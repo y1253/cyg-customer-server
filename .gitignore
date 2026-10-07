@@ -3,3 +3,6 @@ node_modules
 coverage
 /test-results
 *.log
+
+# Copied from cyg-db by prisma.config.ts on every Prisma command
+/prisma/schema.prisma
