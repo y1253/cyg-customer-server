@@ -25,6 +25,13 @@ export const PAGES_PER_CHUNK = 1;
 /** Pages read at once (after page 1, which goes first to establish the period). */
 const PAGE_CONCURRENCY = 3;
 const CHUNK_TIMEOUT_MS = 180_000;
+/**
+ * Re-read rounds after the first reading, at most — the user's cap: "recalculate only 10
+ * times, then throw the error nicely". Each round is paid OpenAI calls.
+ */
+export const MAX_REREADS = 10;
+/** Rounds in a row that may fail to improve the result before giving up early. */
+const MAX_STALE_ROUNDS = 3;
 const MAX_OUTPUT_TOKENS = 16_000;
 
 export interface ExtractedStatement {
@@ -39,6 +46,8 @@ export interface ExtractedStatement {
   verification: ReconcileResult;
   /** OpenAI calls made, first read and re-reads together (for the log). */
   calls: number;
+  /** Re-read rounds used (0 = the first reading already added up). */
+  rereads: number;
 }
 
 /** One page (chunk) as read by the model. */
@@ -81,6 +90,7 @@ export const EXTRACTION_SCHEMA = {
     'totalWithdrawals',
     'depositCount',
     'withdrawalCount',
+    'totalsScope',
     'transactions',
   ],
   properties: {
@@ -95,6 +105,7 @@ export const EXTRACTION_SCHEMA = {
     totalWithdrawals: nullableNumber,
     depositCount: nullableInteger,
     withdrawalCount: nullableInteger,
+    totalsScope: { type: 'string', enum: ['all', 'partial', 'none'] },
     transactions: {
       type: 'array',
       items: {
@@ -137,13 +148,15 @@ export const SYSTEM_PROMPT = [
     UNCATEGORIZED +
     '".',
   '',
-  '- balanceAfter: the running balance printed on that row, if the statement has a balance column; else null.',
+  '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one.',
   '',
-  "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here):",
-  '- openingBalance / closingBalance: the beginning and ending balance of the statement period.',
-  '- totalDeposits: the summary total of money in ("Deposits and additions", "Total credits"), as a positive number.',
-  '- totalWithdrawals: the summary total of money out ("Withdrawals and subtractions", or "Checks paid" + "Electronic withdrawals" + "Fees" added together, "Total debits"), as a positive number.',
-  '- depositCount / withdrawalCount: only if the statement prints how many deposits / withdrawals there were.',
+  "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
+  '- openingBalance / closingBalance: the beginning and ending balance of the statement period (for a credit card: the previous and new balance).',
+  '- totalDeposits: the summary total of ALL money in for this account and period ("Deposits and additions", "Total credits"), as a positive number.',
+  '- totalWithdrawals: the summary total of ALL money out ("Withdrawals and subtractions", "Total debits", or "Checks paid" + "Electronic withdrawals" + "Fees" when printed as separate lines — add those lines up), as a positive number.',
+  '- depositCount / withdrawalCount: only if the statement prints how many deposits / withdrawals there were in total.',
+  '- NEVER copy as a total: year-to-date figures, a page subtotal, a single category on its own (e.g. only "Checks paid" when there are other withdrawals), pending/held amounts, another account\'s section, credit limit, available credit, minimum payment, interest-rate tables. When unsure a figure covers every transaction, use null.',
+  '- totalsScope: "all" if the totals you copied cover every transaction of this account and period, "partial" if the only totals printed cover just part of them, "none" if no totals are printed on these pages.',
   '',
   'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
   'accountName: the bank name plus the last 4 digits of the account number, e.g. "Chase 4362" (null if not on these pages).',
@@ -184,17 +197,23 @@ export class StatementExtractor {
 
   /**
    * Reads the whole statement, then checks it against the bank's own figures and
-   * RE-READS until it matches (or the rounds run out):
-   *  1. the suspect pages again, told exactly what does not add up;
-   *  2. the same, with the stronger model;
-   *  3. every page, with the stronger model.
+   * RE-READS until it matches — at most `MAX_REREADS` rounds (`rereadRound`), and it gives
+   * up early after `MAX_STALE_ROUNDS` rounds in a row that change nothing. A statement
+   * that prints nothing comparable (no totals, or totals that count something else —
+   * `reconcile`'s skipped checks) is not a MISMATCH, so it is never re-read for them.
    * Per page, a re-read replaces the earlier reading only if more checks pass, so a
    * re-read can never make the result worse. `pagesPerChunk` is for tests (the probe).
    */
   async extract(
     pdf: Buffer,
     filename: string,
-    opts: { pagesPerChunk?: number } = {},
+    opts: {
+      pagesPerChunk?: number;
+      /** Re-read rounds allowed (default `MAX_REREADS`). */
+      maxRereads?: number;
+      /** Called after every re-read round — the processor's heartbeat. */
+      onRound?: (rereads: number) => Promise<void> | void;
+    } = {},
   ): Promise<ExtractedStatement> {
     const pagesPerChunk = opts.pagesPerChunk ?? PAGES_PER_CHUNK;
     const chunks = await splitPdf(pdf, pagesPerChunk);
@@ -239,50 +258,61 @@ export class StatementExtractor {
     }
 
     let result = assemble(pages);
-    const rounds = [
-      { model: this.model(), allPages: false },
-      { model: this.verifyModel(), allPages: false },
-      { model: this.verifyModel(), allPages: true },
-    ];
-    for (const [r, round] of rounds.entries()) {
-      if (result.verification.verification !== 'MISMATCH') break;
+    const maxRereads = opts.maxRereads ?? MAX_REREADS;
+    let rereads = 0;
+    let stale = 0;
+    while (
+      result.verification.verification === 'MISMATCH' &&
+      rereads < maxRereads &&
+      stale < MAX_STALE_ROUNDS
+    ) {
+      const round = rereadRound(rereads);
+      rereads++;
+      const model = round.verifyModel ? this.verifyModel() : this.model();
       const suspects = result.verification.suspectPages;
       const targets =
         round.allPages || !suspects.length ? chunks.map((_, i) => i) : suspects;
-      const failed = result.verification.checks.filter((c) => !c.ok);
+      const failed = result.verification.checks.filter(
+        (c) => !c.ok && !c.skipped,
+      );
       this.logger.warn(
         `"${filename}" does not reconcile (${failed.map(describeCheck).join('; ')}) — ` +
-          `re-read round ${r + 1}: ${round.model}, page(s) ${targets.map((t) => t + 1).join(',')}`,
+          `re-read ${rereads}/${maxRereads}: ${model}, page(s) ${targets.map((t) => t + 1).join(',')}`,
       );
       const hint = [
         "A previous reading of this statement does NOT add up against the bank's own figures:",
         ...failed.map((c) => `- ${describeCheck(c)}`),
         'Re-read EVERY line on this page carefully. A row is probably missing, doubled, misread, or has the wrong sign. Copy the summary figures exactly as printed too.',
+        'But if a total you copied is NOT the total of every transaction (year-to-date, a subtotal, one category only, leaves out fees…), set it to null and totalsScope to "partial" — never change a row to make it fit.',
       ].join('\n');
-      const rereads = new Map<number, PageReading>();
+      const rereadPages = new Map<number, PageReading>();
       await this.pool(targets, async (i) => {
-        rereads.set(
+        rereadPages.set(
           i,
-          await read(i, round.model, i === 0 ? null : context, hint),
+          await read(i, model, i === 0 ? null : context, hint),
         );
       });
       // Greedy, page by page: keep a re-read only if it makes the statement add up better.
-      for (const i of [...rereads.keys()].sort((a, b) => a - b)) {
+      let improved = false;
+      for (const i of [...rereadPages.keys()].sort((a, b) => a - b)) {
         const trial = [...pages];
-        trial[i] = rereads.get(i)!;
+        trial[i] = rereadPages.get(i)!;
         const candidate = assemble(trial);
         if (better(candidate.verification, result.verification)) {
           pages[i] = trial[i];
           result = candidate;
+          improved = true;
         }
       }
+      stale = improved ? 0 : stale + 1;
+      await opts.onRound?.(rereads);
     }
 
     this.logger.log(
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
-        `${result.verification.verification} after ${calls} call(s)`,
+        `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)`,
     );
-    return { ...result, calls };
+    return { ...result, calls, rereads };
   }
 
   /** Runs `fn` over `items`, `PAGE_CONCURRENCY` at a time. */
@@ -347,7 +377,7 @@ export class StatementExtractor {
  */
 export function assemble(
   pages: PageReading[],
-): Omit<ExtractedStatement, 'calls'> {
+): Omit<ExtractedStatement, 'calls' | 'rereads'> {
   const first = <T>(pick: (p: PageReading) => T | null): T | null => {
     for (const p of pages) {
       const v = pick(p);
@@ -362,6 +392,13 @@ export function assemble(
     totalWithdrawals: first((p) => p.stated.totalWithdrawals),
     depositCount: first((p) => p.stated.depositCount),
     withdrawalCount: first((p) => p.stated.withdrawalCount),
+    // What the totals cover is said by the page they were COPIED from — a page with no
+    // summary on it may well call its (absent) totals "partial", and must not override it.
+    totalsScope:
+      pages.find(
+        (p) =>
+          p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null,
+      )?.stated.totalsScope ?? null,
   };
   const transactions = pages.flatMap((p, page) =>
     p.transactions.map((t) => ({ ...t, page })),
@@ -386,6 +423,19 @@ export function assemble(
   };
 }
 
+/**
+ * Re-read round `n` (0-based): the suspect pages on the base model, then on the stronger
+ * one, then every page on it; after that suspect pages and every page alternate.
+ */
+export function rereadRound(n: number): {
+  verifyModel: boolean;
+  allPages: boolean;
+} {
+  if (n === 0) return { verifyModel: false, allPages: false };
+  if (n === 1) return { verifyModel: true, allPages: false };
+  return { verifyModel: true, allPages: n % 2 === 0 };
+}
+
 /** Is reading `a` closer to the bank's figures than `b`? More checks passing wins; then a smaller money gap. */
 export function better(a: ReconcileResult, b: ReconcileResult): boolean {
   if (a.verification === 'VERIFIED' && b.verification !== 'VERIFIED')
@@ -400,6 +450,7 @@ function mismatchCents(r: ReconcileResult): number {
     .filter(
       (c) =>
         !c.ok &&
+        !c.skipped &&
         (c.name === 'deposits' ||
           c.name === 'withdrawals' ||
           c.name === 'balance'),
@@ -493,6 +544,12 @@ export function parseExtraction(reply: string): PageReading {
       totalWithdrawals: num(raw.totalWithdrawals),
       depositCount: count(raw.depositCount),
       withdrawalCount: count(raw.withdrawalCount),
+      totalsScope:
+        raw.totalsScope === 'all' ||
+        raw.totalsScope === 'partial' ||
+        raw.totalsScope === 'none'
+          ? raw.totalsScope
+          : null,
     },
     transactions: list
       .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')

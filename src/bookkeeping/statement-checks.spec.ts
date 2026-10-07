@@ -147,3 +147,19 @@ describe('better', () => {
     expect(better(closer, wrong)).toBe(true); // same checks failing, but $1 off instead of $20
   });
 });
+
+describe('assemble: totalsScope', () => {
+  it('comes from the page the totals were copied from, not a later page without them', () => {
+    const p1 = page({
+      stated: { ...page({}).stated, totalWithdrawals: 30, totalsScope: 'all' },
+      transactions: [tx(-10, null)],
+    });
+    const p2 = page({
+      stated: { ...page({}).stated, totalsScope: 'partial' },
+      transactions: [tx(-10, null)],
+    });
+    const out = assemble([p1, p2]);
+    expect(out.stated.totalsScope).toBe('all');
+    expect(out.verification.verification).toBe('MISMATCH'); // a dropped row is not excused
+  });
+});

@@ -28,10 +28,6 @@ export interface StatementView {
   periodStart: string | null;
   periodEnd: string | null;
   transactionCount: number;
-  /** VERIFIED | UNVERIFIED | MISMATCH, or null while it has not been read yet. */
-  verification: string | null;
-  /** The checks against the bank's own figures, each with a ready-made sentence. */
-  checks: Array<{ name: string; ok: boolean; text: string }>;
   createdAt: Date;
   processedAt: Date | null;
 }
@@ -53,6 +49,10 @@ export interface TransactionView {
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
 
+/**
+ * What the customer sees of a statement. The check against the bank's figures
+ * (`verification`, `verificationDetail`) is stored for us but deliberately NOT returned.
+ */
 function toView(s: BankStatement): StatementView {
   return {
     id: s.id,
@@ -66,16 +66,6 @@ function toView(s: BankStatement): StatementView {
     periodStart: day(s.periodStart),
     periodEnd: day(s.periodEnd),
     transactionCount: s.transactionCount,
-    verification: s.verification,
-    checks: Array.isArray(s.verificationDetail)
-      ? (
-          s.verificationDetail as Array<{
-            name: string;
-            ok: boolean;
-            text: string;
-          }>
-        ).map((c) => ({ name: c.name, ok: c.ok, text: c.text }))
-      : [],
     createdAt: s.createdAt,
     processedAt: s.processedAt,
   };

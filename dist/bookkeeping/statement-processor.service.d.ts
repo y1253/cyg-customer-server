@@ -2,7 +2,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { StatementExtractor } from './statement-extractor';
 export declare const MAX_ATTEMPTS = 4;
-export declare const MAX_RUNS = 3;
 export declare function claimableAt(updatedAt: Date, attempts: number): number;
 export declare class StatementProcessorService {
     private readonly prisma;
@@ -18,3 +17,4 @@ export declare class StatementProcessorService {
     private processOne;
     private recordFailure;
 }
+export declare function needsReviewMessage(rereads: number, problems: string[]): string;

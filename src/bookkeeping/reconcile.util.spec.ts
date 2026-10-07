@@ -119,4 +119,100 @@ describe('reconcile', () => {
       'Withdrawals: statement $20.10, read $20.00 (off by $0.10)',
     );
   });
+
+  describe('totals that are not "the sum of the rows"', () => {
+    it('a credit card (balances = amount OWED) verifies with the sign flipped', () => {
+      // Owed 500; a -120 purchase and a +200 payment → owed 420.
+      const card: ReconcileRow[] = [
+        { amount: -120, balanceAfter: 620, page: 0 },
+        { amount: 200, balanceAfter: 420, page: 0 },
+      ];
+      const r = reconcile(
+        { ...NONE, openingBalance: 500, closingBalance: 420 },
+        card,
+      );
+      expect(r.verification).toBe('VERIFIED');
+      expect(r.checks.every((c) => c.ok)).toBe(true);
+    });
+
+    it("the bank's own figures disagree (one category only) → totals skipped, balance decides", () => {
+      // "Checks paid 20.00" copied as the withdrawals total: 1000 + 50.30 − 20 ≠ 1030.20.
+      const r = reconcile(
+        { ...STATED, totalWithdrawals: 20, withdrawalCount: null },
+        rows(),
+      );
+      expect(r.verification).toBe('VERIFIED');
+      const w = r.checks.find((c) => c.name === 'withdrawals')!;
+      expect(w.ok).toBe(false);
+      expect(w.skipped).toMatch(/count something else/);
+      expect(describeCheck(w)).toMatch(/^Withdrawals: not compared/);
+    });
+
+    it('every row proven by the running balance → a failing total/count is skipped', () => {
+      // A self-consistent summary is not printed (no totals), but a count of "1 deposit" is.
+      const r = reconcile(
+        {
+          ...NONE,
+          openingBalance: 1000,
+          closingBalance: 1030.2,
+          depositCount: 1,
+        },
+        rows(),
+      );
+      expect(r.verification).toBe('VERIFIED');
+      expect(r.checks.find((c) => c.name === 'depositCount')!.skipped).toMatch(
+        /running balance/,
+      );
+    });
+
+    it('the balance alone is NOT proof: two offsetting misreads still MISMATCH', () => {
+      // +5 deposit and −5 withdrawal both missing; net and closing unchanged, no running balance.
+      const bare = [
+        { amount: 55, balanceAfter: null, page: 0 },
+        { amount: -25, balanceAfter: null, page: 0 },
+        { amount: -0.1, balanceAfter: null, page: 1 },
+        { amount: 0.3, balanceAfter: null, page: 1 },
+      ];
+      const r = reconcile(
+        { ...STATED, depositCount: null, withdrawalCount: null },
+        bare,
+      );
+      expect(r.checks.find((c) => c.name === 'balance')!.ok).toBe(true);
+      expect(r.verification).toBe('MISMATCH');
+      expect(r.checks.filter((c) => c.skipped)).toEqual([]);
+    });
+
+    it('the AI\'s "partial" is believed when nothing proves the totals complete', () => {
+      const bare = rows().map((r) => ({ ...r, balanceAfter: null }));
+      const r = reconcile(
+        { ...NONE, totalWithdrawals: 20, totalsScope: 'partial' },
+        bare,
+      );
+      expect(r.verification).toBe('UNVERIFIED');
+      expect(r.checks[0].skipped).toMatch(/does not cover every transaction/);
+    });
+
+    it("…but NOT when the bank's own figures prove the totals complete (a dropped row stays caught)", () => {
+      const dropped = rows()
+        .filter((_, i) => i !== 2)
+        .map((r) => ({ ...r, balanceAfter: null }));
+      const r = reconcile({ ...STATED, totalsScope: 'partial' }, dropped);
+      expect(r.verification).toBe('MISMATCH');
+      expect(r.checks.filter((c) => c.skipped)).toEqual([]);
+    });
+
+    it('a running balance on every row and nothing else printed → VERIFIED by the chain', () => {
+      const r = reconcile(NONE, rows());
+      expect(r.checks.map((c) => c.name)).toEqual(['runningBalance']);
+      expect(r.verification).toBe('VERIFIED');
+    });
+
+    it('a balance printed only on the last row of each day still chains', () => {
+      const daily = rows();
+      daily[0] = { ...daily[0], balanceAfter: null };
+      daily[2] = { ...daily[2], balanceAfter: null };
+      const r = reconcile({ ...NONE, openingBalance: 1000 }, daily);
+      expect(r.verification).toBe('VERIFIED');
+    });
+  });
 });

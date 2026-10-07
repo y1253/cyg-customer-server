@@ -6,102 +6,134 @@ exports.describeCheck = describeCheck;
 const cents = (n) => Math.round(n * 100);
 exports.cents = cents;
 function reconcile(stated, rows) {
-    const checks = [];
     const amounts = rows.map((r) => (0, exports.cents)(r.amount));
     const inSum = amounts.filter((a) => a > 0).reduce((s, a) => s + a, 0);
     const outSum = -amounts.filter((a) => a < 0).reduce((s, a) => s + a, 0);
     const net = inSum - outSum;
+    const totals = [];
     if (stated.totalDeposits !== null) {
-        const expected = (0, exports.cents)(Math.abs(stated.totalDeposits));
-        checks.push({
-            name: 'deposits',
-            expected,
-            actual: inSum,
-            ok: expected === inSum,
-        });
+        totals.push(check('deposits', (0, exports.cents)(Math.abs(stated.totalDeposits)), inSum));
     }
     if (stated.totalWithdrawals !== null) {
-        const expected = (0, exports.cents)(Math.abs(stated.totalWithdrawals));
-        checks.push({
-            name: 'withdrawals',
-            expected,
-            actual: outSum,
-            ok: expected === outSum,
-        });
+        totals.push(check('withdrawals', (0, exports.cents)(Math.abs(stated.totalWithdrawals)), outSum));
     }
-    if (stated.openingBalance !== null && stated.closingBalance !== null) {
-        const expected = (0, exports.cents)(stated.closingBalance);
-        const actual = (0, exports.cents)(stated.openingBalance) + net;
-        checks.push({ name: 'balance', expected, actual, ok: expected === actual });
-    }
+    const counts = [];
     if (stated.depositCount !== null) {
         const actual = amounts.filter((a) => a > 0).length;
-        checks.push({
-            name: 'depositCount',
-            expected: stated.depositCount,
-            actual,
-            ok: actual === stated.depositCount,
-        });
+        counts.push(check('depositCount', stated.depositCount, actual));
     }
     if (stated.withdrawalCount !== null) {
         const actual = amounts.filter((a) => a < 0).length;
-        checks.push({
-            name: 'withdrawalCount',
-            expected: stated.withdrawalCount,
-            actual,
-            ok: actual === stated.withdrawalCount,
-        });
+        counts.push(check('withdrawalCount', stated.withdrawalCount, actual));
     }
-    const forward = runningBalance(rows, amounts, stated.openingBalance);
-    const backward = runningBalance([...rows].reverse(), [...amounts].reverse(), stated.openingBalance);
-    const chain = backward.links > 0 && backward.broken < forward.broken ? backward : forward;
-    if (chain.links > 0) {
-        checks.push({
-            name: 'runningBalance',
-            expected: chain.links,
-            actual: chain.links - chain.broken,
-            ok: chain.broken === 0,
-        });
+    const asPrinted = balanceChecks(stated, rows, amounts, net, 1);
+    const owed = balanceChecks(stated, rows, amounts, net, -1);
+    const balances = fit(owed) > fit(asPrinted) ? owed : asPrinted;
+    const reason = skipReason(stated, balances);
+    for (const c of [...totals, ...counts]) {
+        if (!c.ok && reason)
+            c.skipped = reason;
     }
-    const suspect = chain.suspect;
-    const verification = !checks.length
+    const checks = [
+        ...totals,
+        ...(balances.balance ? [balances.balance] : []),
+        ...counts,
+        ...(balances.running ? [balances.running] : []),
+    ];
+    const counted = checks.filter((c) => !c.skipped);
+    const verification = !counted.length
         ? 'UNVERIFIED'
-        : checks.every((c) => c.ok)
+        : counted.every((c) => c.ok)
             ? 'VERIFIED'
             : 'MISMATCH';
     return {
         verification,
         checks,
-        suspectPages: [...suspect].sort((a, b) => a - b),
+        suspectPages: [...balances.suspect].sort((a, b) => a - b),
     };
 }
-function runningBalance(rows, amounts, opening) {
+const check = (name, expected, actual) => ({
+    name,
+    expected,
+    actual,
+    ok: expected === actual,
+    skipped: null,
+});
+function balanceChecks(stated, rows, amounts, net, sign) {
+    const bal = (n) => (n === null ? null : sign * (0, exports.cents)(n));
+    const opening = bal(stated.openingBalance);
+    const closing = bal(stated.closingBalance);
+    const balance = opening !== null && closing !== null
+        ? check('balance', closing, opening + net)
+        : null;
+    const printed = rows.map((r) => bal(r.balanceAfter));
+    const pages = rows.map((r) => r.page);
+    const forward = runningBalance(printed, amounts, pages, opening);
+    const backward = runningBalance([...printed].reverse(), [...amounts].reverse(), [...pages].reverse(), opening);
+    const chain = backward.links > 0 && backward.broken < forward.broken ? backward : forward;
+    const running = chain.links > 0
+        ? check('runningBalance', chain.links, chain.links - chain.broken)
+        : null;
+    const dep = stated.totalDeposits;
+    const wd = stated.totalWithdrawals;
+    const selfConsistent = opening !== null && closing !== null && dep !== null && wd !== null
+        ? opening + (0, exports.cents)(Math.abs(dep)) - (0, exports.cents)(Math.abs(wd)) === closing
+        : null;
+    return { balance, running, suspect: chain.suspect, selfConsistent };
+}
+function fit(b) {
+    const passing = (b.balance?.ok ? 1 : 0) + (b.running?.ok ? 1 : 0);
+    const broken = b.running ? b.running.expected - b.running.actual : 0;
+    return passing * 1e9 + (b.selfConsistent ? 1e6 : 0) - broken;
+}
+function skipReason(stated, b) {
+    if (b.selfConsistent === false) {
+        return "the statement's totals don't add up to its own opening and closing balance, so they count something else";
+    }
+    if (b.running?.ok && b.balance?.ok) {
+        return "every row matches the bank's running balance, so the printed figure counts something different";
+    }
+    if (stated.totalsScope === 'partial' && b.selfConsistent !== true) {
+        return 'the printed figure does not cover every transaction on the statement';
+    }
+    return null;
+}
+function runningBalance(printed, amounts, pages, opening) {
     const suspect = new Set();
-    let prev = opening !== null ? (0, exports.cents)(opening) : null;
+    let prev = opening;
     let links = 0;
     let broken = 0;
-    rows.forEach((r, i) => {
-        if (r.balanceAfter === null) {
+    printed.forEach((balance, i) => {
+        if (balance === null) {
             if (prev !== null)
                 prev += amounts[i];
             return;
         }
-        const printed = (0, exports.cents)(r.balanceAfter);
         if (prev !== null) {
             links++;
-            if (prev + amounts[i] !== printed) {
+            if (prev + amounts[i] !== balance) {
                 broken++;
-                suspect.add(r.page);
+                suspect.add(pages[i]);
             }
         }
-        prev = printed;
+        prev = balance;
     });
     return { links, broken, suspect };
 }
-const score = (r) => r.checks.filter((c) => c.ok).length;
+const score = (r) => r.checks.filter((c) => c.ok && !c.skipped).length;
 exports.score = score;
+const CHECK_LABEL = {
+    deposits: 'Deposits',
+    withdrawals: 'Withdrawals',
+    balance: 'Ending balance',
+    depositCount: 'Number of deposits',
+    withdrawalCount: 'Number of withdrawals',
+    runningBalance: 'Running balance',
+};
 function describeCheck(c) {
-    const money = (v) => `$${(v / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (c.skipped)
+        return `${CHECK_LABEL[c.name]}: not compared — ${c.skipped}`;
+    const money = (v) => `${v < 0 ? '-' : ''}$${(Math.abs(v) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     switch (c.name) {
         case 'deposits':
         case 'withdrawals':

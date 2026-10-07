@@ -34,10 +34,6 @@ function toView(s) {
         periodStart: day(s.periodStart),
         periodEnd: day(s.periodEnd),
         transactionCount: s.transactionCount,
-        verification: s.verification,
-        checks: Array.isArray(s.verificationDetail)
-            ? s.verificationDetail.map((c) => ({ name: c.name, ok: c.ok, text: c.text }))
-            : [],
         createdAt: s.createdAt,
         processedAt: s.processedAt,
     };

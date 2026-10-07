@@ -12,12 +12,6 @@ import {
 import { sweepStaleStaging } from './statement-uploads';
 
 export const MAX_ATTEMPTS = 4;
-/**
- * Full reads (each = first read + up to 3 re-read rounds) before a statement that still
- * does not add up is set aside as NEEDS_REVIEW. "Re-read until it matches", with a guard:
- * every round is a paid OpenAI call, and a page that cannot be read will never match.
- */
-export const MAX_RUNS = 3;
 /** Wait before attempt n+1 (index = attempts so far): 1 min, 5 min, 30 min. */
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
 const CONCURRENCY = 2;
@@ -135,20 +129,28 @@ export class StatementProcessorService {
     const started = Date.now();
     try {
       const pdf = await this.storage.getBuffer(row.storageKey);
-      const extracted = await this.extractor.extract(pdf, row.filename);
+      // One run does every re-read (at most MAX_REREADS); each round refreshes updatedAt
+      // so a long run is not mistaken for a crashed one and claimed again.
+      const extracted = await this.extractor.extract(pdf, row.filename, {
+        onRound: async () => {
+          await this.prisma.bankStatement.updateMany({
+            where: { id: row.id, status: StatementStatus.PROCESSING },
+            data: { updatedAt: new Date() },
+          });
+        },
+      });
       const bank = extracted.accountName ?? 'Bank account';
       const rows = buildLedgerRows(extracted.transactions, bank);
       const { verification, checks } = extracted.verification;
       const runs = row.runs + 1;
       const mismatch = verification === 'MISMATCH';
-      // A mismatch goes back to the queue for another full read (with backoff) until
-      // MAX_RUNS; only then is it set aside. Either way its rows never reach a customer:
-      // the ledger and the exports read DONE statements only.
-      const status = !mismatch
-        ? StatementStatus.DONE
-        : runs < MAX_RUNS
-          ? StatementStatus.PENDING
-          : StatementStatus.NEEDS_REVIEW;
+      // Still off after every re-read → set aside with a readable reason. Its rows never
+      // reach a customer: the ledger and the exports read DONE statements only. A
+      // statement with nothing comparable printed (UNVERIFIED) is released as it is.
+      const status = mismatch
+        ? StatementStatus.NEEDS_REVIEW
+        : StatementStatus.DONE;
+      const failed = checks.filter((c) => !c.ok && !c.skipped);
       const money = (n: number | null) => (n === null ? null : n.toFixed(2));
 
       await this.prisma.$transaction([
@@ -168,8 +170,6 @@ export class StatementProcessorService {
           data: {
             status,
             runs,
-            // Mismatch retries share the error backoff: 1 min, then 5 min.
-            ...(status === StatementStatus.PENDING && { attempts: runs }),
             accountName: extracted.accountName,
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
@@ -186,27 +186,19 @@ export class StatementProcessorService {
               text: describeCheck(c),
             })),
             transactionCount: rows.length,
-            processedAt: status === StatementStatus.PENDING ? null : new Date(),
-            error:
-              status === StatementStatus.NEEDS_REVIEW
-                ? "We read this statement several times and the totals still don't match the bank's figures."
-                : null,
+            processedAt: new Date(),
+            error: mismatch
+              ? needsReviewMessage(extracted.rereads, failed.map(describeCheck))
+              : null,
           },
         }),
       ]);
       const level = mismatch ? 'warn' : 'log';
       this.logger[level](
         `statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
-          `${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
-          (mismatch
-            ? ` — ${checks
-                .filter((c) => !c.ok)
-                .map(describeCheck)
-                .join('; ')}`
-            : ''),
+          `${extracted.rereads} re-read(s), ${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
+          (mismatch ? ` — ${failed.map(describeCheck).join('; ')}` : ''),
       );
-      if (status === StatementStatus.PENDING)
-        setTimeout(() => this.processSoon(), 61_000);
     } catch (err) {
       await this.recordFailure(row, err);
     }
@@ -236,4 +228,20 @@ export class StatementProcessorService {
       })
       .catch(() => undefined);
   }
+}
+
+/**
+ * The customer-facing reason a statement was set aside:
+ * "We re-checked this statement 10 times and it still doesn't match the bank's totals
+ * (Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)). …"
+ */
+export function needsReviewMessage(
+  rereads: number,
+  problems: string[],
+): string {
+  const what = problems.length ? ` (${problems.join('; ')})` : '';
+  return (
+    `We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +
+    "Nothing from it is in your ledger. Try again, or contact us and we'll look at it."
+  );
 }

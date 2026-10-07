@@ -5,7 +5,9 @@ export interface StatedFigures {
     totalWithdrawals: number | null;
     depositCount: number | null;
     withdrawalCount: number | null;
+    totalsScope?: TotalsScope | null;
 }
+export type TotalsScope = 'all' | 'partial' | 'none';
 export interface ReconcileRow {
     amount: number;
     balanceAfter: number | null;
@@ -17,6 +19,7 @@ export interface Check {
     expected: number;
     actual: number;
     ok: boolean;
+    skipped: string | null;
 }
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
 export interface ReconcileResult {

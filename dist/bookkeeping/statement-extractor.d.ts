@@ -4,6 +4,7 @@ import type { ExtractedTransaction } from './ledger.util';
 import { type ReconcileResult, type StatedFigures } from './reconcile.util';
 import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
+export declare const MAX_REREADS = 10;
 export interface ExtractedStatement {
     accountName: string | null;
     bankName: string | null;
@@ -13,6 +14,7 @@ export interface ExtractedStatement {
     transactions: ExtractedTransaction[];
     verification: ReconcileResult;
     calls: number;
+    rereads: number;
 }
 export interface PageReading {
     isBankStatement: boolean;
@@ -27,7 +29,7 @@ export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
-    readonly required: readonly ["isBankStatement", "bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "transactions"];
+    readonly required: readonly ["isBankStatement", "bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions"];
     readonly properties: {
         readonly isBankStatement: {
             readonly type: "boolean";
@@ -61,6 +63,10 @@ export declare const EXTRACTION_SCHEMA: {
         };
         readonly withdrawalCount: {
             type: string[];
+        };
+        readonly totalsScope: {
+            readonly type: "string";
+            readonly enum: readonly ["all", "partial", "none"];
         };
         readonly transactions: {
             readonly type: "array";
@@ -103,11 +109,17 @@ export declare class StatementExtractor {
     verifyModel(): string;
     extract(pdf: Buffer, filename: string, opts?: {
         pagesPerChunk?: number;
+        maxRereads?: number;
+        onRound?: (rereads: number) => Promise<void> | void;
     }): Promise<ExtractedStatement>;
     private pool;
     private readChunk;
 }
-export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls'>;
+export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
+export declare function rereadRound(n: number): {
+    verifyModel: boolean;
+    allPages: boolean;
+};
 export declare function better(a: ReconcileResult, b: ReconcileResult): boolean;
 export declare function splitPdf(pdf: Buffer, pagesPerChunk: number, decrypt?: (pdf: Buffer) => Promise<Buffer>): Promise<Array<{
     bytes: Buffer;

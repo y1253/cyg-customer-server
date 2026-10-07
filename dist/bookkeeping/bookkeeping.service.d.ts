@@ -16,12 +16,6 @@ export interface StatementView {
     periodStart: string | null;
     periodEnd: string | null;
     transactionCount: number;
-    verification: string | null;
-    checks: Array<{
-        name: string;
-        ok: boolean;
-        text: string;
-    }>;
     createdAt: Date;
     processedAt: Date | null;
 }

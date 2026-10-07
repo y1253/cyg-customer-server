@@ -21,7 +21,8 @@ import { StatementExtractor } from '../src/bookkeeping/statement-extractor';
 
 async function main(): Promise<void> {
   const file = process.argv[2];
-  if (!file) throw new Error('usage: bookkeeping-probe.ts <statement.pdf> [--pages=N]');
+  if (!file)
+    throw new Error('usage: bookkeeping-probe.ts <statement.pdf> [--pages=N]');
   const pagesArg = process.argv.find((a) => a.startsWith('--pages='));
   const quiet = process.argv.includes('--quiet');
   const config = {
@@ -36,15 +37,25 @@ async function main(): Promise<void> {
   const out = await extractor.extract(readFileSync(file), basename(file), {
     pagesPerChunk: pagesArg ? Number(pagesArg.split('=')[1]) : undefined,
   });
-  const rows = buildLedgerRows(out.transactions, out.accountName ?? 'Bank account');
+  const rows = buildLedgerRows(
+    out.transactions,
+    out.accountName ?? 'Bank account',
+  );
 
-  console.log(`model=${extractor.model()} verify=${extractor.verifyModel()} ${Date.now() - started}ms, ${out.calls} call(s)`);
+  console.log(
+    `model=${extractor.model()} verify=${extractor.verifyModel()} ${Date.now() - started}ms, ${out.calls} call(s)`,
+  );
   console.log(
     `account="${out.accountName}" bank="${out.bankName}" period=${out.periodStart}..${out.periodEnd} rows=${rows.length}`,
   );
   console.log(`stated: ${JSON.stringify(out.stated)}`);
-  console.log(`VERIFICATION: ${out.verification.verification}`);
-  for (const c of out.verification.checks) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${describeCheck(c)}`);
+  console.log(
+    `VERIFICATION: ${out.verification.verification} after ${out.rereads} re-read(s)`,
+  );
+  for (const c of out.verification.checks)
+    console.log(
+      `  ${c.skipped ? 'skip' : c.ok ? 'ok  ' : 'FAIL'} ${describeCheck(c)}`,
+    );
   if (!quiet) {
     console.table(
       rows.slice(0, 12).map((r) => ({
@@ -64,12 +75,21 @@ class SabotagingClient extends OpenAiClient {
   private sabotaged = false;
   async chat(req: ChatRequest): Promise<string> {
     const reply = await super.chat(req);
-    const first = Array.isArray(req.user) && req.user[0].type === 'text' ? req.user[0].text : '';
-    if (!this.sabotaged && /page 2 of/.test(first) && !/does NOT add up/.test(first)) {
+    const first =
+      Array.isArray(req.user) && req.user[0].type === 'text'
+        ? req.user[0].text
+        : '';
+    if (
+      !this.sabotaged &&
+      /page 2 of/.test(first) &&
+      !/does NOT add up/.test(first)
+    ) {
       this.sabotaged = true;
       const parsed = JSON.parse(reply) as { transactions: unknown[] };
       const [gone] = parsed.transactions.splice(4, 1);
-      console.log(`SABOTAGE: removed from page 2's first reading -> ${JSON.stringify(gone)}`);
+      console.log(
+        `SABOTAGE: removed from page 2's first reading -> ${JSON.stringify(gone)}`,
+      );
       return JSON.stringify(parsed);
     }
     return reply;
