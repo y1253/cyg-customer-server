@@ -19,7 +19,7 @@ async function decryptForReading(pdf) {
         const pdfDoc = doc.asPDF();
         if (!pdfDoc)
             throw new statement_errors_1.UnreadableStatementError('This file could not be opened as a PDF.');
-        return Buffer.from(pdfDoc.saveToBuffer('decrypt').asUint8Array());
+        return Buffer.from(pdfDoc.saveToBuffer('encrypt=none').asUint8Array());
     }
     finally {
         doc.destroy();

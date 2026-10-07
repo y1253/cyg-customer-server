@@ -41,7 +41,7 @@ export async function decryptForReading(pdf: Buffer): Promise<Buffer> {
       throw new UnreadableStatementError(
         'This file could not be opened as a PDF.',
       );
-    return Buffer.from(pdfDoc.saveToBuffer('decrypt').asUint8Array());
+    return Buffer.from(pdfDoc.saveToBuffer('encrypt=none').asUint8Array());
   } finally {
     doc.destroy();
   }
