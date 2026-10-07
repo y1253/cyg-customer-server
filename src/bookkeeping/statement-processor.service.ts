@@ -4,6 +4,7 @@ import { StatementStatus, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { buildLedgerRows, parseIsoDate } from './ledger.util';
+import { describeCheck } from './reconcile.util';
 import {
   StatementExtractor,
   UnreadableStatementError,
@@ -11,6 +12,12 @@ import {
 import { sweepStaleStaging } from './statement-uploads';
 
 export const MAX_ATTEMPTS = 4;
+/**
+ * Full reads (each = first read + up to 3 re-read rounds) before a statement that still
+ * does not add up is set aside as NEEDS_REVIEW. "Re-read until it matches", with a guard:
+ * every round is a paid OpenAI call, and a page that cannot be read will never match.
+ */
+export const MAX_RUNS = 3;
 /** Wait before attempt n+1 (index = attempts so far): 1 min, 5 min, 30 min. */
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
 const CONCURRENCY = 2;
@@ -131,6 +138,18 @@ export class StatementProcessorService {
       const extracted = await this.extractor.extract(pdf, row.filename);
       const bank = extracted.accountName ?? 'Bank account';
       const rows = buildLedgerRows(extracted.transactions, bank);
+      const { verification, checks } = extracted.verification;
+      const runs = row.runs + 1;
+      const mismatch = verification === 'MISMATCH';
+      // A mismatch goes back to the queue for another full read (with backoff) until
+      // MAX_RUNS; only then is it set aside. Either way its rows never reach a customer:
+      // the ledger and the exports read DONE statements only.
+      const status = !mismatch
+        ? StatementStatus.DONE
+        : runs < MAX_RUNS
+          ? StatementStatus.PENDING
+          : StatementStatus.NEEDS_REVIEW;
+      const money = (n: number | null) => (n === null ? null : n.toFixed(2));
 
       await this.prisma.$transaction([
         // Idempotent: a retry after a crash mid-write replaces, never duplicates.
@@ -147,19 +166,47 @@ export class StatementProcessorService {
         this.prisma.bankStatement.update({
           where: { id: row.id },
           data: {
-            status: StatementStatus.DONE,
+            status,
+            runs,
+            // Mismatch retries share the error backoff: 1 min, then 5 min.
+            ...(status === StatementStatus.PENDING && { attempts: runs }),
             accountName: extracted.accountName,
+            bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
             periodEnd: parseIsoDate(extracted.periodEnd),
+            openingBalance: money(extracted.stated.openingBalance),
+            closingBalance: money(extracted.stated.closingBalance),
+            statedDeposits: money(extracted.stated.totalDeposits),
+            statedWithdrawals: money(extracted.stated.totalWithdrawals),
+            statedDepositCount: extracted.stated.depositCount,
+            statedWithdrawalCount: extracted.stated.withdrawalCount,
+            verification,
+            verificationDetail: checks.map((c) => ({
+              ...c,
+              text: describeCheck(c),
+            })),
             transactionCount: rows.length,
-            processedAt: new Date(),
-            error: null,
+            processedAt: status === StatementStatus.PENDING ? null : new Date(),
+            error:
+              status === StatementStatus.NEEDS_REVIEW
+                ? "We read this statement several times and the totals still don't match the bank's figures."
+                : null,
           },
         }),
       ]);
-      this.logger.log(
-        `statement #${row.id} DONE: ${rows.length} transactions in ${Date.now() - started}ms`,
+      const level = mismatch ? 'warn' : 'log';
+      this.logger[level](
+        `statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
+          `${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
+          (mismatch
+            ? ` — ${checks
+                .filter((c) => !c.ok)
+                .map(describeCheck)
+                .join('; ')}`
+            : ''),
       );
+      if (status === StatementStatus.PENDING)
+        setTimeout(() => this.processSoon(), 61_000);
     } catch (err) {
       await this.recordFailure(row, err);
     }

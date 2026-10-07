@@ -10,7 +10,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 var StatementProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StatementProcessorService = exports.MAX_ATTEMPTS = void 0;
+exports.StatementProcessorService = exports.MAX_RUNS = exports.MAX_ATTEMPTS = void 0;
 exports.claimableAt = claimableAt;
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
@@ -18,9 +18,11 @@ const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const ledger_util_1 = require("./ledger.util");
+const reconcile_util_1 = require("./reconcile.util");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_uploads_1 = require("./statement-uploads");
 exports.MAX_ATTEMPTS = 4;
+exports.MAX_RUNS = 3;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
 const CONCURRENCY = 2;
 const BATCH = 6;
@@ -115,6 +117,15 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const extracted = await this.extractor.extract(pdf, row.filename);
             const bank = extracted.accountName ?? 'Bank account';
             const rows = (0, ledger_util_1.buildLedgerRows)(extracted.transactions, bank);
+            const { verification, checks } = extracted.verification;
+            const runs = row.runs + 1;
+            const mismatch = verification === 'MISMATCH';
+            const status = !mismatch
+                ? client_1.StatementStatus.DONE
+                : runs < exports.MAX_RUNS
+                    ? client_1.StatementStatus.PENDING
+                    : client_1.StatementStatus.NEEDS_REVIEW;
+            const money = (n) => (n === null ? null : n.toFixed(2));
             await this.prisma.$transaction([
                 this.prisma.bankTransaction.deleteMany({
                     where: { statementId: row.id },
@@ -129,17 +140,43 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 this.prisma.bankStatement.update({
                     where: { id: row.id },
                     data: {
-                        status: client_1.StatementStatus.DONE,
+                        status,
+                        runs,
+                        ...(status === client_1.StatementStatus.PENDING && { attempts: runs }),
                         accountName: extracted.accountName,
+                        bankName: extracted.bankName,
                         periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
                         periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
+                        openingBalance: money(extracted.stated.openingBalance),
+                        closingBalance: money(extracted.stated.closingBalance),
+                        statedDeposits: money(extracted.stated.totalDeposits),
+                        statedWithdrawals: money(extracted.stated.totalWithdrawals),
+                        statedDepositCount: extracted.stated.depositCount,
+                        statedWithdrawalCount: extracted.stated.withdrawalCount,
+                        verification,
+                        verificationDetail: checks.map((c) => ({
+                            ...c,
+                            text: (0, reconcile_util_1.describeCheck)(c),
+                        })),
                         transactionCount: rows.length,
-                        processedAt: new Date(),
-                        error: null,
+                        processedAt: status === client_1.StatementStatus.PENDING ? null : new Date(),
+                        error: status === client_1.StatementStatus.NEEDS_REVIEW
+                            ? "We read this statement several times and the totals still don't match the bank's figures."
+                            : null,
                     },
                 }),
             ]);
-            this.logger.log(`statement #${row.id} DONE: ${rows.length} transactions in ${Date.now() - started}ms`);
+            const level = mismatch ? 'warn' : 'log';
+            this.logger[level](`statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
+                `${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
+                (mismatch
+                    ? ` — ${checks
+                        .filter((c) => !c.ok)
+                        .map(reconcile_util_1.describeCheck)
+                        .join('; ')}`
+                    : ''));
+            if (status === client_1.StatementStatus.PENDING)
+                setTimeout(() => this.processSoon(), 61_000);
         }
         catch (err) {
             await this.recordFailure(row, err);

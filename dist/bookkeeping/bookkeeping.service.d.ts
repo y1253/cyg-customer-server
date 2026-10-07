@@ -11,9 +11,17 @@ export interface StatementView {
     status: StatementStatus;
     error: string | null;
     accountName: string | null;
+    bankName: string | null;
+    label: string;
     periodStart: string | null;
     periodEnd: string | null;
     transactionCount: number;
+    verification: string | null;
+    checks: Array<{
+        name: string;
+        ok: boolean;
+        text: string;
+    }>;
     createdAt: Date;
     processedAt: Date | null;
 }
@@ -27,6 +35,7 @@ export interface TransactionView {
     offsetAccount: string;
     debitAccount: string;
     creditAccount: string;
+    statementLabel: string;
 }
 export declare class BookkeepingService {
     private readonly prisma;

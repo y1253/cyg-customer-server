@@ -18,6 +18,7 @@ const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 function toView(s) {
@@ -28,9 +29,15 @@ function toView(s) {
         status: s.status,
         error: s.error,
         accountName: s.accountName,
+        bankName: s.bankName,
+        label: (0, statement_label_1.statementLabel)(s),
         periodStart: day(s.periodStart),
         periodEnd: day(s.periodEnd),
         transactionCount: s.transactionCount,
+        verification: s.verification,
+        checks: Array.isArray(s.verificationDetail)
+            ? s.verificationDetail.map((c) => ({ name: c.name, ok: c.ok, text: c.text }))
+            : [],
         createdAt: s.createdAt,
         processedAt: s.processedAt,
     };
@@ -89,6 +96,17 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 ...(statementIds?.length && { statementId: { in: statementIds } }),
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },
+            include: {
+                statement: {
+                    select: {
+                        accountName: true,
+                        bankName: true,
+                        filename: true,
+                        periodStart: true,
+                        periodEnd: true,
+                    },
+                },
+            },
             orderBy: [
                 { postingDate: 'desc' },
                 { statementId: 'desc' },
@@ -105,6 +123,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             offsetAccount: r.offsetAccount,
             debitAccount: r.debitAccount,
             creditAccount: r.creditAccount,
+            statementLabel: (0, statement_label_1.statementLabel)(r.statement),
         }));
     }
     async file(customerId, id) {
@@ -120,12 +139,18 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     }
     async retry(customerId, id) {
         const s = await this.owned(customerId, id);
-        if (s.status !== client_1.StatementStatus.FAILED) {
+        if (s.status !== client_1.StatementStatus.FAILED &&
+            s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
             throw new common_1.BadRequestException('Only a statement that failed can be retried');
         }
         const row = await this.prisma.bankStatement.update({
             where: { id: s.id },
-            data: { status: client_1.StatementStatus.PENDING, attempts: 0, error: null },
+            data: {
+                status: client_1.StatementStatus.PENDING,
+                attempts: 0,
+                runs: 0,
+                error: null,
+            },
         });
         this.processor.processSoon();
         return toView(row);

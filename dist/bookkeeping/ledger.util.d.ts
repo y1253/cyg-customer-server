@@ -3,7 +3,9 @@ export interface ExtractedTransaction {
     postingDate: string | null;
     description: string;
     amount: number;
+    balanceAfter: number | null;
     offsetAccount: string;
+    page?: number;
 }
 export interface LedgerRow {
     position: number;
@@ -11,6 +13,7 @@ export interface LedgerRow {
     postingDate: Date | null;
     description: string;
     amount: string;
+    balanceAfter: string | null;
     offsetAccount: string;
     debitAccount: string;
     creditAccount: string;

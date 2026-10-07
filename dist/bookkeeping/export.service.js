@@ -18,6 +18,7 @@ const common_1 = require("@nestjs/common");
 const exceljs_1 = __importDefault(require("exceljs"));
 const pdfkit_1 = __importDefault(require("pdfkit"));
 const prisma_service_1 = require("../prisma/prisma.service");
+const statement_label_1 = require("./statement-label");
 const BRAND = '#169F96';
 function netOf(rows) {
     return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
@@ -35,7 +36,17 @@ let LedgerExportService = class LedgerExportService {
     async rowsFor(customerId) {
         const rows = await this.prisma.bankTransaction.findMany({
             where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
-            include: { statement: { select: { filename: true } } },
+            include: {
+                statement: {
+                    select: {
+                        filename: true,
+                        accountName: true,
+                        bankName: true,
+                        periodStart: true,
+                        periodEnd: true,
+                    },
+                },
+            },
             orderBy: [
                 { postingDate: 'asc' },
                 { statementId: 'asc' },
@@ -49,7 +60,7 @@ let LedgerExportService = class LedgerExportService {
             amount: Number(r.amount),
             debitAccount: r.debitAccount,
             creditAccount: r.creditAccount,
-            statement: r.statement.filename,
+            statement: (0, statement_label_1.statementLabel)(r.statement),
         }));
     }
     async excel(rows, customerName) {
@@ -112,12 +123,13 @@ let LedgerExportService = class LedgerExportService {
             doc.on('end', () => resolve(Buffer.concat(chunks)));
             doc.on('error', reject);
             const cols = [
-                { label: 'Pending', width: 62 },
-                { label: 'Posting', width: 62 },
-                { label: 'Description', width: 236 },
-                { label: 'Amount', width: 72, align: 'right' },
-                { label: 'Debit', width: 144 },
-                { label: 'Credit', width: 144 },
+                { label: 'Pending', width: 56 },
+                { label: 'Posting', width: 56 },
+                { label: 'Description', width: 186 },
+                { label: 'Amount', width: 66, align: 'right' },
+                { label: 'Debit', width: 114 },
+                { label: 'Credit', width: 114 },
+                { label: 'Statement', width: 128 },
             ];
             const left = doc.page.margins.left;
             const bottom = () => doc.page.height - doc.page.margins.bottom;
@@ -164,6 +176,7 @@ let LedgerExportService = class LedgerExportService {
                     MONEY(r.amount),
                     r.debitAccount,
                     r.creditAccount,
+                    r.statement,
                 ];
                 doc.fontSize(8.5);
                 const h = Math.max(...cells.map((t, k) => doc.heightOfString(t, { width: cols[k].width - 6 }))) + 5;

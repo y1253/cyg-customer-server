@@ -38,6 +38,9 @@ function buildLedgerRows(lines, bankAccount) {
             postingDate: parseIsoDate(line.postingDate),
             description: (line.description || '').trim().slice(0, 512) || '(no description)',
             amount,
+            balanceAfter: line.balanceAfter === null || line.balanceAfter === undefined
+                ? null
+                : toMoney(line.balanceAfter),
             offsetAccount: offset,
             ...doubleEntry(Number(amount), bankAccount, offset),
         });

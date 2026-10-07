@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { PrismaService } from '../prisma/prisma.service';
+import { statementLabel } from './statement-label';
 
 export interface LedgerExportRow {
   pendingDate: Date | null;
@@ -38,7 +39,17 @@ export class LedgerExportService {
   async rowsFor(customerId: number): Promise<LedgerExportRow[]> {
     const rows = await this.prisma.bankTransaction.findMany({
       where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
-      include: { statement: { select: { filename: true } } },
+      include: {
+        statement: {
+          select: {
+            filename: true,
+            accountName: true,
+            bankName: true,
+            periodStart: true,
+            periodEnd: true,
+          },
+        },
+      },
       orderBy: [
         { postingDate: 'asc' },
         { statementId: 'asc' },
@@ -52,7 +63,7 @@ export class LedgerExportService {
       amount: Number(r.amount),
       debitAccount: r.debitAccount,
       creditAccount: r.creditAccount,
-      statement: r.statement.filename,
+      statement: statementLabel(r.statement),
     }));
   }
 
@@ -117,12 +128,13 @@ export class LedgerExportService {
       doc.on('error', reject);
 
       const cols = [
-        { label: 'Pending', width: 62 },
-        { label: 'Posting', width: 62 },
-        { label: 'Description', width: 236 },
-        { label: 'Amount', width: 72, align: 'right' as const },
-        { label: 'Debit', width: 144 },
-        { label: 'Credit', width: 144 },
+        { label: 'Pending', width: 56 },
+        { label: 'Posting', width: 56 },
+        { label: 'Description', width: 186 },
+        { label: 'Amount', width: 66, align: 'right' as const },
+        { label: 'Debit', width: 114 },
+        { label: 'Credit', width: 114 },
+        { label: 'Statement', width: 128 },
       ];
       const left = doc.page.margins.left;
       const bottom = () => doc.page.height - doc.page.margins.bottom;
@@ -180,6 +192,7 @@ export class LedgerExportService {
           MONEY(r.amount),
           r.debitAccount,
           r.creditAccount,
+          r.statement,
         ];
         doc.fontSize(8.5);
         const h =

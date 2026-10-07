@@ -69,6 +69,7 @@ describe('buildLedgerRows', () => {
           postingDate: '2026-09-01',
           description: 'STRIPE',
           amount: 50,
+          balanceAfter: null,
           offsetAccount: 'Sales Income',
         },
         {
@@ -76,6 +77,7 @@ describe('buildLedgerRows', () => {
           postingDate: '2026-09-02',
           description: 'BALANCE',
           amount: NaN,
+          balanceAfter: null,
           offsetAccount: 'Sales Income',
         },
         {
@@ -83,6 +85,7 @@ describe('buildLedgerRows', () => {
           postingDate: '2026-09-02',
           description: 'WALMART',
           amount: -50,
+          balanceAfter: null,
           offsetAccount: 'Groceries??',
         },
       ],
@@ -118,6 +121,7 @@ describe('parseExtraction', () => {
             postingDate: '2026-09-02',
             description: 'WALMART',
             amount: -50,
+            balanceAfter: null,
             offsetAccount: 'Office Expense',
           },
         ],

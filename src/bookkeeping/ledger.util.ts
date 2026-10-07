@@ -7,7 +7,11 @@ export interface ExtractedTransaction {
   description: string;
   /** Signed: > 0 money INTO the bank account, < 0 money OUT. */
   amount: number;
+  /** The running balance printed on the row, if the statement has that column. */
+  balanceAfter: number | null;
   offsetAccount: string;
+  /** 0-based page (chunk) the row was read from; set when pages are assembled. */
+  page?: number;
 }
 
 /** One ledger row, ready for `BankTransaction`. */
@@ -18,6 +22,7 @@ export interface LedgerRow {
   description: string;
   /** Rounded to cents, as a string so Prisma's Decimal never sees a float error. */
   amount: string;
+  balanceAfter: string | null;
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
@@ -83,6 +88,10 @@ export function buildLedgerRows(
       description:
         (line.description || '').trim().slice(0, 512) || '(no description)',
       amount,
+      balanceAfter:
+        line.balanceAfter === null || line.balanceAfter === undefined
+          ? null
+          : toMoney(line.balanceAfter),
       offsetAccount: offset,
       ...doubleEntry(Number(amount), bankAccount, offset),
     });

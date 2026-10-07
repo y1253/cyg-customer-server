@@ -12,6 +12,7 @@ import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
 
 export interface StatementView {
@@ -21,9 +22,16 @@ export interface StatementView {
   status: StatementStatus;
   error: string | null;
   accountName: string | null;
+  bankName: string | null;
+  /** "Chase 4362 · Sep 2026" — what every ledger row of this statement shows. */
+  label: string;
   periodStart: string | null;
   periodEnd: string | null;
   transactionCount: number;
+  /** VERIFIED | UNVERIFIED | MISMATCH, or null while it has not been read yet. */
+  verification: string | null;
+  /** The checks against the bank's own figures, each with a ready-made sentence. */
+  checks: Array<{ name: string; ok: boolean; text: string }>;
   createdAt: Date;
   processedAt: Date | null;
 }
@@ -38,6 +46,8 @@ export interface TransactionView {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  /** The statement it came from, e.g. "Chase 4362 · Sep 2026". */
+  statementLabel: string;
 }
 
 const day = (d: Date | null): string | null =>
@@ -51,9 +61,21 @@ function toView(s: BankStatement): StatementView {
     status: s.status,
     error: s.error,
     accountName: s.accountName,
+    bankName: s.bankName,
+    label: statementLabel(s),
     periodStart: day(s.periodStart),
     periodEnd: day(s.periodEnd),
     transactionCount: s.transactionCount,
+    verification: s.verification,
+    checks: Array.isArray(s.verificationDetail)
+      ? (
+          s.verificationDetail as Array<{
+            name: string;
+            ok: boolean;
+            text: string;
+          }>
+        ).map((c) => ({ name: c.name, ok: c.ok, text: c.text }))
+      : [],
     createdAt: s.createdAt,
     processedAt: s.processedAt,
   };
@@ -129,6 +151,17 @@ export class BookkeepingService {
         ...(statementIds?.length && { statementId: { in: statementIds } }),
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },
+      include: {
+        statement: {
+          select: {
+            accountName: true,
+            bankName: true,
+            filename: true,
+            periodStart: true,
+            periodEnd: true,
+          },
+        },
+      },
       orderBy: [
         { postingDate: 'desc' },
         { statementId: 'desc' },
@@ -145,6 +178,7 @@ export class BookkeepingService {
       offsetAccount: r.offsetAccount,
       debitAccount: r.debitAccount,
       creditAccount: r.creditAccount,
+      statementLabel: statementLabel(r.statement),
     }));
   }
 
@@ -165,14 +199,23 @@ export class BookkeepingService {
 
   async retry(customerId: number, id: number): Promise<StatementView> {
     const s = await this.owned(customerId, id);
-    if (s.status !== StatementStatus.FAILED) {
+    if (
+      s.status !== StatementStatus.FAILED &&
+      s.status !== StatementStatus.NEEDS_REVIEW
+    ) {
       throw new BadRequestException(
         'Only a statement that failed can be retried',
       );
     }
+    // A fresh set of full reads: "re-read until it matches" starts over.
     const row = await this.prisma.bankStatement.update({
       where: { id: s.id },
-      data: { status: StatementStatus.PENDING, attempts: 0, error: null },
+      data: {
+        status: StatementStatus.PENDING,
+        attempts: 0,
+        runs: 0,
+        error: null,
+      },
     });
     this.processor.processSoon();
     return toView(row);
