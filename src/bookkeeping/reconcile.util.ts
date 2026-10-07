@@ -65,6 +65,8 @@ export interface Check {
    * is not re-read for a total it can never match.
    */
   skipped: string | null;
+  /** 0-based page whose OWN summary box this checks (per-page totals); absent = whole statement. */
+  page?: number;
 }
 
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
@@ -127,16 +129,97 @@ export function reconcile(
     ...counts,
     ...(balances.running ? [balances.running] : []),
   ];
+  const suspect = new Set(balances.suspect);
+  // The chain holds but the ending balance doesn't: the extra/missing rows come AFTER the
+  // last printed balance — e.g. a page of cheque images read as new withdrawals.
+  if (balances.balance && !balances.balance.ok && !suspect.size) {
+    const last = rows.map((r) => r.balanceAfter !== null).lastIndexOf(true);
+    if (last >= 0) rows.slice(last + 1).forEach((r) => suspect.add(r.page));
+  }
+  return {
+    verification: verdict(checks),
+    checks,
+    suspectPages: [...suspect].sort((a, b) => a - b),
+  };
+}
+
+function verdict(checks: Check[]): Verification {
   const counted = checks.filter((c) => !c.skipped);
-  const verification: Verification = !counted.length
+  return !counted.length
     ? 'UNVERIFIED'
     : counted.every((c) => c.ok)
       ? 'VERIFIED'
       : 'MISMATCH';
+}
+
+/** One page's own printed figures and the rows read from it. */
+export interface PageFigures {
+  stated: StatedFigures;
+  rows: ReconcileRow[];
+}
+
+/**
+ * The whole statement, checked. Usually that is `reconcile(stated, allRows)` — but some
+ * banks (TD) print a Credits/Debits box on EVERY page that totals only THAT page. Taking
+ * page 1's box as the statement's total was a production false alarm ("doesn't match" on a
+ * perfectly read statement). Per-page boxes are recognised by pages printing DIFFERENT
+ * totals; each page is then checked against its own box, and the balances (opening of the
+ * first page, closing of the last) against all rows.
+ */
+export function reconcileStatement(
+  stated: StatedFigures,
+  pages: PageFigures[],
+): ReconcileResult {
+  const allRows = pages.flatMap((p) => p.rows);
+  const boxes = pages
+    .map((p, page) => ({ ...p, page }))
+    .filter(
+      (p) =>
+        p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null,
+    );
+  const key = (f: StatedFigures) =>
+    [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
+      .map((v) => (v === null ? '' : String(Math.abs(v))))
+      .join('|');
+  const perPage =
+    boxes.length >= 2 && new Set(boxes.map((b) => key(b.stated))).size > 1;
+  if (!perPage) return reconcile(stated, allRows);
+
+  const NO_TOTALS = {
+    totalDeposits: null,
+    totalWithdrawals: null,
+    depositCount: null,
+    withdrawalCount: null,
+    totalsScope: null,
+  };
+  const whole = reconcile({ ...stated, ...NO_TOTALS }, allRows);
+  const pageChecks: Check[] = [];
+  const suspect = new Set(whole.suspectPages);
+  for (const box of boxes) {
+    // The page's own opening ("balance forward") and closing; without a printed closing,
+    // its last printed running balance.
+    const lastPrinted = [...box.rows]
+      .reverse()
+      .find((r) => r.balanceAfter !== null);
+    const r = reconcile(
+      {
+        ...box.stated,
+        closingBalance:
+          box.stated.closingBalance ?? lastPrinted?.balanceAfter ?? null,
+      },
+      box.rows,
+    );
+    for (const c of r.checks) {
+      if (c.name === 'balance' || c.name === 'runningBalance') continue;
+      pageChecks.push({ ...c, page: box.page });
+      if (!c.ok && !c.skipped) suspect.add(box.page);
+    }
+  }
+  const checks = [...pageChecks, ...whole.checks];
   return {
-    verification,
+    verification: verdict(checks),
     checks,
-    suspectPages: [...balances.suspect].sort((a, b) => a - b),
+    suspectPages: [...suspect].sort((a, b) => a - b),
   };
 }
 
@@ -272,6 +355,11 @@ const CHECK_LABEL: Record<CheckName, string> = {
 
 /** "Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)" — for prompts and the UI. */
 export function describeCheck(c: Check): string {
+  const text = describe(c);
+  return c.page === undefined ? text : `Page ${c.page + 1} — ${text}`;
+}
+
+function describe(c: Check): string {
   if (c.skipped) return `${CHECK_LABEL[c.name]}: not compared — ${c.skipped}`;
   const money = (v: number) =>
     `${v < 0 ? '-' : ''}$${(Math.abs(v) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -12,6 +12,7 @@ var StatementExtractor_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementExtractor = exports.SYSTEM_PROMPT = exports.EXTRACTION_SCHEMA = exports.UnreadableStatementError = exports.MAX_REREADS = exports.PAGES_PER_CHUNK = void 0;
 exports.assemble = assemble;
+exports.closingOf = closingOf;
 exports.rereadRound = rereadRound;
 exports.better = better;
 exports.splitPdf = splitPdf;
@@ -23,6 +24,7 @@ const openai_client_1 = require("../ai/openai.client");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const pdf_decrypt_1 = require("./pdf-decrypt");
 const reconcile_util_1 = require("./reconcile.util");
+const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
 Object.defineProperty(exports, "UnreadableStatementError", { enumerable: true, get: function () { return statement_errors_1.UnreadableStatementError; } });
 exports.PAGES_PER_CHUNK = 1;
@@ -95,13 +97,15 @@ exports.SYSTEM_PROMPT = [
     'Extract EVERY transaction line on these pages, in the order printed. Do not skip, merge or summarise lines.',
     'Lines that look identical (same date, description and amount) are SEPARATE transactions — two identical coffees are two purchases. List every one; never de-duplicate.',
     'Count the transaction lines on each page and make sure your list has the same number.',
-    'Opening/closing balances, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
+    'Opening/closing balances, "balance forward" lines, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
+    'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — return NO transactions for such a page.',
     '',
     'For each transaction:',
     '- postingDate: the posting/transaction date as YYYY-MM-DD. If the statement prints dates without a year, take the year from the statement period.',
     '- pendingDate: a separate pending/authorisation date if the statement shows one, else null.',
     '- description: the description text EXACTLY as printed (keep reference numbers and codes), joined into one line.',
     '- amount: a signed number. POSITIVE for money INTO the account (deposits, credits, refunds, transfers in). NEGATIVE for money OUT (purchases, withdrawals, fees, payments, transfers out). For a credit-card statement, purchases are NEGATIVE and payments to the card are POSITIVE.',
+    '  The sign comes from the COLUMN the amount is printed in — look at the page image, because the text alone loses the columns: an amount under "Cheque/Debit", "Withdrawals" or "Debits" is NEGATIVE; under "Deposit/Credit", "Deposits" or "Credits" it is POSITIVE. Never guess the sign from the description.',
     '- offsetAccount: the bookkeeping account on the OTHER side of the bank entry, chosen ONLY from the allowed list. Examples: Walmart, Staples, Amazon office purchases -> Office Expense; Stripe, Square, Shopify payouts -> Sales Income; restaurants -> Meals & Entertainment; gas stations -> Vehicle & Fuel; bank service charges -> Bank Fees; Google Workspace, Adobe, Microsoft -> Software & Subscriptions; payroll providers -> Payroll & Wages; transfers between the owner\'s own accounts -> Transfer Between Accounts; owner withdrawals -> Owner Draw. If genuinely unclear, use "' +
         chart_of_accounts_1.UNCATEGORIZED +
         '".',
@@ -109,12 +113,14 @@ exports.SYSTEM_PROMPT = [
     '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one.',
     '',
     "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
-    '- openingBalance / closingBalance: the beginning and ending balance of the statement period (for a credit card: the previous and new balance).',
+    '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"). Never the balance printed after a transaction.',
+    '- closingBalance: the ending balance from its own labelled line ("Ending balance", "Closing balance", "New balance"), null if these pages print none. Never copy the running balance of the last row as the closing balance.',
+    '- Some banks print a Credits/Debits summary box on every page that totals only that page — copy the box printed on THESE pages as it is.',
     '- totalDeposits: the summary total of ALL money in for this account and period ("Deposits and additions", "Total credits"), as a positive number.',
     '- totalWithdrawals: the summary total of ALL money out ("Withdrawals and subtractions", "Total debits", or "Checks paid" + "Electronic withdrawals" + "Fees" when printed as separate lines — add those lines up), as a positive number.',
     '- depositCount / withdrawalCount: only if the statement prints how many deposits / withdrawals there were in total.',
-    '- NEVER copy as a total: year-to-date figures, a page subtotal, a single category on its own (e.g. only "Checks paid" when there are other withdrawals), pending/held amounts, another account\'s section, credit limit, available credit, minimum payment, interest-rate tables. When unsure a figure covers every transaction, use null.',
-    '- totalsScope: "all" if the totals you copied cover every transaction of this account and period, "partial" if the only totals printed cover just part of them, "none" if no totals are printed on these pages.',
+    '- NEVER copy as a total: year-to-date figures, a running subtotal carried over between pages, a single category on its own (e.g. only "Checks paid" when there are other withdrawals), pending/held amounts, another account\'s section, credit limit, available credit, minimum payment, interest-rate tables. When unsure a figure covers every transaction, use null.',
+    '- totalsScope: "all" if the totals you copied cover every transaction they are printed for (the whole statement, or every transaction on this page for a per-page box), "partial" if the only totals printed cover just part of them, "none" if no totals are printed on these pages.',
     '',
     'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
     'accountName: the bank name plus the last 4 digits of the account number, e.g. "Chase 4362" (null if not on these pages).',
@@ -200,7 +206,10 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             await opts.onRound?.(rereads);
         }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
-            `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)`);
+            `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
+            (result.signFixes
+                ? `, ${result.signFixes} sign(s) fixed from the running balance`
+                : ''));
         return { ...result, calls, rereads };
     }
     async pool(items, fn) {
@@ -258,14 +267,25 @@ function assemble(pages) {
     };
     const stated = {
         openingBalance: first((p) => p.stated.openingBalance),
-        closingBalance: first((p) => p.stated.closingBalance),
+        closingBalance: closingOf(pages),
         totalDeposits: first((p) => p.stated.totalDeposits),
         totalWithdrawals: first((p) => p.stated.totalWithdrawals),
         depositCount: first((p) => p.stated.depositCount),
         withdrawalCount: first((p) => p.stated.withdrawalCount),
         totalsScope: pages.find((p) => p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null)?.stated.totalsScope ?? null,
     };
-    const transactions = pages.flatMap((p, page) => p.transactions.map((t) => ({ ...t, page })));
+    const read = pages.flatMap((p, page) => p.transactions.map((t) => ({ ...t, page })));
+    const finite = read.filter((t) => Number.isFinite(t.amount));
+    const repair = (0, sign_repair_1.repairSigns)(finite, stated.openingBalance);
+    finite.forEach((t, i) => (t.amount = repair.amounts[i]));
+    const transactions = read;
+    const rows = (page) => finite
+        .filter((t) => page === null || t.page === page)
+        .map((t) => ({
+        amount: t.amount,
+        balanceAfter: t.balanceAfter,
+        page: t.page,
+    }));
     return {
         accountName: first((p) => p.accountName),
         bankName: first((p) => p.bankName),
@@ -273,14 +293,23 @@ function assemble(pages) {
         periodEnd: first((p) => p.periodEnd),
         stated,
         transactions,
-        verification: (0, reconcile_util_1.reconcile)(stated, transactions
-            .filter((t) => Number.isFinite(t.amount))
-            .map((t) => ({
-            amount: t.amount,
-            balanceAfter: t.balanceAfter,
-            page: t.page,
-        }))),
+        signFixes: repair.flips,
+        verification: (0, reconcile_util_1.reconcileStatement)(stated, pages.map((p, page) => ({ stated: p.stated, rows: rows(page) }))),
     };
+}
+function closingOf(pages) {
+    const candidates = pages
+        .map((p) => p.stated.closingBalance)
+        .filter((v) => v !== null);
+    if (!candidates.length)
+        return null;
+    const printed = pages
+        .flatMap((p) => p.transactions)
+        .map((t) => t.balanceAfter)
+        .filter((v) => v !== null);
+    const ends = [printed[printed.length - 1], printed[0]];
+    const c = (n) => Math.round(n * 100);
+    return (candidates.find((v) => ends.some((e) => e !== undefined && c(e) === c(v))) ?? candidates[candidates.length - 1]);
 }
 function rereadRound(n) {
     if (n === 0)

@@ -15,6 +15,7 @@ export interface ExtractedStatement {
     verification: ReconcileResult;
     calls: number;
     rereads: number;
+    signFixes: number;
 }
 export interface PageReading {
     isBankStatement: boolean;
@@ -116,6 +117,7 @@ export declare class StatementExtractor {
     private readChunk;
 }
 export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
+export declare function closingOf(pages: PageReading[]): number | null;
 export declare function rereadRound(n: number): {
     verifyModel: boolean;
     allPages: boolean;

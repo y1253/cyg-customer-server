@@ -1,5 +1,10 @@
 import { reconcile } from './reconcile.util';
-import { assemble, better, type PageReading } from './statement-extractor';
+import {
+  assemble,
+  better,
+  closingOf,
+  type PageReading,
+} from './statement-extractor';
 import { statementLabel } from './statement-label';
 
 const d = (iso: string) => new Date(iso + 'T00:00:00Z');
@@ -161,5 +166,124 @@ describe('assemble: totalsScope', () => {
     const out = assemble([p1, p2]);
     expect(out.stated.totalsScope).toBe('all');
     expect(out.verification.verification).toBe('MISMATCH'); // a dropped row is not excused
+  });
+});
+
+/**
+ * TD-shaped (synthetic numbers): every page prints its OWN Credits/Debits box and a
+ * "balance forward"; the balance is printed on each day's last row; the last page is
+ * cheque images. Page 1's box was once compared with the whole statement — a false
+ * "doesn't match" on a perfectly read statement.
+ */
+describe('assemble: per-page summary boxes (TD)', () => {
+  const box = (
+    opening: number,
+    closing: number,
+    dep: number,
+    depCount: number,
+    wd: number,
+    wdCount: number,
+  ) => ({
+    ...page({}).stated,
+    openingBalance: opening,
+    closingBalance: closing,
+    totalDeposits: dep,
+    depositCount: depCount,
+    totalWithdrawals: wd,
+    withdrawalCount: wdCount,
+    totalsScope: 'all' as const,
+  });
+  const td = () => [
+    page({
+      stated: box(1000, 1150, 300, 2, 150, 2),
+      transactions: [
+        tx(100, null),
+        tx(-50, null),
+        tx(200, 1250),
+        tx(-100, 1150),
+      ],
+    }),
+    page({
+      stated: box(1150, 1175, 50, 1, 25, 1),
+      transactions: [tx(-25, null), tx(50, 1175)],
+    }),
+    page({}), // cheque images: nothing to list
+  ];
+
+  it('checks each page against its own box → VERIFIED', () => {
+    const out = assemble(td());
+    expect(out.stated.closingBalance).toBe(1175); // the LAST page's, not page 1's
+    expect(out.verification.verification).toBe('VERIFIED');
+    const deposits = out.verification.checks.filter(
+      (c) => c.name === 'deposits',
+    );
+    expect(deposits.map((c) => c.page)).toEqual([0, 1]);
+  });
+
+  it('signs read from the wrong column are fixed from the running balance', () => {
+    const pages = td();
+    pages[0].transactions[1] = tx(50, null); // really −50
+    const out = assemble(pages);
+    expect(out.signFixes).toBe(1);
+    expect(out.transactions[1].amount).toBe(-50);
+    expect(out.verification.verification).toBe('VERIFIED');
+  });
+
+  it('a dropped row fails only its own page, which is named as the suspect', () => {
+    const pages = td();
+    pages[1].transactions.shift(); // the −25 on page 2
+    const out = assemble(pages);
+    expect(out.verification.verification).toBe('MISMATCH');
+    expect(out.verification.suspectPages).toEqual([1]);
+    const failed = out.verification.checks.filter((c) => !c.ok && !c.skipped);
+    expect(failed.every((c) => c.page === 1 || c.page === undefined)).toBe(
+      true,
+    );
+  });
+
+  it('cheque images read as new withdrawals: the ending balance fails and names that page', () => {
+    const pages = td();
+    pages[2] = page({ transactions: [tx(-100, null)] });
+    const out = assemble(pages);
+    expect(out.verification.verification).toBe('MISMATCH');
+    expect(out.verification.suspectPages).toEqual([2]);
+  });
+
+  it('the SAME box repeated on every page is the statement total, checked once', () => {
+    const stated = box(1000, 1175, 350, 3, 175, 3);
+    const pages = td();
+    pages[0].stated = stated;
+    pages[1].stated = { ...stated };
+    const out = assemble(pages);
+    expect(out.verification.verification).toBe('VERIFIED');
+    expect(out.verification.checks.every((c) => c.page === undefined)).toBe(
+      true,
+    );
+  });
+});
+
+describe('closingOf', () => {
+  const withClosing = (
+    closingBalance: number | null,
+    balances: Array<number | null>,
+  ) =>
+    page({
+      stated: { ...page({}).stated, closingBalance },
+      transactions: balances.map((b) => tx(-1, b)),
+    });
+
+  it('prefers the closing balance the running balance actually ends on', () => {
+    // Page 2's "22.00" is a stray figure; the rows end on 24,170.17.
+    expect(
+      closingOf([
+        withClosing(24170.17, [null, 25000]),
+        withClosing(22, [24170.17]),
+      ]),
+    ).toBe(24170.17);
+  });
+
+  it('otherwise the last page that prints one', () => {
+    expect(closingOf([withClosing(100, []), withClosing(90, [])])).toBe(90);
+    expect(closingOf([withClosing(null, [])])).toBeNull();
   });
 });

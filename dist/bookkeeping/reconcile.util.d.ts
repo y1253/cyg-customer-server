@@ -20,6 +20,7 @@ export interface Check {
     actual: number;
     ok: boolean;
     skipped: string | null;
+    page?: number;
 }
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
 export interface ReconcileResult {
@@ -29,5 +30,10 @@ export interface ReconcileResult {
 }
 export declare const cents: (n: number) => number;
 export declare function reconcile(stated: StatedFigures, rows: ReconcileRow[]): ReconcileResult;
+export interface PageFigures {
+    stated: StatedFigures;
+    rows: ReconcileRow[];
+}
+export declare function reconcileStatement(stated: StatedFigures, pages: PageFigures[]): ReconcileResult;
 export declare const score: (r: ReconcileResult) => number;
 export declare function describeCheck(c: Check): string;

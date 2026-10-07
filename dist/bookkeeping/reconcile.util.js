@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.score = exports.cents = void 0;
 exports.reconcile = reconcile;
+exports.reconcileStatement = reconcileStatement;
 exports.describeCheck = describeCheck;
 const cents = (n) => Math.round(n * 100);
 exports.cents = cents;
@@ -40,16 +41,68 @@ function reconcile(stated, rows) {
         ...counts,
         ...(balances.running ? [balances.running] : []),
     ];
+    const suspect = new Set(balances.suspect);
+    if (balances.balance && !balances.balance.ok && !suspect.size) {
+        const last = rows.map((r) => r.balanceAfter !== null).lastIndexOf(true);
+        if (last >= 0)
+            rows.slice(last + 1).forEach((r) => suspect.add(r.page));
+    }
+    return {
+        verification: verdict(checks),
+        checks,
+        suspectPages: [...suspect].sort((a, b) => a - b),
+    };
+}
+function verdict(checks) {
     const counted = checks.filter((c) => !c.skipped);
-    const verification = !counted.length
+    return !counted.length
         ? 'UNVERIFIED'
         : counted.every((c) => c.ok)
             ? 'VERIFIED'
             : 'MISMATCH';
+}
+function reconcileStatement(stated, pages) {
+    const allRows = pages.flatMap((p) => p.rows);
+    const boxes = pages
+        .map((p, page) => ({ ...p, page }))
+        .filter((p) => p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null);
+    const key = (f) => [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
+        .map((v) => (v === null ? '' : String(Math.abs(v))))
+        .join('|');
+    const perPage = boxes.length >= 2 && new Set(boxes.map((b) => key(b.stated))).size > 1;
+    if (!perPage)
+        return reconcile(stated, allRows);
+    const NO_TOTALS = {
+        totalDeposits: null,
+        totalWithdrawals: null,
+        depositCount: null,
+        withdrawalCount: null,
+        totalsScope: null,
+    };
+    const whole = reconcile({ ...stated, ...NO_TOTALS }, allRows);
+    const pageChecks = [];
+    const suspect = new Set(whole.suspectPages);
+    for (const box of boxes) {
+        const lastPrinted = [...box.rows]
+            .reverse()
+            .find((r) => r.balanceAfter !== null);
+        const r = reconcile({
+            ...box.stated,
+            closingBalance: box.stated.closingBalance ?? lastPrinted?.balanceAfter ?? null,
+        }, box.rows);
+        for (const c of r.checks) {
+            if (c.name === 'balance' || c.name === 'runningBalance')
+                continue;
+            pageChecks.push({ ...c, page: box.page });
+            if (!c.ok && !c.skipped)
+                suspect.add(box.page);
+        }
+    }
+    const checks = [...pageChecks, ...whole.checks];
     return {
-        verification,
+        verification: verdict(checks),
         checks,
-        suspectPages: [...balances.suspect].sort((a, b) => a - b),
+        suspectPages: [...suspect].sort((a, b) => a - b),
     };
 }
 const check = (name, expected, actual) => ({
@@ -131,6 +184,10 @@ const CHECK_LABEL = {
     runningBalance: 'Running balance',
 };
 function describeCheck(c) {
+    const text = describe(c);
+    return c.page === undefined ? text : `Page ${c.page + 1} — ${text}`;
+}
+function describe(c) {
     if (c.skipped)
         return `${CHECK_LABEL[c.name]}: not compared — ${c.skipped}`;
     const money = (v) => `${v < 0 ? '-' : ''}$${(Math.abs(v) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
