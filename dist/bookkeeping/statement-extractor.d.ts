@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import type { ExtractedTransaction } from './ledger.util';
+import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
 export interface ExtractedStatement {
     accountName: string | null;
@@ -8,8 +9,7 @@ export interface ExtractedStatement {
     periodEnd: string | null;
     transactions: ExtractedTransaction[];
 }
-export declare class UnreadableStatementError extends Error {
-}
+export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
@@ -65,7 +65,7 @@ export declare class StatementExtractor {
     extract(pdf: Buffer, filename: string): Promise<ExtractedStatement>;
     private readChunk;
 }
-export declare function splitPdf(pdf: Buffer, pagesPerChunk: number): Promise<Array<{
+export declare function splitPdf(pdf: Buffer, pagesPerChunk: number, decrypt?: (pdf: Buffer) => Promise<Buffer>): Promise<Array<{
     bytes: Buffer;
     pages: number;
 }>>;

@@ -4,6 +4,8 @@ import { PDFDocument } from 'pdf-lib';
 import { OpenAiClient } from '../ai/openai.client';
 import { ACCOUNT_NAMES, UNCATEGORIZED } from './chart-of-accounts';
 import type { ExtractedTransaction } from './ledger.util';
+import { decryptForReading } from './pdf-decrypt';
+import { UnreadableStatementError } from './statement-errors';
 
 /**
  * Pages sent per request. ONE, measured: at 3 pages (~40 lines) gpt-4o silently dropped
@@ -25,8 +27,8 @@ export interface ExtractedStatement {
   transactions: ExtractedTransaction[];
 }
 
-/** A failure the customer should see as-is (not retried: retrying would fail the same way). */
-export class UnreadableStatementError extends Error {}
+// Re-exported: the processor and tests import it from here.
+export { UnreadableStatementError };
 
 const nullableString = { type: ['string', 'null'] };
 
@@ -216,21 +218,40 @@ export class StatementExtractor {
   }
 }
 
-/** Splits a PDF into page chunks. Throws an UnreadableStatementError for an encrypted/broken file. */
+/**
+ * Splits a PDF into page chunks. Throws an UnreadableStatementError for a broken file or one
+ * that needs a password to OPEN.
+ *
+ * ⚠️ An ENCRYPTED file is not necessarily a locked one. Most bank statements carry only an
+ * owner (editing) password and open freely; pdf-lib refuses every encrypted file, so those
+ * are decrypted first (`decryptForReading`) and split as usual. Refusing them was the
+ * reported bug: "it says password protected, but the password is only for editing".
+ * `decrypt` is injectable so tests never load the mupdf WASM.
+ */
 export async function splitPdf(
   pdf: Buffer,
   pagesPerChunk: number,
+  decrypt: (pdf: Buffer) => Promise<Buffer> = decryptForReading,
 ): Promise<Array<{ bytes: Buffer; pages: number }>> {
   let doc: PDFDocument;
   try {
     doc = await PDFDocument.load(pdf, { updateMetadata: false });
   } catch (err) {
     const msg = err instanceof Error ? err.message : '';
-    throw new UnreadableStatementError(
-      /encrypt/i.test(msg)
-        ? 'This PDF is password-protected. Please upload an unlocked copy.'
-        : 'This file could not be opened as a PDF.',
-    );
+    if (!/encrypt/i.test(msg)) {
+      throw new UnreadableStatementError(
+        'This file could not be opened as a PDF.',
+      );
+    }
+    // Throws the customer-facing "needs a password to open" itself when that is the case.
+    pdf = await decrypt(pdf);
+    try {
+      doc = await PDFDocument.load(pdf, { updateMetadata: false });
+    } catch {
+      throw new UnreadableStatementError(
+        'This file could not be opened as a PDF.',
+      );
+    }
   }
   const total = doc.getPageCount();
   if (total === 0) throw new UnreadableStatementError('This PDF has no pages.');

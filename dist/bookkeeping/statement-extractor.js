@@ -18,13 +18,13 @@ const config_1 = require("@nestjs/config");
 const pdf_lib_1 = require("pdf-lib");
 const openai_client_1 = require("../ai/openai.client");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const pdf_decrypt_1 = require("./pdf-decrypt");
+const statement_errors_1 = require("./statement-errors");
+Object.defineProperty(exports, "UnreadableStatementError", { enumerable: true, get: function () { return statement_errors_1.UnreadableStatementError; } });
 exports.PAGES_PER_CHUNK = 1;
 const PAGE_CONCURRENCY = 3;
 const CHUNK_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_TOKENS = 16_000;
-class UnreadableStatementError extends Error {
-}
-exports.UnreadableStatementError = UnreadableStatementError;
 const nullableString = { type: ['string', 'null'] };
 exports.EXTRACTION_SCHEMA = {
     type: 'object',
@@ -125,7 +125,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         }
         const statementPages = parts.filter((p) => p.isBankStatement).length;
         if (statementPages === 0) {
-            throw new UnreadableStatementError('This file does not look like a bank or credit-card statement.');
+            throw new statement_errors_1.UnreadableStatementError('This file does not look like a bank or credit-card statement.');
         }
         this.logger.log(`extracted ${out.transactions.length} transactions from ${chunks.length} chunk(s) of "${filename}"`);
         return out;
@@ -164,20 +164,27 @@ exports.StatementExtractor = StatementExtractor = StatementExtractor_1 = __decor
     __metadata("design:paramtypes", [openai_client_1.OpenAiClient,
         config_1.ConfigService])
 ], StatementExtractor);
-async function splitPdf(pdf, pagesPerChunk) {
+async function splitPdf(pdf, pagesPerChunk, decrypt = pdf_decrypt_1.decryptForReading) {
     let doc;
     try {
         doc = await pdf_lib_1.PDFDocument.load(pdf, { updateMetadata: false });
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : '';
-        throw new UnreadableStatementError(/encrypt/i.test(msg)
-            ? 'This PDF is password-protected. Please upload an unlocked copy.'
-            : 'This file could not be opened as a PDF.');
+        if (!/encrypt/i.test(msg)) {
+            throw new statement_errors_1.UnreadableStatementError('This file could not be opened as a PDF.');
+        }
+        pdf = await decrypt(pdf);
+        try {
+            doc = await pdf_lib_1.PDFDocument.load(pdf, { updateMetadata: false });
+        }
+        catch {
+            throw new statement_errors_1.UnreadableStatementError('This file could not be opened as a PDF.');
+        }
     }
     const total = doc.getPageCount();
     if (total === 0)
-        throw new UnreadableStatementError('This PDF has no pages.');
+        throw new statement_errors_1.UnreadableStatementError('This PDF has no pages.');
     if (total <= pagesPerChunk)
         return [{ bytes: pdf, pages: total }];
     const chunks = [];
