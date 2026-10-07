@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "//": "prisma.config.ts is read by the Prisma CLI, never shipped — compiling it would move dist/main.js to dist/src/main.js.",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "prisma.config.ts"]
+  "//": "prisma.config.ts and scripts/ are dev tools, never shipped — compiling it would move dist/main.js to dist/src/main.js.",
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "prisma.config.ts", "scripts"]
 }

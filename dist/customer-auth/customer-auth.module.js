@@ -32,7 +32,7 @@ exports.CustomerAuthModule = CustomerAuthModule = __decorate([
         ],
         controllers: [customer_auth_controller_1.CustomerAuthController],
         providers: [customer_auth_service_1.CustomerAuthService, customer_jwt_strategy_1.CustomerJwtStrategy, customer_jwt_guard_1.CustomerJwtGuard],
-        exports: [customer_jwt_guard_1.CustomerJwtGuard],
+        exports: [customer_jwt_guard_1.CustomerJwtGuard, customer_auth_service_1.CustomerAuthService],
     })
 ], CustomerAuthModule);
 //# sourceMappingURL=customer-auth.module.js.map

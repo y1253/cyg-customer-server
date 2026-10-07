@@ -6,3 +6,6 @@ coverage
 
 # Copied from cyg-db by prisma.config.ts on every Prisma command
 /prisma/schema.prisma
+
+# transit dir for statement uploads (never stored here)
+/uploads
