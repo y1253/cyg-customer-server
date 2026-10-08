@@ -5,6 +5,8 @@ export interface ExtractedTransaction {
   pendingDate: string | null;
   postingDate: string | null;
   description: string;
+  /** The payee / payer the AI read out of the description, or null. */
+  name?: string | null;
   /** Signed: > 0 money INTO the bank account, < 0 money OUT. */
   amount: number;
   /** The running balance printed on the row, if the statement has that column. */
@@ -20,6 +22,7 @@ export interface LedgerRow {
   pendingDate: Date | null;
   postingDate: Date | null;
   description: string;
+  name: string | null;
   /** Rounded to cents, as a string so Prisma's Decimal never sees a float error. */
   amount: string;
   balanceAfter: string | null;
@@ -87,6 +90,7 @@ export function buildLedgerRows(
       postingDate: parseIsoDate(line.postingDate),
       description:
         (line.description || '').trim().slice(0, 512) || '(no description)',
+      name: (line.name ?? '').trim().slice(0, 191) || null,
       amount,
       balanceAfter:
         line.balanceAfter === null || line.balanceAfter === undefined

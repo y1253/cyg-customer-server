@@ -19,7 +19,9 @@ const customer_auth_service_1 = require("../customer-auth/customer-auth.service"
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const reports_query_dto_1 = require("./dto/reports-query.dto");
 const export_service_1 = require("./export.service");
+const reports_service_1 = require("./reports.service");
 const statement_uploads_1 = require("./statement-uploads");
 function attachment(filename, inline = false) {
     const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
@@ -29,10 +31,12 @@ let BookkeepingController = class BookkeepingController {
     bookkeeping;
     exporter;
     customers;
-    constructor(bookkeeping, exporter, customers) {
+    reportsService;
+    constructor(bookkeeping, exporter, customers, reportsService) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
+        this.reportsService = reportsService;
     }
     upload(req, files) {
         return this.bookkeeping.upload(req.user.customerId, files);
@@ -83,6 +87,12 @@ let BookkeepingController = class BookkeepingController {
             'Cache-Control': 'private, no-store',
         });
         return new common_1.StreamableFile(buf);
+    }
+    reports(req, q) {
+        if (q.from && q.to && q.from > q.to) {
+            throw new common_1.BadRequestException('from must be on or before to');
+        }
+        return this.reportsService.reports(req.user.customerId, q.from ?? null, q.to ?? null);
     }
     accounts() {
         return chart_of_accounts_1.CHART_OF_ACCOUNTS;
@@ -149,6 +159,14 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "export", null);
 __decorate([
+    (0, common_1.Get)('reports'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, reports_query_dto_1.ReportsQueryDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "reports", null);
+__decorate([
     (0, common_1.Get)('accounts'),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
@@ -159,6 +177,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
     __metadata("design:paramtypes", [bookkeeping_service_1.BookkeepingService,
         export_service_1.LedgerExportService,
-        customer_auth_service_1.CustomerAuthService])
+        customer_auth_service_1.CustomerAuthService,
+        reports_service_1.ReportsService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

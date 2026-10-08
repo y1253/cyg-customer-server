@@ -115,6 +115,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             pendingDate: day(r.pendingDate),
             postingDate: day(r.postingDate),
             description: r.description,
+            name: r.name,
             amount: Number(r.amount),
             offsetAccount: r.offsetAccount,
             debitAccount: r.debitAccount,

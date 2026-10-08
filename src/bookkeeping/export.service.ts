@@ -7,6 +7,7 @@ import { statementLabel } from './statement-label';
 export interface LedgerExportRow {
   pendingDate: Date | null;
   postingDate: Date | null;
+  name: string;
   description: string;
   amount: number;
   debitAccount: string;
@@ -30,7 +31,7 @@ const MONEY = (n: number): string =>
 /**
  * The downloadable ledger: ALWAYS every statement of the customer combined, ordered by
  * posting date — the columns of the firm's own sheet (pending date, posting date,
- * description, amount, debit, credit).
+ * name, description, amount, debit, credit).
  */
 @Injectable()
 export class LedgerExportService {
@@ -59,6 +60,7 @@ export class LedgerExportService {
     return rows.map((r) => ({
       pendingDate: r.pendingDate,
       postingDate: r.postingDate,
+      name: r.name ?? '',
       description: r.description,
       amount: Number(r.amount),
       debitAccount: r.debitAccount,
@@ -86,6 +88,7 @@ export class LedgerExportService {
         width: 14,
         style: { numFmt: 'yyyy-mm-dd' },
       },
+      { header: 'Name', key: 'name', width: 24 },
       { header: 'Description', key: 'description', width: 46 },
       {
         header: 'Amount',
@@ -110,7 +113,7 @@ export class LedgerExportService {
       amount: netOf(rows),
     });
     total.font = { bold: true };
-    ws.autoFilter = { from: 'A1', to: 'G1' };
+    ws.autoFilter = { from: 'A1', to: 'H1' };
     wb.title = `${customerName} — ledger`;
     return Buffer.from(await wb.xlsx.writeBuffer());
   }
@@ -130,11 +133,12 @@ export class LedgerExportService {
       const cols = [
         { label: 'Pending', width: 56 },
         { label: 'Posting', width: 56 },
-        { label: 'Description', width: 186 },
+        { label: 'Name', width: 90 },
+        { label: 'Description', width: 136 },
         { label: 'Amount', width: 66, align: 'right' as const },
         { label: 'Debit', width: 114 },
         { label: 'Credit', width: 114 },
-        { label: 'Statement', width: 128 },
+        { label: 'Statement', width: 88 },
       ];
       const left = doc.page.margins.left;
       const bottom = () => doc.page.height - doc.page.margins.bottom;
@@ -188,6 +192,7 @@ export class LedgerExportService {
         const cells = [
           ISO(r.pendingDate),
           ISO(r.postingDate),
+          r.name,
           r.description,
           MONEY(r.amount),
           r.debitAccount,
@@ -220,7 +225,7 @@ export class LedgerExportService {
         cells.forEach((t, k) => {
           doc
             .fillColor(
-              k === 3 ? (r.amount < 0 ? '#B42318' : '#067647') : '#222222',
+              k === 4 ? (r.amount < 0 ? '#B42318' : '#067647') : '#222222',
             )
             .text(t, x + 3, y, {
               width: cols[k].width - 6,

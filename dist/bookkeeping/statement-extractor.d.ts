@@ -74,7 +74,7 @@ export declare const EXTRACTION_SCHEMA: {
             readonly items: {
                 readonly type: "object";
                 readonly additionalProperties: false;
-                readonly required: readonly ["pendingDate", "postingDate", "description", "amount", "balanceAfter", "offsetAccount"];
+                readonly required: readonly ["pendingDate", "postingDate", "description", "name", "amount", "balanceAfter", "offsetAccount"];
                 readonly properties: {
                     readonly pendingDate: {
                         type: string[];
@@ -84,6 +84,9 @@ export declare const EXTRACTION_SCHEMA: {
                     };
                     readonly description: {
                         readonly type: "string";
+                    };
+                    readonly name: {
+                        type: string[];
                     };
                     readonly amount: {
                         readonly type: "number";
@@ -100,6 +103,7 @@ export declare const EXTRACTION_SCHEMA: {
         };
     };
 };
+export declare const NAME_RULE = "name: the merchant, payee or payer in the description, as a short clean company or person name \u2014 e.g. \"WALMART SUPERCENTER #1234 TORONTO\" -> \"Walmart\", \"STRIPE TRANSFER ST-X9Y8\" -> \"Stripe\", \"GOOGLE *WORKSPACE\" -> \"Google Workspace\". Leave out store numbers, card digits, dates, cities and reference codes. null when no name can be identified (e.g. \"SERVICE CHARGE\", \"TRANSFER 0042\", \"INTEREST\").";
 export declare const SYSTEM_PROMPT: string;
 export declare class StatementExtractor {
     private readonly openai;

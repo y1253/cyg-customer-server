@@ -25,6 +25,7 @@ export interface TransactionView {
     pendingDate: string | null;
     postingDate: string | null;
     description: string;
+    name: string | null;
     amount: number;
     offsetAccount: string;
     debitAccount: string;

@@ -38,6 +38,8 @@ export interface TransactionView {
   pendingDate: string | null;
   postingDate: string | null;
   description: string;
+  /** The payee / payer the AI read out of the description; null when it found none. */
+  name: string | null;
   amount: number;
   offsetAccount: string;
   debitAccount: string;
@@ -164,6 +166,7 @@ export class BookkeepingService {
       pendingDate: day(r.pendingDate),
       postingDate: day(r.postingDate),
       description: r.description,
+      name: r.name,
       amount: Number(r.amount),
       offsetAccount: r.offsetAccount,
       debitAccount: r.debitAccount,

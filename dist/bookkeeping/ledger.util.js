@@ -37,6 +37,7 @@ function buildLedgerRows(lines, bankAccount) {
             pendingDate: parseIsoDate(line.pendingDate),
             postingDate: parseIsoDate(line.postingDate),
             description: (line.description || '').trim().slice(0, 512) || '(no description)',
+            name: (line.name ?? '').trim().slice(0, 191) || null,
             amount,
             balanceAfter: line.balanceAfter === null || line.balanceAfter === undefined
                 ? null

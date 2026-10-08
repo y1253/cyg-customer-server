@@ -2,6 +2,7 @@ export interface ExtractedTransaction {
     pendingDate: string | null;
     postingDate: string | null;
     description: string;
+    name?: string | null;
     amount: number;
     balanceAfter: number | null;
     offsetAccount: string;
@@ -12,6 +13,7 @@ export interface LedgerRow {
     pendingDate: Date | null;
     postingDate: Date | null;
     description: string;
+    name: string | null;
     amount: string;
     balanceAfter: string | null;
     offsetAccount: string;

@@ -68,6 +68,7 @@ describe('buildLedgerRows', () => {
           pendingDate: null,
           postingDate: '2026-09-01',
           description: 'STRIPE',
+          name: '  Stripe  ',
           amount: 50,
           balanceAfter: null,
           offsetAccount: 'Sales Income',
@@ -94,11 +95,13 @@ describe('buildLedgerRows', () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.position)).toEqual([0, 1]);
     expect(rows[0]).toMatchObject({
+      name: 'Stripe',
       amount: '50.00',
       debitAccount: BANK,
       creditAccount: 'Sales Income',
     });
     expect(rows[1]).toMatchObject({
+      name: null,
       amount: '-50.00',
       offsetAccount: UNCATEGORIZED,
       debitAccount: UNCATEGORIZED,
@@ -120,15 +123,27 @@ describe('parseExtraction', () => {
             pendingDate: null,
             postingDate: '2026-09-02',
             description: 'WALMART',
+            name: ' Walmart ',
             amount: -50,
             balanceAfter: null,
             offsetAccount: 'Office Expense',
+          },
+          {
+            pendingDate: null,
+            postingDate: '2026-09-03',
+            description: 'SERVICE CHARGE',
+            name: '  ',
+            amount: -5,
+            balanceAfter: null,
+            offsetAccount: 'Bank Fees',
           },
         ],
       }),
     );
     expect(out.accountName).toBe('Chase 4362');
+    expect(out.transactions[1].name).toBeNull();
     expect(out.transactions[0]).toMatchObject({
+      name: 'Walmart',
       amount: -50,
       offsetAccount: 'Office Expense',
     });

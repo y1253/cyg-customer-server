@@ -118,6 +118,7 @@ export const EXTRACTION_SCHEMA = {
           'pendingDate',
           'postingDate',
           'description',
+          'name',
           'amount',
           'balanceAfter',
           'offsetAccount',
@@ -126,6 +127,7 @@ export const EXTRACTION_SCHEMA = {
           pendingDate: nullableString,
           postingDate: nullableString,
           description: { type: 'string' },
+          name: nullableString,
           amount: { type: 'number' },
           balanceAfter: nullableNumber,
           offsetAccount: { type: 'string', enum: [...ACCOUNT_NAMES] },
@@ -134,6 +136,13 @@ export const EXTRACTION_SCHEMA = {
     },
   },
 } as const;
+
+/**
+ * How the AI names the payee of a line. Shared with the backfill script
+ * (`scripts/backfill-transaction-names.ts`) so the two never drift apart.
+ */
+export const NAME_RULE =
+  'name: the merchant, payee or payer in the description, as a short clean company or person name — e.g. "WALMART SUPERCENTER #1234 TORONTO" -> "Walmart", "STRIPE TRANSFER ST-X9Y8" -> "Stripe", "GOOGLE *WORKSPACE" -> "Google Workspace". Leave out store numbers, card digits, dates, cities and reference codes. null when no name can be identified (e.g. "SERVICE CHARGE", "TRANSFER 0042", "INTEREST").';
 
 export const SYSTEM_PROMPT = [
   'You are a meticulous bookkeeper reading pages of a business bank or credit-card statement.',
@@ -147,6 +156,7 @@ export const SYSTEM_PROMPT = [
   '- postingDate: the posting/transaction date as YYYY-MM-DD. If the statement prints dates without a year, take the year from the statement period.',
   '- pendingDate: a separate pending/authorisation date if the statement shows one, else null.',
   '- description: the description text EXACTLY as printed (keep reference numbers and codes), joined into one line.',
+  '- ' + NAME_RULE,
   '- amount: a signed number. POSITIVE for money INTO the account (deposits, credits, refunds, transfers in). NEGATIVE for money OUT (purchases, withdrawals, fees, payments, transfers out). For a credit-card statement, purchases are NEGATIVE and payments to the card are POSITIVE.',
   '  The sign comes from the COLUMN the amount is printed in — look at the page image, because the text alone loses the columns: an amount under "Cheque/Debit", "Withdrawals" or "Debits" is NEGATIVE; under "Deposit/Credit", "Deposits" or "Credits" it is POSITIVE. Never guess the sign from the description.',
   '- offsetAccount: the bookkeeping account on the OTHER side of the bank entry, chosen ONLY from the allowed list. Examples: Walmart, Staples, Amazon office purchases -> Office Expense; Stripe, Square, Shopify payouts -> Sales Income; restaurants -> Meals & Entertainment; gas stations -> Vehicle & Fuel; bank service charges -> Bank Fees; Google Workspace, Adobe, Microsoft -> Software & Subscriptions; payroll providers -> Payroll & Wages; transfers between the owner\'s own accounts -> Transfer Between Accounts; owner withdrawals -> Owner Draw. If genuinely unclear, use "' +
@@ -600,6 +610,7 @@ export function parseExtraction(reply: string): PageReading {
         pendingDate: str(t.pendingDate),
         postingDate: str(t.postingDate),
         description: str(t.description) ?? '',
+        name: str(t.name),
         amount: typeof t.amount === 'number' ? t.amount : Number(t.amount),
         balanceAfter: num(t.balanceAfter),
         offsetAccount: str(t.offsetAccount) ?? UNCATEGORIZED,

@@ -26,7 +26,10 @@ import {
   type TransactionView,
 } from './bookkeeping.service';
 import { CHART_OF_ACCOUNTS, type ChartAccount } from './chart-of-accounts';
+import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
+import { ReportsService } from './reports.service';
+import type { ReportsView } from './reports.util';
 import {
   MAX_FILES_PER_REQUEST,
   STATEMENT_UPLOAD_OPTIONS,
@@ -48,6 +51,7 @@ export class BookkeepingController {
     private readonly bookkeeping: BookkeepingService,
     private readonly exporter: LedgerExportService,
     private readonly customers: CustomerAuthService,
+    private readonly reportsService: ReportsService,
   ) {}
 
   @Post('statements')
@@ -139,6 +143,22 @@ export class BookkeepingController {
       'Cache-Control': 'private, no-store',
     });
     return new StreamableFile(buf);
+  }
+
+  /** Chart of accounts + income statement for `from…to`; balance sheet as of `to`. */
+  @Get('reports')
+  reports(
+    @Req() req: AuthedRequest,
+    @Query() q: ReportsQueryDto,
+  ): Promise<ReportsView> {
+    if (q.from && q.to && q.from > q.to) {
+      throw new BadRequestException('from must be on or before to');
+    }
+    return this.reportsService.reports(
+      req.user.customerId,
+      q.from ?? null,
+      q.to ?? null,
+    );
   }
 
   @Get('accounts')

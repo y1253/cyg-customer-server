@@ -2,6 +2,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export interface LedgerExportRow {
     pendingDate: Date | null;
     postingDate: Date | null;
+    name: string;
     description: string;
     amount: number;
     debitAccount: string;
