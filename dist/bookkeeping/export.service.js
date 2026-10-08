@@ -18,6 +18,7 @@ const common_1 = require("@nestjs/common");
 const exceljs_1 = __importDefault(require("exceljs"));
 const pdfkit_1 = __importDefault(require("pdfkit"));
 const prisma_service_1 = require("../prisma/prisma.service");
+const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const BRAND = '#169F96';
@@ -50,17 +51,10 @@ let LedgerExportService = class LedgerExportService {
                     },
                 },
             }),
-            this.prisma.bankStatement.findMany({
-                where: { customerId, deletedAt: null, status: 'DONE' },
-                select: opening_balance_util_1.OPENING_STATEMENT_SELECT,
-            }),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
-        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
-            ...s,
-            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
-            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
-        })));
+        const openings = (0, opening_balance_util_1.openingRows)(statements);
         return [
             ...rows.map((r) => ({
                 statementId: r.statementId,

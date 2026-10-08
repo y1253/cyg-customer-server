@@ -4,6 +4,7 @@ export interface OpeningStatement {
     openingBalance: number | null;
     closingBalance: number | null;
     periodStart: Date | null;
+    net: number;
 }
 export interface OpeningRow {
     statementId: number;

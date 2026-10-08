@@ -12,11 +12,10 @@ import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { loadOpeningStatements } from './opening-balance.query';
 import {
   ledgerOrder,
-  num,
   OPENING_POSITION,
-  OPENING_STATEMENT_SELECT,
   openingRows,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
@@ -147,7 +146,6 @@ export class BookkeepingService {
     customerId: number,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
     const [rows, statements] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
@@ -169,21 +167,14 @@ export class BookkeepingService {
       }),
       // ALL done statements: the chain decides which ones start fresh, even when the
       // ledger is filtered to a few of them.
-      this.prisma.bankStatement.findMany({
-        where: done,
-        select: OPENING_STATEMENT_SELECT,
-      }),
+      loadOpeningStatements(this.prisma, customerId),
     ]);
 
     const byId = new Map(statements.map((s) => [s.id, s]));
     const wanted = statementIds?.length ? new Set(statementIds) : null;
-    const openings = openingRows(
-      statements.map((s) => ({
-        ...s,
-        openingBalance: num(s.openingBalance),
-        closingBalance: num(s.closingBalance),
-      })),
-    ).filter((o) => !wanted || wanted.has(o.statementId));
+    const openings = openingRows(statements).filter(
+      (o) => !wanted || wanted.has(o.statementId),
+    );
 
     const keyed: Array<{
       postingDate: Date | null;

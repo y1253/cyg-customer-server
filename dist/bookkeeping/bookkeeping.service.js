@@ -18,6 +18,7 @@ const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
@@ -87,7 +88,6 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return rows.map(toView);
     }
     async transactions(customerId, statementIds) {
-        const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
         const [rows, statements] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
@@ -107,18 +107,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                     },
                 },
             }),
-            this.prisma.bankStatement.findMany({
-                where: done,
-                select: opening_balance_util_1.OPENING_STATEMENT_SELECT,
-            }),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const wanted = statementIds?.length ? new Set(statementIds) : null;
-        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
-            ...s,
-            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
-            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
-        }))).filter((o) => !wanted || wanted.has(o.statementId));
+        const openings = (0, opening_balance_util_1.openingRows)(statements).filter((o) => !wanted || wanted.has(o.statementId));
         const keyed = [
             ...rows.map((r) => ({
                 postingDate: r.postingDate,

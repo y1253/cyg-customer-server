@@ -2,11 +2,10 @@ import { Injectable } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { PrismaService } from '../prisma/prisma.service';
+import { loadOpeningStatements } from './opening-balance.query';
 import {
   ledgerOrder,
-  num,
   OPENING_POSITION,
-  OPENING_STATEMENT_SELECT,
   openingRows,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
@@ -60,19 +59,10 @@ export class LedgerExportService {
           },
         },
       }),
-      this.prisma.bankStatement.findMany({
-        where: { customerId, deletedAt: null, status: 'DONE' },
-        select: OPENING_STATEMENT_SELECT,
-      }),
+      loadOpeningStatements(this.prisma, customerId),
     ]);
     const byId = new Map(statements.map((s) => [s.id, s]));
-    const openings = openingRows(
-      statements.map((s) => ({
-        ...s,
-        openingBalance: num(s.openingBalance),
-        closingBalance: num(s.closingBalance),
-      })),
-    );
+    const openings = openingRows(statements);
 
     // Oldest first: a statement's Starting balance row comes before its first row.
     return [

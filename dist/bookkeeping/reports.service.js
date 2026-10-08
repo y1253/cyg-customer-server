@@ -13,6 +13,7 @@ exports.ReportsService = void 0;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
+const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -36,22 +37,9 @@ let ReportsService = class ReportsService {
                     statement: { select: { periodEnd: true } },
                 },
             }),
-            this.prisma.bankStatement.findMany({
-                where: done,
-                select: {
-                    id: true,
-                    accountName: true,
-                    openingBalance: true,
-                    closingBalance: true,
-                    periodStart: true,
-                },
-            }),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
         ]);
-        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
-            ...s,
-            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
-            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
-        }))).map((o) => ({
+        const openings = (0, opening_balance_util_1.openingRows)(statements).map((o) => ({
             amount: o.amount,
             offsetAccount: o.offsetAccount,
             bankAccount: o.bankAccount,

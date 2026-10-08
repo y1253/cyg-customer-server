@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { num, openingRows } from './opening-balance.util';
+import { loadOpeningStatements } from './opening-balance.query';
+import { openingRows } from './opening-balance.util';
 import { buildReports, type ReportsView } from './reports.util';
 
 const day = (d: Date | null): string | null =>
@@ -34,26 +35,11 @@ export class ReportsService {
           statement: { select: { periodEnd: true } },
         },
       }),
-      this.prisma.bankStatement.findMany({
-        where: done,
-        select: {
-          id: true,
-          accountName: true,
-          openingBalance: true,
-          closingBalance: true,
-          periodStart: true,
-        },
-      }),
+      loadOpeningStatements(this.prisma, customerId),
     ]);
 
     // The printed starting balances — the same "Starting balance" rows the ledger shows.
-    const openings = openingRows(
-      statements.map((s) => ({
-        ...s,
-        openingBalance: num(s.openingBalance),
-        closingBalance: num(s.closingBalance),
-      })),
-    ).map((o) => ({
+    const openings = openingRows(statements).map((o) => ({
       amount: o.amount,
       offsetAccount: o.offsetAccount,
       bankAccount: o.bankAccount,

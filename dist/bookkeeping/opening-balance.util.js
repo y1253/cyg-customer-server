@@ -20,10 +20,8 @@ function openingRows(statements) {
         list.forEach((s, i) => {
             if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0)
                 return;
-            const prev = list[i - 1]?.closingBalance;
-            if (prev !== undefined &&
-                prev !== null &&
-                (0, reconcile_util_1.cents)(prev) === (0, reconcile_util_1.cents)(s.openingBalance))
+            const prev = list[i - 1];
+            if (prev && endingsOf(prev).includes((0, reconcile_util_1.cents)(s.openingBalance)))
                 return;
             const amount = (0, reconcile_util_1.cents)(s.openingBalance) / 100;
             out.push({
@@ -38,6 +36,15 @@ function openingRows(statements) {
         });
     }
     return out;
+}
+function endingsOf(s) {
+    if (s.closingBalance !== null)
+        return [(0, reconcile_util_1.cents)(s.closingBalance)];
+    if (s.openingBalance === null)
+        return [];
+    const open = (0, reconcile_util_1.cents)(s.openingBalance);
+    const net = (0, reconcile_util_1.cents)(s.net);
+    return [open + net, open - net];
 }
 const num = (d) => d === null ? null : Number(d);
 exports.num = num;

@@ -7,11 +7,13 @@ const st = (
   openingBalance: number | null,
   closingBalance: number | null,
   accountName: string | null = 'Chase 4362',
+  net = 0,
 ): OpeningStatement => ({
   id,
   accountName,
   openingBalance,
   closingBalance,
+  net,
   periodStart: periodStart ? new Date(`${periodStart}T00:00:00Z`) : null,
 });
 
@@ -73,9 +75,33 @@ describe('openingRows', () => {
     ).toEqual([]);
   });
 
-  it('treats a previous statement with no closing balance as not connected', () => {
+  it('chains statements that print no closing balance via opening + Σ rows (production TD case)', () => {
+    // Uploaded June first, then May; neither printed a closing balance.
+    const td = 'TD Canada Trust 3246';
     expect(
-      ids([st(1, '2026-01-01', 100, null), st(2, '2026-02-01', 200, 300)]),
+      ids([
+        st(14, '2026-05-29', 12629.94, null, td, -7539.12),
+        st(15, '2026-04-30', 6114, null, td, 6515.94),
+      ]),
+    ).toEqual([15]);
+  });
+
+  it('chains a credit card, whose printed balance is the amount owed', () => {
+    // Owed 500, charged 200 (−200 from the bank side) → owes 700 next month.
+    expect(
+      ids([
+        st(1, '2026-01-01', 500, null, 'Visa 1111', -200),
+        st(2, '2026-02-01', 700, null, 'Visa 1111', 50),
+      ]),
+    ).toEqual([1]);
+  });
+
+  it('still adds a row when the computed ending does not match', () => {
+    expect(
+      ids([
+        st(1, '2026-01-01', 100, null, 'Chase 4362', 50),
+        st(2, '2026-02-01', 400, null, 'Chase 4362', 0),
+      ]),
     ).toEqual([1, 2]);
   });
 

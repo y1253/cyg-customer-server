@@ -9,6 +9,8 @@ export interface OpeningStatement {
   openingBalance: number | null;
   closingBalance: number | null;
   periodStart: Date | null;
+  /** Σ amount of the statement's own (AI-read) rows. */
+  net: number;
 }
 
 /** One "Starting balance" row — computed on read, NEVER stored in `BankTransaction`. */
@@ -31,9 +33,12 @@ export const STARTING_BALANCE = 'Starting balance';
  * The printed starting balance of each statement as a ledger row, offset to Owner's Loan.
  *
  * Statements are chained per bank account (`accountName`, the same "Bank account"
- * fallback `processOne` uses), in `periodStart` order: a statement whose opening balance
- * equals, to the cent, the closing balance of the PREVIOUS statement of that account
- * continues it and gets no row. Any other statement (the first one, or one after a gap
+ * fallback `processOne` uses), in `periodStart` order — never upload order: a statement
+ * whose opening balance equals, to the cent, the ending balance of the PREVIOUS statement
+ * of that account continues it and gets no row. The ending balance is the printed
+ * `closingBalance`; when none was printed (TD has no labelled closing line) it is
+ * opening ± Σ rows — exact, since a DONE statement passed the self-check; "−" because a
+ * credit card prints the balance OWED. Any other statement (the first one, or one after a gap
  * or a mismatch) gets its full printed balance. No opening balance, or zero → no row.
  *
  * Computed when the ledger, exports and reports are READ, so it is never part of the
@@ -54,13 +59,8 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
     );
     list.forEach((s, i) => {
       if (s.openingBalance === null || cents(s.openingBalance) === 0) return;
-      const prev = list[i - 1]?.closingBalance;
-      if (
-        prev !== undefined &&
-        prev !== null &&
-        cents(prev) === cents(s.openingBalance)
-      )
-        return;
+      const prev = list[i - 1];
+      if (prev && endingsOf(prev).includes(cents(s.openingBalance))) return;
       const amount = cents(s.openingBalance) / 100;
       out.push({
         statementId: s.id,
@@ -74,6 +74,15 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
     });
   }
   return out;
+}
+
+/** Where a statement may have ended, in cents (see `openingRows`). */
+function endingsOf(s: OpeningStatement): number[] {
+  if (s.closingBalance !== null) return [cents(s.closingBalance)];
+  if (s.openingBalance === null) return [];
+  const open = cents(s.openingBalance);
+  const net = cents(s.net);
+  return [open + net, open - net];
 }
 
 /** A Prisma Decimal (or null) as a number, for `OpeningStatement`. */
