@@ -19,9 +19,11 @@ const customer_auth_service_1 = require("../customer-auth/customer-auth.service"
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
 const export_service_1 = require("./export.service");
 const reports_service_1 = require("./reports.service");
+const tax_service_1 = require("./tax.service");
 const statement_uploads_1 = require("./statement-uploads");
 function attachment(filename, inline = false) {
     const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
@@ -32,11 +34,31 @@ let BookkeepingController = class BookkeepingController {
     exporter;
     customers;
     reportsService;
-    constructor(bookkeeping, exporter, customers, reportsService) {
+    tax;
+    constructor(bookkeeping, exporter, customers, reportsService, tax) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
         this.reportsService = reportsService;
+        this.tax = tax;
+    }
+    generate(req) {
+        return this.bookkeeping.generate(req.user.customerId);
+    }
+    taxSettings(req) {
+        return this.tax.settings(req.user.customerId);
+    }
+    setTax(req, dto) {
+        return this.tax.setEnabled(req.user.customerId, dto.enabled);
+    }
+    createAgency(req, dto) {
+        return this.tax.createAgency(req.user.customerId, dto);
+    }
+    updateAgency(req, id, dto) {
+        return this.tax.updateAgency(req.user.customerId, id, dto);
+    }
+    removeAgency(req, id) {
+        return this.tax.removeAgency(req.user.customerId, id);
     }
     upload(req, files) {
         return this.bookkeeping.upload(req.user.customerId, files);
@@ -99,6 +121,54 @@ let BookkeepingController = class BookkeepingController {
     }
 };
 exports.BookkeepingController = BookkeepingController;
+__decorate([
+    (0, common_1.Post)('generate'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "generate", null);
+__decorate([
+    (0, common_1.Get)('tax'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "taxSettings", null);
+__decorate([
+    (0, common_1.Patch)('tax'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.UpdateTaxDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setTax", null);
+__decorate([
+    (0, common_1.Post)('agencies'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.CreateAgencyDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "createAgency", null);
+__decorate([
+    (0, common_1.Patch)('agencies/:id'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.UpdateAgencyDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "updateAgency", null);
+__decorate([
+    (0, common_1.Delete)('agencies/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "removeAgency", null);
 __decorate([
     (0, common_1.Post)('statements'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', statement_uploads_1.MAX_FILES_PER_REQUEST, statement_uploads_1.STATEMENT_UPLOAD_OPTIONS)),
@@ -178,6 +248,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
     __metadata("design:paramtypes", [bookkeeping_service_1.BookkeepingService,
         export_service_1.LedgerExportService,
         customer_auth_service_1.CustomerAuthService,
-        reports_service_1.ReportsService])
+        reports_service_1.ReportsService,
+        tax_service_1.TaxService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

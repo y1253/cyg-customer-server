@@ -7,6 +7,7 @@ import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
 import { StatementExtractor } from './statement-extractor';
 import { StatementProcessorService } from './statement-processor.service';
+import { TaxService } from './tax.service';
 
 @Module({
   imports: [CustomerAuthModule],
@@ -18,6 +19,7 @@ import { StatementProcessorService } from './statement-processor.service';
     ReportsService,
     StatementExtractor,
     StatementProcessorService,
+    TaxService,
   ],
 })
 export class BookkeepingModule {}

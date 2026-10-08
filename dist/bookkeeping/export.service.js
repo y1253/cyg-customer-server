@@ -21,9 +21,11 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
+const tax_service_1 = require("./tax.service");
+const tax_util_1 = require("./tax.util");
 const BRAND = '#169F96';
 function netOf(rows) {
-    return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
+    return (rows.reduce((cents, r) => (r.tax ? cents : cents + Math.round(r.amount * 100)), 0) / 100);
 }
 const ISO = (d) => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n) => n.toLocaleString('en-US', {
@@ -32,11 +34,13 @@ const MONEY = (n) => n.toLocaleString('en-US', {
 });
 let LedgerExportService = class LedgerExportService {
     prisma;
-    constructor(prisma) {
+    tax;
+    constructor(prisma, tax) {
         this.prisma = prisma;
+        this.tax = tax;
     }
     async rowsFor(customerId) {
-        const [rows, statements] = await Promise.all([
+        const [rows, statements, taxes] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
                 include: {
@@ -52,13 +56,16 @@ let LedgerExportService = class LedgerExportService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
+            this.tax.linesFor(customerId),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const openings = (0, opening_balance_util_1.openingRows)(statements);
-        return [
+        const sorted = [
             ...rows.map((r) => ({
                 statementId: r.statementId,
                 position: r.position,
+                id: r.id,
+                offsetAccount: r.offsetAccount,
                 row: {
                     pendingDate: r.pendingDate,
                     postingDate: r.postingDate,
@@ -73,6 +80,8 @@ let LedgerExportService = class LedgerExportService {
             ...openings.map((o) => ({
                 statementId: o.statementId,
                 position: opening_balance_util_1.OPENING_POSITION,
+                id: 0,
+                offsetAccount: o.offsetAccount,
                 row: {
                     pendingDate: null,
                     postingDate: o.postingDate,
@@ -84,9 +93,16 @@ let LedgerExportService = class LedgerExportService {
                     statement: (0, statement_label_1.statementLabel)(byId.get(o.statementId)),
                 },
             })),
-        ]
-            .sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }))
-            .map((x) => x.row);
+        ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
+        return (0, tax_util_1.withTaxRows)(sorted, (p) => taxes.get(p.id)?.map((t) => ({
+            ...p,
+            row: {
+                ...p.row,
+                amount: t.amount,
+                ...(0, tax_util_1.taxEntry)(t.kind, p.offsetAccount, t.agency),
+                tax: true,
+            },
+        }))).map((x) => x.row);
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();
@@ -126,10 +142,15 @@ let LedgerExportService = class LedgerExportService {
             pattern: 'solid',
             fgColor: { argb: 'FF169F96' },
         };
-        for (const r of rows)
-            ws.addRow(r);
+        for (const r of rows) {
+            const { tax, ...cells } = r;
+            const row = ws.addRow(cells);
+            if (tax)
+                row.font = { italic: true, color: { argb: 'FF8A8F98' } };
+        }
+        const count = rows.filter((r) => !r.tax).length;
         const total = ws.addRow({
-            description: `Net change (${rows.length} transactions)`,
+            description: `Net change (${count} transactions)`,
             amount: netOf(rows),
         });
         total.font = { bold: true };
@@ -175,7 +196,7 @@ let LedgerExportService = class LedgerExportService {
                 .fillColor('#333333')
                 .font('Helvetica')
                 .fontSize(10)
-                .text(`${customerName}  ·  ${period}  ·  ${rows.length} transactions  ·  generated ${ISO(new Date())}`);
+                .text(`${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax).length} transactions  ·  generated ${ISO(new Date())}`);
             doc.moveDown(0.8);
             const drawHeader = () => {
                 const y = doc.y;
@@ -219,9 +240,16 @@ let LedgerExportService = class LedgerExportService {
                         .fill('#F3F8F8');
                 }
                 let x = left;
+                doc.font(r.tax ? 'Helvetica-Oblique' : 'Helvetica');
                 cells.forEach((t, k) => {
                     doc
-                        .fillColor(k === 4 ? (r.amount < 0 ? '#B42318' : '#067647') : '#222222')
+                        .fillColor(r.tax
+                        ? '#8A8F98'
+                        : k === 4
+                            ? r.amount < 0
+                                ? '#B42318'
+                                : '#067647'
+                            : '#222222')
                         .text(t, x + 3, y, {
                         width: cols[k].width - 6,
                         align: cols[k].align ?? 'left',
@@ -230,6 +258,7 @@ let LedgerExportService = class LedgerExportService {
                 });
                 doc.y = y + h;
             });
+            doc.font('Helvetica');
             const net = netOf(rows);
             doc
                 .moveDown(0.6)
@@ -244,6 +273,7 @@ let LedgerExportService = class LedgerExportService {
 exports.LedgerExportService = LedgerExportService;
 exports.LedgerExportService = LedgerExportService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        tax_service_1.TaxService])
 ], LedgerExportService);
 //# sourceMappingURL=export.service.js.map

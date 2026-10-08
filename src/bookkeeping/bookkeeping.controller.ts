@@ -1,11 +1,13 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Delete,
   Get,
   HttpCode,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -26,9 +28,19 @@ import {
   type TransactionView,
 } from './bookkeeping.service';
 import { CHART_OF_ACCOUNTS, type ChartAccount } from './chart-of-accounts';
+import {
+  CreateAgencyDto,
+  UpdateAgencyDto,
+  UpdateTaxDto,
+} from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
+import {
+  TaxService,
+  type AgencyView,
+  type TaxSettingsView,
+} from './tax.service';
 import type { ReportsView } from './reports.util';
 import {
   MAX_FILES_PER_REQUEST,
@@ -52,7 +64,55 @@ export class BookkeepingController {
     private readonly exporter: LedgerExportService,
     private readonly customers: CustomerAuthService,
     private readonly reportsService: ReportsService,
+    private readonly tax: TaxService,
   ) {}
+
+  /** Reads every UPLOADED statement and re-applies changed tax settings. */
+  @Post('generate')
+  generate(
+    @Req() req: AuthedRequest,
+  ): Promise<{ queued: number; taxing: boolean }> {
+    return this.bookkeeping.generate(req.user.customerId);
+  }
+
+  @Get('tax')
+  taxSettings(@Req() req: AuthedRequest): Promise<TaxSettingsView> {
+    return this.tax.settings(req.user.customerId);
+  }
+
+  @Patch('tax')
+  setTax(
+    @Req() req: AuthedRequest,
+    @Body() dto: UpdateTaxDto,
+  ): Promise<TaxSettingsView> {
+    return this.tax.setEnabled(req.user.customerId, dto.enabled);
+  }
+
+  @Post('agencies')
+  createAgency(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateAgencyDto,
+  ): Promise<AgencyView> {
+    return this.tax.createAgency(req.user.customerId, dto);
+  }
+
+  @Patch('agencies/:id')
+  updateAgency(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateAgencyDto,
+  ): Promise<AgencyView> {
+    return this.tax.updateAgency(req.user.customerId, id, dto);
+  }
+
+  @Delete('agencies/:id')
+  @HttpCode(204)
+  removeAgency(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    return this.tax.removeAgency(req.user.customerId, id);
+  }
 
   @Post('statements')
   @UseInterceptors(

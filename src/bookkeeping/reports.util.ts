@@ -9,8 +9,8 @@ export interface ReportRow {
   /** Signed from the bank's side: > 0 money in, < 0 money out. */
   amount: number;
   offsetAccount: string;
-  /** The bank side of the entry, e.g. "Chase 4362". */
-  bankAccount: string;
+  /** The bank side of the entry, e.g. "Chase 4362"; null on a tax line (no cash moves). */
+  bankAccount: string | null;
   /** YYYY-MM-DD the row counts on; null when the statement printed no date. */
   date: string | null;
 }
@@ -63,7 +63,7 @@ export const RETAINED_EARNINGS = 'Retained Earnings';
 
 const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
 /** An account no longer in the chart (renamed) still has to land somewhere. */
-const typeOf = (name: string): AccountType => TYPE_OF.get(name) ?? 'EXPENSE';
+const chartType = (name: string): AccountType => TYPE_OF.get(name) ?? 'EXPENSE';
 
 /** Credit-normal accounts grow with money IN; debit-normal ones with money OUT. */
 const CREDIT_NORMAL: ReadonlySet<AccountType> = new Set([
@@ -101,7 +101,7 @@ function tally(rows: ReportRow[], from: string | null, to: string | null) {
     if (to && r.date! > to) continue;
     const c = cents(r.amount);
     add(offsets, r.offsetAccount, c);
-    add(banks, r.bankAccount, c);
+    if (r.bankAccount !== null) add(banks, r.bankAccount, c);
   }
   return { offsets, banks };
 }
@@ -123,8 +123,17 @@ export function buildReports(
   rows: ReportRow[],
   from: string | null = null,
   to: string | null = null,
+  /** Tax agencies: LIABILITY accounts outside the chart. */
+  liabilityAccounts: string[] = [],
 ): ReportsView {
-  const bankNames = [...new Set(rows.map((r) => r.bankAccount))].sort();
+  const bankNames = [
+    ...new Set(
+      rows.map((r) => r.bankAccount).filter((b): b is string => b !== null),
+    ),
+  ].sort();
+  const liabilitySet = new Set(liabilityAccounts);
+  const typeOf = (name: string): AccountType =>
+    liabilitySet.has(name) ? 'LIABILITY' : chartType(name);
 
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);

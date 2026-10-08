@@ -89,4 +89,47 @@ describe('buildReports', () => {
     expect(line(r.incomeStatement.expenses, 'Old Name')).toBe(7);
     expect(r.balanceSheet.balanced).toBe(true);
   });
+
+  it('counts tax lines as a liability and still balances', () => {
+    const taxed: ReportRow[] = [
+      ...rows,
+      // 10% Federal Tax on the 1000 sale, 5% Input Credit on the 120.10 office expense.
+      {
+        amount: 100,
+        offsetAccount: 'Federal Tax',
+        bankAccount: null,
+        date: '2026-08-05',
+      },
+      {
+        amount: -100,
+        offsetAccount: 'Sales Income',
+        bankAccount: null,
+        date: '2026-08-05',
+      },
+      {
+        amount: -6.01,
+        offsetAccount: 'Input Credit',
+        bankAccount: null,
+        date: '2026-09-01',
+      },
+      {
+        amount: 6.01,
+        offsetAccount: 'Office Expense',
+        bankAccount: null,
+        date: '2026-09-01',
+      },
+    ];
+    const r = buildReports(taxed, null, null, ['Federal Tax', 'Input Credit']);
+    const bs = r.balanceSheet;
+    expect(line(bs.liabilities, 'Federal Tax')).toBe(100);
+    expect(line(bs.liabilities, 'Input Credit')).toBe(-6.01);
+    expect(line(r.incomeStatement.income, 'Sales Income')).toBe(900);
+    expect(line(r.incomeStatement.expenses, 'Office Expense')).toBe(94.04);
+    // Cash is untouched by tax lines.
+    expect(line(bs.assets, BANK)).toBe(824.96);
+    expect(bs.balanced).toBe(true);
+    expect(r.accounts.find((a) => a.name === 'Federal Tax')?.type).toBe(
+      'LIABILITY',
+    );
+  });
 });

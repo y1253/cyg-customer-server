@@ -4,6 +4,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { StatementProcessorService } from './statement-processor.service';
+import { TaxService } from './tax.service';
 export interface StatementView {
     id: number;
     filename: string;
@@ -20,6 +21,7 @@ export interface StatementView {
     processedAt: Date | null;
 }
 export interface TransactionView {
+    key: string;
     id: number;
     statementId: number;
     pendingDate: string | null;
@@ -31,16 +33,22 @@ export interface TransactionView {
     debitAccount: string;
     creditAccount: string;
     statementLabel: string;
-    isOpening?: true;
+    kind?: 'opening' | 'tax';
+    taxRate?: number;
 }
 export declare class BookkeepingService {
     private readonly prisma;
     private readonly storage;
     private readonly openai;
     private readonly processor;
+    private readonly tax;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService);
     upload(customerId: number, files: Express.Multer.File[]): Promise<StatementView[]>;
+    generate(customerId: number): Promise<{
+        queued: number;
+        taxing: boolean;
+    }>;
     list(customerId: number): Promise<StatementView[]>;
     transactions(customerId: number, statementIds?: number[]): Promise<TransactionView[]>;
     file(customerId: number, id: number): Promise<{

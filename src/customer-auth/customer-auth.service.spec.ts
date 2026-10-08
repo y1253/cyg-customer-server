@@ -27,6 +27,9 @@ function customer(over: Partial<Customer> = {}): Customer {
     updatedAt: new Date('2026-10-01'),
     lastLoginAt: null,
     deletedAt: null,
+    salesTaxEnabled: false,
+    taxStale: false,
+    taxRunningSince: null,
     ...over,
   };
 }

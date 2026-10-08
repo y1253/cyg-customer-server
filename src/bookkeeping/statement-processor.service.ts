@@ -10,6 +10,7 @@ import {
   UnreadableStatementError,
 } from './statement-extractor';
 import { sweepStaleStaging } from './statement-uploads';
+import { TaxService } from './tax.service';
 
 export const MAX_ATTEMPTS = 4;
 /** Wait before attempt n+1 (index = attempts so far): 1 min, 5 min, 30 min. */
@@ -45,6 +46,7 @@ export class StatementProcessorService {
     private readonly prisma: PrismaService,
     private readonly storage: ObjectStorageService,
     private readonly extractor: StatementExtractor,
+    private readonly tax: TaxService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -193,6 +195,7 @@ export class StatementProcessorService {
           },
         }),
       ]);
+      if (!mismatch) await this.tax.tagStatement(row.customerId, row.id);
       const level = mismatch ? 'warn' : 'log';
       this.logger[level](
         `statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +

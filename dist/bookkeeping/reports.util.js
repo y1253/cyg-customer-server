@@ -5,7 +5,7 @@ exports.buildReports = buildReports;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.RETAINED_EARNINGS = 'Retained Earnings';
 const TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
-const typeOf = (name) => TYPE_OF.get(name) ?? 'EXPENSE';
+const chartType = (name) => TYPE_OF.get(name) ?? 'EXPENSE';
 const CREDIT_NORMAL = new Set([
     'INCOME',
     'LIABILITY',
@@ -31,13 +31,18 @@ function tally(rows, from, to) {
             continue;
         const c = cents(r.amount);
         add(offsets, r.offsetAccount, c);
-        add(banks, r.bankAccount, c);
+        if (r.bankAccount !== null)
+            add(banks, r.bankAccount, c);
     }
     return { offsets, banks };
 }
 const normal = (type, sum) => CREDIT_NORMAL.has(type) ? sum : -sum;
-function buildReports(rows, from = null, to = null) {
-    const bankNames = [...new Set(rows.map((r) => r.bankAccount))].sort();
+function buildReports(rows, from = null, to = null, liabilityAccounts = []) {
+    const bankNames = [
+        ...new Set(rows.map((r) => r.bankAccount).filter((b) => b !== null)),
+    ].sort();
+    const liabilitySet = new Set(liabilityAccounts);
+    const typeOf = (name) => liabilitySet.has(name) ? 'LIABILITY' : chartType(name);
     const period = tally(rows, from, to);
     const chartNames = chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => a.name);
     const extra = [...period.offsets.keys()].filter((n) => !TYPE_OF.has(n));

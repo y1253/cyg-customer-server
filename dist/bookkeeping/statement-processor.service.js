@@ -22,6 +22,7 @@ const ledger_util_1 = require("./ledger.util");
 const reconcile_util_1 = require("./reconcile.util");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_uploads_1 = require("./statement-uploads");
+const tax_service_1 = require("./tax.service");
 exports.MAX_ATTEMPTS = 4;
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
 const CONCURRENCY = 2;
@@ -37,12 +38,14 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     prisma;
     storage;
     extractor;
+    tax;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor) {
+    constructor(prisma, storage, extractor, tax) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
+        this.tax = tax;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -171,6 +174,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     },
                 }),
             ]);
+            if (!mismatch)
+                await this.tax.tagStatement(row.customerId, row.id);
             const level = mismatch ? 'warn' : 'log';
             this.logger[level](`statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
                 `${extracted.rereads} re-read(s), ${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
@@ -218,7 +223,8 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
-        statement_extractor_1.StatementExtractor])
+        statement_extractor_1.StatementExtractor,
+        tax_service_1.TaxService])
 ], StatementProcessorService);
 function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';

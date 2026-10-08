@@ -3,7 +3,9 @@ import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
 import { openingRows } from './opening-balance.util';
-import { buildReports, type ReportsView } from './reports.util';
+import { buildReports, type ReportRow, type ReportsView } from './reports.util';
+import { TaxService } from './tax.service';
+import { taxReportRows } from './tax.util';
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
@@ -14,7 +16,10 @@ const day = (d: Date | null): string | null =>
  */
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tax: TaxService,
+  ) {}
 
   async reports(
     customerId: number,
@@ -22,10 +27,11 @@ export class ReportsService {
     to: string | null,
   ): Promise<ReportsView> {
     const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
-    const [rows, statements] = await Promise.all([
+    const [rows, statements, taxes, agencies] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: { customerId, statement: done },
         select: {
+          id: true,
           amount: true,
           offsetAccount: true,
           debitAccount: true,
@@ -36,6 +42,8 @@ export class ReportsService {
         },
       }),
       loadOpeningStatements(this.prisma, customerId),
+      this.tax.linesFor(customerId),
+      this.tax.agencyNames(customerId),
     ]);
 
     // The printed starting balances — the same "Starting balance" rows the ledger shows.
@@ -49,22 +57,32 @@ export class ReportsService {
     return buildReports(
       [
         ...openings,
-        ...rows.map((r) => {
+        ...rows.flatMap((r): ReportRow[] => {
           const amount = Number(r.amount);
-          return {
-            amount,
-            offsetAccount: r.offsetAccount,
-            // The bank is whichever side is not the offset (see `doubleEntry`).
-            bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-            date:
-              day(r.postingDate) ??
-              day(r.pendingDate) ??
-              day(r.statement.periodEnd),
-          };
+          const date =
+            day(r.postingDate) ??
+            day(r.pendingDate) ??
+            day(r.statement.periodEnd);
+          return [
+            {
+              amount,
+              offsetAccount: r.offsetAccount,
+              // The bank is whichever side is not the offset (see `doubleEntry`).
+              bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
+              date,
+            },
+            // Its tax lines: agency ↔ the row's own account, no cash side.
+            ...(taxes.get(r.id) ?? []).flatMap((t) =>
+              taxReportRows(t.kind, r.offsetAccount, t.agency, t.amount).map(
+                (x) => ({ ...x, bankAccount: null, date }),
+              ),
+            ),
+          ];
         }),
       ],
       from,
       to,
+      agencies,
     );
   }
 }

@@ -20,6 +20,8 @@ import {
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
+import { TaxService } from './tax.service';
+import { taxEntry, withTaxRows } from './tax.util';
 
 export interface StatementView {
   id: number;
@@ -39,7 +41,9 @@ export interface StatementView {
 }
 
 export interface TransactionView {
-  /** Negative for a computed "Starting balance" row (`opening-balance.util.ts`). */
+  /** Unique per row, the React key: `t:<transaction>`, `o:<statement>`, `x:<tax line>`. */
+  key: string;
+  /** The transaction's id; for a tax row, its PARENT transaction's id. 0 on a starting balance. */
   id: number;
   statementId: number;
   pendingDate: string | null;
@@ -53,8 +57,14 @@ export interface TransactionView {
   creditAccount: string;
   /** The statement it came from, e.g. "Chase 4362 · Sep 2026". */
   statementLabel: string;
-  /** The statement's printed starting balance, offset to Owner's Loan — never stored. */
-  isOpening?: true;
+  /**
+   * `opening`: the statement's printed starting balance, offset to Owner's Loan — never
+   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`); it moves
+   * no cash, so it never counts in a net change.
+   */
+  kind?: 'opening' | 'tax';
+  /** On a tax row: the agency's rate, a percent. */
+  taxRate?: number;
 }
 
 const day = (d: Date | null): string | null =>
@@ -96,9 +106,13 @@ export class BookkeepingService {
     private readonly storage: ObjectStorageService,
     private readonly openai: OpenAiClient,
     private readonly processor: StatementProcessorService,
+    private readonly tax: TaxService,
   ) {}
 
-  /** Stores each staged PDF in R2, queues it, and starts processing. Staged files are always removed. */
+  /**
+   * Stores each staged PDF in R2 as UPLOADED — NOT read yet: reading starts when the
+   * customer clicks Generate (`generate`). Staged files are always removed.
+   */
   async upload(
     customerId: number,
     files: Express.Multer.File[],
@@ -125,13 +139,30 @@ export class BookkeepingService {
         });
         created.push(toView(row));
       }
-      this.processor.processSoon();
       return created;
     } finally {
       await Promise.all(
         (files ?? []).map((f) => unlink(f.path).catch(() => undefined)),
       );
     }
+  }
+
+  /**
+   * Generate: queue every UPLOADED statement for reading, and re-run the tax step over the
+   * statements already read when the tax settings changed since the last run.
+   */
+  async generate(
+    customerId: number,
+  ): Promise<{ queued: number; taxing: boolean }> {
+    const { count } = await this.prisma.bankStatement.updateMany({
+      where: { customerId, deletedAt: null, status: StatementStatus.UPLOADED },
+      data: { status: StatementStatus.PENDING },
+    });
+    if (count) this.processor.processSoon();
+    const taxing =
+      (await this.tax.needsRetag(customerId)) &&
+      (await this.tax.retagCustomer(customerId));
+    return { queued: count, taxing };
   }
 
   async list(customerId: number): Promise<StatementView[]> {
@@ -146,7 +177,7 @@ export class BookkeepingService {
     customerId: number,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const [rows, statements] = await Promise.all([
+    const [rows, statements, taxes] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           customerId,
@@ -168,6 +199,7 @@ export class BookkeepingService {
       // ALL done statements: the chain decides which ones start fresh, even when the
       // ledger is filtered to a few of them.
       loadOpeningStatements(this.prisma, customerId),
+      this.tax.linesFor(customerId, statementIds),
     ]);
 
     const byId = new Map(statements.map((s) => [s.id, s]));
@@ -187,6 +219,7 @@ export class BookkeepingService {
         statementId: r.statementId,
         position: r.position,
         view: {
+          key: `t:${r.id}`,
           id: r.id,
           statementId: r.statementId,
           pendingDate: day(r.pendingDate),
@@ -205,8 +238,8 @@ export class BookkeepingService {
         statementId: o.statementId,
         position: OPENING_POSITION,
         view: {
-          // Negative: never collides with a real row id.
-          id: -o.statementId,
+          key: `o:${o.statementId}`,
+          id: 0,
           statementId: o.statementId,
           pendingDate: null,
           postingDate: day(o.postingDate),
@@ -217,12 +250,27 @@ export class BookkeepingService {
           debitAccount: o.debitAccount,
           creditAccount: o.creditAccount,
           statementLabel: statementLabel(byId.get(o.statementId)!),
-          isOpening: true as const,
+          kind: 'opening' as const,
         },
       })),
     ];
-    // Newest first.
-    return keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
+    // Newest first, each row's tax lines directly under it.
+    const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
+    return withTaxRows(sorted, (p) =>
+      p.kind
+        ? undefined
+        : taxes.get(p.id)?.map(
+            (t): TransactionView => ({
+              ...p,
+              key: `x:${t.id}`,
+              amount: t.amount,
+              ...taxEntry(t.kind, p.offsetAccount, t.agency),
+              offsetAccount: t.agency,
+              kind: 'tax',
+              taxRate: t.rate,
+            }),
+          ),
+    );
   }
 
   async file(

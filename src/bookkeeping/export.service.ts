@@ -9,6 +9,8 @@ import {
   openingRows,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
+import { TaxService } from './tax.service';
+import { taxEntry, withTaxRows } from './tax.util';
 
 export interface LedgerExportRow {
   pendingDate: Date | null;
@@ -19,13 +21,23 @@ export interface LedgerExportRow {
   debitAccount: string;
   creditAccount: string;
   statement: string;
+  /** A tax line under the row above it: drawn grey italic, left out of the net change. */
+  tax?: boolean;
 }
 
 const BRAND = '#169F96';
 
-/** Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). */
-export function netOf(rows: Array<{ amount: number }>): number {
-  return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
+/**
+ * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). Tax lines
+ * move no cash, so they never count.
+ */
+export function netOf(rows: Array<{ amount: number; tax?: boolean }>): number {
+  return (
+    rows.reduce(
+      (cents, r) => (r.tax ? cents : cents + Math.round(r.amount * 100)),
+      0,
+    ) / 100
+  );
 }
 const ISO = (d: Date | null): string => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n: number): string =>
@@ -41,10 +53,13 @@ const MONEY = (n: number): string =>
  */
 @Injectable()
 export class LedgerExportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tax: TaxService,
+  ) {}
 
   async rowsFor(customerId: number): Promise<LedgerExportRow[]> {
-    const [rows, statements] = await Promise.all([
+    const [rows, statements, taxes] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
         include: {
@@ -60,15 +75,19 @@ export class LedgerExportService {
         },
       }),
       loadOpeningStatements(this.prisma, customerId),
+      this.tax.linesFor(customerId),
     ]);
     const byId = new Map(statements.map((s) => [s.id, s]));
     const openings = openingRows(statements);
 
-    // Oldest first: a statement's Starting balance row comes before its first row.
-    return [
+    // Oldest first: a statement's Starting balance row comes before its first row, and
+    // each row's tax lines sit directly under it.
+    const sorted = [
       ...rows.map((r) => ({
         statementId: r.statementId,
         position: r.position,
+        id: r.id,
+        offsetAccount: r.offsetAccount,
         row: {
           pendingDate: r.pendingDate,
           postingDate: r.postingDate,
@@ -83,6 +102,8 @@ export class LedgerExportService {
       ...openings.map((o) => ({
         statementId: o.statementId,
         position: OPENING_POSITION,
+        id: 0,
+        offsetAccount: o.offsetAccount,
         row: {
           pendingDate: null,
           postingDate: o.postingDate,
@@ -94,14 +115,23 @@ export class LedgerExportService {
           statement: statementLabel(byId.get(o.statementId)!),
         },
       })),
-    ]
-      .sort((a, b) =>
-        ledgerOrder(
-          { ...a, postingDate: a.row.postingDate },
-          { ...b, postingDate: b.row.postingDate },
-        ),
-      )
-      .map((x) => x.row);
+    ].sort((a, b) =>
+      ledgerOrder(
+        { ...a, postingDate: a.row.postingDate },
+        { ...b, postingDate: b.row.postingDate },
+      ),
+    );
+    return withTaxRows(sorted, (p) =>
+      taxes.get(p.id)?.map((t) => ({
+        ...p,
+        row: {
+          ...p.row,
+          amount: t.amount,
+          ...taxEntry(t.kind, p.offsetAccount, t.agency),
+          tax: true,
+        },
+      })),
+    ).map((x) => x.row);
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {
@@ -142,9 +172,14 @@ export class LedgerExportService {
       pattern: 'solid',
       fgColor: { argb: 'FF169F96' },
     };
-    for (const r of rows) ws.addRow(r);
+    for (const r of rows) {
+      const { tax, ...cells } = r;
+      const row = ws.addRow(cells);
+      if (tax) row.font = { italic: true, color: { argb: 'FF8A8F98' } };
+    }
+    const count = rows.filter((r) => !r.tax).length;
     const total = ws.addRow({
-      description: `Net change (${rows.length} transactions)`,
+      description: `Net change (${count} transactions)`,
       amount: netOf(rows),
     });
     total.font = { bold: true };
@@ -195,7 +230,7 @@ export class LedgerExportService {
         .font('Helvetica')
         .fontSize(10)
         .text(
-          `${customerName}  ·  ${period}  ·  ${rows.length} transactions  ·  generated ${ISO(new Date())}`,
+          `${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax).length} transactions  ·  generated ${ISO(new Date())}`,
         );
       doc.moveDown(0.8);
 
@@ -257,10 +292,17 @@ export class LedgerExportService {
             .fill('#F3F8F8');
         }
         let x = left;
+        doc.font(r.tax ? 'Helvetica-Oblique' : 'Helvetica');
         cells.forEach((t, k) => {
           doc
             .fillColor(
-              k === 4 ? (r.amount < 0 ? '#B42318' : '#067647') : '#222222',
+              r.tax
+                ? '#8A8F98'
+                : k === 4
+                  ? r.amount < 0
+                    ? '#B42318'
+                    : '#067647'
+                  : '#222222',
             )
             .text(t, x + 3, y, {
               width: cols[k].width - 6,
@@ -270,6 +312,7 @@ export class LedgerExportService {
         });
         doc.y = y + h;
       });
+      doc.font('Helvetica');
 
       const net = netOf(rows);
       doc

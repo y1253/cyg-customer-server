@@ -22,6 +22,8 @@ const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
+const tax_service_1 = require("./tax.service");
+const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 function toView(s) {
     return {
@@ -45,12 +47,14 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     storage;
     openai;
     processor;
+    tax;
     logger = new common_1.Logger(BookkeepingService_1.name);
-    constructor(prisma, storage, openai, processor) {
+    constructor(prisma, storage, openai, processor, tax) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
+        this.tax = tax;
     }
     async upload(customerId, files) {
         try {
@@ -73,12 +77,22 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 });
                 created.push(toView(row));
             }
-            this.processor.processSoon();
             return created;
         }
         finally {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
         }
+    }
+    async generate(customerId) {
+        const { count } = await this.prisma.bankStatement.updateMany({
+            where: { customerId, deletedAt: null, status: client_1.StatementStatus.UPLOADED },
+            data: { status: client_1.StatementStatus.PENDING },
+        });
+        if (count)
+            this.processor.processSoon();
+        const taxing = (await this.tax.needsRetag(customerId)) &&
+            (await this.tax.retagCustomer(customerId));
+        return { queued: count, taxing };
     }
     async list(customerId) {
         const rows = await this.prisma.bankStatement.findMany({
@@ -88,7 +102,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return rows.map(toView);
     }
     async transactions(customerId, statementIds) {
-        const [rows, statements] = await Promise.all([
+        const [rows, statements, taxes] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     customerId,
@@ -108,6 +122,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
+            this.tax.linesFor(customerId, statementIds),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const wanted = statementIds?.length ? new Set(statementIds) : null;
@@ -118,6 +133,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 statementId: r.statementId,
                 position: r.position,
                 view: {
+                    key: `t:${r.id}`,
                     id: r.id,
                     statementId: r.statementId,
                     pendingDate: day(r.pendingDate),
@@ -136,7 +152,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 statementId: o.statementId,
                 position: opening_balance_util_1.OPENING_POSITION,
                 view: {
-                    id: -o.statementId,
+                    key: `o:${o.statementId}`,
+                    id: 0,
                     statementId: o.statementId,
                     pendingDate: null,
                     postingDate: day(o.postingDate),
@@ -147,11 +164,22 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                     debitAccount: o.debitAccount,
                     creditAccount: o.creditAccount,
                     statementLabel: (0, statement_label_1.statementLabel)(byId.get(o.statementId)),
-                    isOpening: true,
+                    kind: 'opening',
                 },
             })),
         ];
-        return keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
+        const sorted = keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
+        return (0, tax_util_1.withTaxRows)(sorted, (p) => p.kind
+            ? undefined
+            : taxes.get(p.id)?.map((t) => ({
+                ...p,
+                key: `x:${t.id}`,
+                amount: t.amount,
+                ...(0, tax_util_1.taxEntry)(t.kind, p.offsetAccount, t.agency),
+                offsetAccount: t.agency,
+                kind: 'tax',
+                taxRate: t.rate,
+            })));
     }
     async file(customerId, id) {
         const s = await this.owned(customerId, id);
@@ -204,6 +232,7 @@ exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decor
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
-        statement_processor_service_1.StatementProcessorService])
+        statement_processor_service_1.StatementProcessorService,
+        tax_service_1.TaxService])
 ], BookkeepingService);
 //# sourceMappingURL=bookkeeping.service.js.map

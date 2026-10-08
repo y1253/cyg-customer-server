@@ -2,7 +2,7 @@ import { type AccountType } from './chart-of-accounts';
 export interface ReportRow {
     amount: number;
     offsetAccount: string;
-    bankAccount: string;
+    bankAccount: string | null;
     date: string | null;
 }
 export interface AccountBalance {
@@ -44,4 +44,4 @@ export interface ReportsView {
     };
 }
 export declare const RETAINED_EARNINGS = "Retained Earnings";
-export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null): ReportsView;
+export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null, liabilityAccounts?: string[]): ReportsView;

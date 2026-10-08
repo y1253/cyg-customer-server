@@ -5,6 +5,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import type { ObjectStorageService } from '../storage/object-storage.service';
 import { BookkeepingService } from './bookkeeping.service';
 import type { StatementProcessorService } from './statement-processor.service';
+import type { TaxService } from './tax.service';
 import { claimableAt } from './statement-processor.service';
 
 function setup(found: unknown = null) {
@@ -19,6 +20,7 @@ function setup(found: unknown = null) {
     {} as ObjectStorageService,
     {} as OpenAiClient,
     { processSoon: jest.fn() } as unknown as StatementProcessorService,
+    {} as TaxService,
   );
   return { service, prisma };
 }

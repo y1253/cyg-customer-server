@@ -16,18 +16,23 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
+const tax_service_1 = require("./tax.service");
+const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 let ReportsService = class ReportsService {
     prisma;
-    constructor(prisma) {
+    tax;
+    constructor(prisma, tax) {
         this.prisma = prisma;
+        this.tax = tax;
     }
     async reports(customerId, from, to) {
         const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
-        const [rows, statements] = await Promise.all([
+        const [rows, statements, taxes, agencies] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: { customerId, statement: done },
                 select: {
+                    id: true,
                     amount: true,
                     offsetAccount: true,
                     debitAccount: true,
@@ -38,6 +43,8 @@ let ReportsService = class ReportsService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
+            this.tax.linesFor(customerId),
+            this.tax.agencyNames(customerId),
         ]);
         const openings = (0, opening_balance_util_1.openingRows)(statements).map((o) => ({
             amount: o.amount,
@@ -47,23 +54,28 @@ let ReportsService = class ReportsService {
         }));
         return (0, reports_util_1.buildReports)([
             ...openings,
-            ...rows.map((r) => {
+            ...rows.flatMap((r) => {
                 const amount = Number(r.amount);
-                return {
-                    amount,
-                    offsetAccount: r.offsetAccount,
-                    bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-                    date: day(r.postingDate) ??
-                        day(r.pendingDate) ??
-                        day(r.statement.periodEnd),
-                };
+                const date = day(r.postingDate) ??
+                    day(r.pendingDate) ??
+                    day(r.statement.periodEnd);
+                return [
+                    {
+                        amount,
+                        offsetAccount: r.offsetAccount,
+                        bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
+                        date,
+                    },
+                    ...(taxes.get(r.id) ?? []).flatMap((t) => (0, tax_util_1.taxReportRows)(t.kind, r.offsetAccount, t.agency, t.amount).map((x) => ({ ...x, bankAccount: null, date }))),
+                ];
             }),
-        ], from, to);
+        ], from, to, agencies);
     }
 };
 exports.ReportsService = ReportsService;
 exports.ReportsService = ReportsService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        tax_service_1.TaxService])
 ], ReportsService);
 //# sourceMappingURL=reports.service.js.map

@@ -16,6 +16,7 @@ const export_service_1 = require("./export.service");
 const reports_service_1 = require("./reports.service");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_processor_service_1 = require("./statement-processor.service");
+const tax_service_1 = require("./tax.service");
 let BookkeepingModule = class BookkeepingModule {
 };
 exports.BookkeepingModule = BookkeepingModule;
@@ -30,6 +31,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             reports_service_1.ReportsService,
             statement_extractor_1.StatementExtractor,
             statement_processor_service_1.StatementProcessorService,
+            tax_service_1.TaxService,
         ],
     })
 ], BookkeepingModule);
