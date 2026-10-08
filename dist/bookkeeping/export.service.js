@@ -18,6 +18,7 @@ const common_1 = require("@nestjs/common");
 const exceljs_1 = __importDefault(require("exceljs"));
 const pdfkit_1 = __importDefault(require("pdfkit"));
 const prisma_service_1 = require("../prisma/prisma.service");
+const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const BRAND = '#169F96';
 function netOf(rows) {
@@ -34,35 +35,64 @@ let LedgerExportService = class LedgerExportService {
         this.prisma = prisma;
     }
     async rowsFor(customerId) {
-        const rows = await this.prisma.bankTransaction.findMany({
-            where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
-            include: {
-                statement: {
-                    select: {
-                        filename: true,
-                        accountName: true,
-                        bankName: true,
-                        periodStart: true,
-                        periodEnd: true,
+        const [rows, statements] = await Promise.all([
+            this.prisma.bankTransaction.findMany({
+                where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
+                include: {
+                    statement: {
+                        select: {
+                            filename: true,
+                            accountName: true,
+                            bankName: true,
+                            periodStart: true,
+                            periodEnd: true,
+                        },
                     },
                 },
-            },
-            orderBy: [
-                { postingDate: 'asc' },
-                { statementId: 'asc' },
-                { position: 'asc' },
-            ],
-        });
-        return rows.map((r) => ({
-            pendingDate: r.pendingDate,
-            postingDate: r.postingDate,
-            name: r.name ?? '',
-            description: r.description,
-            amount: Number(r.amount),
-            debitAccount: r.debitAccount,
-            creditAccount: r.creditAccount,
-            statement: (0, statement_label_1.statementLabel)(r.statement),
-        }));
+            }),
+            this.prisma.bankStatement.findMany({
+                where: { customerId, deletedAt: null, status: 'DONE' },
+                select: opening_balance_util_1.OPENING_STATEMENT_SELECT,
+            }),
+        ]);
+        const byId = new Map(statements.map((s) => [s.id, s]));
+        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
+            ...s,
+            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
+            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
+        })));
+        return [
+            ...rows.map((r) => ({
+                statementId: r.statementId,
+                position: r.position,
+                row: {
+                    pendingDate: r.pendingDate,
+                    postingDate: r.postingDate,
+                    name: r.name ?? '',
+                    description: r.description,
+                    amount: Number(r.amount),
+                    debitAccount: r.debitAccount,
+                    creditAccount: r.creditAccount,
+                    statement: (0, statement_label_1.statementLabel)(r.statement),
+                },
+            })),
+            ...openings.map((o) => ({
+                statementId: o.statementId,
+                position: opening_balance_util_1.OPENING_POSITION,
+                row: {
+                    pendingDate: null,
+                    postingDate: o.postingDate,
+                    name: '',
+                    description: o.description,
+                    amount: o.amount,
+                    debitAccount: o.debitAccount,
+                    creditAccount: o.creditAccount,
+                    statement: (0, statement_label_1.statementLabel)(byId.get(o.statementId)),
+                },
+            })),
+        ]
+            .sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }))
+            .map((x) => x.row);
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();

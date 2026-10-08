@@ -5,10 +5,6 @@ export interface ReportRow {
     bankAccount: string;
     date: string | null;
 }
-export interface OpeningBalance {
-    bankAccount: string;
-    amount: number;
-}
 export interface AccountBalance {
     name: string;
     type: AccountType;
@@ -47,6 +43,5 @@ export interface ReportsView {
         amount: number;
     };
 }
-export declare const OPENING_BALANCE_EQUITY = "Opening Balance Equity";
 export declare const RETAINED_EARNINGS = "Retained Earnings";
-export declare function buildReports(rows: ReportRow[], openings: OpeningBalance[], from?: string | null, to?: string | null): ReportsView;
+export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null): ReportsView;

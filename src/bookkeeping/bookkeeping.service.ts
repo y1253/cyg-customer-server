@@ -12,6 +12,13 @@ import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import {
+  ledgerOrder,
+  num,
+  OPENING_POSITION,
+  OPENING_STATEMENT_SELECT,
+  openingRows,
+} from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
 
@@ -33,6 +40,7 @@ export interface StatementView {
 }
 
 export interface TransactionView {
+  /** Negative for a computed "Starting balance" row (`opening-balance.util.ts`). */
   id: number;
   statementId: number;
   pendingDate: string | null;
@@ -46,6 +54,8 @@ export interface TransactionView {
   creditAccount: string;
   /** The statement it came from, e.g. "Chase 4362 · Sep 2026". */
   statementLabel: string;
+  /** The statement's printed starting balance, offset to Owner's Loan — never stored. */
+  isOpening?: true;
 }
 
 const day = (d: Date | null): string | null =>
@@ -137,42 +147,91 @@ export class BookkeepingService {
     customerId: number,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const rows = await this.prisma.bankTransaction.findMany({
-      where: {
-        customerId,
-        ...(statementIds?.length && { statementId: { in: statementIds } }),
-        statement: { deletedAt: null, status: StatementStatus.DONE },
-      },
-      include: {
-        statement: {
-          select: {
-            accountName: true,
-            bankName: true,
-            filename: true,
-            periodStart: true,
-            periodEnd: true,
+    const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
+    const [rows, statements] = await Promise.all([
+      this.prisma.bankTransaction.findMany({
+        where: {
+          customerId,
+          ...(statementIds?.length && { statementId: { in: statementIds } }),
+          statement: { deletedAt: null, status: StatementStatus.DONE },
+        },
+        include: {
+          statement: {
+            select: {
+              accountName: true,
+              bankName: true,
+              filename: true,
+              periodStart: true,
+              periodEnd: true,
+            },
           },
         },
-      },
-      orderBy: [
-        { postingDate: 'desc' },
-        { statementId: 'desc' },
-        { position: 'desc' },
-      ],
-    });
-    return rows.map((r) => ({
-      id: r.id,
-      statementId: r.statementId,
-      pendingDate: day(r.pendingDate),
-      postingDate: day(r.postingDate),
-      description: r.description,
-      name: r.name,
-      amount: Number(r.amount),
-      offsetAccount: r.offsetAccount,
-      debitAccount: r.debitAccount,
-      creditAccount: r.creditAccount,
-      statementLabel: statementLabel(r.statement),
-    }));
+      }),
+      // ALL done statements: the chain decides which ones start fresh, even when the
+      // ledger is filtered to a few of them.
+      this.prisma.bankStatement.findMany({
+        where: done,
+        select: OPENING_STATEMENT_SELECT,
+      }),
+    ]);
+
+    const byId = new Map(statements.map((s) => [s.id, s]));
+    const wanted = statementIds?.length ? new Set(statementIds) : null;
+    const openings = openingRows(
+      statements.map((s) => ({
+        ...s,
+        openingBalance: num(s.openingBalance),
+        closingBalance: num(s.closingBalance),
+      })),
+    ).filter((o) => !wanted || wanted.has(o.statementId));
+
+    const keyed: Array<{
+      postingDate: Date | null;
+      statementId: number;
+      position: number;
+      view: TransactionView;
+    }> = [
+      ...rows.map((r) => ({
+        postingDate: r.postingDate,
+        statementId: r.statementId,
+        position: r.position,
+        view: {
+          id: r.id,
+          statementId: r.statementId,
+          pendingDate: day(r.pendingDate),
+          postingDate: day(r.postingDate),
+          description: r.description,
+          name: r.name,
+          amount: Number(r.amount),
+          offsetAccount: r.offsetAccount,
+          debitAccount: r.debitAccount,
+          creditAccount: r.creditAccount,
+          statementLabel: statementLabel(r.statement),
+        },
+      })),
+      ...openings.map((o) => ({
+        postingDate: o.postingDate,
+        statementId: o.statementId,
+        position: OPENING_POSITION,
+        view: {
+          // Negative: never collides with a real row id.
+          id: -o.statementId,
+          statementId: o.statementId,
+          pendingDate: null,
+          postingDate: day(o.postingDate),
+          description: o.description,
+          name: null,
+          amount: o.amount,
+          offsetAccount: o.offsetAccount,
+          debitAccount: o.debitAccount,
+          creditAccount: o.creditAccount,
+          statementLabel: statementLabel(byId.get(o.statementId)!),
+          isOpening: true as const,
+        },
+      })),
+    ];
+    // Newest first.
+    return keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
   }
 
   async file(

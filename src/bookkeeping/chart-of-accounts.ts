@@ -19,6 +19,8 @@ export interface ChartAccount {
 }
 
 export const UNCATEGORIZED = 'Uncategorized';
+/** The offset of every statement's "Starting balance" row (`opening-balance.util.ts`). */
+export const OWNERS_LOAN = "Owner's Loan";
 
 export const CHART_OF_ACCOUNTS: readonly ChartAccount[] = [
   // Income
@@ -52,6 +54,7 @@ export const CHART_OF_ACCOUNTS: readonly ChartAccount[] = [
   { name: 'Credit Card Payment', type: 'LIABILITY' },
   { name: 'Loan Payment', type: 'LIABILITY' },
   { name: 'Sales Tax Payable', type: 'LIABILITY' },
+  { name: OWNERS_LOAN, type: 'LIABILITY' },
   { name: 'Owner Contribution', type: 'EQUITY' },
   { name: 'Owner Draw', type: 'EQUITY' },
   { name: UNCATEGORIZED, type: 'EXPENSE' },

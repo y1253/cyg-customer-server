@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ACCOUNT_NAMES = exports.CHART_OF_ACCOUNTS = exports.UNCATEGORIZED = void 0;
+exports.ACCOUNT_NAMES = exports.CHART_OF_ACCOUNTS = exports.OWNERS_LOAN = exports.UNCATEGORIZED = void 0;
 exports.normalizeAccount = normalizeAccount;
 exports.UNCATEGORIZED = 'Uncategorized';
+exports.OWNERS_LOAN = "Owner's Loan";
 exports.CHART_OF_ACCOUNTS = [
     { name: 'Sales Income', type: 'INCOME' },
     { name: 'Service Income', type: 'INCOME' },
@@ -32,6 +33,7 @@ exports.CHART_OF_ACCOUNTS = [
     { name: 'Credit Card Payment', type: 'LIABILITY' },
     { name: 'Loan Payment', type: 'LIABILITY' },
     { name: 'Sales Tax Payable', type: 'LIABILITY' },
+    { name: exports.OWNERS_LOAN, type: 'LIABILITY' },
     { name: 'Owner Contribution', type: 'EQUITY' },
     { name: 'Owner Draw', type: 'EQUITY' },
     { name: exports.UNCATEGORIZED, type: 'EXPENSE' },

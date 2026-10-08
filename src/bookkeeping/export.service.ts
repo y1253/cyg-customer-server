@@ -2,6 +2,13 @@ import { Injectable } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  ledgerOrder,
+  num,
+  OPENING_POSITION,
+  OPENING_STATEMENT_SELECT,
+  openingRows,
+} from './opening-balance.util';
 import { statementLabel } from './statement-label';
 
 export interface LedgerExportRow {
@@ -38,35 +45,73 @@ export class LedgerExportService {
   constructor(private readonly prisma: PrismaService) {}
 
   async rowsFor(customerId: number): Promise<LedgerExportRow[]> {
-    const rows = await this.prisma.bankTransaction.findMany({
-      where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
-      include: {
-        statement: {
-          select: {
-            filename: true,
-            accountName: true,
-            bankName: true,
-            periodStart: true,
-            periodEnd: true,
+    const [rows, statements] = await Promise.all([
+      this.prisma.bankTransaction.findMany({
+        where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
+        include: {
+          statement: {
+            select: {
+              filename: true,
+              accountName: true,
+              bankName: true,
+              periodStart: true,
+              periodEnd: true,
+            },
           },
         },
-      },
-      orderBy: [
-        { postingDate: 'asc' },
-        { statementId: 'asc' },
-        { position: 'asc' },
-      ],
-    });
-    return rows.map((r) => ({
-      pendingDate: r.pendingDate,
-      postingDate: r.postingDate,
-      name: r.name ?? '',
-      description: r.description,
-      amount: Number(r.amount),
-      debitAccount: r.debitAccount,
-      creditAccount: r.creditAccount,
-      statement: statementLabel(r.statement),
-    }));
+      }),
+      this.prisma.bankStatement.findMany({
+        where: { customerId, deletedAt: null, status: 'DONE' },
+        select: OPENING_STATEMENT_SELECT,
+      }),
+    ]);
+    const byId = new Map(statements.map((s) => [s.id, s]));
+    const openings = openingRows(
+      statements.map((s) => ({
+        ...s,
+        openingBalance: num(s.openingBalance),
+        closingBalance: num(s.closingBalance),
+      })),
+    );
+
+    // Oldest first: a statement's Starting balance row comes before its first row.
+    return [
+      ...rows.map((r) => ({
+        statementId: r.statementId,
+        position: r.position,
+        row: {
+          pendingDate: r.pendingDate,
+          postingDate: r.postingDate,
+          name: r.name ?? '',
+          description: r.description,
+          amount: Number(r.amount),
+          debitAccount: r.debitAccount,
+          creditAccount: r.creditAccount,
+          statement: statementLabel(r.statement),
+        },
+      })),
+      ...openings.map((o) => ({
+        statementId: o.statementId,
+        position: OPENING_POSITION,
+        row: {
+          pendingDate: null,
+          postingDate: o.postingDate,
+          name: '',
+          description: o.description,
+          amount: o.amount,
+          debitAccount: o.debitAccount,
+          creditAccount: o.creditAccount,
+          statement: statementLabel(byId.get(o.statementId)!),
+        },
+      })),
+    ]
+      .sort((a, b) =>
+        ledgerOrder(
+          { ...a, postingDate: a.row.postingDate },
+          { ...b, postingDate: b.row.postingDate },
+        ),
+      )
+      .map((x) => x.row);
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {

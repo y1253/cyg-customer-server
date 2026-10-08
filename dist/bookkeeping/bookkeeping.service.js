@@ -18,6 +18,7 @@ const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -86,42 +87,78 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return rows.map(toView);
     }
     async transactions(customerId, statementIds) {
-        const rows = await this.prisma.bankTransaction.findMany({
-            where: {
-                customerId,
-                ...(statementIds?.length && { statementId: { in: statementIds } }),
-                statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
-            },
-            include: {
-                statement: {
-                    select: {
-                        accountName: true,
-                        bankName: true,
-                        filename: true,
-                        periodStart: true,
-                        periodEnd: true,
+        const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
+        const [rows, statements] = await Promise.all([
+            this.prisma.bankTransaction.findMany({
+                where: {
+                    customerId,
+                    ...(statementIds?.length && { statementId: { in: statementIds } }),
+                    statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
+                },
+                include: {
+                    statement: {
+                        select: {
+                            accountName: true,
+                            bankName: true,
+                            filename: true,
+                            periodStart: true,
+                            periodEnd: true,
+                        },
                     },
                 },
-            },
-            orderBy: [
-                { postingDate: 'desc' },
-                { statementId: 'desc' },
-                { position: 'desc' },
-            ],
-        });
-        return rows.map((r) => ({
-            id: r.id,
-            statementId: r.statementId,
-            pendingDate: day(r.pendingDate),
-            postingDate: day(r.postingDate),
-            description: r.description,
-            name: r.name,
-            amount: Number(r.amount),
-            offsetAccount: r.offsetAccount,
-            debitAccount: r.debitAccount,
-            creditAccount: r.creditAccount,
-            statementLabel: (0, statement_label_1.statementLabel)(r.statement),
-        }));
+            }),
+            this.prisma.bankStatement.findMany({
+                where: done,
+                select: opening_balance_util_1.OPENING_STATEMENT_SELECT,
+            }),
+        ]);
+        const byId = new Map(statements.map((s) => [s.id, s]));
+        const wanted = statementIds?.length ? new Set(statementIds) : null;
+        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
+            ...s,
+            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
+            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
+        }))).filter((o) => !wanted || wanted.has(o.statementId));
+        const keyed = [
+            ...rows.map((r) => ({
+                postingDate: r.postingDate,
+                statementId: r.statementId,
+                position: r.position,
+                view: {
+                    id: r.id,
+                    statementId: r.statementId,
+                    pendingDate: day(r.pendingDate),
+                    postingDate: day(r.postingDate),
+                    description: r.description,
+                    name: r.name,
+                    amount: Number(r.amount),
+                    offsetAccount: r.offsetAccount,
+                    debitAccount: r.debitAccount,
+                    creditAccount: r.creditAccount,
+                    statementLabel: (0, statement_label_1.statementLabel)(r.statement),
+                },
+            })),
+            ...openings.map((o) => ({
+                postingDate: o.postingDate,
+                statementId: o.statementId,
+                position: opening_balance_util_1.OPENING_POSITION,
+                view: {
+                    id: -o.statementId,
+                    statementId: o.statementId,
+                    pendingDate: null,
+                    postingDate: day(o.postingDate),
+                    description: o.description,
+                    name: null,
+                    amount: o.amount,
+                    offsetAccount: o.offsetAccount,
+                    debitAccount: o.debitAccount,
+                    creditAccount: o.creditAccount,
+                    statementLabel: (0, statement_label_1.statementLabel)(byId.get(o.statementId)),
+                    isOpening: true,
+                },
+            })),
+        ];
+        return keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
     }
     async file(customerId, id) {
         const s = await this.owned(customerId, id);

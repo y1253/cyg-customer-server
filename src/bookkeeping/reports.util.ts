@@ -15,12 +15,6 @@ export interface ReportRow {
   date: string | null;
 }
 
-/** The bank's printed balance before its first statement we hold, per bank account. */
-export interface OpeningBalance {
-  bankAccount: string;
-  amount: number;
-}
-
 export interface AccountBalance {
   name: string;
   type: AccountType;
@@ -65,7 +59,6 @@ export interface ReportsView {
   uncategorized: { count: number; amount: number };
 }
 
-export const OPENING_BALANCE_EQUITY = 'Opening Balance Equity';
 export const RETAINED_EARNINGS = 'Retained Earnings';
 
 const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
@@ -121,26 +114,17 @@ const normal = (type: AccountType, sum: number): number =>
  * Chart of accounts, income statement and balance sheet from the ledger.
  *
  * Every row is a double entry between a bank account (an asset) and its offset account,
- * so the balance sheet balances by construction: cash = opening + Σ amount, and every
- * Σ amount lands on the other side in an income, expense, asset, liability or equity
- * account. The bank's opening balances are matched by Opening Balance Equity, and the
- * net income to date by Retained Earnings.
+ * so the balance sheet balances by construction: cash = Σ amount, and every Σ amount
+ * lands on the other side in an income, expense, asset, liability or equity account.
+ * The bank's printed starting balances arrive as rows too ("Starting balance" →
+ * Owner's Loan, `opening-balance.util.ts`), and net income to date is Retained Earnings.
  */
 export function buildReports(
   rows: ReportRow[],
-  openings: OpeningBalance[],
   from: string | null = null,
   to: string | null = null,
 ): ReportsView {
-  const bankNames = [
-    ...new Set([
-      ...openings.map((o) => o.bankAccount),
-      ...rows.map((r) => r.bankAccount),
-    ]),
-  ].sort();
-  const openingOf = new Map(
-    openings.map((o) => [o.bankAccount, cents(o.amount)]),
-  );
+  const bankNames = [...new Set(rows.map((r) => r.bankAccount))].sort();
 
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);
@@ -194,25 +178,17 @@ export function buildReports(
       .filter(([name]) => ['INCOME', 'EXPENSE'].includes(typeOf(name)))
       .reduce((s, [, t]) => s + t.sum, 0),
   );
-  const openingTotal = dollars(
-    [...openingOf.values()].reduce((s, c) => s + c, 0),
-  );
 
   const assets: ReportLine[] = [
     ...bankNames.map((name) => ({
       name,
-      amount: dollars(
-        (openingOf.get(name) ?? 0) + (all.banks.get(name)?.sum ?? 0),
-      ),
+      amount: dollars(all.banks.get(name)?.sum ?? 0),
     })),
     ...sheetLines('ASSET'),
   ];
   const liabilities = sheetLines('LIABILITY');
   const equity: ReportLine[] = [
     ...sheetLines('EQUITY'),
-    ...(openingTotal !== 0
-      ? [{ name: OPENING_BALANCE_EQUITY, amount: openingTotal }]
-      : []),
     { name: RETAINED_EARNINGS, amount: netToDate },
   ];
   const totalAssets = total(assets);

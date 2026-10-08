@@ -1,11 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  buildReports,
-  type OpeningBalance,
-  type ReportsView,
-} from './reports.util';
+import { num, openingRows } from './opening-balance.util';
+import { buildReports, type ReportsView } from './reports.util';
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
@@ -39,39 +36,47 @@ export class ReportsService {
       }),
       this.prisma.bankStatement.findMany({
         where: done,
-        select: { accountName: true, openingBalance: true, periodStart: true },
-        orderBy: [{ periodStart: 'asc' }, { id: 'asc' }],
+        select: {
+          id: true,
+          accountName: true,
+          openingBalance: true,
+          closingBalance: true,
+          periodStart: true,
+        },
       }),
     ]);
 
-    // The bank's balance before the EARLIEST statement we hold, per bank account.
-    // `processOne` names a statement with no account "Bank account" — match it.
-    const openings: OpeningBalance[] = [];
-    const seen = new Set<string>();
-    for (const s of statements) {
-      const bankAccount = s.accountName ?? 'Bank account';
-      if (seen.has(bankAccount)) continue;
-      seen.add(bankAccount);
-      if (s.openingBalance !== null) {
-        openings.push({ bankAccount, amount: Number(s.openingBalance) });
-      }
-    }
+    // The printed starting balances — the same "Starting balance" rows the ledger shows.
+    const openings = openingRows(
+      statements.map((s) => ({
+        ...s,
+        openingBalance: num(s.openingBalance),
+        closingBalance: num(s.closingBalance),
+      })),
+    ).map((o) => ({
+      amount: o.amount,
+      offsetAccount: o.offsetAccount,
+      bankAccount: o.bankAccount,
+      date: day(o.postingDate),
+    }));
 
     return buildReports(
-      rows.map((r) => {
-        const amount = Number(r.amount);
-        return {
-          amount,
-          offsetAccount: r.offsetAccount,
-          // The bank is whichever side is not the offset (see `doubleEntry`).
-          bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-          date:
-            day(r.postingDate) ??
-            day(r.pendingDate) ??
-            day(r.statement.periodEnd),
-        };
-      }),
-      openings,
+      [
+        ...openings,
+        ...rows.map((r) => {
+          const amount = Number(r.amount);
+          return {
+            amount,
+            offsetAccount: r.offsetAccount,
+            // The bank is whichever side is not the offset (see `doubleEntry`).
+            bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
+            date:
+              day(r.postingDate) ??
+              day(r.pendingDate) ??
+              day(r.statement.periodEnd),
+          };
+        }),
+      ],
       from,
       to,
     );

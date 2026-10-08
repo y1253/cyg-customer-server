@@ -31,6 +31,7 @@ export interface TransactionView {
     debitAccount: string;
     creditAccount: string;
     statementLabel: string;
+    isOpening?: true;
 }
 export declare class BookkeepingService {
     private readonly prisma;

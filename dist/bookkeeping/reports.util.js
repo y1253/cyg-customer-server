@@ -1,9 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RETAINED_EARNINGS = exports.OPENING_BALANCE_EQUITY = void 0;
+exports.RETAINED_EARNINGS = void 0;
 exports.buildReports = buildReports;
 const chart_of_accounts_1 = require("./chart-of-accounts");
-exports.OPENING_BALANCE_EQUITY = 'Opening Balance Equity';
 exports.RETAINED_EARNINGS = 'Retained Earnings';
 const TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
 const typeOf = (name) => TYPE_OF.get(name) ?? 'EXPENSE';
@@ -37,14 +36,8 @@ function tally(rows, from, to) {
     return { offsets, banks };
 }
 const normal = (type, sum) => CREDIT_NORMAL.has(type) ? sum : -sum;
-function buildReports(rows, openings, from = null, to = null) {
-    const bankNames = [
-        ...new Set([
-            ...openings.map((o) => o.bankAccount),
-            ...rows.map((r) => r.bankAccount),
-        ]),
-    ].sort();
-    const openingOf = new Map(openings.map((o) => [o.bankAccount, cents(o.amount)]));
+function buildReports(rows, from = null, to = null) {
+    const bankNames = [...new Set(rows.map((r) => r.bankAccount))].sort();
     const period = tally(rows, from, to);
     const chartNames = chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => a.name);
     const extra = [...period.offsets.keys()].filter((n) => !TYPE_OF.has(n));
@@ -87,20 +80,16 @@ function buildReports(rows, openings, from = null, to = null) {
     const netToDate = dollars([...all.offsets.entries()]
         .filter(([name]) => ['INCOME', 'EXPENSE'].includes(typeOf(name)))
         .reduce((s, [, t]) => s + t.sum, 0));
-    const openingTotal = dollars([...openingOf.values()].reduce((s, c) => s + c, 0));
     const assets = [
         ...bankNames.map((name) => ({
             name,
-            amount: dollars((openingOf.get(name) ?? 0) + (all.banks.get(name)?.sum ?? 0)),
+            amount: dollars(all.banks.get(name)?.sum ?? 0),
         })),
         ...sheetLines('ASSET'),
     ];
     const liabilities = sheetLines('LIABILITY');
     const equity = [
         ...sheetLines('EQUITY'),
-        ...(openingTotal !== 0
-            ? [{ name: exports.OPENING_BALANCE_EQUITY, amount: openingTotal }]
-            : []),
         { name: exports.RETAINED_EARNINGS, amount: netToDate },
     ];
     const totalAssets = total(assets);

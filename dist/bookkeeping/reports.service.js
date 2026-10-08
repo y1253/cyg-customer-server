@@ -13,6 +13,7 @@ exports.ReportsService = void 0;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
+const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 let ReportsService = class ReportsService {
@@ -37,32 +38,39 @@ let ReportsService = class ReportsService {
             }),
             this.prisma.bankStatement.findMany({
                 where: done,
-                select: { accountName: true, openingBalance: true, periodStart: true },
-                orderBy: [{ periodStart: 'asc' }, { id: 'asc' }],
+                select: {
+                    id: true,
+                    accountName: true,
+                    openingBalance: true,
+                    closingBalance: true,
+                    periodStart: true,
+                },
             }),
         ]);
-        const openings = [];
-        const seen = new Set();
-        for (const s of statements) {
-            const bankAccount = s.accountName ?? 'Bank account';
-            if (seen.has(bankAccount))
-                continue;
-            seen.add(bankAccount);
-            if (s.openingBalance !== null) {
-                openings.push({ bankAccount, amount: Number(s.openingBalance) });
-            }
-        }
-        return (0, reports_util_1.buildReports)(rows.map((r) => {
-            const amount = Number(r.amount);
-            return {
-                amount,
-                offsetAccount: r.offsetAccount,
-                bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-                date: day(r.postingDate) ??
-                    day(r.pendingDate) ??
-                    day(r.statement.periodEnd),
-            };
-        }), openings, from, to);
+        const openings = (0, opening_balance_util_1.openingRows)(statements.map((s) => ({
+            ...s,
+            openingBalance: (0, opening_balance_util_1.num)(s.openingBalance),
+            closingBalance: (0, opening_balance_util_1.num)(s.closingBalance),
+        }))).map((o) => ({
+            amount: o.amount,
+            offsetAccount: o.offsetAccount,
+            bankAccount: o.bankAccount,
+            date: day(o.postingDate),
+        }));
+        return (0, reports_util_1.buildReports)([
+            ...openings,
+            ...rows.map((r) => {
+                const amount = Number(r.amount);
+                return {
+                    amount,
+                    offsetAccount: r.offsetAccount,
+                    bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
+                    date: day(r.postingDate) ??
+                        day(r.pendingDate) ??
+                        day(r.statement.periodEnd),
+                };
+            }),
+        ], from, to);
     }
 };
 exports.ReportsService = ReportsService;
