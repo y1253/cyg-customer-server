@@ -169,17 +169,22 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         ];
         const sorted = keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
-        return (0, tax_util_1.withTaxRows)(sorted, (p) => p.kind
-            ? undefined
-            : taxes.get(p.id)?.map((t) => ({
-                ...p,
-                key: `x:${t.id}`,
-                amount: t.amount,
-                ...(0, tax_util_1.taxEntry)(t.kind, p.offsetAccount, t.agency),
-                offsetAccount: t.agency,
-                kind: 'tax',
-                taxRate: t.rate,
-            })));
+        return sorted.flatMap((p) => {
+            const lines = p.kind ? undefined : taxes.get(p.id);
+            if (!lines?.length)
+                return [p];
+            const split = (0, tax_util_1.taxSplit)(p, lines);
+            return [
+                split.parent,
+                ...split.taxes.map((entry, i) => ({
+                    ...p,
+                    ...entry,
+                    key: `x:${lines[i].id}`,
+                    kind: 'tax',
+                    taxRate: lines[i].rate,
+                })),
+            ];
+        });
     }
     async file(customerId, id) {
         const s = await this.owned(customerId, id);

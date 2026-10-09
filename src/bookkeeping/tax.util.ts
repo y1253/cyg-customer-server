@@ -103,42 +103,38 @@ export function taxLines(
   return out;
 }
 
-/**
- * The double entry of a tax row. The agency is a liability:
- *  - sales:    DEBIT the income account, CREDIT the agency (tax collected is owed);
- *  - purchase: DEBIT the agency, CREDIT the expense account (tax paid is claimed back).
- */
-export function taxEntry(
-  kind: TaxKind,
-  offsetAccount: string,
-  agency: string,
-): { debitAccount: string; creditAccount: string } {
-  return kind === 'SALES'
-    ? { debitAccount: offsetAccount, creditAccount: agency }
-    : { debitAccount: agency, creditAccount: offsetAccount };
+/** A ledger entry as the tax split sees it: the bank side is the one that is not the offset. */
+export interface SplitEntry {
+  amount: number;
+  offsetAccount: string;
+  debitAccount: string;
+  creditAccount: string;
 }
 
 /**
- * The same entry for the reports, which count every row from the bank's side
- * (+ = credit the offset). A tax row has no bank side, so it is two rows with no bank.
+ * Splits a taxed bank row "tax included", the customer's choice: a $100 sale at 10%
+ * shows the sale at $90 and the Federal Tax line at $10. Each tax line keeps the row's
+ * bank side and puts the agency where the row's own account was, so
+ *  - sales:    DEBIT the bank, CREDIT the agency (tax collected is owed);
+ *  - purchase: DEBIT the agency, CREDIT the bank (tax paid is claimed back).
+ * The row and its lines add up to the bank amount, to the cent.
  */
-export function taxReportRows(
-  kind: TaxKind,
-  offsetAccount: string,
-  agency: string,
-  amount: number,
-): Array<{ amount: number; offsetAccount: string }> {
-  const s = kind === 'SALES' ? 1 : -1;
-  return [
-    { amount: s * amount, offsetAccount: agency },
-    { amount: -s * amount, offsetAccount: offsetAccount },
-  ];
-}
-
-/** Puts each parent's tax rows directly after it, whatever order the parents are in. */
-export function withTaxRows<P, C>(
-  parents: P[],
-  childrenOf: (p: P) => C[] | undefined,
-): Array<P | C> {
-  return parents.flatMap((p) => [p, ...(childrenOf(p) ?? [])]);
+export function taxSplit<E extends SplitEntry>(
+  parent: E,
+  lines: Array<{ agency: string; amount: number }>,
+): { parent: E; taxes: SplitEntry[] } {
+  const sign = parent.amount < 0 ? -1 : 1;
+  const swap = (account: string, agency: string) =>
+    account === parent.offsetAccount ? agency : account;
+  const taxes = lines.map((t) => ({
+    amount: sign * t.amount,
+    offsetAccount: t.agency,
+    debitAccount: swap(parent.debitAccount, t.agency),
+    creditAccount: swap(parent.creditAccount, t.agency),
+  }));
+  const net =
+    (cents(parent.amount) -
+      taxes.reduce((sum, t) => sum + cents(t.amount), 0)) /
+    100;
+  return { parent: { ...parent, amount: net }, taxes };
 }

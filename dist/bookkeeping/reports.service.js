@@ -59,15 +59,14 @@ let ReportsService = class ReportsService {
                 const date = day(r.postingDate) ??
                     day(r.pendingDate) ??
                     day(r.statement.periodEnd);
-                return [
-                    {
-                        amount,
-                        offsetAccount: r.offsetAccount,
-                        bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-                        date,
-                    },
-                    ...(taxes.get(r.id) ?? []).flatMap((t) => (0, tax_util_1.taxReportRows)(t.kind, r.offsetAccount, t.agency, t.amount).map((x) => ({ ...x, bankAccount: null, date }))),
-                ];
+                const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
+                const split = (0, tax_util_1.taxSplit)({ ...r, amount }, taxes.get(r.id) ?? []);
+                return [split.parent, ...split.taxes].map((e) => ({
+                    amount: e.amount,
+                    offsetAccount: e.offsetAccount,
+                    bankAccount,
+                    date,
+                }));
             }),
         ], from, to, agencies);
     }

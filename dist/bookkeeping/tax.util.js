@@ -4,9 +4,7 @@ exports.taxAmount = exports.fits = void 0;
 exports.kindOf = kindOf;
 exports.candidates = candidates;
 exports.taxLines = taxLines;
-exports.taxEntry = taxEntry;
-exports.taxReportRows = taxReportRows;
-exports.withTaxRows = withTaxRows;
+exports.taxSplit = taxSplit;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const reconcile_util_1 = require("./reconcile.util");
 const TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
@@ -57,19 +55,18 @@ function taxLines(rows, verdicts, agencies) {
     }
     return out;
 }
-function taxEntry(kind, offsetAccount, agency) {
-    return kind === 'SALES'
-        ? { debitAccount: offsetAccount, creditAccount: agency }
-        : { debitAccount: agency, creditAccount: offsetAccount };
-}
-function taxReportRows(kind, offsetAccount, agency, amount) {
-    const s = kind === 'SALES' ? 1 : -1;
-    return [
-        { amount: s * amount, offsetAccount: agency },
-        { amount: -s * amount, offsetAccount: offsetAccount },
-    ];
-}
-function withTaxRows(parents, childrenOf) {
-    return parents.flatMap((p) => [p, ...(childrenOf(p) ?? [])]);
+function taxSplit(parent, lines) {
+    const sign = parent.amount < 0 ? -1 : 1;
+    const swap = (account, agency) => account === parent.offsetAccount ? agency : account;
+    const taxes = lines.map((t) => ({
+        amount: sign * t.amount,
+        offsetAccount: t.agency,
+        debitAccount: swap(parent.debitAccount, t.agency),
+        creditAccount: swap(parent.creditAccount, t.agency),
+    }));
+    const net = ((0, reconcile_util_1.cents)(parent.amount) -
+        taxes.reduce((sum, t) => sum + (0, reconcile_util_1.cents)(t.amount), 0)) /
+        100;
+    return { parent: { ...parent, amount: net }, taxes };
 }
 //# sourceMappingURL=tax.util.js.map

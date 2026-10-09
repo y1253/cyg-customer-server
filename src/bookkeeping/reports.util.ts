@@ -9,7 +9,7 @@ export interface ReportRow {
   /** Signed from the bank's side: > 0 money in, < 0 money out. */
   amount: number;
   offsetAccount: string;
-  /** The bank side of the entry, e.g. "Chase 4362"; null on a tax line (no cash moves). */
+  /** The bank side of the entry, e.g. "Chase 4362"; null = no cash side. */
   bankAccount: string | null;
   /** YYYY-MM-DD the row counts on; null when the statement printed no date. */
   date: string | null;

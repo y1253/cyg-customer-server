@@ -31,12 +31,16 @@ export declare function taxLines(rows: TaxCandidate[], verdicts: Array<{
     id: number;
     agencyIds: number[];
 }>, agencies: Agency[]): TaxLine[];
-export declare function taxEntry(kind: TaxKind, offsetAccount: string, agency: string): {
-    debitAccount: string;
-    creditAccount: string;
-};
-export declare function taxReportRows(kind: TaxKind, offsetAccount: string, agency: string, amount: number): Array<{
+export interface SplitEntry {
     amount: number;
     offsetAccount: string;
-}>;
-export declare function withTaxRows<P, C>(parents: P[], childrenOf: (p: P) => C[] | undefined): Array<P | C>;
+    debitAccount: string;
+    creditAccount: string;
+}
+export declare function taxSplit<E extends SplitEntry>(parent: E, lines: Array<{
+    agency: string;
+    amount: number;
+}>): {
+    parent: E;
+    taxes: SplitEntry[];
+};

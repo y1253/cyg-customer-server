@@ -21,7 +21,7 @@ import {
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
-import { taxEntry, withTaxRows } from './tax.util';
+import { taxSplit } from './tax.util';
 
 export interface StatementView {
   id: number;
@@ -59,8 +59,8 @@ export interface TransactionView {
   statementLabel: string;
   /**
    * `opening`: the statement's printed starting balance, offset to Owner's Loan — never
-   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`); it moves
-   * no cash, so it never counts in a net change.
+   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`). Tax is
+   * shown included: the row above is net of it, and the two add up to the bank amount.
    */
   kind?: 'opening' | 'tax';
   /** On a tax row: the agency's rate, a percent. */
@@ -254,23 +254,25 @@ export class BookkeepingService {
         },
       })),
     ];
-    // Newest first, each row's tax lines directly under it.
+    // Newest first. A taxed row shows net of its tax, its tax lines directly under it.
     const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
-    return withTaxRows(sorted, (p) =>
-      p.kind
-        ? undefined
-        : taxes.get(p.id)?.map(
-            (t): TransactionView => ({
-              ...p,
-              key: `x:${t.id}`,
-              amount: t.amount,
-              ...taxEntry(t.kind, p.offsetAccount, t.agency),
-              offsetAccount: t.agency,
-              kind: 'tax',
-              taxRate: t.rate,
-            }),
-          ),
-    );
+    return sorted.flatMap((p): TransactionView[] => {
+      const lines = p.kind ? undefined : taxes.get(p.id);
+      if (!lines?.length) return [p];
+      const split = taxSplit(p, lines);
+      return [
+        split.parent,
+        ...split.taxes.map(
+          (entry, i): TransactionView => ({
+            ...p,
+            ...entry,
+            key: `x:${lines[i].id}`,
+            kind: 'tax',
+            taxRate: lines[i].rate,
+          }),
+        ),
+      ];
+    });
   }
 
   async file(

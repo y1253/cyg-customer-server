@@ -13,7 +13,6 @@ export interface LedgerExportRow {
 }
 export declare function netOf(rows: Array<{
     amount: number;
-    tax?: boolean;
 }>): number;
 export declare class LedgerExportService {
     private readonly prisma;

@@ -2,10 +2,8 @@ import {
   candidates,
   kindOf,
   taxAmount,
-  taxEntry,
   taxLines,
-  taxReportRows,
-  withTaxRows,
+  taxSplit,
   type Agency,
   type TaxableRow,
 } from './tax.util';
@@ -103,46 +101,60 @@ describe('taxLines', () => {
   });
 });
 
-describe('taxEntry / taxReportRows', () => {
-  it('credits the agency on a sale and debits it on a purchase', () => {
-    expect(taxEntry('SALES', 'Sales Income', 'Federal Tax')).toEqual({
-      debitAccount: 'Sales Income',
-      creditAccount: 'Federal Tax',
-    });
-    expect(taxEntry('PURCHASE', 'Office Expense', 'Input Credit')).toEqual({
-      debitAccount: 'Input Credit',
-      creditAccount: 'Office Expense',
-    });
+describe('taxSplit', () => {
+  const sale = {
+    amount: 100,
+    offsetAccount: 'Sales Income',
+    debitAccount: 'Chase 4362',
+    creditAccount: 'Sales Income',
+  };
+  const purchase = {
+    amount: -50,
+    offsetAccount: 'Office Expense',
+    debitAccount: 'Office Expense',
+    creditAccount: 'Chase 4362',
+  };
+
+  it('shows a sale net of its tax, the agency credited from the bank', () => {
+    const r = taxSplit(sale, [{ agency: 'Federal Tax', amount: 10 }]);
+    expect(r.parent).toEqual({ ...sale, amount: 90 });
+    expect(r.taxes).toEqual([
+      {
+        amount: 10,
+        offsetAccount: 'Federal Tax',
+        debitAccount: 'Chase 4362',
+        creditAccount: 'Federal Tax',
+      },
+    ]);
   });
 
-  it('nets to zero in the reports, the agency growing on a sale', () => {
-    const r = taxReportRows('SALES', 'Sales Income', 'Federal Tax', 10);
-    expect(r).toEqual([
-      { amount: 10, offsetAccount: 'Federal Tax' },
-      { amount: -10, offsetAccount: 'Sales Income' },
+  it('shows a purchase net of its tax, the agency debited', () => {
+    const r = taxSplit(purchase, [{ agency: 'Input Credit', amount: 2.5 }]);
+    expect(r.parent.amount).toBe(-47.5);
+    expect(r.taxes).toEqual([
+      {
+        amount: -2.5,
+        offsetAccount: 'Input Credit',
+        debitAccount: 'Input Credit',
+        creditAccount: 'Chase 4362',
+      },
     ]);
-    expect(taxReportRows('PURCHASE', 'Rent', 'Input Credit', 7)[0].amount).toBe(
-      -7,
+  });
+
+  it('adds back up to the bank amount, to the cent, with several agencies', () => {
+    const r = taxSplit({ ...sale, amount: 123.45 }, [
+      { agency: 'Federal Tax', amount: 12.35 },
+      { agency: 'State Tax', amount: 6.17 },
+    ]);
+    expect(r.parent.amount).toBe(104.93);
+    const total = [r.parent, ...r.taxes].reduce(
+      (c, x) => c + Math.round(x.amount * 100),
+      0,
     );
+    expect(total).toBe(12345);
   });
-});
 
-describe('withTaxRows', () => {
-  it('puts the children right after their parent, in either order', () => {
-    const kids = new Map([[2, ['2a', '2b']]]);
-    expect(withTaxRows([1, 2, 3], (p) => kids.get(p))).toEqual([
-      1,
-      2,
-      '2a',
-      '2b',
-      3,
-    ]);
-    expect(withTaxRows([3, 2, 1], (p) => kids.get(p))).toEqual([
-      3,
-      2,
-      '2a',
-      '2b',
-      1,
-    ]);
+  it('leaves an untaxed row alone', () => {
+    expect(taxSplit(sale, [])).toEqual({ parent: sale, taxes: [] });
   });
 });

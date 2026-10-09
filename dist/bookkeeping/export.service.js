@@ -25,7 +25,7 @@ const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const BRAND = '#169F96';
 function netOf(rows) {
-    return (rows.reduce((cents, r) => (r.tax ? cents : cents + Math.round(r.amount * 100)), 0) / 100);
+    return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
 }
 const ISO = (d) => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n) => n.toLocaleString('en-US', {
@@ -94,15 +94,22 @@ let LedgerExportService = class LedgerExportService {
                 },
             })),
         ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
-        return (0, tax_util_1.withTaxRows)(sorted, (p) => taxes.get(p.id)?.map((t) => ({
-            ...p,
-            row: {
-                ...p.row,
-                amount: t.amount,
-                ...(0, tax_util_1.taxEntry)(t.kind, p.offsetAccount, t.agency),
-                tax: true,
-            },
-        }))).map((x) => x.row);
+        return sorted.flatMap((p) => {
+            const lines = taxes.get(p.id);
+            if (!lines?.length)
+                return [p.row];
+            const split = (0, tax_util_1.taxSplit)({ ...p.row, offsetAccount: p.offsetAccount }, lines);
+            return [
+                { ...p.row, amount: split.parent.amount },
+                ...split.taxes.map((e) => ({
+                    ...p.row,
+                    amount: e.amount,
+                    debitAccount: e.debitAccount,
+                    creditAccount: e.creditAccount,
+                    tax: true,
+                })),
+            ];
+        });
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();

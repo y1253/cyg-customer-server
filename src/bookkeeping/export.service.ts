@@ -10,7 +10,7 @@ import {
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { TaxService } from './tax.service';
-import { taxEntry, withTaxRows } from './tax.util';
+import { taxSplit } from './tax.util';
 
 export interface LedgerExportRow {
   pendingDate: Date | null;
@@ -21,23 +21,18 @@ export interface LedgerExportRow {
   debitAccount: string;
   creditAccount: string;
   statement: string;
-  /** A tax line under the row above it: drawn grey italic, left out of the net change. */
+  /** A tax line under the row above it (its share of that bank amount): grey italic. */
   tax?: boolean;
 }
 
 const BRAND = '#169F96';
 
 /**
- * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). Tax lines
- * move no cash, so they never count.
+ * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). A taxed row
+ * shows net of its tax, so its tax lines count too: together they are the bank amount.
  */
-export function netOf(rows: Array<{ amount: number; tax?: boolean }>): number {
-  return (
-    rows.reduce(
-      (cents, r) => (r.tax ? cents : cents + Math.round(r.amount * 100)),
-      0,
-    ) / 100
-  );
+export function netOf(rows: Array<{ amount: number }>): number {
+  return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
 }
 const ISO = (d: Date | null): string => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n: number): string =>
@@ -121,17 +116,24 @@ export class LedgerExportService {
         { ...b, postingDate: b.row.postingDate },
       ),
     );
-    return withTaxRows(sorted, (p) =>
-      taxes.get(p.id)?.map((t) => ({
-        ...p,
-        row: {
+    return sorted.flatMap((p): LedgerExportRow[] => {
+      const lines = taxes.get(p.id);
+      if (!lines?.length) return [p.row];
+      const split = taxSplit(
+        { ...p.row, offsetAccount: p.offsetAccount },
+        lines,
+      );
+      return [
+        { ...p.row, amount: split.parent.amount },
+        ...split.taxes.map((e) => ({
           ...p.row,
-          amount: t.amount,
-          ...taxEntry(t.kind, p.offsetAccount, t.agency),
+          amount: e.amount,
+          debitAccount: e.debitAccount,
+          creditAccount: e.creditAccount,
           tax: true,
-        },
-      })),
-    ).map((x) => x.row);
+        })),
+      ];
+    });
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {

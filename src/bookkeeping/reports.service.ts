@@ -5,7 +5,7 @@ import { loadOpeningStatements } from './opening-balance.query';
 import { openingRows } from './opening-balance.util';
 import { buildReports, type ReportRow, type ReportsView } from './reports.util';
 import { TaxService } from './tax.service';
-import { taxReportRows } from './tax.util';
+import { taxSplit } from './tax.util';
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
@@ -63,21 +63,17 @@ export class ReportsService {
             day(r.postingDate) ??
             day(r.pendingDate) ??
             day(r.statement.periodEnd);
-          return [
-            {
-              amount,
-              offsetAccount: r.offsetAccount,
-              // The bank is whichever side is not the offset (see `doubleEntry`).
-              bankAccount: amount < 0 ? r.creditAccount : r.debitAccount,
-              date,
-            },
-            // Its tax lines: agency ↔ the row's own account, no cash side.
-            ...(taxes.get(r.id) ?? []).flatMap((t) =>
-              taxReportRows(t.kind, r.offsetAccount, t.agency, t.amount).map(
-                (x) => ({ ...x, bankAccount: null, date }),
-              ),
-            ),
-          ];
+          // The bank is whichever side is not the offset (see `doubleEntry`).
+          const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
+          // A taxed row is split like the ledger shows it: the row net of its tax, and
+          // each tax line its share of the same bank movement, against the agency.
+          const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
+          return [split.parent, ...split.taxes].map((e) => ({
+            amount: e.amount,
+            offsetAccount: e.offsetAccount,
+            bankAccount,
+            date,
+          }));
         }),
       ],
       from,
