@@ -21,7 +21,7 @@ export interface LedgerExportRow {
   debitAccount: string;
   creditAccount: string;
   statement: string;
-  /** A tax line under the row above it (its share of that bank amount): grey italic. */
+  /** A tax line under the row above it (tax on top of that bank amount): grey italic. */
   tax?: boolean;
 }
 
@@ -29,7 +29,7 @@ const BRAND = '#169F96';
 
 /**
  * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). A taxed row
- * shows net of its tax, so its tax lines count too: together they are the bank amount.
+ * keeps its bank amount and its tax lines count on top: the real total, incl. tax.
  */
 export function netOf(rows: Array<{ amount: number }>): number {
   return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;

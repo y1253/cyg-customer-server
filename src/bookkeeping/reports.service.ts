@@ -65,8 +65,8 @@ export class ReportsService {
             day(r.statement.periodEnd);
           // The bank is whichever side is not the offset (see `doubleEntry`).
           const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
-          // A taxed row is split like the ledger shows it: the row net of its tax, and
-          // each tax line its share of the same bank movement, against the agency.
+          // A taxed row is split like the ledger shows it: the row at its bank amount,
+          // and each tax line on top of it, against the agency.
           const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
           return [split.parent, ...split.taxes].map((e) => ({
             amount: e.amount,

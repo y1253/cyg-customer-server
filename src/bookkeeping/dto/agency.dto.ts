@@ -1,6 +1,9 @@
-import { TaxAgencyType } from '@prisma/client';
-import { Transform } from 'class-transformer';
+import { TaxKind } from '@prisma/client';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsEnum,
   IsNotEmpty,
@@ -10,12 +13,24 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** `POST /api/bookkeeping/agencies` — a tax agency; `rate` is a percent (10 = 10%). */
+/** One rate of an agency; `rate` is a percent (10 = 10%). */
+export class AgencyRateDto {
+  @IsEnum(TaxKind)
+  kind!: TaxKind;
+
+  @IsNumber({ maxDecimalPlaces: 3 }, { message: 'Rate must be a number' })
+  @Min(0)
+  @Max(100)
+  rate!: number;
+}
+
+/** `POST /api/bookkeeping/agencies` — a tax agency with a Sales and/or Purchase rate. */
 export class CreateAgencyDto {
   @Transform(trim)
   @IsString()
@@ -23,20 +38,19 @@ export class CreateAgencyDto {
   @MaxLength(191)
   name!: string;
 
-  @IsEnum(TaxAgencyType)
-  type!: TaxAgencyType;
-
-  @IsNumber({ maxDecimalPlaces: 3 }, { message: 'Rate must be a number' })
-  @Min(0)
-  @Max(100)
-  rate!: number;
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Give the agency a Sales or a Purchase rate' })
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => AgencyRateDto)
+  rates!: AgencyRateDto[];
 
   @IsOptional()
   @IsBoolean()
   active?: boolean;
 }
 
-/** `PATCH /api/bookkeeping/agencies/:id` — any subset. */
+/** `PATCH /api/bookkeeping/agencies/:id` — any subset; `rates` replaces them all. */
 export class UpdateAgencyDto {
   @IsOptional()
   @Transform(trim)
@@ -46,14 +60,12 @@ export class UpdateAgencyDto {
   name?: string;
 
   @IsOptional()
-  @IsEnum(TaxAgencyType)
-  type?: TaxAgencyType;
-
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 3 }, { message: 'Rate must be a number' })
-  @Min(0)
-  @Max(100)
-  rate?: number;
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Give the agency a Sales or a Purchase rate' })
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => AgencyRateDto)
+  rates?: AgencyRateDto[];
 
   @IsOptional()
   @IsBoolean()
@@ -64,4 +76,16 @@ export class UpdateAgencyDto {
 export class UpdateTaxDto {
   @IsBoolean()
   enabled!: boolean;
+}
+
+/** `PATCH /api/bookkeeping/names` — switch tax on/off for one AI-read payee name. */
+export class UpdateNameDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name!: string;
+
+  @IsBoolean()
+  taxExempt!: boolean;
 }

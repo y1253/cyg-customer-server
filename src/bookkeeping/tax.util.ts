@@ -1,15 +1,16 @@
 import { CHART_OF_ACCOUNTS } from './chart-of-accounts';
 import { cents } from './reconcile.util';
 
-export type AgencyType = 'SALES' | 'PURCHASE' | 'BOTH';
 export type TaxKind = 'SALES' | 'PURCHASE';
 
-/** An ACTIVE agency, as the tax step sees it. `rate` is a percent (10 = 10%). */
+/**
+ * An ACTIVE agency, as the tax step sees it: its rate per kind, a percent (10 = 10%).
+ * A kind it has no rate for, it never taxes.
+ */
 export interface Agency {
   id: number;
   name: string;
-  type: AgencyType;
-  rate: number;
+  rates: Partial<Record<TaxKind, number>>;
 }
 
 /** A ledger row the AI may tax. */
@@ -35,7 +36,7 @@ export interface TaxLine {
   amount: number;
 }
 
-const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
+export const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
 
 /**
  * Which kind of tax a row can carry, from its category alone: income → sales tax,
@@ -50,8 +51,11 @@ export function kindOf(offsetAccount: string): TaxKind | null {
   return null;
 }
 
+export const rateFor = (agency: Agency, kind: TaxKind): number | undefined =>
+  agency.rates[kind];
+
 export const fits = (agency: Agency, kind: TaxKind): boolean =>
-  agency.type === 'BOTH' || agency.type === kind;
+  rateFor(agency, kind) !== undefined;
 
 /** The rows worth asking the AI about: a taxable kind with at least one agency of it. */
 export function candidates(
@@ -89,13 +93,14 @@ export function taxLines(
       const key = `${row.id}:${agencyId}`;
       if (!agency || !fits(agency, row.kind) || seen.has(key)) continue;
       seen.add(key);
-      const amount = taxAmount(row.amount, agency.rate);
+      const rate = rateFor(agency, row.kind)!;
+      const amount = taxAmount(row.amount, rate);
       if (amount === 0) continue;
       out.push({
         transactionId: row.id,
         agencyId,
         kind: row.kind,
-        rate: agency.rate,
+        rate,
         amount,
       });
     }
@@ -112,12 +117,13 @@ export interface SplitEntry {
 }
 
 /**
- * Splits a taxed bank row "tax included", the customer's choice: a $100 sale at 10%
- * shows the sale at $90 and the Federal Tax line at $10. Each tax line keeps the row's
- * bank side and puts the agency where the row's own account was, so
+ * Adds a taxed bank row's tax lines "on top", the customer's choice: the bank amount is
+ * BEFORE tax, so a $100 sale at 10% keeps the sale at $100 and adds a Federal Tax line of
+ * $10 — the real total, $110, no longer matches the statement (the self-check reads the
+ * raw stored amount, so it is unaffected). Each tax line keeps the row's bank side and
+ * puts the agency where the row's own account was, so
  *  - sales:    DEBIT the bank, CREDIT the agency (tax collected is owed);
  *  - purchase: DEBIT the agency, CREDIT the bank (tax paid is claimed back).
- * The row and its lines add up to the bank amount, to the cent.
  */
 export function taxSplit<E extends SplitEntry>(
   parent: E,
@@ -132,9 +138,5 @@ export function taxSplit<E extends SplitEntry>(
     debitAccount: swap(parent.debitAccount, t.agency),
     creditAccount: swap(parent.creditAccount, t.agency),
   }));
-  const net =
-    (cents(parent.amount) -
-      taxes.reduce((sum, t) => sum + cents(t.amount), 0)) /
-    100;
-  return { parent: { ...parent, amount: net }, taxes };
+  return { parent, taxes };
 }

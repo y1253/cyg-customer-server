@@ -1,5 +1,4 @@
 import { ConfigService } from '@nestjs/config';
-import { type TaxAgency } from '@prisma/client';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
@@ -7,9 +6,20 @@ import { type TaxKind } from './tax.util';
 export interface AgencyView {
     id: number;
     name: string;
-    type: TaxAgency['type'];
-    rate: number;
+    rates: Array<{
+        kind: TaxKind;
+        rate: number;
+    }>;
     active: boolean;
+}
+export type NameType = 'CUSTOMER' | 'SUPPLIER' | 'OTHER';
+export interface NameView {
+    name: string;
+    category: string;
+    otherCategories: number;
+    type: NameType;
+    rows: number;
+    taxExempt: boolean;
 }
 export interface StoredTax {
     id: number;
@@ -40,6 +50,9 @@ export declare class TaxService {
     private ownedAgency;
     private checkName;
     linesFor(customerId: number, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
+    private exemptNames;
+    names(customerId: number): Promise<NameView[]>;
+    setNameTax(customerId: number, name: string, taxExempt: boolean): Promise<NameView[]>;
     agencyNames(customerId: number): Promise<string[]>;
     needsRetag(customerId: number): Promise<boolean>;
     retagCustomer(customerId: number): Promise<boolean>;

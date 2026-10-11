@@ -1,22 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.taxAmount = exports.fits = void 0;
+exports.taxAmount = exports.fits = exports.rateFor = exports.TYPE_OF = void 0;
 exports.kindOf = kindOf;
 exports.candidates = candidates;
 exports.taxLines = taxLines;
 exports.taxSplit = taxSplit;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const reconcile_util_1 = require("./reconcile.util");
-const TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
+exports.TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
 function kindOf(offsetAccount) {
-    const type = TYPE_OF.get(offsetAccount);
+    const type = exports.TYPE_OF.get(offsetAccount);
     if (type === 'INCOME')
         return 'SALES';
     if (type === 'EXPENSE')
         return 'PURCHASE';
     return null;
 }
-const fits = (agency, kind) => agency.type === 'BOTH' || agency.type === kind;
+const rateFor = (agency, kind) => agency.rates[kind];
+exports.rateFor = rateFor;
+const fits = (agency, kind) => (0, exports.rateFor)(agency, kind) !== undefined;
 exports.fits = fits;
 function candidates(rows, agencies) {
     return rows.flatMap((r) => {
@@ -41,14 +43,15 @@ function taxLines(rows, verdicts, agencies) {
             if (!agency || !(0, exports.fits)(agency, row.kind) || seen.has(key))
                 continue;
             seen.add(key);
-            const amount = (0, exports.taxAmount)(row.amount, agency.rate);
+            const rate = (0, exports.rateFor)(agency, row.kind);
+            const amount = (0, exports.taxAmount)(row.amount, rate);
             if (amount === 0)
                 continue;
             out.push({
                 transactionId: row.id,
                 agencyId,
                 kind: row.kind,
-                rate: agency.rate,
+                rate,
                 amount,
             });
         }
@@ -64,9 +67,6 @@ function taxSplit(parent, lines) {
         debitAccount: swap(parent.debitAccount, t.agency),
         creditAccount: swap(parent.creditAccount, t.agency),
     }));
-    const net = ((0, reconcile_util_1.cents)(parent.amount) -
-        taxes.reduce((sum, t) => sum + (0, reconcile_util_1.cents)(t.amount), 0)) /
-        100;
-    return { parent: { ...parent, amount: net }, taxes };
+    return { parent, taxes };
 }
 //# sourceMappingURL=tax.util.js.map

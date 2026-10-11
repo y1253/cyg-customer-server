@@ -60,6 +60,12 @@ let BookkeepingController = class BookkeepingController {
     removeAgency(req, id) {
         return this.tax.removeAgency(req.user.customerId, id);
     }
+    names(req) {
+        return this.tax.names(req.user.customerId);
+    }
+    updateName(req, dto) {
+        return this.tax.setNameTax(req.user.customerId, dto.name, dto.taxExempt);
+    }
     upload(req, files) {
         return this.bookkeeping.upload(req.user.customerId, files);
     }
@@ -169,6 +175,21 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "removeAgency", null);
+__decorate([
+    (0, common_1.Get)('names'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "names", null);
+__decorate([
+    (0, common_1.Patch)('names'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.UpdateNameDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "updateName", null);
 __decorate([
     (0, common_1.Post)('statements'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', statement_uploads_1.MAX_FILES_PER_REQUEST, statement_uploads_1.STATEMENT_UPLOAD_OPTIONS)),

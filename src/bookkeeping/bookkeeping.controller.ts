@@ -31,6 +31,7 @@ import { CHART_OF_ACCOUNTS, type ChartAccount } from './chart-of-accounts';
 import {
   CreateAgencyDto,
   UpdateAgencyDto,
+  UpdateNameDto,
   UpdateTaxDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
@@ -39,6 +40,7 @@ import { ReportsService } from './reports.service';
 import {
   TaxService,
   type AgencyView,
+  type NameView,
   type TaxSettingsView,
 } from './tax.service';
 import type { ReportsView } from './reports.util';
@@ -112,6 +114,20 @@ export class BookkeepingController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
     return this.tax.removeAgency(req.user.customerId, id);
+  }
+
+  /** Every payee name the AI read, with its category, type and tax switch. */
+  @Get('names')
+  names(@Req() req: AuthedRequest): Promise<NameView[]> {
+    return this.tax.names(req.user.customerId);
+  }
+
+  @Patch('names')
+  updateName(
+    @Req() req: AuthedRequest,
+    @Body() dto: UpdateNameDto,
+  ): Promise<NameView[]> {
+    return this.tax.setNameTax(req.user.customerId, dto.name, dto.taxExempt);
   }
 
   @Post('statements')

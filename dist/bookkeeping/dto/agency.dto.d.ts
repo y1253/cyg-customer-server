@@ -1,16 +1,22 @@
-import { TaxAgencyType } from '@prisma/client';
+import { TaxKind } from '@prisma/client';
+export declare class AgencyRateDto {
+    kind: TaxKind;
+    rate: number;
+}
 export declare class CreateAgencyDto {
     name: string;
-    type: TaxAgencyType;
-    rate: number;
+    rates: AgencyRateDto[];
     active?: boolean;
 }
 export declare class UpdateAgencyDto {
     name?: string;
-    type?: TaxAgencyType;
-    rate?: number;
+    rates?: AgencyRateDto[];
     active?: boolean;
 }
 export declare class UpdateTaxDto {
     enabled: boolean;
+}
+export declare class UpdateNameDto {
+    name: string;
+    taxExempt: boolean;
 }

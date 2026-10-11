@@ -1,10 +1,8 @@
-export type AgencyType = 'SALES' | 'PURCHASE' | 'BOTH';
 export type TaxKind = 'SALES' | 'PURCHASE';
 export interface Agency {
     id: number;
     name: string;
-    type: AgencyType;
-    rate: number;
+    rates: Partial<Record<TaxKind, number>>;
 }
 export interface TaxableRow {
     id: number;
@@ -23,7 +21,9 @@ export interface TaxLine {
     rate: number;
     amount: number;
 }
+export declare const TYPE_OF: Map<string, import("./chart-of-accounts").AccountType>;
 export declare function kindOf(offsetAccount: string): TaxKind | null;
+export declare const rateFor: (agency: Agency, kind: TaxKind) => number | undefined;
 export declare const fits: (agency: Agency, kind: TaxKind) => boolean;
 export declare function candidates(rows: TaxableRow[], agencies: Agency[]): TaxCandidate[];
 export declare const taxAmount: (amount: number, rate: number) => number;
