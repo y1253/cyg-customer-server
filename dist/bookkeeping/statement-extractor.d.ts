@@ -30,11 +30,8 @@ export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
-    readonly required: readonly ["isBankStatement", "bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions"];
+    readonly required: readonly ["bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "isBankStatement"];
     readonly properties: {
-        readonly isBankStatement: {
-            readonly type: "boolean";
-        };
         readonly bankName: {
             type: string[];
         };
@@ -101,6 +98,9 @@ export declare const EXTRACTION_SCHEMA: {
                 };
             };
         };
+        readonly isBankStatement: {
+            readonly type: "boolean";
+        };
     };
 };
 export declare const NAME_RULE = "name: the merchant, payee or payer in the description, as a short clean company or person name \u2014 e.g. \"WALMART SUPERCENTER #1234 TORONTO\" -> \"Walmart\", \"STRIPE TRANSFER ST-X9Y8\" -> \"Stripe\", \"GOOGLE *WORKSPACE\" -> \"Google Workspace\". Leave out store numbers, card digits, dates, cities and reference codes. null when no name can be identified (e.g. \"SERVICE CHARGE\", \"TRANSFER 0042\", \"INTEREST\").";
@@ -131,4 +131,5 @@ export declare function splitPdf(pdf: Buffer, pagesPerChunk: number, decrypt?: (
     bytes: Buffer;
     pages: number;
 }>>;
+export declare function looksLikeStatement(page: PageReading): boolean;
 export declare function parseExtraction(reply: string): PageReading;

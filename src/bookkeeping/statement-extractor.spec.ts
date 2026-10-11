@@ -2,9 +2,13 @@ import type { ConfigService } from '@nestjs/config';
 import { PDFDocument } from 'pdf-lib';
 import type { ChatRequest, OpenAiClient } from '../ai/openai.client';
 import {
+  EXTRACTION_SCHEMA,
+  looksLikeStatement,
   MAX_REREADS,
+  parseExtraction,
   rereadRound,
   StatementExtractor,
+  UnreadableStatementError,
 } from './statement-extractor';
 import { needsReviewMessage } from './statement-processor.service';
 
@@ -136,5 +140,80 @@ describe('needsReviewMessage', () => {
         '(Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)). ' +
         "Nothing from it is in your ledger. Try again, or contact us and we'll look at it.",
     );
+  });
+});
+
+describe('the "is this a statement?" gate (2026-10-11 BMO incident)', () => {
+  const page = (over: Record<string, unknown>) => parseExtraction(reply(over));
+  const empty = {
+    isBankStatement: false,
+    bankName: null,
+    accountName: null,
+    periodStart: null,
+    periodEnd: null,
+    transactions: [],
+  };
+
+  it('asks for the verdict LAST, after the page has been read', () => {
+    expect(EXTRACTION_SCHEMA.required.at(-1)).toBe('isBankStatement');
+    expect(Object.keys(EXTRACTION_SCHEMA.properties).at(-1)).toBe(
+      'isBankStatement',
+    );
+  });
+
+  describe('looksLikeStatement', () => {
+    it('believes a yes', () => {
+      expect(looksLikeStatement(page({}))).toBe(true);
+    });
+    it('overrules a no on a page that was read as a statement (rows + a bank)', () => {
+      expect(looksLikeStatement(page({ isBankStatement: false }))).toBe(true);
+    });
+    it('a no with no rows stays a no', () => {
+      expect(
+        looksLikeStatement(page({ isBankStatement: false, transactions: [] })),
+      ).toBe(false);
+    });
+    it('rows with nothing a statement prints stay a no (an invoice, a receipt)', () => {
+      expect(
+        looksLikeStatement(
+          page({
+            isBankStatement: false,
+            bankName: null,
+            accountName: null,
+            periodStart: null,
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+
+  it('reads a statement gpt-4o flagged "not a statement" without any extra call', async () => {
+    const { ex, chat } = extractor(() => reply({ isBankStatement: false }));
+    const out = await ex.extract(await pdf(1), 'July 12, 2026.pdf');
+    expect(out.transactions).toHaveLength(1);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the stronger model once before giving up, and uses its reading', async () => {
+    const { ex, chat } = extractor((req) =>
+      req.model === 'gpt-4.1' ? reply({}) : reply(empty),
+    );
+    const out = await ex.extract(await pdf(1), 'scan.pdf');
+    expect(out.transactions).toHaveLength(1);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(chat.mock.calls[1][0].model).toBe('gpt-4.1');
+  });
+
+  it('still refuses a document both models say is not a statement', async () => {
+    const { ex, chat } = extractor(() => reply(empty));
+    await expect(ex.extract(await pdf(1), 'invoice.pdf')).rejects.toThrow(
+      UnreadableStatementError,
+    );
+    await expect(
+      extractor(() => reply(empty)).ex.extract(await pdf(1), 'invoice.pdf'),
+    ).rejects.toThrow(
+      'This file does not look like a bank or credit-card statement.',
+    );
+    expect(chat).toHaveBeenCalledTimes(2);
   });
 });
