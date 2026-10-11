@@ -4,6 +4,7 @@ import { StatementStatus, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { buildLedgerRows, parseIsoDate } from './ledger.util';
+import { NameMemoryService } from './name-memory.service';
 import { describeCheck } from './reconcile.util';
 import {
   StatementExtractor,
@@ -47,6 +48,7 @@ export class StatementProcessorService {
     private readonly storage: ObjectStorageService,
     private readonly extractor: StatementExtractor,
     private readonly tax: TaxService,
+    private readonly names: NameMemoryService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -142,7 +144,13 @@ export class StatementProcessorService {
         },
       });
       const bank = extracted.accountName ?? 'Bank account';
-      const rows = buildLedgerRows(extracted.transactions, bank);
+      // The customer's own rules first, then the firm memory, then the AI's guess — and
+      // the memory learns this statement's new descriptions (`name-memory.util.ts`).
+      const lines = await this.names.resolveStatement(
+        row.customerId,
+        extracted.transactions,
+      );
+      const rows = buildLedgerRows(lines, bank);
       const { verification, checks } = extracted.verification;
       const runs = row.runs + 1;
       const mismatch = verification === 'MISMATCH';

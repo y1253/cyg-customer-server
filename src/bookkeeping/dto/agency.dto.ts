@@ -6,6 +6,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -88,4 +89,42 @@ export class UpdateNameDto {
 
   @IsBoolean()
   taxExempt!: boolean;
+}
+
+/** `PUT /api/bookkeeping/names/rule` — a customer's own name and/or category. */
+export class SaveNameRuleDto {
+  @IsIn(['NAME', 'DESCRIPTION'])
+  matchType!: 'NAME' | 'DESCRIPTION';
+
+  /** The `ruleKey` (NAME) or the description `key` (DESCRIPTION) the Names tab gave. */
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  matchKey!: string;
+
+  /** Null or absent = leave the name as it is. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string | null;
+
+  /** Null or absent = leave the category as it is. Must be a chart-of-accounts name. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  category?: string | null;
+}
+
+/** `DELETE /api/bookkeeping/names/rule` — back to the default. */
+export class ResetNameRuleDto {
+  @IsIn(['NAME', 'DESCRIPTION'])
+  matchType!: 'NAME' | 'DESCRIPTION';
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  matchKey!: string;
 }

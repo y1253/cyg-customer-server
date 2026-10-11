@@ -17,6 +17,7 @@ const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const name_memory_util_1 = require("./name-memory.util");
 const tax_util_1 = require("./tax.util");
 const BATCH = 100;
 const STALE_RUN_MS = 10 * 60_000;
@@ -229,18 +230,37 @@ let TaxService = TaxService_1 = class TaxService {
         return new Set(rows.map((r) => r.name.toLowerCase()));
     }
     async names(customerId) {
-        const [groups, exempt] = await Promise.all([
+        const done = { deletedAt: null, status: client_1.StatementStatus.DONE };
+        const [groups, nameless, exempt, rules] = await Promise.all([
             this.prisma.bankTransaction.groupBy({
                 by: ['name', 'offsetAccount'],
-                where: {
-                    customerId,
-                    name: { not: null },
-                    statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
-                },
+                where: { customerId, name: { not: null }, statement: done },
                 _count: { _all: true },
             }),
+            this.prisma.bankTransaction.findMany({
+                where: { customerId, name: null, statement: done },
+                select: { description: true, offsetAccount: true },
+            }),
             this.exemptNames(customerId),
+            this.prisma.customerNameRule.findMany({
+                where: { customerId },
+                select: { matchType: true, matchKey: true, name: true },
+            }),
         ]);
+        const ref = (r) => ({
+            matchType: (r.matchType === 'DESCRIPTION'
+                ? 'DESCRIPTION'
+                : 'NAME'),
+            matchKey: r.matchKey,
+        });
+        const ruleForName = (key) => {
+            const byName = rules.find((r) => r.matchType === 'NAME' &&
+                (r.matchKey === key || (r.name && (0, name_memory_util_1.nameKey)(r.name) === key)));
+            if (byName)
+                return ref(byName);
+            const byDesc = rules.find((r) => r.matchType === 'DESCRIPTION' && r.name && (0, name_memory_util_1.nameKey)(r.name) === key);
+            return byDesc ? ref(byDesc) : null;
+        };
         const byName = new Map();
         for (const g of groups) {
             if (!g.name)
@@ -250,10 +270,11 @@ let TaxService = TaxService_1 = class TaxService {
             entry.categories.push([g.offsetAccount, g._count._all]);
             byName.set(key, entry);
         }
-        return [...byName.entries()]
+        const names = [...byName.entries()]
             .map(([key, { name, categories }]) => {
             categories.sort((a, b) => b[1] - a[1]);
             const category = categories[0][0];
+            const rule = ruleForName(key);
             return {
                 name,
                 category,
@@ -261,9 +282,38 @@ let TaxService = TaxService_1 = class TaxService {
                 type: typeOfCategory(category),
                 rows: categories.reduce((n, [, c]) => n + c, 0),
                 taxExempt: exempt.has(key),
+                ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
+                rule,
             };
         })
             .sort((a, b) => a.name.localeCompare(b.name));
+        const byKey = new Map();
+        for (const t of nameless) {
+            const key = (0, name_memory_util_1.descriptionKey)(t.description);
+            if (!key)
+                continue;
+            const entry = byKey.get(key) ?? {
+                sample: t.description,
+                categories: new Map(),
+            };
+            entry.categories.set(t.offsetAccount, (entry.categories.get(t.offsetAccount) ?? 0) + 1);
+            byKey.set(key, entry);
+        }
+        const unrecognized = [...byKey.entries()]
+            .map(([key, { sample, categories }]) => {
+            const sorted = [...categories.entries()].sort((a, b) => b[1] - a[1]);
+            const descRule = rules.find((r) => r.matchType === 'DESCRIPTION' && r.matchKey === key);
+            return {
+                key,
+                sampleDescription: sample,
+                category: sorted[0][0],
+                otherCategories: sorted.length - 1,
+                rows: sorted.reduce((n, [, c]) => n + c, 0),
+                rule: descRule ? ref(descRule) : null,
+            };
+        })
+            .sort((a, b) => b.rows - a.rows || a.key.localeCompare(b.key));
+        return { names, unrecognized };
     }
     async setNameTax(customerId, name, taxExempt) {
         await this.prisma.ledgerName.upsert({

@@ -1,0 +1,249 @@
+import { UNCATEGORIZED } from './chart-of-accounts';
+import {
+  descriptionKey,
+  indexRules,
+  memoryWrites,
+  resolveRow,
+  type MemoryEntry,
+  type NameRule,
+  type ResolveContext,
+} from './name-memory.util';
+
+describe('descriptionKey', () => {
+  it('drops reference numbers, card digits, dates and punctuation', () => {
+    expect(descriptionKey('POS 0923 WALMART #1234 TORONTO ON')).toBe(
+      'pos walmart toronto on',
+    );
+    expect(descriptionKey('pos 1105 Walmart #9876 Toronto, ON')).toBe(
+      'pos walmart toronto on',
+    );
+  });
+
+  it('strips accents so French descriptions match', () => {
+    expect(descriptionKey('Dépôt — PAIE Société 12/09')).toBe(
+      'depot paie societe',
+    );
+  });
+
+  it('drops one-letter tokens and is empty when nothing is left', () => {
+    expect(descriptionKey('E-TRANSFER A 1234')).toBe('transfer');
+    expect(descriptionKey('0042 / 12-09')).toBe('');
+    expect(descriptionKey(null)).toBe('');
+  });
+
+  it('is idempotent (a key is its own key)', () => {
+    const k = descriptionKey('STRIPE TRANSFER ST-X9Y8');
+    expect(descriptionKey(k)).toBe(k);
+  });
+});
+
+const row = (
+  over: Partial<{
+    description: string;
+    name: string | null;
+    offsetAccount: string;
+  }> = {},
+) => ({
+  description: 'POS 0923 WALMART #1234 TORONTO ON',
+  name: 'Walmart',
+  offsetAccount: 'Supplies',
+  ...over,
+});
+
+function ctx(
+  memory: Record<string, MemoryEntry> = {},
+  rules: NameRule[] = [],
+): ResolveContext {
+  return { memory: new Map(Object.entries(memory)), ...indexRules(rules) };
+}
+
+const KEY = 'pos walmart toronto on';
+
+describe('resolveRow precedence: customer rule > firm memory > AI', () => {
+  it("keeps the AI's answer when nothing is known", () => {
+    expect(resolveRow(row(), ctx())).toEqual({
+      name: 'Walmart',
+      category: 'Supplies',
+      source: 'ai',
+    });
+  });
+
+  it('reuses the firm memory over a different AI answer', () => {
+    const out = resolveRow(
+      row({ name: 'Wal Mart Store', offsetAccount: 'Office Expense' }),
+      ctx({ [KEY]: { name: 'Walmart', category: 'Supplies' } }),
+    );
+    expect(out).toEqual({
+      name: 'Walmart',
+      category: 'Supplies',
+      source: 'memory',
+    });
+  });
+
+  it("an empty memory field keeps the AI's value", () => {
+    const out = resolveRow(
+      row({ name: 'Walmart', offsetAccount: 'Supplies' }),
+      ctx({ [KEY]: { name: null, category: UNCATEGORIZED } }),
+    );
+    expect(out).toEqual({
+      name: 'Walmart',
+      category: 'Supplies',
+      source: 'ai',
+    });
+  });
+
+  it("a customer's NAME rule beats the memory", () => {
+    const out = resolveRow(
+      row(),
+      ctx({ [KEY]: { name: 'Walmart', category: 'Supplies' } }, [
+        {
+          matchType: 'NAME',
+          matchKey: 'walmart',
+          name: 'Walmart Canada',
+          category: 'Office Expense',
+        },
+      ]),
+    );
+    expect(out).toEqual({
+      name: 'Walmart Canada',
+      category: 'Office Expense',
+      source: 'customer',
+    });
+  });
+
+  it("a customer's DESCRIPTION rule names an unrecognised row", () => {
+    const out = resolveRow(
+      row({
+        description: 'SERVICE CHARGE 0923',
+        name: null,
+        offsetAccount: UNCATEGORIZED,
+      }),
+      ctx({}, [
+        {
+          matchType: 'DESCRIPTION',
+          matchKey: 'service charge',
+          name: 'BMO',
+          category: 'Bank Fees',
+        },
+      ]),
+    );
+    expect(out).toEqual({
+      name: 'BMO',
+      category: 'Bank Fees',
+      source: 'customer',
+    });
+  });
+
+  it('a NAME rule applies to the name a DESCRIPTION rule gave', () => {
+    const out = resolveRow(
+      row({ description: 'SERVICE CHARGE', name: null }),
+      ctx({}, [
+        {
+          matchType: 'DESCRIPTION',
+          matchKey: 'service charge',
+          name: 'BMO',
+          category: null,
+        },
+        {
+          matchType: 'NAME',
+          matchKey: 'bmo',
+          name: null,
+          category: 'Bank Fees',
+        },
+      ]),
+    );
+    expect(out).toEqual({
+      name: 'BMO',
+      category: 'Bank Fees',
+      source: 'customer',
+    });
+  });
+
+  it('a null rule field leaves that value alone', () => {
+    const out = resolveRow(
+      row(),
+      ctx({}, [
+        {
+          matchType: 'NAME',
+          matchKey: 'walmart',
+          name: null,
+          category: 'Office Expense',
+        },
+      ]),
+    );
+    expect(out.name).toBe('Walmart');
+    expect(out.category).toBe('Office Expense');
+  });
+
+  it('a category outside the chart becomes Uncategorized', () => {
+    expect(
+      resolveRow(row({ offsetAccount: 'Groceries' }), ctx()).category,
+    ).toBe(UNCATEGORIZED);
+  });
+
+  it('matches NAME rules case-insensitively', () => {
+    const out = resolveRow(
+      row({ name: 'WALMART' }),
+      ctx({}, [
+        {
+          matchType: 'NAME',
+          matchKey: 'walmart',
+          name: 'Walmart Canada',
+          category: null,
+        },
+      ]),
+    );
+    expect(out.name).toBe('Walmart Canada');
+  });
+});
+
+describe('memoryWrites', () => {
+  it('stores a new description once, even when it repeats', () => {
+    const { creates } = memoryWrites(
+      [row(), row({ description: 'POS 1111 WALMART #9 TORONTO ON' })],
+      new Map(),
+    );
+    expect(creates).toEqual([
+      {
+        descriptionKey: KEY,
+        sampleDescription: 'POS 0923 WALMART #1234 TORONTO ON',
+        name: 'Walmart',
+        category: 'Supplies',
+      },
+    ]);
+  });
+
+  it('never replaces what the memory already knows', () => {
+    const { creates, fills } = memoryWrites(
+      [row({ name: 'Other Name', offsetAccount: 'Office Expense' })],
+      new Map([[KEY, { name: 'Walmart', category: 'Supplies' }]]),
+    );
+    expect(creates).toEqual([]);
+    expect(fills).toEqual([]);
+  });
+
+  it('fills a gap the memory had', () => {
+    const { fills } = memoryWrites(
+      [row()],
+      new Map([[KEY, { name: null, category: UNCATEGORIZED }]]),
+    );
+    expect(fills).toEqual([
+      expect.objectContaining({
+        descriptionKey: KEY,
+        name: 'Walmart',
+        category: 'Supplies',
+      }),
+    ]);
+  });
+
+  it('skips an answer with nothing in it, and a description with no key', () => {
+    const { creates } = memoryWrites(
+      [
+        row({ name: null, offsetAccount: UNCATEGORIZED }),
+        row({ description: '0042 / 12-09' }),
+      ],
+      new Map(),
+    );
+    expect(creates).toEqual([]);
+  });
+});

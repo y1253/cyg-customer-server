@@ -19,6 +19,7 @@ const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const ledger_util_1 = require("./ledger.util");
+const name_memory_service_1 = require("./name-memory.service");
 const reconcile_util_1 = require("./reconcile.util");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_uploads_1 = require("./statement-uploads");
@@ -39,13 +40,15 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     storage;
     extractor;
     tax;
+    names;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax) {
+    constructor(prisma, storage, extractor, tax, names) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.tax = tax;
+        this.names = names;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -126,7 +129,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 },
             });
             const bank = extracted.accountName ?? 'Bank account';
-            const rows = (0, ledger_util_1.buildLedgerRows)(extracted.transactions, bank);
+            const lines = await this.names.resolveStatement(row.customerId, extracted.transactions);
+            const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
             const mismatch = verification === 'MISMATCH';
@@ -224,7 +228,8 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        name_memory_service_1.NameMemoryService])
 ], StatementProcessorService);
 function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';

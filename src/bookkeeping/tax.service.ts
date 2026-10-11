@@ -14,6 +14,11 @@ import {
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACCOUNT_NAMES } from './chart-of-accounts';
+import {
+  descriptionKey,
+  nameKey,
+  type RuleMatchType,
+} from './name-memory.util';
 import type {
   AgencyRateDto,
   CreateAgencyDto,
@@ -56,6 +61,27 @@ export interface NameView {
   rows: number;
   /** Its tax lines are left out everywhere (on read). */
   taxExempt: boolean;
+  /** What an edit of this row saves under: a NAME rule with this key. */
+  ruleKey: string;
+  /** The customer's own rule behind this row, if any — what "Reset to default" removes. */
+  rule: { matchType: RuleMatchType; matchKey: string } | null;
+}
+
+/** Rows the AI found no payee name for, grouped by description, on the Names tab. */
+export interface UnrecognizedView {
+  /** The description key — what an assignment saves under (a DESCRIPTION rule). */
+  key: string;
+  /** One of the descriptions, as printed. */
+  sampleDescription: string;
+  category: string;
+  otherCategories: number;
+  rows: number;
+  rule: { matchType: RuleMatchType; matchKey: string } | null;
+}
+
+export interface NamesView {
+  names: NameView[];
+  unrecognized: UnrecognizedView[];
 }
 
 /** One stored tax line, as the ledger, exports and reports read it. */
@@ -108,9 +134,7 @@ const SYSTEM = [
 
 const KIND_ORDER: TaxKind[] = ['SALES', 'PURCHASE'];
 
-const toAgency = (
-  a: TaxAgency & { rates: TaxAgencyRate[] },
-): AgencyView => ({
+const toAgency = (a: TaxAgency & { rates: TaxAgencyRate[] }): AgencyView => ({
   id: a.id,
   name: a.name,
   rates: KIND_ORDER.flatMap((kind) => {
@@ -342,22 +366,51 @@ export class TaxService {
   // ---- names ----
 
   /**
-   * Every payee name the AI read on the customer's DONE statements, with its most
-   * frequent category and the type that category makes it.
+   * The Names tab: every payee name on the customer's DONE statements (with its most
+   * frequent category, the type that category makes it, and the customer's own rule behind
+   * it), plus every row with NO name, grouped by description, so it can be assigned once.
    */
-  async names(customerId: number): Promise<NameView[]> {
-    const [groups, exempt] = await Promise.all([
+  async names(customerId: number): Promise<NamesView> {
+    const done = { deletedAt: null, status: StatementStatus.DONE };
+    const [groups, nameless, exempt, rules] = await Promise.all([
       this.prisma.bankTransaction.groupBy({
         by: ['name', 'offsetAccount'],
-        where: {
-          customerId,
-          name: { not: null },
-          statement: { deletedAt: null, status: StatementStatus.DONE },
-        },
+        where: { customerId, name: { not: null }, statement: done },
         _count: { _all: true },
       }),
+      this.prisma.bankTransaction.findMany({
+        where: { customerId, name: null, statement: done },
+        select: { description: true, offsetAccount: true },
+      }),
       this.exemptNames(customerId),
+      this.prisma.customerNameRule.findMany({
+        where: { customerId },
+        select: { matchType: true, matchKey: true, name: true },
+      }),
     ]);
+
+    const ref = (r: { matchType: string; matchKey: string }) => ({
+      matchType: (r.matchType === 'DESCRIPTION'
+        ? 'DESCRIPTION'
+        : 'NAME') as RuleMatchType,
+      matchKey: r.matchKey,
+    });
+    // The rule behind a NAMED row: a NAME rule keyed on it or renaming to it, else a
+    // DESCRIPTION rule that gave rows this name.
+    const ruleForName = (key: string) => {
+      const byName = rules.find(
+        (r) =>
+          r.matchType === 'NAME' &&
+          (r.matchKey === key || (r.name && nameKey(r.name) === key)),
+      );
+      if (byName) return ref(byName);
+      const byDesc = rules.find(
+        (r) =>
+          r.matchType === 'DESCRIPTION' && r.name && nameKey(r.name) === key,
+      );
+      return byDesc ? ref(byDesc) : null;
+    };
+
     const byName = new Map<
       string,
       { name: string; categories: Array<[string, number]> }
@@ -369,10 +422,11 @@ export class TaxService {
       entry.categories.push([g.offsetAccount, g._count._all]);
       byName.set(key, entry);
     }
-    return [...byName.entries()]
+    const names = [...byName.entries()]
       .map(([key, { name, categories }]): NameView => {
         categories.sort((a, b) => b[1] - a[1]);
         const category = categories[0][0];
+        const rule = ruleForName(key);
         return {
           name,
           category,
@@ -380,9 +434,47 @@ export class TaxService {
           type: typeOfCategory(category),
           rows: categories.reduce((n, [, c]) => n + c, 0),
           taxExempt: exempt.has(key),
+          ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
+          rule,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
+
+    const byKey = new Map<
+      string,
+      { sample: string; categories: Map<string, number> }
+    >();
+    for (const t of nameless) {
+      const key = descriptionKey(t.description);
+      if (!key) continue;
+      const entry = byKey.get(key) ?? {
+        sample: t.description,
+        categories: new Map<string, number>(),
+      };
+      entry.categories.set(
+        t.offsetAccount,
+        (entry.categories.get(t.offsetAccount) ?? 0) + 1,
+      );
+      byKey.set(key, entry);
+    }
+    const unrecognized = [...byKey.entries()]
+      .map(([key, { sample, categories }]): UnrecognizedView => {
+        const sorted = [...categories.entries()].sort((a, b) => b[1] - a[1]);
+        const descRule = rules.find(
+          (r) => r.matchType === 'DESCRIPTION' && r.matchKey === key,
+        );
+        return {
+          key,
+          sampleDescription: sample,
+          category: sorted[0][0],
+          otherCategories: sorted.length - 1,
+          rows: sorted.reduce((n, [, c]) => n + c, 0),
+          rule: descRule ? ref(descRule) : null,
+        };
+      })
+      .sort((a, b) => b.rows - a.rows || a.key.localeCompare(b.key));
+
+    return { names, unrecognized };
   }
 
   /** Applies on read (`linesFor`) — no Generate needed, so nothing is marked stale. */
@@ -390,7 +482,7 @@ export class TaxService {
     customerId: number,
     name: string,
     taxExempt: boolean,
-  ): Promise<NameView[]> {
+  ): Promise<NamesView> {
     await this.prisma.ledgerName.upsert({
       where: { customerId_name: { customerId, name } },
       create: { customerId, name, taxExempt },

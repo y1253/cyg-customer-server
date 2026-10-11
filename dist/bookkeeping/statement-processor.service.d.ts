@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { NameMemoryService } from './name-memory.service';
 import { StatementExtractor } from './statement-extractor';
 import { TaxService } from './tax.service';
 export declare const MAX_ATTEMPTS = 4;
@@ -9,9 +10,10 @@ export declare class StatementProcessorService {
     private readonly storage;
     private readonly extractor;
     private readonly tax;
+    private readonly names;
     private readonly logger;
     private sweeping;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService);
     processSoon(): void;
     cleanStaging(): Promise<void>;
     sweep(): Promise<void>;

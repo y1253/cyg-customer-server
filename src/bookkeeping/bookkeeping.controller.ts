@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   Res,
@@ -27,9 +28,16 @@ import {
   type StatementView,
   type TransactionView,
 } from './bookkeeping.service';
-import { CHART_OF_ACCOUNTS, type ChartAccount } from './chart-of-accounts';
+import {
+  ACCOUNT_NAMES,
+  CHART_OF_ACCOUNTS,
+  type ChartAccount,
+} from './chart-of-accounts';
+import { NameMemoryService } from './name-memory.service';
 import {
   CreateAgencyDto,
+  ResetNameRuleDto,
+  SaveNameRuleDto,
   UpdateAgencyDto,
   UpdateNameDto,
   UpdateTaxDto,
@@ -40,7 +48,7 @@ import { ReportsService } from './reports.service';
 import {
   TaxService,
   type AgencyView,
-  type NameView,
+  type NamesView,
   type TaxSettingsView,
 } from './tax.service';
 import type { ReportsView } from './reports.util';
@@ -67,6 +75,7 @@ export class BookkeepingController {
     private readonly customers: CustomerAuthService,
     private readonly reportsService: ReportsService,
     private readonly tax: TaxService,
+    private readonly nameMemory: NameMemoryService,
   ) {}
 
   /** Reads every UPLOADED statement and re-applies changed tax settings. */
@@ -116,9 +125,9 @@ export class BookkeepingController {
     return this.tax.removeAgency(req.user.customerId, id);
   }
 
-  /** Every payee name the AI read, with its category, type and tax switch. */
+  /** Every payee name the AI read (category, type, tax switch, rule) plus the unnamed rows. */
   @Get('names')
-  names(@Req() req: AuthedRequest): Promise<NameView[]> {
+  names(@Req() req: AuthedRequest): Promise<NamesView> {
     return this.tax.names(req.user.customerId);
   }
 
@@ -126,8 +135,46 @@ export class BookkeepingController {
   updateName(
     @Req() req: AuthedRequest,
     @Body() dto: UpdateNameDto,
-  ): Promise<NameView[]> {
+  ): Promise<NamesView> {
     return this.tax.setNameTax(req.user.customerId, dto.name, dto.taxExempt);
+  }
+
+  /**
+   * Save the customer's own name and/or category. Applied to their existing rows at once
+   * and to every statement they read from now on (`NameMemoryService`).
+   */
+  @Put('names/rule')
+  async saveNameRule(
+    @Req() req: AuthedRequest,
+    @Body() dto: SaveNameRuleDto,
+  ): Promise<NamesView> {
+    const name = dto.name?.trim() || null;
+    const category = dto.category?.trim() || null;
+    if (!name && !category) {
+      throw new BadRequestException('Enter a name or choose a category');
+    }
+    if (category && !ACCOUNT_NAMES.includes(category)) {
+      throw new BadRequestException(
+        `"${category}" is not an account in the chart`,
+      );
+    }
+    await this.nameMemory.saveRule(req.user.customerId, {
+      matchType: dto.matchType,
+      matchKey: dto.matchKey,
+      name,
+      category,
+    });
+    return this.tax.names(req.user.customerId);
+  }
+
+  /** Drop the customer's own rule: their rows go back to the default. */
+  @Delete('names/rule')
+  async resetNameRule(
+    @Req() req: AuthedRequest,
+    @Body() dto: ResetNameRuleDto,
+  ): Promise<NamesView> {
+    await this.nameMemory.resetRule(req.user.customerId, dto);
+    return this.tax.names(req.user.customerId);
   }
 
   @Post('statements')

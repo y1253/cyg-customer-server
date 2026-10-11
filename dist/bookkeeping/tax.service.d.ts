@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { type RuleMatchType } from './name-memory.util';
 import type { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
 export interface AgencyView {
@@ -20,6 +21,26 @@ export interface NameView {
     type: NameType;
     rows: number;
     taxExempt: boolean;
+    ruleKey: string;
+    rule: {
+        matchType: RuleMatchType;
+        matchKey: string;
+    } | null;
+}
+export interface UnrecognizedView {
+    key: string;
+    sampleDescription: string;
+    category: string;
+    otherCategories: number;
+    rows: number;
+    rule: {
+        matchType: RuleMatchType;
+        matchKey: string;
+    } | null;
+}
+export interface NamesView {
+    names: NameView[];
+    unrecognized: UnrecognizedView[];
 }
 export interface StoredTax {
     id: number;
@@ -51,8 +72,8 @@ export declare class TaxService {
     private checkName;
     linesFor(customerId: number, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
     private exemptNames;
-    names(customerId: number): Promise<NameView[]>;
-    setNameTax(customerId: number, name: string, taxExempt: boolean): Promise<NameView[]>;
+    names(customerId: number): Promise<NamesView>;
+    setNameTax(customerId: number, name: string, taxExempt: boolean): Promise<NamesView>;
     agencyNames(customerId: number): Promise<string[]>;
     needsRetag(customerId: number): Promise<boolean>;
     retagCustomer(customerId: number): Promise<boolean>;

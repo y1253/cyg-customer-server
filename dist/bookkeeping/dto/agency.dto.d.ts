@@ -20,3 +20,13 @@ export declare class UpdateNameDto {
     name: string;
     taxExempt: boolean;
 }
+export declare class SaveNameRuleDto {
+    matchType: 'NAME' | 'DESCRIPTION';
+    matchKey: string;
+    name?: string | null;
+    category?: string | null;
+}
+export declare class ResetNameRuleDto {
+    matchType: 'NAME' | 'DESCRIPTION';
+    matchKey: string;
+}
