@@ -13,6 +13,11 @@ import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
 export interface LedgerExportRow {
+  /**
+   * The transaction's id — and the SAME id on each of its tax lines, so the customer can
+   * see in Excel which lines belong to one transaction. Null on a starting-balance row.
+   */
+  id: number | null;
   pendingDate: Date | null;
   postingDate: Date | null;
   name: string;
@@ -21,7 +26,7 @@ export interface LedgerExportRow {
   debitAccount: string;
   creditAccount: string;
   statement: string;
-  /** A tax line under the row above it (tax on top of that bank amount): grey italic. */
+  /** A tax line under the row above it (its tax, taken out of that row): grey italic. */
   tax?: boolean;
 }
 
@@ -29,11 +34,35 @@ const BRAND = '#169F96';
 
 /**
  * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). A taxed row
- * keeps its bank amount and its tax lines count on top: the real total, incl. tax.
+ * and its tax lines add back to the bank amount, so this is the statements' net change.
  */
 export function netOf(rows: Array<{ amount: number }>): number {
   return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
 }
+/**
+ * One exported transaction followed by its tax lines: the row WITHOUT its tax, each line
+ * against its agency — and every line carrying the transaction's own `id`, which is how the
+ * customer sees in Excel that they are one transaction.
+ */
+export function exportRowWithTaxes(
+  row: Omit<LedgerExportRow, 'tax'>,
+  offsetAccount: string,
+  lines: Array<{ agency: string; rate: number }>,
+): LedgerExportRow[] {
+  if (!lines.length) return [row];
+  const split = taxSplit({ ...row, offsetAccount }, lines);
+  return [
+    { ...row, amount: split.parent.amount },
+    ...split.taxes.map((e) => ({
+      ...row,
+      amount: e.amount,
+      debitAccount: e.debitAccount,
+      creditAccount: e.creditAccount,
+      tax: true,
+    })),
+  ];
+}
+
 const ISO = (d: Date | null): string => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n: number): string =>
   n.toLocaleString('en-US', {
@@ -84,6 +113,7 @@ export class LedgerExportService {
         id: r.id,
         offsetAccount: r.offsetAccount,
         row: {
+          id: r.id,
           pendingDate: r.pendingDate,
           postingDate: r.postingDate,
           name: r.name ?? '',
@@ -100,6 +130,7 @@ export class LedgerExportService {
         id: 0,
         offsetAccount: o.offsetAccount,
         row: {
+          id: null,
           pendingDate: null,
           postingDate: o.postingDate,
           name: '',
@@ -116,24 +147,9 @@ export class LedgerExportService {
         { ...b, postingDate: b.row.postingDate },
       ),
     );
-    return sorted.flatMap((p): LedgerExportRow[] => {
-      const lines = taxes.get(p.id);
-      if (!lines?.length) return [p.row];
-      const split = taxSplit(
-        { ...p.row, offsetAccount: p.offsetAccount },
-        lines,
-      );
-      return [
-        { ...p.row, amount: split.parent.amount },
-        ...split.taxes.map((e) => ({
-          ...p.row,
-          amount: e.amount,
-          debitAccount: e.debitAccount,
-          creditAccount: e.creditAccount,
-          tax: true,
-        })),
-      ];
-    });
+    return sorted.flatMap((p) =>
+      exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
+    );
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {
@@ -143,6 +159,7 @@ export class LedgerExportService {
       views: [{ state: 'frozen', ySplit: 1 }],
     });
     ws.columns = [
+      { header: 'ID', key: 'id', width: 9 },
       {
         header: 'Pending date',
         key: 'pendingDate',
@@ -185,7 +202,7 @@ export class LedgerExportService {
       amount: netOf(rows),
     });
     total.font = { bold: true };
-    ws.autoFilter = { from: 'A1', to: 'H1' };
+    ws.autoFilter = { from: 'A1', to: 'I1' };
     wb.title = `${customerName} — ledger`;
     return Buffer.from(await wb.xlsx.writeBuffer());
   }

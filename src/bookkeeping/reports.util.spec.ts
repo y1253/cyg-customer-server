@@ -133,3 +133,28 @@ describe('buildReports', () => {
     );
   });
 });
+
+describe("the customer's own categories", () => {
+  it('land where the type they picked puts them', () => {
+    const r = buildReports(
+      [
+        row(400, 'Consulting Fees'),
+        row(-80, 'Groceries'),
+        row(-1000, 'Car Loan'),
+      ],
+      null,
+      null,
+      [],
+      new Map([
+        ['Consulting Fees', 'INCOME'],
+        ['Groceries', 'EXPENSE'],
+        ['Car Loan', 'LIABILITY'],
+      ]),
+    );
+    expect(line(r.incomeStatement.income, 'Consulting Fees')).toBe(400);
+    expect(line(r.incomeStatement.expenses, 'Groceries')).toBe(80);
+    expect(r.accounts.find((a) => a.name === 'Car Loan')?.type).toBe(
+      'LIABILITY',
+    );
+  });
+});

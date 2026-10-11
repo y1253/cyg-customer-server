@@ -44,4 +44,4 @@ export interface ReportsView {
     };
 }
 export declare const RETAINED_EARNINGS = "Retained Earnings";
-export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null, liabilityAccounts?: string[]): ReportsView;
+export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null, liabilityAccounts?: string[], customTypes?: ReadonlyMap<string, AccountType>): ReportsView;

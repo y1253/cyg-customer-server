@@ -78,12 +78,15 @@ export function toMoney(raw: unknown): string | null {
 export function buildLedgerRows(
   lines: ExtractedTransaction[],
   bankAccount: string,
+  /** The customer's own categories, kept as they are instead of becoming Uncategorized. */
+  customAccounts?: Iterable<string>,
 ): LedgerRow[] {
+  const extra = customAccounts ? [...customAccounts] : undefined;
   const rows: LedgerRow[] = [];
   for (const line of lines) {
     const amount = toMoney(line.amount);
     if (amount === null) continue;
-    const offset = normalizeAccount(line.offsetAccount);
+    const offset = normalizeAccount(line.offsetAccount, extra);
     rows.push({
       position: rows.length,
       pendingDate: parseIsoDate(line.pendingDate),

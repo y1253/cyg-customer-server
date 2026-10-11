@@ -1,6 +1,7 @@
 import {
   candidates,
   kindOf,
+  includedTaxes,
   taxAmount,
   taxLines,
   taxSplit,
@@ -59,11 +60,23 @@ describe('candidates', () => {
   });
 });
 
-describe('taxAmount', () => {
-  it('is amount × rate on top, in whole cents', () => {
-    expect(taxAmount(100, 10)).toBe(10);
-    expect(taxAmount(-19.99, 13)).toBe(2.6);
-    expect(taxAmount(33.33, 9.975)).toBe(3.32);
+describe('includedTaxes (tax INCLUDED in the bank amount)', () => {
+  it('takes the tax out of the amount: $100 at 10% is $9.09 of tax', () => {
+    expect(includedTaxes(100, [10])).toEqual([9.09]);
+    expect(taxAmount(100, 10)).toBe(9.09);
+    expect(taxAmount(-113, 13)).toBe(13);
+  });
+
+  it('splits several rates by their share of the combined tax, to the cent', () => {
+    // GST 5% + QST 9.975% on $114.98 = $100 + $5 + $9.98
+    const [gst, qst] = includedTaxes(114.98, [5, 9.975]);
+    expect(gst).toBe(5);
+    expect(qst).toBe(9.98);
+  });
+
+  it('a zero or missing rate taxes nothing', () => {
+    expect(includedTaxes(100, [])).toEqual([]);
+    expect(includedTaxes(100, [0])).toEqual([0]);
   });
 });
 
@@ -73,6 +86,7 @@ describe('taxLines', () => {
     [federal, state, input],
   );
 
+  // $100 with 10% + 5% INCLUDED: $13.04 of tax, split 8.70 / 4.34 (the last absorbs the cent).
   it('allows several agencies on one row', () => {
     const lines = taxLines(
       rows,
@@ -80,8 +94,8 @@ describe('taxLines', () => {
       [federal, state],
     );
     expect(lines).toEqual([
-      { transactionId: 1, agencyId: 1, kind: 'SALES', rate: 10, amount: 10 },
-      { transactionId: 1, agencyId: 2, kind: 'SALES', rate: 5, amount: 5 },
+      { transactionId: 1, agencyId: 1, kind: 'SALES', rate: 10, amount: 8.7 },
+      { transactionId: 1, agencyId: 2, kind: 'SALES', rate: 5, amount: 4.34 },
     ]);
   });
 
@@ -95,8 +109,14 @@ describe('taxLines', () => {
       [gst],
     );
     expect(lines).toEqual([
-      { transactionId: 1, agencyId: 4, kind: 'SALES', rate: 2, amount: 2 },
-      { transactionId: 2, agencyId: 4, kind: 'PURCHASE', rate: 3, amount: 1.5 },
+      { transactionId: 1, agencyId: 4, kind: 'SALES', rate: 2, amount: 1.96 },
+      {
+        transactionId: 2,
+        agencyId: 4,
+        kind: 'PURCHASE',
+        rate: 3,
+        amount: 1.46,
+      },
     ]);
   });
 
@@ -130,13 +150,18 @@ describe('taxSplit', () => {
     debitAccount: 'Office Expense',
     creditAccount: 'Chase 4362',
   };
+  const total = (r: {
+    parent: { amount: number };
+    taxes: { amount: number }[];
+  }) =>
+    [r.parent, ...r.taxes].reduce((c, x) => c + Math.round(x.amount * 100), 0);
 
-  it('keeps a sale at its bank amount, the tax on top, the agency credited', () => {
-    const r = taxSplit(sale, [{ agency: 'Federal Tax', amount: 10 }]);
-    expect(r.parent).toEqual(sale);
+  it('takes the tax OUT of a sale and credits the agency', () => {
+    const r = taxSplit(sale, [{ agency: 'Federal Tax', rate: 10 }]);
+    expect(r.parent).toEqual({ ...sale, amount: 90.91 });
     expect(r.taxes).toEqual([
       {
-        amount: 10,
+        amount: 9.09,
         offsetAccount: 'Federal Tax',
         debitAccount: 'Chase 4362',
         creditAccount: 'Federal Tax',
@@ -144,12 +169,12 @@ describe('taxSplit', () => {
     ]);
   });
 
-  it('keeps a purchase at its bank amount, the tax on top, the agency debited', () => {
-    const r = taxSplit(purchase, [{ agency: 'Input Credit', amount: 2.5 }]);
-    expect(r.parent.amount).toBe(-50);
+  it('takes the tax OUT of a purchase and debits the agency', () => {
+    const r = taxSplit(purchase, [{ agency: 'Input Credit', rate: 5 }]);
+    expect(r.parent.amount).toBe(-47.62);
     expect(r.taxes).toEqual([
       {
-        amount: -2.5,
+        amount: -2.38,
         offsetAccount: 'Input Credit',
         debitAccount: 'Input Credit',
         creditAccount: 'Chase 4362',
@@ -157,17 +182,16 @@ describe('taxSplit', () => {
     ]);
   });
 
-  it('totals the bank amount plus every tax, to the cent', () => {
+  it('the row and its taxes add back to the bank amount, to the cent', () => {
     const r = taxSplit({ ...sale, amount: 123.45 }, [
-      { agency: 'Federal Tax', amount: 12.35 },
-      { agency: 'State Tax', amount: 6.17 },
+      { agency: 'Federal Tax', rate: 5 },
+      { agency: 'State Tax', rate: 9.975 },
     ]);
-    expect(r.parent.amount).toBe(123.45);
-    const total = [r.parent, ...r.taxes].reduce(
-      (c, x) => c + Math.round(x.amount * 100),
-      0,
-    );
-    expect(total).toBe(12345 + 1235 + 617);
+    expect(total(r)).toBe(12345);
+    const neg = taxSplit({ ...purchase, amount: -0.07 }, [
+      { agency: 'Input Credit', rate: 13 },
+    ]);
+    expect(total(neg)).toBe(-7);
   });
 
   it('leaves an untaxed row alone', () => {

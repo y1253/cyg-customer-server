@@ -37,12 +37,14 @@ function tally(rows, from, to) {
     return { offsets, banks };
 }
 const normal = (type, sum) => CREDIT_NORMAL.has(type) ? sum : -sum;
-function buildReports(rows, from = null, to = null, liabilityAccounts = []) {
+function buildReports(rows, from = null, to = null, liabilityAccounts = [], customTypes = new Map()) {
     const bankNames = [
         ...new Set(rows.map((r) => r.bankAccount).filter((b) => b !== null)),
     ].sort();
     const liabilitySet = new Set(liabilityAccounts);
-    const typeOf = (name) => liabilitySet.has(name) ? 'LIABILITY' : chartType(name);
+    const typeOf = (name) => liabilitySet.has(name)
+        ? 'LIABILITY'
+        : (customTypes.get(name) ?? chartType(name));
     const period = tally(rows, from, to);
     const chartNames = chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => a.name);
     const extra = [...period.offsets.keys()].filter((n) => !TYPE_OF.has(n));

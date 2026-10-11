@@ -25,13 +25,14 @@ function toMoney(raw) {
         return null;
     return (Math.round(n * 100) / 100).toFixed(2);
 }
-function buildLedgerRows(lines, bankAccount) {
+function buildLedgerRows(lines, bankAccount, customAccounts) {
+    const extra = customAccounts ? [...customAccounts] : undefined;
     const rows = [];
     for (const line of lines) {
         const amount = toMoney(line.amount);
         if (amount === null)
             continue;
-        const offset = (0, chart_of_accounts_1.normalizeAccount)(line.offsetAccount);
+        const offset = (0, chart_of_accounts_1.normalizeAccount)(line.offsetAccount, extra);
         rows.push({
             position: rows.length,
             pendingDate: parseIsoDate(line.pendingDate),

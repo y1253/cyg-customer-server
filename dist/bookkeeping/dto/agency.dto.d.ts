@@ -25,8 +25,18 @@ export declare class SaveNameRuleDto {
     matchKey: string;
     name?: string | null;
     category?: string | null;
+    scope?: 'ALWAYS' | 'ONCE';
 }
 export declare class ResetNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION';
     matchKey: string;
+}
+export declare class EditTransactionDto {
+    name?: string | null;
+    category?: string | null;
+    scope: 'ALWAYS' | 'ONCE';
+}
+export declare class CreateAccountDto {
+    name: string;
+    type: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }

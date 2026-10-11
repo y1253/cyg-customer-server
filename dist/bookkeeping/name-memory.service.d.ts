@@ -1,25 +1,38 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { type ExtractedTransaction } from './ledger.util';
 import { type NameRule, type ResolveContext, type RuleMatchType } from './name-memory.util';
+export type EditScope = 'ALWAYS' | 'ONCE';
 export declare class NameMemoryService {
     private readonly prisma;
     private readonly logger;
     constructor(prisma: PrismaService);
-    contextFor(customerId: number, descriptions: readonly string[]): Promise<ResolveContext>;
+    contextFor(customerId: number, descriptions: readonly string[]): Promise<ResolveContext & {
+        customAccounts: Set<string>;
+    }>;
     rulesOf(customerId: number): Promise<NameRule[]>;
-    resolveStatement(customerId: number, rows: ExtractedTransaction[]): Promise<ExtractedTransaction[]>;
+    private customAccountsOf;
+    resolveStatement(customerId: number, rows: ExtractedTransaction[]): Promise<{
+        lines: ExtractedTransaction[];
+        customAccounts: Set<string>;
+    }>;
     private learn;
     saveRule(customerId: number, input: {
         matchType: RuleMatchType;
         matchKey: string;
         name: string | null;
         category: string | null;
+        scope?: EditScope;
     }): Promise<void>;
+    editTransaction(customerId: number, id: number, input: {
+        name: string | null;
+        category: string | null;
+        scope: EditScope;
+    }): Promise<void>;
+    private ruleKeyForName;
     resetRule(customerId: number, input: {
         matchType: RuleMatchType;
         matchKey: string;
     }): Promise<void>;
-    private rewrite;
     private matchingRows;
     private writeRows;
     private carryTaxSwitch;

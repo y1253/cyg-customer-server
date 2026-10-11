@@ -32,7 +32,7 @@ const nameKey = (name) => name.trim().toLowerCase();
 exports.nameKey = nameKey;
 function resolveRow(row, ctx) {
     let name = cleanName(row.name);
-    let category = (0, chart_of_accounts_1.normalizeAccount)(row.offsetAccount);
+    let category = (0, chart_of_accounts_1.normalizeAccount)(row.offsetAccount, ctx.customAccounts);
     let source = 'ai';
     const key = descriptionKey(row.description);
     const remembered = key ? ctx.memory.get(key) : undefined;
@@ -52,8 +52,9 @@ function resolveRow(row, ctx) {
         const ruleName = cleanName(rule.name);
         if (ruleName)
             name = ruleName;
-        if (rule.category)
-            category = (0, chart_of_accounts_1.normalizeAccount)(rule.category);
+        if (rule.category) {
+            category = (0, chart_of_accounts_1.normalizeAccount)(rule.category, ctx.customAccounts);
+        }
         source = 'customer';
     };
     if (key)

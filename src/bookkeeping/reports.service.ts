@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
 import { openingRows } from './opening-balance.util';
 import { buildReports, type ReportRow, type ReportsView } from './reports.util';
+import { CustomerAccountsService } from './customer-accounts.service';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -19,6 +20,7 @@ export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tax: TaxService,
+    private readonly accounts: CustomerAccountsService,
   ) {}
 
   async reports(
@@ -27,7 +29,7 @@ export class ReportsService {
     to: string | null,
   ): Promise<ReportsView> {
     const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
-    const [rows, statements, taxes, agencies] = await Promise.all([
+    const [rows, statements, taxes, agencies, customTypes] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: { customerId, statement: done },
         select: {
@@ -44,6 +46,7 @@ export class ReportsService {
       loadOpeningStatements(this.prisma, customerId),
       this.tax.linesFor(customerId),
       this.tax.agencyNames(customerId),
+      this.accounts.types(customerId),
     ]);
 
     // The printed starting balances — the same "Starting balance" rows the ledger shows.
@@ -65,8 +68,8 @@ export class ReportsService {
             day(r.statement.periodEnd);
           // The bank is whichever side is not the offset (see `doubleEntry`).
           const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
-          // A taxed row is split like the ledger shows it: the row at its bank amount,
-          // and each tax line on top of it, against the agency.
+          // A taxed row is split like the ledger shows it: the tax taken OUT of the bank
+          // amount, each tax line against the agency.
           const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
           return [split.parent, ...split.taxes].map((e) => ({
             amount: e.amount,
@@ -79,6 +82,7 @@ export class ReportsService {
       from,
       to,
       agencies,
+      customTypes,
     );
   }
 }

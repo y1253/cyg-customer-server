@@ -13,6 +13,7 @@ const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const bookkeeping_controller_1 = require("./bookkeeping.controller");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
+const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
 const reports_service_1 = require("./reports.service");
 const statement_extractor_1 = require("./statement-extractor");
@@ -27,6 +28,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
         controllers: [bookkeeping_controller_1.BookkeepingController],
         providers: [
             bookkeeping_service_1.BookkeepingService,
+            customer_accounts_service_1.CustomerAccountsService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
             openai_client_1.OpenAiClient,

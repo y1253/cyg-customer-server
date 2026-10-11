@@ -26,4 +26,4 @@ export declare function doubleEntry(amount: number, bankAccount: string, offsetA
 };
 export declare function parseIsoDate(raw: string | null | undefined): Date | null;
 export declare function toMoney(raw: unknown): string | null;
-export declare function buildLedgerRows(lines: ExtractedTransaction[], bankAccount: string): LedgerRow[];
+export declare function buildLedgerRows(lines: ExtractedTransaction[], bankAccount: string, customAccounts?: Iterable<string>): LedgerRow[];

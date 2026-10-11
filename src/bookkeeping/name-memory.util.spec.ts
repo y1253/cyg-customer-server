@@ -181,6 +181,26 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
     ).toBe(UNCATEGORIZED);
   });
 
+  it("keeps the customer's own category when it is one of theirs", () => {
+    const own = { ...ctx(), customAccounts: new Set(['Groceries']) };
+    expect(resolveRow(row({ offsetAccount: 'groceries' }), own).category).toBe(
+      'Groceries',
+    );
+    expect(
+      resolveRow(row(), {
+        ...ctx({}, [
+          {
+            matchType: 'NAME',
+            matchKey: 'walmart',
+            name: null,
+            category: 'Groceries',
+          },
+        ]),
+        customAccounts: new Set(['Groceries']),
+      }).category,
+    ).toBe('Groceries');
+  });
+
   it('matches NAME rules case-insensitively', () => {
     const out = resolveRow(
       row({ name: 'WALMART' }),

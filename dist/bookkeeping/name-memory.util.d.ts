@@ -17,6 +17,7 @@ export interface ResolveContext {
     memory: ReadonlyMap<string, MemoryEntry>;
     descRules: ReadonlyMap<string, NameRule>;
     nameRules: ReadonlyMap<string, NameRule>;
+    customAccounts?: ReadonlySet<string>;
 }
 export type NameSource = 'ai' | 'memory' | 'customer';
 export interface Resolved {

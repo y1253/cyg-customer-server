@@ -64,11 +64,18 @@ export const ACCOUNT_NAMES: readonly string[] = CHART_OF_ACCOUNTS.map(
   (a) => a.name,
 );
 
-/** The chart name, or Uncategorized for anything the chart does not contain. */
-export function normalizeAccount(name: unknown): string {
+/**
+ * The chart name — or one of the customer's OWN accounts (`extra`, `CustomerAccount`) —
+ * or Uncategorized for anything else. Case-insensitive; returns the stored spelling.
+ */
+export function normalizeAccount(
+  name: unknown,
+  extra?: Iterable<string>,
+): string {
   if (typeof name !== 'string') return UNCATEGORIZED;
-  const hit = ACCOUNT_NAMES.find(
-    (n) => n.toLowerCase() === name.trim().toLowerCase(),
-  );
-  return hit ?? UNCATEGORIZED;
+  const wanted = name.trim().toLowerCase();
+  const hit = ACCOUNT_NAMES.find((n) => n.toLowerCase() === wanted);
+  if (hit) return hit;
+  for (const n of extra ?? []) if (n.toLowerCase() === wanted) return n;
+  return UNCATEGORIZED;
 }

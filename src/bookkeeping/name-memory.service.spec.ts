@@ -28,8 +28,12 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
       update: jest.fn(),
       updateMany: jest.fn(),
     },
+    customerAccount: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     bankTransaction: {
       findMany: jest.fn().mockResolvedValue(rows),
+      findFirst: jest.fn().mockResolvedValue(null),
       update: jest.fn(
         ({
           where,
@@ -220,7 +224,7 @@ describe('NameMemoryService.resolveStatement', () => {
         offsetAccount: 'Supplies',
       },
     ];
-    expect(await service(prisma).resolveStatement(7, rows)).toBe(rows);
+    expect((await service(prisma).resolveStatement(7, rows)).lines).toBe(rows);
   });
 
   it('applies the memory and learns new descriptions', async () => {
@@ -248,7 +252,7 @@ describe('NameMemoryService.resolveStatement', () => {
         offsetAccount: 'Office Expense',
       },
     ]);
-    expect(out.map((r) => [r.name, r.offsetAccount])).toEqual([
+    expect(out.lines.map((r) => [r.name, r.offsetAccount])).toEqual([
       ['Walmart', 'Supplies'],
       ['Staples', 'Office Expense'],
     ]);
@@ -267,5 +271,119 @@ describe('NameMemoryService.resolveStatement', () => {
       where: { descriptionKey: { in: ['walmart'] } },
       data: { hits: { increment: 1 } },
     });
+  });
+});
+
+describe('one time vs always', () => {
+  const walmart = (id: number, manual = false) => ({
+    id,
+    description: `WALMART ${id}`,
+    name: 'Walmart',
+    amount: money(-20),
+    offsetAccount: 'Supplies',
+    debitAccount: 'Supplies',
+    creditAccount: 'BMO 1234',
+    manualEdit: manual,
+  });
+
+  it('ONCE changes the rows and flags them, but saves no rule', async () => {
+    const { prisma, updates } = fakePrisma([walmart(1), walmart(2)]);
+    await service(prisma).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: null,
+      category: 'Office Expense',
+      scope: 'ONCE',
+    });
+    expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
+    expect(updates.map((u) => u.data.manualEdit)).toEqual([true, true]);
+    // A one-time change reaches rows an earlier one-time change touched.
+    const [args] = prisma.bankTransaction.findMany.mock.calls[0] as [
+      { where: Record<string, unknown> },
+    ];
+    expect(args.where).not.toHaveProperty('manualEdit');
+  });
+
+  it('ALWAYS never touches a row a one-time edit flagged', async () => {
+    const { prisma } = fakePrisma([walmart(1)]);
+    await service(prisma).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: null,
+      category: 'Office Expense',
+    });
+    const [args] = prisma.bankTransaction.findMany.mock.calls[0] as [
+      { where: Record<string, unknown> },
+    ];
+    expect(args.where.manualEdit).toBe(false);
+  });
+
+  it('a ledger ONCE edit changes only that row, with debit/credit re-derived', async () => {
+    const { prisma, updates } = fakePrisma([]);
+    prisma.bankTransaction.findFirst.mockResolvedValue({
+      ...walmart(5),
+      amount: money(30),
+      debitAccount: 'BMO 1234',
+      creditAccount: 'Supplies',
+    });
+    await service(prisma).editTransaction(7, 5, {
+      name: 'Walmart Refund',
+      category: 'Other Income',
+      scope: 'ONCE',
+    });
+    expect(updates).toEqual([
+      {
+        id: 5,
+        data: {
+          name: 'Walmart Refund',
+          offsetAccount: 'Other Income',
+          debitAccount: 'BMO 1234',
+          creditAccount: 'Other Income',
+          manualEdit: true,
+        },
+      },
+    ]);
+    expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('a ledger ALWAYS edit saves a rule for the payee', async () => {
+    const { prisma } = fakePrisma([]);
+    prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
+    await service(prisma).editTransaction(7, 5, {
+      name: null,
+      category: 'Office Expense',
+      scope: 'ALWAYS',
+    });
+    const [upsert] = prisma.customerNameRule.upsert.mock.calls[0] as [
+      { create: { matchType: string; matchKey: string; category: string } },
+    ];
+    expect(upsert.create).toMatchObject({
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      category: 'Office Expense',
+    });
+  });
+
+  it("keeps the customer's own category instead of turning it into Uncategorized", async () => {
+    const { prisma, updates } = fakePrisma([walmart(1)]);
+    prisma.customerAccount.findMany.mockResolvedValue([{ name: 'Groceries' }]);
+    await service(prisma).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: null,
+      category: 'groceries',
+    });
+    expect(updates[0].data.offsetAccount).toBe('Groceries');
+  });
+
+  it('a ledger edit of a row that is not theirs is a 404', async () => {
+    const { prisma } = fakePrisma([]);
+    await expect(
+      service(prisma).editTransaction(7, 99, {
+        name: 'X',
+        category: null,
+        scope: 'ONCE',
+      }),
+    ).rejects.toThrow('Transaction not found');
   });
 });

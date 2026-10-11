@@ -39,10 +39,16 @@ exports.CHART_OF_ACCOUNTS = [
     { name: exports.UNCATEGORIZED, type: 'EXPENSE' },
 ];
 exports.ACCOUNT_NAMES = exports.CHART_OF_ACCOUNTS.map((a) => a.name);
-function normalizeAccount(name) {
+function normalizeAccount(name, extra) {
     if (typeof name !== 'string')
         return exports.UNCATEGORIZED;
-    const hit = exports.ACCOUNT_NAMES.find((n) => n.toLowerCase() === name.trim().toLowerCase());
-    return hit ?? exports.UNCATEGORIZED;
+    const wanted = name.trim().toLowerCase();
+    const hit = exports.ACCOUNT_NAMES.find((n) => n.toLowerCase() === wanted);
+    if (hit)
+        return hit;
+    for (const n of extra ?? [])
+        if (n.toLowerCase() === wanted)
+            return n;
+    return exports.UNCATEGORIZED;
 }
 //# sourceMappingURL=chart-of-accounts.js.map

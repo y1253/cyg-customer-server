@@ -59,8 +59,9 @@ export interface TransactionView {
   statementLabel: string;
   /**
    * `opening`: the statement's printed starting balance, offset to Owner's Loan — never
-   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`), added on
-   * top: the row above keeps its bank amount, so the two total more than the bank moved.
+   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`), taken OUT
+   * of that row: the row above shows its amount without tax, and the two add back to what
+   * the bank moved.
    */
   kind?: 'opening' | 'tax';
   /** On a tax row: the agency's rate, a percent. */
@@ -254,7 +255,7 @@ export class BookkeepingService {
         },
       })),
     ];
-    // Newest first. A taxed row keeps its bank amount, its tax lines directly under it.
+    // Newest first. A taxed row shows its amount without tax, its tax lines directly under it.
     const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
     return sorted.flatMap((p): TransactionView[] => {
       const lines = p.kind ? undefined : taxes.get(p.id);

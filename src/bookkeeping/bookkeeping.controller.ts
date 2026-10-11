@@ -29,13 +29,14 @@ import {
   type TransactionView,
 } from './bookkeeping.service';
 import {
-  ACCOUNT_NAMES,
-  CHART_OF_ACCOUNTS,
-  type ChartAccount,
-} from './chart-of-accounts';
+  CustomerAccountsService,
+  type AccountView,
+} from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import {
+  CreateAccountDto,
   CreateAgencyDto,
+  EditTransactionDto,
   ResetNameRuleDto,
   SaveNameRuleDto,
   UpdateAgencyDto,
@@ -76,6 +77,7 @@ export class BookkeepingController {
     private readonly reportsService: ReportsService,
     private readonly tax: TaxService,
     private readonly nameMemory: NameMemoryService,
+    private readonly accounts: CustomerAccountsService,
   ) {}
 
   /** Reads every UPLOADED statement and re-applies changed tax settings. */
@@ -148,23 +150,50 @@ export class BookkeepingController {
     @Req() req: AuthedRequest,
     @Body() dto: SaveNameRuleDto,
   ): Promise<NamesView> {
-    const name = dto.name?.trim() || null;
-    const category = dto.category?.trim() || null;
-    if (!name && !category) {
-      throw new BadRequestException('Enter a name or choose a category');
-    }
-    if (category && !ACCOUNT_NAMES.includes(category)) {
-      throw new BadRequestException(
-        `"${category}" is not an account in the chart`,
-      );
-    }
+    const { name, category } = await this.editValues(req.user.customerId, dto);
     await this.nameMemory.saveRule(req.user.customerId, {
       matchType: dto.matchType,
       matchKey: dto.matchKey,
       name,
       category,
+      scope: dto.scope ?? 'ALWAYS',
     });
     return this.tax.names(req.user.customerId);
+  }
+
+  /**
+   * Change ONE ledger row's name and/or category: just that row (`ONCE`), or saved for its
+   * payee from now on (`ALWAYS`, the same rule the Names tab saves).
+   */
+  @Patch('transactions/:id')
+  @HttpCode(204)
+  async editTransaction(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: EditTransactionDto,
+  ): Promise<void> {
+    const { name, category } = await this.editValues(req.user.customerId, dto);
+    await this.nameMemory.editTransaction(req.user.customerId, id, {
+      name,
+      category,
+      scope: dto.scope,
+    });
+  }
+
+  /** A name and/or a category the customer may use — the chart or one of their own. */
+  private async editValues(
+    customerId: number,
+    dto: { name?: string | null; category?: string | null },
+  ): Promise<{ name: string | null; category: string | null }> {
+    const name = dto.name?.trim() || null;
+    const raw = dto.category?.trim() || null;
+    if (!name && !raw) {
+      throw new BadRequestException('Enter a name or choose a category');
+    }
+    const category = raw
+      ? await this.accounts.validCategory(customerId, raw)
+      : null;
+    return { name, category };
   }
 
   /** Drop the customer's own rule: their rows go back to the default. */
@@ -284,8 +313,18 @@ export class BookkeepingController {
     );
   }
 
+  /** The categories this customer may pick: the fixed chart, then their own. */
   @Get('accounts')
-  accounts(): readonly ChartAccount[] {
-    return CHART_OF_ACCOUNTS;
+  accountList(@Req() req: AuthedRequest): Promise<AccountView[]> {
+    return this.accounts.list(req.user.customerId);
+  }
+
+  /** A category of the customer's own, for when nothing in the chart fits. */
+  @Post('accounts')
+  createAccount(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateAccountDto,
+  ): Promise<AccountView> {
+    return this.accounts.create(req.user.customerId, dto);
   }
 }

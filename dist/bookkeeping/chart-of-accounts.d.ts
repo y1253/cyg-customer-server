@@ -7,4 +7,4 @@ export declare const UNCATEGORIZED = "Uncategorized";
 export declare const OWNERS_LOAN = "Owner's Loan";
 export declare const CHART_OF_ACCOUNTS: readonly ChartAccount[];
 export declare const ACCOUNT_NAMES: readonly string[];
-export declare function normalizeAccount(name: unknown): string;
+export declare function normalizeAccount(name: unknown, extra?: Iterable<string>): string;

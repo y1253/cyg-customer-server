@@ -1,6 +1,7 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { TaxService } from './tax.service';
 export interface LedgerExportRow {
+    id: number | null;
     pendingDate: Date | null;
     postingDate: Date | null;
     name: string;
@@ -14,6 +15,10 @@ export interface LedgerExportRow {
 export declare function netOf(rows: Array<{
     amount: number;
 }>): number;
+export declare function exportRowWithTaxes(row: Omit<LedgerExportRow, 'tax'>, offsetAccount: string, lines: Array<{
+    agency: string;
+    rate: number;
+}>): LedgerExportRow[];
 export declare class LedgerExportService {
     private readonly prisma;
     private readonly tax;

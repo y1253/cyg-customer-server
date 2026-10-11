@@ -16,19 +16,22 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
+const customer_accounts_service_1 = require("./customer-accounts.service");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 let ReportsService = class ReportsService {
     prisma;
     tax;
-    constructor(prisma, tax) {
+    accounts;
+    constructor(prisma, tax, accounts) {
         this.prisma = prisma;
         this.tax = tax;
+        this.accounts = accounts;
     }
     async reports(customerId, from, to) {
         const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
-        const [rows, statements, taxes, agencies] = await Promise.all([
+        const [rows, statements, taxes, agencies, customTypes] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: { customerId, statement: done },
                 select: {
@@ -45,6 +48,7 @@ let ReportsService = class ReportsService {
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
             this.tax.linesFor(customerId),
             this.tax.agencyNames(customerId),
+            this.accounts.types(customerId),
         ]);
         const openings = (0, opening_balance_util_1.openingRows)(statements).map((o) => ({
             amount: o.amount,
@@ -68,13 +72,14 @@ let ReportsService = class ReportsService {
                     date,
                 }));
             }),
-        ], from, to, agencies);
+        ], from, to, agencies, customTypes);
     }
 };
 exports.ReportsService = ReportsService;
 exports.ReportsService = ReportsService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        customer_accounts_service_1.CustomerAccountsService])
 ], ReportsService);
 //# sourceMappingURL=reports.service.js.map

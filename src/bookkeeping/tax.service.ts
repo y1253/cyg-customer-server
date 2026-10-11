@@ -14,6 +14,7 @@ import {
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ACCOUNT_NAMES } from './chart-of-accounts';
+import { CustomerAccountsService } from './customer-accounts.service';
 import {
   descriptionKey,
   nameKey,
@@ -61,6 +62,11 @@ export interface NameView {
   rows: number;
   /** Its tax lines are left out everywhere (on read). */
   taxExempt: boolean;
+  /**
+   * The descriptions the AI put under this name (one per description key, most rows first,
+   * at most `MAX_DESCRIPTIONS`), with the category their rows mostly have.
+   */
+  descriptions: Array<{ description: string; category: string; rows: number }>;
   /** What an edit of this row saves under: a NAME rule with this key. */
   ruleKey: string;
   /** The customer's own rule behind this row, if any — what "Reset to default" removes. */
@@ -152,8 +158,11 @@ function rateRows(rates: AgencyRateDto[]) {
   return rates.map((r) => ({ kind: r.kind, rate: r.rate.toFixed(3) }));
 }
 
-const typeOfCategory = (category: string): NameType => {
-  const type = TYPE_OF.get(category);
+const typeOfCategory = (
+  category: string,
+  customTypes?: ReadonlyMap<string, string>,
+): NameType => {
+  const type = TYPE_OF.get(category) ?? customTypes?.get(category);
   if (type === 'INCOME') return 'CUSTOMER';
   if (type === 'EXPENSE') return 'SUPPLIER';
   return 'OTHER';
@@ -172,6 +181,7 @@ export class TaxService {
     private readonly prisma: PrismaService,
     private readonly openai: OpenAiClient,
     private readonly config: ConfigService,
+    private readonly accounts: CustomerAccountsService,
   ) {}
 
   private model(): string {
@@ -372,22 +382,29 @@ export class TaxService {
    */
   async names(customerId: number): Promise<NamesView> {
     const done = { deletedAt: null, status: StatementStatus.DONE };
-    const [groups, nameless, exempt, rules] = await Promise.all([
-      this.prisma.bankTransaction.groupBy({
-        by: ['name', 'offsetAccount'],
-        where: { customerId, name: { not: null }, statement: done },
-        _count: { _all: true },
-      }),
-      this.prisma.bankTransaction.findMany({
-        where: { customerId, name: null, statement: done },
-        select: { description: true, offsetAccount: true },
-      }),
-      this.exemptNames(customerId),
-      this.prisma.customerNameRule.findMany({
-        where: { customerId },
-        select: { matchType: true, matchKey: true, name: true },
-      }),
-    ]);
+    const [groups, named, nameless, exempt, rules, customTypes] =
+      await Promise.all([
+        this.prisma.bankTransaction.groupBy({
+          by: ['name', 'offsetAccount'],
+          where: { customerId, name: { not: null }, statement: done },
+          _count: { _all: true },
+        }),
+        this.prisma.bankTransaction.findMany({
+          where: { customerId, name: { not: null }, statement: done },
+          select: { name: true, description: true, offsetAccount: true },
+        }),
+        this.prisma.bankTransaction.findMany({
+          where: { customerId, name: null, statement: done },
+          select: { description: true, offsetAccount: true },
+        }),
+        this.exemptNames(customerId),
+        this.prisma.customerNameRule.findMany({
+          where: { customerId },
+          select: { matchType: true, matchKey: true, name: true },
+        }),
+        this.accounts.types(customerId),
+      ]);
+    const descriptionsOf = groupDescriptions(named);
 
     const ref = (r: { matchType: string; matchKey: string }) => ({
       matchType: (r.matchType === 'DESCRIPTION'
@@ -431,9 +448,10 @@ export class TaxService {
           name,
           category,
           otherCategories: categories.length - 1,
-          type: typeOfCategory(category),
+          type: typeOfCategory(category, customTypes),
           rows: categories.reduce((n, [, c]) => n + c, 0),
           taxExempt: exempt.has(key),
+          descriptions: descriptionsOf.get(key) ?? [],
           ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
           rule,
         };
@@ -591,6 +609,7 @@ export class TaxService {
     const todo = candidates(
       rows.map((r) => ({ ...r, amount: Number(r.amount) })),
       agencies,
+      await this.accounts.types(customerId),
     );
 
     const lines: TaxLine[] = [];
@@ -652,4 +671,75 @@ export class TaxService {
     };
     return taxLines(rows, parsed.rows, agencies);
   }
+}
+
+/** Descriptions listed per name on the Names tab. */
+const MAX_DESCRIPTIONS = 25;
+
+/**
+ * Per lower-cased name: its rows grouped by description key, each with one printed
+ * description and the category those rows mostly have, most rows first.
+ */
+function groupDescriptions(
+  rows: ReadonlyArray<{
+    name: string | null;
+    description: string;
+    offsetAccount: string;
+  }>,
+): Map<string, Array<{ description: string; category: string; rows: number }>> {
+  const byName = new Map<
+    string,
+    Map<string, { description: string; categories: Map<string, number> }>
+  >();
+  for (const r of rows) {
+    if (!r.name) continue;
+    const name = r.name.toLowerCase();
+    const key =
+      descriptionKey(r.description) || r.description.trim().toLowerCase();
+    const groups: Map<
+      string,
+      { description: string; categories: Map<string, number> }
+    > =
+      byName.get(name) ??
+      new Map<
+        string,
+        { description: string; categories: Map<string, number> }
+      >();
+    const g = groups.get(key) ?? {
+      description: r.description,
+      categories: new Map<string, number>(),
+    };
+    g.categories.set(
+      r.offsetAccount,
+      (g.categories.get(r.offsetAccount) ?? 0) + 1,
+    );
+    groups.set(key, g);
+    byName.set(name, groups);
+  }
+  const out = new Map<
+    string,
+    Array<{ description: string; category: string; rows: number }>
+  >();
+  for (const [name, groups] of byName) {
+    out.set(
+      name,
+      [...groups.values()]
+        .map((g) => {
+          const sorted = [...g.categories.entries()].sort(
+            (a, b) => b[1] - a[1],
+          );
+          return {
+            description: g.description,
+            category: sorted[0][0],
+            rows: sorted.reduce((n, [, c]) => n + c, 0),
+          };
+        })
+        .sort(
+          (a, b) =>
+            b.rows - a.rows || a.description.localeCompare(b.description),
+        )
+        .slice(0, MAX_DESCRIPTIONS),
+    );
+  }
+  return out;
 }

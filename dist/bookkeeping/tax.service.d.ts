@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import type { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
@@ -21,6 +22,11 @@ export interface NameView {
     type: NameType;
     rows: number;
     taxExempt: boolean;
+    descriptions: Array<{
+        description: string;
+        category: string;
+        rows: number;
+    }>;
     ruleKey: string;
     rule: {
         matchType: RuleMatchType;
@@ -59,8 +65,9 @@ export declare class TaxService {
     private readonly prisma;
     private readonly openai;
     private readonly config;
+    private readonly accounts;
     private readonly logger;
-    constructor(prisma: PrismaService, openai: OpenAiClient, config: ConfigService);
+    constructor(prisma: PrismaService, openai: OpenAiClient, config: ConfigService, accounts: CustomerAccountsService);
     private model;
     settings(customerId: number): Promise<TaxSettingsView>;
     setEnabled(customerId: number, enabled: boolean): Promise<TaxSettingsView>;

@@ -14,6 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LedgerExportService = void 0;
 exports.netOf = netOf;
+exports.exportRowWithTaxes = exportRowWithTaxes;
 const common_1 = require("@nestjs/common");
 const exceljs_1 = __importDefault(require("exceljs"));
 const pdfkit_1 = __importDefault(require("pdfkit"));
@@ -26,6 +27,21 @@ const tax_util_1 = require("./tax.util");
 const BRAND = '#169F96';
 function netOf(rows) {
     return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
+}
+function exportRowWithTaxes(row, offsetAccount, lines) {
+    if (!lines.length)
+        return [row];
+    const split = (0, tax_util_1.taxSplit)({ ...row, offsetAccount }, lines);
+    return [
+        { ...row, amount: split.parent.amount },
+        ...split.taxes.map((e) => ({
+            ...row,
+            amount: e.amount,
+            debitAccount: e.debitAccount,
+            creditAccount: e.creditAccount,
+            tax: true,
+        })),
+    ];
 }
 const ISO = (d) => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n) => n.toLocaleString('en-US', {
@@ -67,6 +83,7 @@ let LedgerExportService = class LedgerExportService {
                 id: r.id,
                 offsetAccount: r.offsetAccount,
                 row: {
+                    id: r.id,
                     pendingDate: r.pendingDate,
                     postingDate: r.postingDate,
                     name: r.name ?? '',
@@ -83,6 +100,7 @@ let LedgerExportService = class LedgerExportService {
                 id: 0,
                 offsetAccount: o.offsetAccount,
                 row: {
+                    id: null,
                     pendingDate: null,
                     postingDate: o.postingDate,
                     name: '',
@@ -94,22 +112,7 @@ let LedgerExportService = class LedgerExportService {
                 },
             })),
         ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
-        return sorted.flatMap((p) => {
-            const lines = taxes.get(p.id);
-            if (!lines?.length)
-                return [p.row];
-            const split = (0, tax_util_1.taxSplit)({ ...p.row, offsetAccount: p.offsetAccount }, lines);
-            return [
-                { ...p.row, amount: split.parent.amount },
-                ...split.taxes.map((e) => ({
-                    ...p.row,
-                    amount: e.amount,
-                    debitAccount: e.debitAccount,
-                    creditAccount: e.creditAccount,
-                    tax: true,
-                })),
-            ];
-        });
+        return sorted.flatMap((p) => exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []));
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();
@@ -118,6 +121,7 @@ let LedgerExportService = class LedgerExportService {
             views: [{ state: 'frozen', ySplit: 1 }],
         });
         ws.columns = [
+            { header: 'ID', key: 'id', width: 9 },
             {
                 header: 'Pending date',
                 key: 'pendingDate',
@@ -161,7 +165,7 @@ let LedgerExportService = class LedgerExportService {
             amount: netOf(rows),
         });
         total.font = { bold: true };
-        ws.autoFilter = { from: 'A1', to: 'H1' };
+        ws.autoFilter = { from: 'A1', to: 'I1' };
         wb.title = `${customerName} — ledger`;
         return Buffer.from(await wb.xlsx.writeBuffer());
     }

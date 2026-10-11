@@ -22,10 +22,11 @@ export interface TaxLine {
     amount: number;
 }
 export declare const TYPE_OF: Map<string, import("./chart-of-accounts").AccountType>;
-export declare function kindOf(offsetAccount: string): TaxKind | null;
+export declare function kindOf(offsetAccount: string, customTypes?: ReadonlyMap<string, string>): TaxKind | null;
 export declare const rateFor: (agency: Agency, kind: TaxKind) => number | undefined;
 export declare const fits: (agency: Agency, kind: TaxKind) => boolean;
-export declare function candidates(rows: TaxableRow[], agencies: Agency[]): TaxCandidate[];
+export declare function candidates(rows: TaxableRow[], agencies: Agency[], customTypes?: ReadonlyMap<string, string>): TaxCandidate[];
+export declare function includedTaxes(amount: number, rates: readonly number[]): number[];
 export declare const taxAmount: (amount: number, rate: number) => number;
 export declare function taxLines(rows: TaxCandidate[], verdicts: Array<{
     id: number;
@@ -39,7 +40,7 @@ export interface SplitEntry {
 }
 export declare function taxSplit<E extends SplitEntry>(parent: E, lines: Array<{
     agency: string;
-    amount: number;
+    rate: number;
 }>): {
     parent: E;
     taxes: SplitEntry[];

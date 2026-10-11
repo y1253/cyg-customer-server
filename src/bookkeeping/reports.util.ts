@@ -125,6 +125,8 @@ export function buildReports(
   to: string | null = null,
   /** Tax agencies: LIABILITY accounts outside the chart. */
   liabilityAccounts: string[] = [],
+  /** The customer's OWN categories (`CustomerAccount`) and the type they picked. */
+  customTypes: ReadonlyMap<string, AccountType> = new Map(),
 ): ReportsView {
   const bankNames = [
     ...new Set(
@@ -133,7 +135,9 @@ export function buildReports(
   ].sort();
   const liabilitySet = new Set(liabilityAccounts);
   const typeOf = (name: string): AccountType =>
-    liabilitySet.has(name) ? 'LIABILITY' : chartType(name);
+    liabilitySet.has(name)
+      ? 'LIABILITY'
+      : (customTypes.get(name) ?? chartType(name));
 
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);

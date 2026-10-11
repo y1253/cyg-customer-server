@@ -110,11 +110,16 @@ export class SaveNameRuleDto {
   @MaxLength(191)
   name?: string | null;
 
-  /** Null or absent = leave the category as it is. Must be a chart-of-accounts name. */
+  /** Null or absent = leave the category as it is. The chart or one of their own accounts. */
   @IsOptional()
   @IsString()
   @MaxLength(191)
   category?: string | null;
+
+  /** ALWAYS (default) = saved for the future; ONCE = only the rows in the ledger now. */
+  @IsOptional()
+  @IsIn(['ALWAYS', 'ONCE'])
+  scope?: 'ALWAYS' | 'ONCE';
 }
 
 /** `DELETE /api/bookkeeping/names/rule` — back to the default. */
@@ -127,4 +132,34 @@ export class ResetNameRuleDto {
   @IsNotEmpty()
   @MaxLength(191)
   matchKey!: string;
+}
+
+/** `PATCH /api/bookkeeping/transactions/:id` — one ledger row's name and/or category. */
+export class EditTransactionDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  category?: string | null;
+
+  /** ONCE = only this row; ALWAYS = saved for this payee from now on. */
+  @IsIn(['ALWAYS', 'ONCE'])
+  scope!: 'ALWAYS' | 'ONCE';
+}
+
+/** `POST /api/bookkeeping/accounts` — a category of the customer's own. */
+export class CreateAccountDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name!: string;
+
+  @IsIn(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY'])
+  type!: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }

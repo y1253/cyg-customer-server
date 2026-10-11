@@ -62,6 +62,8 @@ export interface ResolveContext {
   descRules: ReadonlyMap<string, NameRule>;
   /** The customer's NAME rules by lower-cased name. */
   nameRules: ReadonlyMap<string, NameRule>;
+  /** The customer's own categories (`CustomerAccount`) — valid in their rules. */
+  customAccounts?: ReadonlySet<string>;
 }
 
 export type NameSource = 'ai' | 'memory' | 'customer';
@@ -90,7 +92,7 @@ export function resolveRow(
   ctx: ResolveContext,
 ): Resolved {
   let name = cleanName(row.name);
-  let category = normalizeAccount(row.offsetAccount);
+  let category = normalizeAccount(row.offsetAccount, ctx.customAccounts);
   let source: NameSource = 'ai';
   const key = descriptionKey(row.description);
 
@@ -107,7 +109,9 @@ export function resolveRow(
     if (!rule) return;
     const ruleName = cleanName(rule.name);
     if (ruleName) name = ruleName;
-    if (rule.category) category = normalizeAccount(rule.category);
+    if (rule.category) {
+      category = normalizeAccount(rule.category, ctx.customAccounts);
+    }
     source = 'customer';
   };
   if (key) apply(ctx.descRules.get(key));

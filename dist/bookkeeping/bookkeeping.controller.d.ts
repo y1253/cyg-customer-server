@@ -3,9 +3,9 @@ import type { Request, Response } from 'express';
 import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
-import { type ChartAccount } from './chart-of-accounts';
+import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
-import { CreateAgencyDto, ResetNameRuleDto, SaveNameRuleDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, ResetNameRuleDto, SaveNameRuleDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
@@ -21,7 +21,8 @@ export declare class BookkeepingController {
     private readonly reportsService;
     private readonly tax;
     private readonly nameMemory;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService);
+    private readonly accounts;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService);
     generate(req: AuthedRequest): Promise<{
         queued: number;
         taxing: boolean;
@@ -34,6 +35,8 @@ export declare class BookkeepingController {
     names(req: AuthedRequest): Promise<NamesView>;
     updateName(req: AuthedRequest, dto: UpdateNameDto): Promise<NamesView>;
     saveNameRule(req: AuthedRequest, dto: SaveNameRuleDto): Promise<NamesView>;
+    editTransaction(req: AuthedRequest, id: number, dto: EditTransactionDto): Promise<void>;
+    private editValues;
     resetNameRule(req: AuthedRequest, dto: ResetNameRuleDto): Promise<NamesView>;
     upload(req: AuthedRequest, files: Express.Multer.File[]): Promise<StatementView[]>;
     list(req: AuthedRequest): Promise<StatementView[]>;
@@ -43,6 +46,7 @@ export declare class BookkeepingController {
     remove(req: AuthedRequest, id: number): Promise<void>;
     export(req: AuthedRequest, format: string, res: Response): Promise<StreamableFile>;
     reports(req: AuthedRequest, q: ReportsQueryDto): Promise<ReportsView>;
-    accounts(): readonly ChartAccount[];
+    accountList(req: AuthedRequest): Promise<AccountView[]>;
+    createAccount(req: AuthedRequest, dto: CreateAccountDto): Promise<AccountView>;
 }
 export {};

@@ -17,6 +17,7 @@ const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_util_1 = require("./name-memory.util");
 const tax_util_1 = require("./tax.util");
 const BATCH = 100;
@@ -66,8 +67,8 @@ function rateRows(rates) {
     }
     return rates.map((r) => ({ kind: r.kind, rate: r.rate.toFixed(3) }));
 }
-const typeOfCategory = (category) => {
-    const type = tax_util_1.TYPE_OF.get(category);
+const typeOfCategory = (category, customTypes) => {
+    const type = tax_util_1.TYPE_OF.get(category) ?? customTypes?.get(category);
     if (type === 'INCOME')
         return 'CUSTOMER';
     if (type === 'EXPENSE')
@@ -78,11 +79,13 @@ let TaxService = TaxService_1 = class TaxService {
     prisma;
     openai;
     config;
+    accounts;
     logger = new common_1.Logger(TaxService_1.name);
-    constructor(prisma, openai, config) {
+    constructor(prisma, openai, config, accounts) {
         this.prisma = prisma;
         this.openai = openai;
         this.config = config;
+        this.accounts = accounts;
     }
     model() {
         return (this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
@@ -231,11 +234,15 @@ let TaxService = TaxService_1 = class TaxService {
     }
     async names(customerId) {
         const done = { deletedAt: null, status: client_1.StatementStatus.DONE };
-        const [groups, nameless, exempt, rules] = await Promise.all([
+        const [groups, named, nameless, exempt, rules, customTypes] = await Promise.all([
             this.prisma.bankTransaction.groupBy({
                 by: ['name', 'offsetAccount'],
                 where: { customerId, name: { not: null }, statement: done },
                 _count: { _all: true },
+            }),
+            this.prisma.bankTransaction.findMany({
+                where: { customerId, name: { not: null }, statement: done },
+                select: { name: true, description: true, offsetAccount: true },
             }),
             this.prisma.bankTransaction.findMany({
                 where: { customerId, name: null, statement: done },
@@ -246,7 +253,9 @@ let TaxService = TaxService_1 = class TaxService {
                 where: { customerId },
                 select: { matchType: true, matchKey: true, name: true },
             }),
+            this.accounts.types(customerId),
         ]);
+        const descriptionsOf = groupDescriptions(named);
         const ref = (r) => ({
             matchType: (r.matchType === 'DESCRIPTION'
                 ? 'DESCRIPTION'
@@ -279,9 +288,10 @@ let TaxService = TaxService_1 = class TaxService {
                 name,
                 category,
                 otherCategories: categories.length - 1,
-                type: typeOfCategory(category),
+                type: typeOfCategory(category, customTypes),
                 rows: categories.reduce((n, [, c]) => n + c, 0),
                 taxExempt: exempt.has(key),
+                descriptions: descriptionsOf.get(key) ?? [],
                 ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
                 rule,
             };
@@ -397,7 +407,7 @@ let TaxService = TaxService_1 = class TaxService {
             name: a.name,
             rates: Object.fromEntries(a.rates.map((r) => [r.kind, Number(r.rate)])),
         }));
-        const todo = (0, tax_util_1.candidates)(rows.map((r) => ({ ...r, amount: Number(r.amount) })), agencies);
+        const todo = (0, tax_util_1.candidates)(rows.map((r) => ({ ...r, amount: Number(r.amount) })), agencies, await this.accounts.types(customerId));
         const lines = [];
         for (let i = 0; i < todo.length; i += BATCH) {
             lines.push(...(await this.ask(todo.slice(i, i + BATCH), agencies)));
@@ -454,6 +464,41 @@ exports.TaxService = TaxService = TaxService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         openai_client_1.OpenAiClient,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        customer_accounts_service_1.CustomerAccountsService])
 ], TaxService);
+const MAX_DESCRIPTIONS = 25;
+function groupDescriptions(rows) {
+    const byName = new Map();
+    for (const r of rows) {
+        if (!r.name)
+            continue;
+        const name = r.name.toLowerCase();
+        const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
+        const groups = byName.get(name) ??
+            new Map();
+        const g = groups.get(key) ?? {
+            description: r.description,
+            categories: new Map(),
+        };
+        g.categories.set(r.offsetAccount, (g.categories.get(r.offsetAccount) ?? 0) + 1);
+        groups.set(key, g);
+        byName.set(name, groups);
+    }
+    const out = new Map();
+    for (const [name, groups] of byName) {
+        out.set(name, [...groups.values()]
+            .map((g) => {
+            const sorted = [...g.categories.entries()].sort((a, b) => b[1] - a[1]);
+            return {
+                description: g.description,
+                category: sorted[0][0],
+                rows: sorted.reduce((n, [, c]) => n + c, 0),
+            };
+        })
+            .sort((a, b) => b.rows - a.rows || a.description.localeCompare(b.description))
+            .slice(0, MAX_DESCRIPTIONS));
+    }
+    return out;
+}
 //# sourceMappingURL=tax.service.js.map

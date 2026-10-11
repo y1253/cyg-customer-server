@@ -4,6 +4,7 @@ import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { BookkeepingController } from './bookkeeping.controller';
 import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
+import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { ReportsService } from './reports.service';
 import { StatementExtractor } from './statement-extractor';
@@ -15,6 +16,7 @@ import { TaxService } from './tax.service';
   controllers: [BookkeepingController],
   providers: [
     BookkeepingService,
+    CustomerAccountsService,
     LedgerExportService,
     NameMemoryService,
     OpenAiClient,

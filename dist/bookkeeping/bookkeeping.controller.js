@@ -18,7 +18,7 @@ const platform_express_1 = require("@nestjs/platform-express");
 const customer_auth_service_1 = require("../customer-auth/customer-auth.service");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const bookkeeping_service_1 = require("./bookkeeping.service");
-const chart_of_accounts_1 = require("./chart-of-accounts");
+const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
@@ -37,13 +37,15 @@ let BookkeepingController = class BookkeepingController {
     reportsService;
     tax;
     nameMemory;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory) {
+    accounts;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
         this.reportsService = reportsService;
         this.tax = tax;
         this.nameMemory = nameMemory;
+        this.accounts = accounts;
     }
     generate(req) {
         return this.bookkeeping.generate(req.user.customerId);
@@ -70,21 +72,34 @@ let BookkeepingController = class BookkeepingController {
         return this.tax.setNameTax(req.user.customerId, dto.name, dto.taxExempt);
     }
     async saveNameRule(req, dto) {
-        const name = dto.name?.trim() || null;
-        const category = dto.category?.trim() || null;
-        if (!name && !category) {
-            throw new common_1.BadRequestException('Enter a name or choose a category');
-        }
-        if (category && !chart_of_accounts_1.ACCOUNT_NAMES.includes(category)) {
-            throw new common_1.BadRequestException(`"${category}" is not an account in the chart`);
-        }
+        const { name, category } = await this.editValues(req.user.customerId, dto);
         await this.nameMemory.saveRule(req.user.customerId, {
             matchType: dto.matchType,
             matchKey: dto.matchKey,
             name,
             category,
+            scope: dto.scope ?? 'ALWAYS',
         });
         return this.tax.names(req.user.customerId);
+    }
+    async editTransaction(req, id, dto) {
+        const { name, category } = await this.editValues(req.user.customerId, dto);
+        await this.nameMemory.editTransaction(req.user.customerId, id, {
+            name,
+            category,
+            scope: dto.scope,
+        });
+    }
+    async editValues(customerId, dto) {
+        const name = dto.name?.trim() || null;
+        const raw = dto.category?.trim() || null;
+        if (!name && !raw) {
+            throw new common_1.BadRequestException('Enter a name or choose a category');
+        }
+        const category = raw
+            ? await this.accounts.validCategory(customerId, raw)
+            : null;
+        return { name, category };
     }
     async resetNameRule(req, dto) {
         await this.nameMemory.resetRule(req.user.customerId, dto);
@@ -146,8 +161,11 @@ let BookkeepingController = class BookkeepingController {
         }
         return this.reportsService.reports(req.user.customerId, q.from ?? null, q.to ?? null);
     }
-    accounts() {
-        return chart_of_accounts_1.CHART_OF_ACCOUNTS;
+    accountList(req) {
+        return this.accounts.list(req.user.customerId);
+    }
+    createAccount(req, dto) {
+        return this.accounts.create(req.user.customerId, dto);
     }
 };
 exports.BookkeepingController = BookkeepingController;
@@ -222,6 +240,16 @@ __decorate([
     __metadata("design:paramtypes", [Object, agency_dto_1.SaveNameRuleDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "saveNameRule", null);
+__decorate([
+    (0, common_1.Patch)('transactions/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.EditTransactionDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "editTransaction", null);
 __decorate([
     (0, common_1.Delete)('names/rule'),
     __param(0, (0, common_1.Req)()),
@@ -299,10 +327,19 @@ __decorate([
 ], BookkeepingController.prototype, "reports", null);
 __decorate([
     (0, common_1.Get)('accounts'),
+    __param(0, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", []),
-    __metadata("design:returntype", Array)
-], BookkeepingController.prototype, "accounts", null);
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "accountList", null);
+__decorate([
+    (0, common_1.Post)('accounts'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.CreateAccountDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "createAccount", null);
 exports.BookkeepingController = BookkeepingController = __decorate([
     (0, common_1.Controller)('bookkeeping'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
@@ -311,6 +348,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         customer_auth_service_1.CustomerAuthService,
         reports_service_1.ReportsService,
         tax_service_1.TaxService,
-        name_memory_service_1.NameMemoryService])
+        name_memory_service_1.NameMemoryService,
+        customer_accounts_service_1.CustomerAccountsService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

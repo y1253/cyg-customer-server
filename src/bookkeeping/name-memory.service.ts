@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UNCATEGORIZED, normalizeAccount } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
@@ -16,12 +21,21 @@ import {
 } from './name-memory.util';
 
 /**
+ * How far an edit reaches:
+ * - `ALWAYS` — saved as the customer's rule (`CustomerNameRule`): their existing rows AND
+ *   every statement they read from now on.
+ * - `ONCE` — nothing is saved for the future. The rows it touches are flagged
+ *   `manualEdit`, so a later "Always" rule never overwrites them.
+ */
+export type EditScope = 'ALWAYS' | 'ONCE';
+
+/**
  * The two memories of what a transaction is called and how it is categorised:
  *
  * - `DescriptionMemory` — FIRM-WIDE, what the AI concluded for a description the first time
  *   it saw it. Reused for every customer, and it outlives the statement it came from.
- * - `CustomerNameRule` — one customer's OWN edits from the Names tab, which win over both
- *   the memory and the AI for that customer only.
+ * - `CustomerNameRule` — one customer's OWN edits from the Names tab or the ledger, which win
+ *   over both the memory and the AI for that customer only.
  *
  * The rules themselves are pure (`name-memory.util.ts`); this is only the IO around them.
  */
@@ -31,13 +45,13 @@ export class NameMemoryService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Everything `resolveRow` needs for these descriptions: two queries, whatever the count. */
+  /** Everything `resolveRow` needs for these descriptions: three queries, whatever the count. */
   async contextFor(
     customerId: number,
     descriptions: readonly string[],
-  ): Promise<ResolveContext> {
+  ): Promise<ResolveContext & { customAccounts: Set<string> }> {
     const keys = [...new Set(descriptions.map(descriptionKey).filter(Boolean))];
-    const [memoryRows, rules] = await Promise.all([
+    const [memoryRows, rules, customAccounts] = await Promise.all([
       keys.length
         ? this.prisma.descriptionMemory.findMany({
             where: { descriptionKey: { in: keys } },
@@ -45,6 +59,7 @@ export class NameMemoryService {
           })
         : Promise.resolve([]),
       this.rulesOf(customerId),
+      this.customAccountsOf(customerId),
     ]);
     const memory = new Map<string, MemoryEntry>(
       memoryRows.map((m) => [
@@ -52,7 +67,7 @@ export class NameMemoryService {
         { name: m.name, category: m.category },
       ]),
     );
-    return { memory, ...indexRules(rules) };
+    return { memory, ...indexRules(rules), customAccounts };
   }
 
   async rulesOf(customerId: number): Promise<NameRule[]> {
@@ -66,9 +81,18 @@ export class NameMemoryService {
     }));
   }
 
+  private async customAccountsOf(customerId: number): Promise<Set<string>> {
+    const rows = await this.prisma.customerAccount.findMany({
+      where: { customerId },
+      select: { name: true },
+    });
+    return new Set(rows.map((r) => r.name));
+  }
+
   /**
    * A freshly read statement: resolve every row against the customer's rules and the firm
-   * memory, and teach the memory the AI's new answers. Returns the rows to write.
+   * memory, and teach the memory the AI's new answers. Returns the rows to write and the
+   * customer's own categories (which `buildLedgerRows` must keep).
    *
    * Never throws — a memory outage must not fail a statement the AI has already paid to
    * read; the rows then keep the AI's own answers.
@@ -76,23 +100,23 @@ export class NameMemoryService {
   async resolveStatement(
     customerId: number,
     rows: ExtractedTransaction[],
-  ): Promise<ExtractedTransaction[]> {
+  ): Promise<{ lines: ExtractedTransaction[]; customAccounts: Set<string> }> {
     try {
       const ctx = await this.contextFor(
         customerId,
         rows.map((r) => r.description),
       );
-      const resolved = rows.map((r) => {
+      const lines = rows.map((r) => {
         const out = resolveRow(r, ctx);
         return { ...r, name: out.name, offsetAccount: out.category };
       });
       await this.learn(rows, ctx.memory);
-      return resolved;
+      return { lines, customAccounts: ctx.customAccounts };
     } catch (err) {
       this.logger.warn(
         `name memory unavailable for customer ${customerId}, keeping the AI's answers: ${String(err)}`,
       );
-      return rows;
+      return { lines: rows, customAccounts: new Set() };
     }
   }
 
@@ -126,9 +150,14 @@ export class NameMemoryService {
   }
 
   /**
-   * Save a customer's own name/category and apply it to every row of theirs it matches —
-   * so the ledger, exports and reports show it at once, and every statement read from now
-   * on gets it too.
+   * A change from the Names tab.
+   *
+   * `ALWAYS`: saved as the customer's rule and applied to every row of theirs it matches —
+   * so the ledger, exports and reports show it at once, and every statement read from now on
+   * gets it too. Rows a ONE-TIME edit touched (`manualEdit`) are left alone.
+   *
+   * `ONCE`: the same rows are changed now and flagged `manualEdit`; nothing is saved, so the
+   * next statement is read as before.
    *
    * Editing a payee that an earlier rule already renamed updates THAT rule (the caller
    * passes the `ruleKey` the Names tab was given), so edits never chain.
@@ -140,14 +169,18 @@ export class NameMemoryService {
       matchKey: string;
       name: string | null;
       category: string | null;
+      scope?: EditScope;
     },
   ): Promise<void> {
-    const matchKey =
-      input.matchType === 'NAME'
-        ? nameKey(input.matchKey)
-        : descriptionKey(input.matchKey) || input.matchKey.trim().toLowerCase();
+    const scope = input.scope ?? 'ALWAYS';
+    const matchKey = ruleKeyOf(input.matchType, input.matchKey);
     const name = cleanName(input.name);
-    const category = input.category ? normalizeAccount(input.category) : null;
+    const category = input.category
+      ? normalizeAccount(
+          input.category,
+          await this.customAccountsOf(customerId),
+        )
+      : null;
     const where = {
       customerId_matchType_matchKey: {
         customerId,
@@ -157,26 +190,42 @@ export class NameMemoryService {
     };
     const previous = await this.prisma.customerNameRule.findUnique({ where });
 
-    await this.prisma.customerNameRule.upsert({
-      where,
-      create: {
-        customerId,
-        matchType: input.matchType,
-        matchKey,
-        name,
-        category,
-      },
-      update: { name, category },
-    });
+    if (scope === 'ALWAYS') {
+      await this.prisma.customerNameRule.upsert({
+        where,
+        create: {
+          customerId,
+          matchType: input.matchType,
+          matchKey,
+          name,
+          category,
+        },
+        update: { name, category },
+      });
+    }
 
-    // Rows this rule covers now: for a NAME rule, those still carrying the original name
+    // Rows this change covers now: for a NAME rule, those still carrying the original name
     // AND those an earlier version of the rule already renamed.
     const names = new Set<string>([matchKey]);
     if (previous?.name) names.add(nameKey(previous.name));
-    await this.rewrite(customerId, input.matchType, matchKey, names, (row) => ({
-      name: name ?? row.name,
-      category: category ?? row.offsetAccount,
-    }));
+    const rows = await this.matchingRows(
+      customerId,
+      input.matchType,
+      matchKey,
+      names,
+      // A one-time change is the customer acting on these rows directly — it reaches the
+      // ones an earlier one-time change touched. A saved rule does not.
+      scope === 'ONCE',
+    );
+    await this.writeRows(
+      customerId,
+      rows,
+      (row) => ({
+        name: name ?? row.name,
+        category: category ?? row.offsetAccount,
+      }),
+      scope === 'ONCE',
+    );
 
     // "Tax applies" lives on the payee NAME, so a rename carries it over.
     if (name && input.matchType === 'NAME') {
@@ -185,17 +234,90 @@ export class NameMemoryService {
   }
 
   /**
+   * A change made on ONE ledger row (its Name or Category cell).
+   *
+   * `ONCE`: only that row changes, and is flagged `manualEdit`.
+   * `ALWAYS`: saved as a rule for the row's payee (a NAME rule; a DESCRIPTION rule when the
+   * row has no name), so every matching row and every later statement follow it — and the
+   * clicked row itself, even if an earlier one-time edit had flagged it.
+   */
+  async editTransaction(
+    customerId: number,
+    id: number,
+    input: { name: string | null; category: string | null; scope: EditScope },
+  ): Promise<void> {
+    const row = await this.prisma.bankTransaction.findFirst({
+      where: { id, customerId },
+      select: { ...MATCH_SELECT, manualEdit: true },
+    });
+    if (!row) throw new NotFoundException('Transaction not found');
+    const custom = await this.customAccountsOf(customerId);
+    const name = cleanName(input.name);
+    const category = input.category
+      ? normalizeAccount(input.category, custom)
+      : null;
+    const matched = toMatched(row);
+    const next = (r: MatchedRow) => ({
+      name: name ?? r.name,
+      category: category ?? r.offsetAccount,
+    });
+
+    if (input.scope === 'ONCE') {
+      await this.writeRows(customerId, [matched], next, true);
+      return;
+    }
+
+    if (row.name) {
+      await this.saveRule(customerId, {
+        matchType: 'NAME',
+        matchKey: await this.ruleKeyForName(customerId, row.name),
+        name,
+        category,
+      });
+    } else {
+      const key = descriptionKey(row.description);
+      if (!key) {
+        throw new BadRequestException(
+          'This transaction has no description to remember. Change it for this row only.',
+        );
+      }
+      await this.saveRule(customerId, {
+        matchType: 'DESCRIPTION',
+        matchKey: key,
+        name,
+        category,
+      });
+    }
+    // The clicked row too, even when an earlier one-time edit flagged it.
+    if (row.manualEdit) await this.writeRows(customerId, [matched], next);
+  }
+
+  /** The key to edit a payee under: its existing NAME rule's (rename target or key), else its own. */
+  private async ruleKeyForName(
+    customerId: number,
+    name: string,
+  ): Promise<string> {
+    const key = nameKey(name);
+    const rules = await this.prisma.customerNameRule.findMany({
+      where: { customerId, matchType: 'NAME' },
+      select: { matchKey: true, name: true },
+    });
+    const hit = rules.find(
+      (r) => r.matchKey === key || (r.name && nameKey(r.name) === key),
+    );
+    return hit?.matchKey ?? key;
+  }
+
+  /**
    * Remove a customer's rule: their rows go back to what the firm memory says for each
-   * description (and keep what they have where the memory knows nothing).
+   * description (and keep what they have where the memory knows nothing). One-time edits
+   * stay as they are.
    */
   async resetRule(
     customerId: number,
     input: { matchType: RuleMatchType; matchKey: string },
   ): Promise<void> {
-    const matchKey =
-      input.matchType === 'NAME'
-        ? nameKey(input.matchKey)
-        : descriptionKey(input.matchKey) || input.matchKey.trim().toLowerCase();
+    const matchKey = ruleKeyOf(input.matchType, input.matchKey);
     const where = {
       customerId_matchType_matchKey: {
         customerId,
@@ -214,6 +336,7 @@ export class NameMemoryService {
       input.matchType,
       matchKey,
       names,
+      false,
     );
     if (!rows.length) return;
     // Re-resolve WITHOUT the deleted rule — any other rule of theirs still applies.
@@ -244,59 +367,40 @@ export class NameMemoryService {
     });
   }
 
-  /** Apply `next` to every row the rule matches; marks the customer's taxes stale. */
-  private async rewrite(
-    customerId: number,
-    matchType: RuleMatchType,
-    matchKey: string,
-    names: ReadonlySet<string>,
-    next: (row: MatchedRow) => { name: string | null; category: string },
-  ): Promise<void> {
-    const rows = await this.matchingRows(
-      customerId,
-      matchType,
-      matchKey,
-      names,
-    );
-    await this.writeRows(customerId, rows, next);
-  }
-
   private async matchingRows(
     customerId: number,
     matchType: RuleMatchType,
     matchKey: string,
     names: ReadonlySet<string>,
+    includeManual: boolean,
   ): Promise<MatchedRow[]> {
-    const select = {
-      id: true,
-      description: true,
-      name: true,
-      amount: true,
-      offsetAccount: true,
-      debitAccount: true,
-      creditAccount: true,
-    } as const;
+    const manual = includeManual ? {} : { manualEdit: false };
     if (matchType === 'NAME') {
       // MySQL compares names case-insensitively, which is what a NAME key means.
       const rows = await this.prisma.bankTransaction.findMany({
-        where: { customerId, name: { in: [...names] } },
-        select,
+        where: { customerId, name: { in: [...names] }, ...manual },
+        select: MATCH_SELECT,
       });
       return rows.map(toMatched);
     }
     const rows = await this.prisma.bankTransaction.findMany({
-      where: { customerId },
-      select,
+      where: { customerId, ...manual },
+      select: MATCH_SELECT,
     });
     return rows
       .filter((r) => descriptionKey(r.description) === matchKey)
       .map(toMatched);
   }
 
+  /**
+   * Apply `next` to these rows; marks the customer's taxes stale. `manual` flags them as a
+   * one-time edit (or, false, leaves the flag as it is).
+   */
   private async writeRows(
     customerId: number,
     rows: MatchedRow[],
     next: (row: MatchedRow) => { name: string | null; category: string },
+    manual = false,
   ): Promise<void> {
     const updates = rows.flatMap((row) => {
       const { name, category } = next(row);
@@ -310,6 +414,7 @@ export class NameMemoryService {
             name,
             offsetAccount: category,
             ...doubleEntry(row.amount, bank, category),
+            ...(manual && { manualEdit: true }),
           },
         }),
       ];
@@ -343,6 +448,21 @@ export class NameMemoryService {
   }
 }
 
+const MATCH_SELECT = {
+  id: true,
+  description: true,
+  name: true,
+  amount: true,
+  offsetAccount: true,
+  debitAccount: true,
+  creditAccount: true,
+} as const;
+
+const ruleKeyOf = (matchType: RuleMatchType, raw: string): string =>
+  matchType === 'NAME'
+    ? nameKey(raw)
+    : descriptionKey(raw) || raw.trim().toLowerCase();
+
 /**
  * The name a NAME rule's rows had before it renamed them. The key is lower-cased, so a row
  * still carrying the original spelling keeps it; a renamed row gets the key back, title-cased.
@@ -371,5 +491,13 @@ function toMatched(r: {
   debitAccount: string;
   creditAccount: string;
 }): MatchedRow {
-  return { ...r, amount: Number(r.amount.toString()) };
+  return {
+    id: r.id,
+    description: r.description,
+    name: r.name,
+    amount: Number(r.amount.toString()),
+    offsetAccount: r.offsetAccount,
+    debitAccount: r.debitAccount,
+    creditAccount: r.creditAccount,
+  };
 }

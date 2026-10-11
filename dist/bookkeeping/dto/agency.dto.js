@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -112,6 +112,7 @@ class SaveNameRuleDto {
     matchKey;
     name;
     category;
+    scope;
 }
 exports.SaveNameRuleDto = SaveNameRuleDto;
 __decorate([
@@ -138,6 +139,11 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", Object)
 ], SaveNameRuleDto.prototype, "category", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsIn)(['ALWAYS', 'ONCE']),
+    __metadata("design:type", String)
+], SaveNameRuleDto.prototype, "scope", void 0);
 class ResetNameRuleDto {
     matchType;
     matchKey;
@@ -154,4 +160,43 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
 ], ResetNameRuleDto.prototype, "matchKey", void 0);
+class EditTransactionDto {
+    name;
+    category;
+    scope;
+}
+exports.EditTransactionDto = EditTransactionDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", Object)
+], EditTransactionDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", Object)
+], EditTransactionDto.prototype, "category", void 0);
+__decorate([
+    (0, class_validator_1.IsIn)(['ALWAYS', 'ONCE']),
+    __metadata("design:type", String)
+], EditTransactionDto.prototype, "scope", void 0);
+class CreateAccountDto {
+    name;
+    type;
+}
+exports.CreateAccountDto = CreateAccountDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], CreateAccountDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY']),
+    __metadata("design:type", String)
+], CreateAccountDto.prototype, "type", void 0);
 //# sourceMappingURL=agency.dto.js.map

@@ -129,8 +129,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 },
             });
             const bank = extracted.accountName ?? 'Bank account';
-            const lines = await this.names.resolveStatement(row.customerId, extracted.transactions);
-            const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank);
+            const { lines, customAccounts } = await this.names.resolveStatement(row.customerId, extracted.transactions);
+            const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
             const mismatch = verification === 'MISMATCH';

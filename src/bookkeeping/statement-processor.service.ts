@@ -146,11 +146,11 @@ export class StatementProcessorService {
       const bank = extracted.accountName ?? 'Bank account';
       // The customer's own rules first, then the firm memory, then the AI's guess — and
       // the memory learns this statement's new descriptions (`name-memory.util.ts`).
-      const lines = await this.names.resolveStatement(
+      const { lines, customAccounts } = await this.names.resolveStatement(
         row.customerId,
         extracted.transactions,
       );
-      const rows = buildLedgerRows(lines, bank);
+      const rows = buildLedgerRows(lines, bank, customAccounts);
       const { verification, checks } = extracted.verification;
       const runs = row.runs + 1;
       const mismatch = verification === 'MISMATCH';
