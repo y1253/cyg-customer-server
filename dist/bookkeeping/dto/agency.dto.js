@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -199,4 +199,57 @@ __decorate([
     (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY']),
     __metadata("design:type", String)
 ], CreateAccountDto.prototype, "type", void 0);
+class SplitDto {
+    id;
+    name;
+    category;
+    amount;
+}
+exports.SplitDto = SplitDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsNumber)(),
+    __metadata("design:type", Number)
+], SplitDto.prototype, "id", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", Object)
+], SplitDto.prototype, "name", void 0);
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SplitDto.prototype, "category", void 0);
+__decorate([
+    (0, class_validator_1.IsNumber)({ maxDecimalPlaces: 2 }),
+    (0, class_validator_1.Min)(0.01),
+    __metadata("design:type", Number)
+], SplitDto.prototype, "amount", void 0);
+class SaveSplitsDto {
+    splits;
+}
+exports.SaveSplitsDto = SaveSplitsDto;
+__decorate([
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(50),
+    (0, class_validator_1.ValidateNested)({ each: true }),
+    (0, class_transformer_1.Type)(() => SplitDto),
+    __metadata("design:type", Array)
+], SaveSplitsDto.prototype, "splits", void 0);
+class RenameTaxLineDto {
+    name;
+}
+exports.RenameTaxLineDto = RenameTaxLineDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", Object)
+], RenameTaxLineDto.prototype, "name", void 0);
 //# sourceMappingURL=agency.dto.js.map

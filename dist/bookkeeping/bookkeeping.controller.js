@@ -24,6 +24,7 @@ const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
 const export_service_1 = require("./export.service");
 const reports_service_1 = require("./reports.service");
+const splits_service_1 = require("./splits.service");
 const tax_service_1 = require("./tax.service");
 const statement_uploads_1 = require("./statement-uploads");
 function attachment(filename, inline = false) {
@@ -38,7 +39,8 @@ let BookkeepingController = class BookkeepingController {
     tax;
     nameMemory;
     accounts;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts) {
+    splits;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -46,6 +48,7 @@ let BookkeepingController = class BookkeepingController {
         this.tax = tax;
         this.nameMemory = nameMemory;
         this.accounts = accounts;
+        this.splits = splits;
     }
     generate(req) {
         return this.bookkeeping.generate(req.user.customerId);
@@ -89,6 +92,14 @@ let BookkeepingController = class BookkeepingController {
             category,
             scope: dto.scope,
         });
+    }
+    saveSplits(req, id, dto) {
+        return this.splits.save(req.user.customerId, id, dto.splits);
+    }
+    async renameTaxLine(req, id, agencyId, dto) {
+        const ok = await this.tax.renameLine(req.user.customerId, id, agencyId, dto.name?.trim() || null);
+        if (!ok)
+            throw new common_1.NotFoundException('Tax line not found');
     }
     async editValues(customerId, dto) {
         const name = dto.name?.trim() || null;
@@ -251,6 +262,27 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "editTransaction", null);
 __decorate([
+    (0, common_1.Put)('transactions/:id/splits'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SaveSplitsDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "saveSplits", null);
+__decorate([
+    (0, common_1.Patch)('transactions/:id/taxes/:agencyId'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Param)('agencyId', common_1.ParseIntPipe)),
+    __param(3, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, Number, agency_dto_1.RenameTaxLineDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "renameTaxLine", null);
+__decorate([
     (0, common_1.Delete)('names/rule'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Body)()),
@@ -349,6 +381,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         reports_service_1.ReportsService,
         tax_service_1.TaxService,
         name_memory_service_1.NameMemoryService,
-        customer_accounts_service_1.CustomerAccountsService])
+        customer_accounts_service_1.CustomerAccountsService,
+        splits_service_1.SplitsService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

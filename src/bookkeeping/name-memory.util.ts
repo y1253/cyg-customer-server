@@ -64,7 +64,33 @@ export interface ResolveContext {
   nameRules: ReadonlyMap<string, NameRule>;
   /** The customer's own categories (`CustomerAccount`) — valid in their rules. */
   customAccounts?: ReadonlySet<string>;
+  /** The statement's bank ("TD Canada Trust") — the payee of its own fees and interest. */
+  bankName?: string | null;
 }
+
+/** Common banks by the name their customers use for them; anything else stays as printed. */
+const BANK_NAMES: ReadonlyArray<[RegExp, string]> = [
+  [/^td\b|toronto[- ]dominion/i, 'TD Bank'],
+  [/^bmo\b|bank of montreal|banque de montr[ée]al/i, 'BMO'],
+  [/^rbc\b|royal bank/i, 'RBC'],
+  [/^cibc\b|canadian imperial/i, 'CIBC'],
+  [/scotia/i, 'Scotiabank'],
+  [/national bank|banque nationale/i, 'National Bank'],
+  [/desjardins/i, 'Desjardins'],
+];
+
+/** The payee name for a bank's own charges: "TD Canada Trust" → "TD Bank". */
+export function bankPayeeName(
+  bankName: string | null | undefined,
+): string | null {
+  const raw = cleanName(bankName);
+  if (!raw) return null;
+  return BANK_NAMES.find(([re]) => re.test(raw))?.[1] ?? raw;
+}
+
+/** A category the bank itself charges or pays: its fees and interest. */
+export const isBankCharge = (category: string): boolean =>
+  /interest|bank fee|bank charge|service charge/i.test(category);
 
 export type NameSource = 'ai' | 'memory' | 'customer';
 
@@ -81,8 +107,10 @@ export interface Resolved {
  * 2. the FIRM memory for this description — what was concluded the first time it was seen,
  *    so the same description reads the same everywhere (an empty memory field keeps the
  *    AI's value);
- * 3. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
- * 4. the customer's NAME rule, matched on the name as it stands after 1–3.
+ * 3. still no name, and a bank fee or interest: the statement's bank ("TD Bank") — never
+ *    written to the firm memory, which serves every bank;
+ * 4. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
+ * 5. the customer's NAME rule, matched on the name as it stands after 1–4.
  *
  * So a customer's own edit always wins, and the AI is the last resort, never the first.
  * The category always goes through `normalizeAccount`: nothing outside the chart gets in.
@@ -104,6 +132,8 @@ export function resolveRow(
     if (memCategory !== UNCATEGORIZED) category = memCategory;
     if (memName || memCategory !== UNCATEGORIZED) source = 'memory';
   }
+
+  if (!name && isBankCharge(category)) name = bankPayeeName(ctx.bankName);
 
   const apply = (rule: NameRule | undefined) => {
     if (!rule) return;

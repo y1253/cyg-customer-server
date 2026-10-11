@@ -31,7 +31,8 @@ export async function loadOpeningStatements(
     }),
     prisma.bankTransaction.groupBy({
       by: ['statementId'],
-      where: { customerId, statement: done },
+      // Splits are parts of their parent's amount, already in it.
+      where: { customerId, statement: done, splitOfId: null },
       _sum: { amount: true },
     }),
   ]);

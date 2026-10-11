@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.nameKey = exports.RULE_MATCH_TYPES = void 0;
+exports.isBankCharge = exports.nameKey = exports.RULE_MATCH_TYPES = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
+exports.bankPayeeName = bankPayeeName;
 exports.resolveRow = resolveRow;
 exports.memoryWrites = memoryWrites;
 exports.indexRules = indexRules;
@@ -30,6 +31,23 @@ function cleanName(name) {
 }
 const nameKey = (name) => name.trim().toLowerCase();
 exports.nameKey = nameKey;
+const BANK_NAMES = [
+    [/^td\b|toronto[- ]dominion/i, 'TD Bank'],
+    [/^bmo\b|bank of montreal|banque de montr[ée]al/i, 'BMO'],
+    [/^rbc\b|royal bank/i, 'RBC'],
+    [/^cibc\b|canadian imperial/i, 'CIBC'],
+    [/scotia/i, 'Scotiabank'],
+    [/national bank|banque nationale/i, 'National Bank'],
+    [/desjardins/i, 'Desjardins'],
+];
+function bankPayeeName(bankName) {
+    const raw = cleanName(bankName);
+    if (!raw)
+        return null;
+    return BANK_NAMES.find(([re]) => re.test(raw))?.[1] ?? raw;
+}
+const isBankCharge = (category) => /interest|bank fee|bank charge|service charge/i.test(category);
+exports.isBankCharge = isBankCharge;
 function resolveRow(row, ctx) {
     let name = cleanName(row.name);
     let category = (0, chart_of_accounts_1.normalizeAccount)(row.offsetAccount, ctx.customAccounts);
@@ -46,6 +64,8 @@ function resolveRow(row, ctx) {
         if (memName || memCategory !== chart_of_accounts_1.UNCATEGORIZED)
             source = 'memory';
     }
+    if (!name && (0, exports.isBankCharge)(category))
+        name = bankPayeeName(ctx.bankName);
     const apply = (rule) => {
         if (!rule)
             return;

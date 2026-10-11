@@ -163,3 +163,48 @@ export class CreateAccountDto {
   @IsIn(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY'])
   type!: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }
+
+/** One hand-made split of a transaction. `amount` is positive; it takes the parent's sign. */
+export class SplitDto {
+  /** An existing split to keep (and update); omitted for a new one. */
+  @IsOptional()
+  @IsNumber()
+  id?: number;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string | null;
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  category!: string;
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  amount!: number;
+}
+
+/**
+ * `PUT /api/bookkeeping/transactions/:id/splits` — the transaction's whole set of splits:
+ * listed ones are kept or created, missing ones removed (an empty list un-splits it).
+ */
+export class SaveSplitsDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => SplitDto)
+  splits!: SplitDto[];
+}
+
+/** `PATCH /api/bookkeeping/transactions/:id/taxes/:agencyId` — a tax line's own name. */
+export class RenameTaxLineDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string | null;
+}

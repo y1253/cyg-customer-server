@@ -23,6 +23,7 @@ export interface StatementView {
 export interface TransactionView {
     key: string;
     id: number;
+    splitOfId?: number;
     statementId: number;
     pendingDate: string | null;
     postingDate: string | null;
@@ -33,8 +34,9 @@ export interface TransactionView {
     debitAccount: string;
     creditAccount: string;
     statementLabel: string;
-    kind?: 'opening' | 'tax';
+    kind?: 'opening' | 'tax' | 'split';
     taxRate?: number;
+    taxAgencyId?: number;
 }
 export declare class BookkeepingService {
     private readonly prisma;

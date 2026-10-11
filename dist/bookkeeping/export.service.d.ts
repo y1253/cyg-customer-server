@@ -11,6 +11,7 @@ export interface LedgerExportRow {
     creditAccount: string;
     statement: string;
     tax?: boolean;
+    split?: boolean;
 }
 export declare function netOf(rows: Array<{
     amount: number;
@@ -18,6 +19,7 @@ export declare function netOf(rows: Array<{
 export declare function exportRowWithTaxes(row: Omit<LedgerExportRow, 'tax'>, offsetAccount: string, lines: Array<{
     agency: string;
     rate: number;
+    name?: string | null;
 }>): LedgerExportRow[];
 export declare class LedgerExportService {
     private readonly prisma;

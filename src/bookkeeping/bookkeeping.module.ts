@@ -7,6 +7,7 @@ import { LedgerExportService } from './export.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { ReportsService } from './reports.service';
+import { SplitsService } from './splits.service';
 import { StatementExtractor } from './statement-extractor';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
@@ -21,6 +22,7 @@ import { TaxService } from './tax.service';
     NameMemoryService,
     OpenAiClient,
     ReportsService,
+    SplitsService,
     StatementExtractor,
     StatementProcessorService,
     TaxService,

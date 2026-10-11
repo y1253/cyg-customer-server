@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   ParseIntPipe,
   Patch,
@@ -37,7 +38,9 @@ import {
   CreateAccountDto,
   CreateAgencyDto,
   EditTransactionDto,
+  RenameTaxLineDto,
   ResetNameRuleDto,
+  SaveSplitsDto,
   SaveNameRuleDto,
   UpdateAgencyDto,
   UpdateNameDto,
@@ -46,6 +49,7 @@ import {
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
+import { SplitsService } from './splits.service';
 import {
   TaxService,
   type AgencyView,
@@ -78,6 +82,7 @@ export class BookkeepingController {
     private readonly tax: TaxService,
     private readonly nameMemory: NameMemoryService,
     private readonly accounts: CustomerAccountsService,
+    private readonly splits: SplitsService,
   ) {}
 
   /** Reads every UPLOADED statement and re-applies changed tax settings. */
@@ -178,6 +183,38 @@ export class BookkeepingController {
       category,
       scope: dto.scope,
     });
+  }
+
+  /**
+   * Split a transaction by hand: its whole set of splits, each with an amount, a name and
+   * a category. They may not add up to more than the transaction.
+   */
+  @Put('transactions/:id/splits')
+  @HttpCode(204)
+  saveSplits(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SaveSplitsDto,
+  ): Promise<void> {
+    return this.splits.save(req.user.customerId, id, dto.splits);
+  }
+
+  /** Name one tax line (an agency's tax on a row) — null puts the row's own name back. */
+  @Patch('transactions/:id/taxes/:agencyId')
+  @HttpCode(204)
+  async renameTaxLine(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('agencyId', ParseIntPipe) agencyId: number,
+    @Body() dto: RenameTaxLineDto,
+  ): Promise<void> {
+    const ok = await this.tax.renameLine(
+      req.user.customerId,
+      id,
+      agencyId,
+      dto.name?.trim() || null,
+    );
+    if (!ok) throw new NotFoundException('Tax line not found');
   }
 
   /** A name and/or a category the customer may use — the chart or one of their own. */

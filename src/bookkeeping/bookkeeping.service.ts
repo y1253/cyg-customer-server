@@ -21,6 +21,8 @@ import {
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
+import { remainderOf, splitTotals } from './splits.util';
+import type { StoredTax } from './tax.service';
 import { taxSplit } from './tax.util';
 
 export interface StatementView {
@@ -41,10 +43,18 @@ export interface StatementView {
 }
 
 export interface TransactionView {
-  /** Unique per row, the React key: `t:<transaction>`, `o:<statement>`, `x:<tax line>`. */
+  /**
+   * Unique per row, the React key: `t:<transaction>`, `s:<split>`, `o:<statement>`,
+   * `x:<tax line>`.
+   */
   key: string;
-  /** The transaction's id; for a tax row, its PARENT transaction's id. 0 on a starting balance. */
+  /**
+   * The transaction's id; for a tax row, the id of the row it taxes (a transaction or a
+   * split). 0 on a starting balance.
+   */
   id: number;
+  /** On a split, and on a split's tax rows: the transaction it was split from. */
+  splitOfId?: number;
   statementId: number;
   pendingDate: string | null;
   postingDate: string | null;
@@ -61,15 +71,41 @@ export interface TransactionView {
    * `opening`: the statement's printed starting balance, offset to Owner's Loan — never
    * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`), taken OUT
    * of that row: the row above shows its amount without tax, and the two add back to what
-   * the bank moved.
+   * the bank moved. `split`: a part the customer split off the transaction above by hand,
+   * with its own name, category and taxes; the transaction shows what is left of it.
    */
-  kind?: 'opening' | 'tax';
+  kind?: 'opening' | 'tax' | 'split';
   /** On a tax row: the agency's rate, a percent. */
   taxRate?: number;
+  /** On a tax row: the agency — the key for renaming the line. */
+  taxAgencyId?: number;
 }
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
+
+/** A row without its tax, then one line per agency (named by the customer, or as the row). */
+function withTaxLines(
+  p: TransactionView,
+  lines: StoredTax[] | undefined,
+): TransactionView[] {
+  if (!lines?.length) return [p];
+  const split = taxSplit(p, lines);
+  return [
+    split.parent,
+    ...split.taxes.map(
+      (entry, i): TransactionView => ({
+        ...p,
+        ...entry,
+        key: `x:${lines[i].id}`,
+        name: lines[i].name ?? p.name,
+        kind: 'tax',
+        taxRate: lines[i].rate,
+        taxAgencyId: lines[i].agencyId,
+      }),
+    ),
+  ];
+}
 
 /**
  * What the customer sees of a statement. The check against the bank's figures
@@ -204,6 +240,32 @@ export class BookkeepingService {
     ]);
 
     const byId = new Map(statements.map((s) => [s.id, s]));
+    const totals = splitTotals(
+      rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
+    );
+    const viewOf = (r: (typeof rows)[number]): TransactionView => ({
+      key: r.splitOfId ? `s:${r.id}` : `t:${r.id}`,
+      id: r.id,
+      statementId: r.statementId,
+      pendingDate: day(r.pendingDate),
+      postingDate: day(r.postingDate),
+      description: r.description,
+      name: r.name,
+      amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
+      offsetAccount: r.offsetAccount,
+      debitAccount: r.debitAccount,
+      creditAccount: r.creditAccount,
+      statementLabel: statementLabel(r.statement),
+      ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' as const }),
+    });
+    const splitsOf = new Map<number, TransactionView[]>();
+    for (const r of rows) {
+      if (!r.splitOfId) continue;
+      const list = splitsOf.get(r.splitOfId) ?? [];
+      list.push(viewOf(r));
+      splitsOf.set(r.splitOfId, list);
+    }
+    for (const list of splitsOf.values()) list.sort((a, b) => a.id - b.id);
     const wanted = statementIds?.length ? new Set(statementIds) : null;
     const openings = openingRows(statements).filter(
       (o) => !wanted || wanted.has(o.statementId),
@@ -215,25 +277,14 @@ export class BookkeepingService {
       position: number;
       view: TransactionView;
     }> = [
-      ...rows.map((r) => ({
-        postingDate: r.postingDate,
-        statementId: r.statementId,
-        position: r.position,
-        view: {
-          key: `t:${r.id}`,
-          id: r.id,
+      ...rows
+        .filter((r) => !r.splitOfId)
+        .map((r) => ({
+          postingDate: r.postingDate,
           statementId: r.statementId,
-          pendingDate: day(r.pendingDate),
-          postingDate: day(r.postingDate),
-          description: r.description,
-          name: r.name,
-          amount: Number(r.amount),
-          offsetAccount: r.offsetAccount,
-          debitAccount: r.debitAccount,
-          creditAccount: r.creditAccount,
-          statementLabel: statementLabel(r.statement),
-        },
-      })),
+          position: r.position,
+          view: viewOf(r),
+        })),
       ...openings.map((o) => ({
         postingDate: o.postingDate,
         statementId: o.statementId,
@@ -255,25 +306,19 @@ export class BookkeepingService {
         },
       })),
     ];
-    // Newest first. A taxed row shows its amount without tax, its tax lines directly under it.
+    // Newest first. A taxed row shows its amount without tax, its tax lines directly under
+    // it; then its splits, each followed by its own tax lines.
     const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
-    return sorted.flatMap((p): TransactionView[] => {
-      const lines = p.kind ? undefined : taxes.get(p.id);
-      if (!lines?.length) return [p];
-      const split = taxSplit(p, lines);
-      return [
-        split.parent,
-        ...split.taxes.map(
-          (entry, i): TransactionView => ({
-            ...p,
-            ...entry,
-            key: `x:${lines[i].id}`,
-            kind: 'tax',
-            taxRate: lines[i].rate,
-          }),
-        ),
-      ];
-    });
+    return sorted.flatMap((p): TransactionView[] =>
+      p.kind
+        ? [p]
+        : [
+            ...withTaxLines(p, taxes.get(p.id)),
+            ...(splitsOf.get(p.id) ?? []).flatMap((c) =>
+              withTaxLines(c, taxes.get(c.id)),
+            ),
+          ],
+    );
   }
 
   async file(

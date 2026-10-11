@@ -16,6 +16,7 @@ const export_service_1 = require("./export.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
 const reports_service_1 = require("./reports.service");
+const splits_service_1 = require("./splits.service");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_processor_service_1 = require("./statement-processor.service");
 const tax_service_1 = require("./tax.service");
@@ -33,6 +34,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             name_memory_service_1.NameMemoryService,
             openai_client_1.OpenAiClient,
             reports_service_1.ReportsService,
+            splits_service_1.SplitsService,
             statement_extractor_1.StatementExtractor,
             statement_processor_service_1.StatementProcessorService,
             tax_service_1.TaxService,

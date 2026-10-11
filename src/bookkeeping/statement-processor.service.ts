@@ -145,10 +145,12 @@ export class StatementProcessorService {
       });
       const bank = extracted.accountName ?? 'Bank account';
       // The customer's own rules first, then the firm memory, then the AI's guess — and
-      // the memory learns this statement's new descriptions (`name-memory.util.ts`).
+      // the memory learns this statement's new descriptions (`name-memory.util.ts`). Bank
+      // fees and interest with no payee are named after the bank.
       const { lines, customAccounts } = await this.names.resolveStatement(
         row.customerId,
         extracted.transactions,
+        extracted.bankName,
       );
       const rows = buildLedgerRows(lines, bank, customAccounts);
       const { verification, checks } = extracted.verification;

@@ -1,5 +1,6 @@
 import { UNCATEGORIZED } from './chart-of-accounts';
 import {
+  bankPayeeName,
   descriptionKey,
   indexRules,
   memoryWrites,
@@ -265,5 +266,56 @@ describe('memoryWrites', () => {
       new Map(),
     );
     expect(creates).toEqual([]);
+  });
+});
+
+describe('bank fees and interest are named after the bank', () => {
+  it('uses the name customers know the bank by', () => {
+    expect(bankPayeeName('TD Canada Trust')).toBe('TD Bank');
+    expect(bankPayeeName('TD')).toBe('TD Bank');
+    expect(bankPayeeName('Bank of Montreal')).toBe('BMO');
+    expect(bankPayeeName('Royal Bank of Canada')).toBe('RBC');
+    expect(bankPayeeName('Tangerine')).toBe('Tangerine');
+    expect(bankPayeeName('  ')).toBeNull();
+    expect(bankPayeeName(null)).toBeNull();
+  });
+
+  it('fills a nameless fee or interest row, and nothing else', () => {
+    const c = { ...ctx(), bankName: 'TD Canada Trust' };
+    const fee = { description: 'MONTHLY PLAN FEE', offsetAccount: 'Bank Fees' };
+    expect(resolveRow(fee, c).name).toBe('TD Bank');
+    expect(
+      resolveRow(
+        { description: 'INTEREST', offsetAccount: 'Interest Income' },
+        c,
+      ).name,
+    ).toBe('TD Bank');
+    expect(
+      resolveRow(
+        { description: 'TRANSFER 0042', offsetAccount: 'Owner Draws' },
+        c,
+      ).name,
+    ).toBeNull();
+    // A name the AI read stays.
+    expect(resolveRow({ ...fee, name: 'Moneris' }, c).name).toBe('Moneris');
+  });
+
+  it("the customer's rule for that name still applies", () => {
+    const c = {
+      ...ctx({}, [
+        {
+          matchType: 'NAME',
+          matchKey: 'td bank',
+          name: null,
+          category: 'Office Expense',
+        },
+      ]),
+      bankName: 'TD',
+    };
+    const out = resolveRow(
+      { description: 'SERVICE CHARGE', offsetAccount: 'Bank Fees' },
+      c,
+    );
+    expect(out).toMatchObject({ name: 'TD Bank', category: 'Office Expense' });
   });
 });

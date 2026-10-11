@@ -8,14 +8,16 @@ import {
   OPENING_POSITION,
   openingRows,
 } from './opening-balance.util';
+import { remainderOf, splitTotals } from './splits.util';
 import { statementLabel } from './statement-label';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
 export interface LedgerExportRow {
   /**
-   * The transaction's id — and the SAME id on each of its tax lines, so the customer can
-   * see in Excel which lines belong to one transaction. Null on a starting-balance row.
+   * The transaction's id — and the SAME id on each of its tax lines and splits, so the
+   * customer can see in Excel which lines belong to one transaction. Null on a
+   * starting-balance row.
    */
   id: number | null;
   pendingDate: Date | null;
@@ -28,6 +30,8 @@ export interface LedgerExportRow {
   statement: string;
   /** A tax line under the row above it (its tax, taken out of that row): grey italic. */
   tax?: boolean;
+  /** A part the customer split off the transaction above by hand: grey. */
+  split?: boolean;
 }
 
 const BRAND = '#169F96';
@@ -47,14 +51,16 @@ export function netOf(rows: Array<{ amount: number }>): number {
 export function exportRowWithTaxes(
   row: Omit<LedgerExportRow, 'tax'>,
   offsetAccount: string,
-  lines: Array<{ agency: string; rate: number }>,
+  lines: Array<{ agency: string; rate: number; name?: string | null }>,
 ): LedgerExportRow[] {
   if (!lines.length) return [row];
   const split = taxSplit({ ...row, offsetAccount }, lines);
   return [
     { ...row, amount: split.parent.amount },
-    ...split.taxes.map((e) => ({
+    ...split.taxes.map((e, i) => ({
       ...row,
+      split: undefined,
+      name: lines[i].name ?? row.name,
       amount: e.amount,
       debitAccount: e.debitAccount,
       creditAccount: e.creditAccount,
@@ -103,27 +109,39 @@ export class LedgerExportService {
     ]);
     const byId = new Map(statements.map((s) => [s.id, s]));
     const openings = openingRows(statements);
+    const totals = splitTotals(
+      rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
+    );
+    const exportRow = (r: (typeof rows)[number]) => ({
+      id: r.splitOfId ?? r.id,
+      pendingDate: r.pendingDate,
+      postingDate: r.postingDate,
+      name: r.name ?? '',
+      description: r.description,
+      amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
+      debitAccount: r.debitAccount,
+      creditAccount: r.creditAccount,
+      statement: statementLabel(r.statement),
+      ...(r.splitOfId && { split: true }),
+    });
+    const splitsOf = new Map<number, Array<(typeof rows)[number]>>();
+    for (const r of rows) {
+      if (!r.splitOfId) continue;
+      splitsOf.set(r.splitOfId, [...(splitsOf.get(r.splitOfId) ?? []), r]);
+    }
 
     // Oldest first: a statement's Starting balance row comes before its first row, and
     // each row's tax lines sit directly under it.
     const sorted = [
-      ...rows.map((r) => ({
-        statementId: r.statementId,
-        position: r.position,
-        id: r.id,
-        offsetAccount: r.offsetAccount,
-        row: {
+      ...rows
+        .filter((r) => !r.splitOfId)
+        .map((r) => ({
+          statementId: r.statementId,
+          position: r.position,
           id: r.id,
-          pendingDate: r.pendingDate,
-          postingDate: r.postingDate,
-          name: r.name ?? '',
-          description: r.description,
-          amount: Number(r.amount),
-          debitAccount: r.debitAccount,
-          creditAccount: r.creditAccount,
-          statement: statementLabel(r.statement),
-        },
-      })),
+          offsetAccount: r.offsetAccount,
+          row: exportRow(r),
+        })),
       ...openings.map((o) => ({
         statementId: o.statementId,
         position: OPENING_POSITION,
@@ -147,9 +165,19 @@ export class LedgerExportService {
         { ...b, postingDate: b.row.postingDate },
       ),
     );
-    return sorted.flatMap((p) =>
-      exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
-    );
+    // Each transaction, then its splits — every one followed by its own tax lines.
+    return sorted.flatMap((p) => [
+      ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
+      ...(splitsOf.get(p.id) ?? [])
+        .sort((a, b) => a.id - b.id)
+        .flatMap((c) =>
+          exportRowWithTaxes(
+            exportRow(c),
+            c.offsetAccount,
+            taxes.get(c.id) ?? [],
+          ),
+        ),
+    ]);
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {
@@ -192,11 +220,12 @@ export class LedgerExportService {
       fgColor: { argb: 'FF169F96' },
     };
     for (const r of rows) {
-      const { tax, ...cells } = r;
+      const { tax, split, ...cells } = r;
       const row = ws.addRow(cells);
       if (tax) row.font = { italic: true, color: { argb: 'FF8A8F98' } };
+      else if (split) row.font = { color: { argb: 'FF5B6470' } };
     }
-    const count = rows.filter((r) => !r.tax).length;
+    const count = rows.filter((r) => !r.tax && !r.split).length;
     const total = ws.addRow({
       description: `Net change (${count} transactions)`,
       amount: netOf(rows),
@@ -249,7 +278,7 @@ export class LedgerExportService {
         .font('Helvetica')
         .fontSize(10)
         .text(
-          `${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax).length} transactions  ·  generated ${ISO(new Date())}`,
+          `${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax && !r.split).length} transactions  ·  generated ${ISO(new Date())}`,
         );
       doc.moveDown(0.8);
 

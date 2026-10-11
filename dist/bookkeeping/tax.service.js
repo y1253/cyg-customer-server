@@ -19,6 +19,8 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_util_1 = require("./name-memory.util");
+const reconcile_util_1 = require("./reconcile.util");
+const splits_util_1 = require("./splits.util");
 const tax_util_1 = require("./tax.util");
 const BATCH = 100;
 const STALE_RUN_MS = 10 * 60_000;
@@ -216,7 +218,9 @@ let TaxService = TaxService_1 = class TaxService {
             const list = out.get(r.transactionId) ?? [];
             list.push({
                 id: r.id,
+                agencyId: r.agencyId,
                 agency: r.agency.name,
+                name: r.name,
                 kind: r.kind,
                 rate: Number(r.rate),
                 amount: Number(r.amount),
@@ -418,20 +422,32 @@ let TaxService = TaxService_1 = class TaxService {
                     name: true,
                     amount: true,
                     offsetAccount: true,
+                    splitOfId: true,
                 },
             }),
         ]);
+        const totals = await this.splitTotalsOf(rows.map((r) => r.id));
         const agencies = agencyRows.map((a) => ({
             id: a.id,
             name: a.name,
             rates: Object.fromEntries(a.rates.map((r) => [r.kind, Number(r.rate)])),
         }));
-        const todo = (0, tax_util_1.candidates)(rows.map((r) => ({ ...r, amount: Number(r.amount) })), agencies, await this.accounts.types(customerId));
+        const todo = (0, tax_util_1.candidates)(rows
+            .map(({ splitOfId, ...r }) => ({
+            ...r,
+            amount: (0, splits_util_1.remainderOf)({ id: r.id, splitOfId, amount: Number(r.amount) }, totals),
+        }))
+            .filter((r) => r.amount !== 0), agencies, await this.accounts.types(customerId));
         const lines = [];
         for (let i = 0; i < todo.length; i += BATCH) {
             lines.push(...(await this.ask(todo.slice(i, i + BATCH), agencies)));
         }
         const ids = rows.map((r) => r.id);
+        const named = await this.prisma.transactionTax.findMany({
+            where: { customerId, transactionId: { in: ids }, name: { not: null } },
+            select: { transactionId: true, agencyId: true, name: true },
+        });
+        const nameOf = new Map(named.map((n) => [`${n.transactionId}:${n.agencyId}`, n.name]));
         await this.prisma.$transaction([
             this.prisma.transactionTax.deleteMany({
                 where: { customerId, transactionId: { in: ids } },
@@ -444,11 +460,31 @@ let TaxService = TaxService_1 = class TaxService {
                     kind: l.kind,
                     rate: l.rate.toFixed(3),
                     amount: l.amount.toFixed(2),
+                    name: nameOf.get(`${l.transactionId}:${l.agencyId}`) ?? null,
                 })),
             }),
         ]);
         this.logger.log(`customer #${customerId}: ${lines.length} tax line(s) on ${todo.length} candidate row(s) ` +
             `of ${rows.length}, ${Math.ceil(todo.length / BATCH)} call(s), ${Date.now() - started}ms`);
+    }
+    async splitTotalsOf(ids) {
+        if (!ids.length)
+            return new Map();
+        const sums = await this.prisma.bankTransaction.groupBy({
+            by: ['splitOfId'],
+            where: { splitOfId: { in: ids } },
+            _sum: { amount: true },
+        });
+        return new Map(sums
+            .filter((g) => g.splitOfId != null)
+            .map((g) => [g.splitOfId, (0, reconcile_util_1.cents)(Number(g._sum.amount ?? 0))]));
+    }
+    async renameLine(customerId, transactionId, agencyId, name) {
+        const { count } = await this.prisma.transactionTax.updateMany({
+            where: { customerId, transactionId, agencyId },
+            data: { name },
+        });
+        return count > 0;
     }
     async ask(rows, agencies) {
         const reply = await this.openai.chat({

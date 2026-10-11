@@ -12,7 +12,7 @@ async function loadOpeningStatements(prisma, customerId) {
         }),
         prisma.bankTransaction.groupBy({
             by: ['statementId'],
-            where: { customerId, statement: done },
+            where: { customerId, statement: done, splitOfId: null },
             _sum: { amount: true },
         }),
     ]);

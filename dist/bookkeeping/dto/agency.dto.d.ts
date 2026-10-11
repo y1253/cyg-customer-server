@@ -40,3 +40,15 @@ export declare class CreateAccountDto {
     name: string;
     type: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }
+export declare class SplitDto {
+    id?: number;
+    name?: string | null;
+    category: string;
+    amount: number;
+}
+export declare class SaveSplitsDto {
+    splits: SplitDto[];
+}
+export declare class RenameTaxLineDto {
+    name?: string | null;
+}

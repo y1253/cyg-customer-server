@@ -60,9 +60,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
         return new Set(rows.map((r) => r.name));
     }
-    async resolveStatement(customerId, rows) {
+    async resolveStatement(customerId, rows, bankName = null) {
         try {
-            const ctx = await this.contextFor(customerId, rows.map((r) => r.description));
+            const ctx = {
+                ...(await this.contextFor(customerId, rows.map((r) => r.description))),
+                bankName,
+            };
             const lines = rows.map((r) => {
                 const out = (0, name_memory_util_1.resolveRow)(r, ctx);
                 return { ...r, name: out.name, offsetAccount: out.category };
@@ -72,7 +75,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         }
         catch (err) {
             this.logger.warn(`name memory unavailable for customer ${customerId}, keeping the AI's answers: ${String(err)}`);
-            return { lines: rows, customAccounts: new Set() };
+            const bank = (0, name_memory_util_1.bankPayeeName)(bankName);
+            const lines = bank
+                ? rows.map((r) => !(0, name_memory_util_1.cleanName)(r.name) && (0, name_memory_util_1.isBankCharge)(r.offsetAccount)
+                    ? { ...r, name: bank }
+                    : r)
+                : rows;
+            return { lines, customAccounts: new Set() };
         }
     }
     async learn(rows, memory) {
@@ -142,7 +151,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async editTransaction(customerId, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
             where: { id, customerId },
-            select: { ...MATCH_SELECT, manualEdit: true },
+            select: { ...MATCH_SELECT, manualEdit: true, splitOfId: true },
         });
         if (!row)
             throw new common_1.NotFoundException('Transaction not found');
@@ -156,7 +165,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             name: name ?? r.name,
             category: category ?? r.offsetAccount,
         });
-        if (input.scope === 'ONCE') {
+        if (input.scope === 'ONCE' || row.splitOfId) {
             await this.writeRows(customerId, [matched], next, true);
             return;
         }

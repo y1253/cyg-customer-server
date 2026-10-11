@@ -9,7 +9,9 @@ import { UNCATEGORIZED, normalizeAccount } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { TaxService } from './tax.service';
 import {
+  bankPayeeName,
   cleanName,
+  isBankCharge,
   descriptionKey,
   indexRules,
   memoryWrites,
@@ -104,12 +106,16 @@ export class NameMemoryService {
   async resolveStatement(
     customerId: number,
     rows: ExtractedTransaction[],
+    bankName: string | null = null,
   ): Promise<{ lines: ExtractedTransaction[]; customAccounts: Set<string> }> {
     try {
-      const ctx = await this.contextFor(
-        customerId,
-        rows.map((r) => r.description),
-      );
+      const ctx = {
+        ...(await this.contextFor(
+          customerId,
+          rows.map((r) => r.description),
+        )),
+        bankName,
+      };
       const lines = rows.map((r) => {
         const out = resolveRow(r, ctx);
         return { ...r, name: out.name, offsetAccount: out.category };
@@ -120,7 +126,15 @@ export class NameMemoryService {
       this.logger.warn(
         `name memory unavailable for customer ${customerId}, keeping the AI's answers: ${String(err)}`,
       );
-      return { lines: rows, customAccounts: new Set() };
+      const bank = bankPayeeName(bankName);
+      const lines = bank
+        ? rows.map((r) =>
+            !cleanName(r.name) && isBankCharge(r.offsetAccount)
+              ? { ...r, name: bank }
+              : r,
+          )
+        : rows;
+      return { lines, customAccounts: new Set() };
     }
   }
 
@@ -252,7 +266,7 @@ export class NameMemoryService {
   ): Promise<void> {
     const row = await this.prisma.bankTransaction.findFirst({
       where: { id, customerId },
-      select: { ...MATCH_SELECT, manualEdit: true },
+      select: { ...MATCH_SELECT, manualEdit: true, splitOfId: true },
     });
     if (!row) throw new NotFoundException('Transaction not found');
     const custom = await this.customAccountsOf(customerId);
@@ -266,7 +280,8 @@ export class NameMemoryService {
       category: category ?? r.offsetAccount,
     });
 
-    if (input.scope === 'ONCE') {
+    // A hand-made split belongs to its one transaction: never a rule for the payee.
+    if (input.scope === 'ONCE' || row.splitOfId) {
       await this.writeRows(customerId, [matched], next, true);
       return;
     }

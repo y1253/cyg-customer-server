@@ -13,7 +13,7 @@ export declare class NameMemoryService {
     }>;
     rulesOf(customerId: number): Promise<NameRule[]>;
     private customAccountsOf;
-    resolveStatement(customerId: number, rows: ExtractedTransaction[]): Promise<{
+    resolveStatement(customerId: number, rows: ExtractedTransaction[], bankName?: string | null): Promise<{
         lines: ExtractedTransaction[];
         customAccounts: Set<string>;
     }>;

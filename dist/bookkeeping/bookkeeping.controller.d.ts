@@ -5,10 +5,11 @@ import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
 import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, ResetNameRuleDto, SaveNameRuleDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, SaveSplitsDto, SaveNameRuleDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
+import { SplitsService } from './splits.service';
 import { TaxService, type AgencyView, type NamesView, type TaxSettingsView } from './tax.service';
 import type { ReportsView } from './reports.util';
 type AuthedRequest = Request & {
@@ -22,7 +23,8 @@ export declare class BookkeepingController {
     private readonly tax;
     private readonly nameMemory;
     private readonly accounts;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService);
+    private readonly splits;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService);
     generate(req: AuthedRequest): Promise<{
         queued: number;
         taxing: boolean;
@@ -36,6 +38,8 @@ export declare class BookkeepingController {
     updateName(req: AuthedRequest, dto: UpdateNameDto): Promise<NamesView>;
     saveNameRule(req: AuthedRequest, dto: SaveNameRuleDto): Promise<NamesView>;
     editTransaction(req: AuthedRequest, id: number, dto: EditTransactionDto): Promise<void>;
+    saveSplits(req: AuthedRequest, id: number, dto: SaveSplitsDto): Promise<void>;
+    renameTaxLine(req: AuthedRequest, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
     private editValues;
     resetNameRule(req: AuthedRequest, dto: ResetNameRuleDto): Promise<NamesView>;
     upload(req: AuthedRequest, files: Express.Multer.File[]): Promise<StatementView[]>;

@@ -20,6 +20,8 @@ import {
   nameKey,
   type RuleMatchType,
 } from './name-memory.util';
+import { cents } from './reconcile.util';
+import { remainderOf } from './splits.util';
 import type {
   AgencyRateDto,
   CreateAgencyDto,
@@ -93,7 +95,10 @@ export interface NamesView {
 /** One stored tax line, as the ledger, exports and reports read it. */
 export interface StoredTax {
   id: number;
+  agencyId: number;
   agency: string;
+  /** The customer's own name for the line; null = the transaction's name. */
+  name: string | null;
   kind: TaxKind;
   rate: number;
   amount: number;
@@ -354,7 +359,9 @@ export class TaxService {
       const list = out.get(r.transactionId) ?? [];
       list.push({
         id: r.id,
+        agencyId: r.agencyId,
         agency: r.agency.name,
+        name: r.name,
         kind: r.kind,
         rate: Number(r.rate),
         amount: Number(r.amount),
@@ -626,16 +633,27 @@ export class TaxService {
           name: true,
           amount: true,
           offsetAccount: true,
+          splitOfId: true,
         },
       }),
     ]);
+    // A split-off part is taxed on its own; its parent only on what is left of it.
+    const totals = await this.splitTotalsOf(rows.map((r) => r.id));
     const agencies: Agency[] = agencyRows.map((a) => ({
       id: a.id,
       name: a.name,
       rates: Object.fromEntries(a.rates.map((r) => [r.kind, Number(r.rate)])),
     }));
     const todo = candidates(
-      rows.map((r) => ({ ...r, amount: Number(r.amount) })),
+      rows
+        .map(({ splitOfId, ...r }) => ({
+          ...r,
+          amount: remainderOf(
+            { id: r.id, splitOfId, amount: Number(r.amount) },
+            totals,
+          ),
+        }))
+        .filter((r) => r.amount !== 0), // fully split: nothing left to tax
       agencies,
       await this.accounts.types(customerId),
     );
@@ -646,6 +664,14 @@ export class TaxService {
     }
 
     const ids = rows.map((r) => r.id);
+    // The customer's names for tax lines survive the rebuild (same row, same agency).
+    const named = await this.prisma.transactionTax.findMany({
+      where: { customerId, transactionId: { in: ids }, name: { not: null } },
+      select: { transactionId: true, agencyId: true, name: true },
+    });
+    const nameOf = new Map(
+      named.map((n) => [`${n.transactionId}:${n.agencyId}`, n.name]),
+    );
     await this.prisma.$transaction([
       this.prisma.transactionTax.deleteMany({
         where: { customerId, transactionId: { in: ids } },
@@ -658,6 +684,7 @@ export class TaxService {
           kind: l.kind,
           rate: l.rate.toFixed(3),
           amount: l.amount.toFixed(2),
+          name: nameOf.get(`${l.transactionId}:${l.agencyId}`) ?? null,
         })),
       }),
     ]);
@@ -665,6 +692,38 @@ export class TaxService {
       `customer #${customerId}: ${lines.length} tax line(s) on ${todo.length} candidate row(s) ` +
         `of ${rows.length}, ${Math.ceil(todo.length / BATCH)} call(s), ${Date.now() - started}ms`,
     );
+  }
+
+  /** Σ of the splits of each of these rows (cents), for `remainderOf`. */
+  private async splitTotalsOf(ids: number[]): Promise<Map<number, number>> {
+    if (!ids.length) return new Map();
+    const sums = await this.prisma.bankTransaction.groupBy({
+      by: ['splitOfId'],
+      where: { splitOfId: { in: ids } },
+      _sum: { amount: true },
+    });
+    return new Map(
+      sums
+        .filter((g) => g.splitOfId != null)
+        .map((g) => [g.splitOfId!, cents(Number(g._sum.amount ?? 0))]),
+    );
+  }
+
+  /**
+   * Renames one tax line — the agency's tax on one transaction (or split). Null puts the
+   * transaction's own name back. False when the row has no such line.
+   */
+  async renameLine(
+    customerId: number,
+    transactionId: number,
+    agencyId: number,
+    name: string | null,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.transactionTax.updateMany({
+      where: { customerId, transactionId, agencyId },
+      data: { name },
+    });
+    return count > 0;
   }
 
   private async ask(

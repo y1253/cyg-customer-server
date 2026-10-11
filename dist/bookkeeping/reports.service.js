@@ -17,6 +17,7 @@ const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const splits_util_1 = require("./splits.util");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -36,6 +37,7 @@ let ReportsService = class ReportsService {
                 where: { customerId, statement: done },
                 select: {
                     id: true,
+                    splitOfId: true,
                     amount: true,
                     offsetAccount: true,
                     debitAccount: true,
@@ -56,14 +58,15 @@ let ReportsService = class ReportsService {
             bankAccount: o.bankAccount,
             date: day(o.postingDate),
         }));
+        const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
         return (0, reports_util_1.buildReports)([
             ...openings,
             ...rows.flatMap((r) => {
-                const amount = Number(r.amount);
+                const amount = (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals);
                 const date = day(r.postingDate) ??
                     day(r.pendingDate) ??
                     day(r.statement.periodEnd);
-                const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
+                const bankAccount = Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
                 const split = (0, tax_util_1.taxSplit)({ ...r, amount }, taxes.get(r.id) ?? []);
                 return [split.parent, ...split.taxes].map((e) => ({
                     amount: e.amount,

@@ -5,6 +5,7 @@ import { loadOpeningStatements } from './opening-balance.query';
 import { openingRows } from './opening-balance.util';
 import { buildReports, type ReportRow, type ReportsView } from './reports.util';
 import { CustomerAccountsService } from './customer-accounts.service';
+import { remainderOf, splitTotals } from './splits.util';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -34,6 +35,7 @@ export class ReportsService {
         where: { customerId, statement: done },
         select: {
           id: true,
+          splitOfId: true,
           amount: true,
           offsetAccount: true,
           debitAccount: true,
@@ -57,17 +59,26 @@ export class ReportsService {
       date: day(o.postingDate),
     }));
 
+    // A split-off part counts in its own category; its parent only with what is left.
+    const totals = splitTotals(
+      rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
+    );
+
     return buildReports(
       [
         ...openings,
         ...rows.flatMap((r): ReportRow[] => {
-          const amount = Number(r.amount);
+          const amount = remainderOf(
+            { ...r, amount: Number(r.amount) },
+            totals,
+          );
           const date =
             day(r.postingDate) ??
             day(r.pendingDate) ??
             day(r.statement.periodEnd);
           // The bank is whichever side is not the offset (see `doubleEntry`).
-          const bankAccount = amount < 0 ? r.creditAccount : r.debitAccount;
+          const bankAccount =
+            Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
           // A taxed row is split like the ledger shows it: the tax taken OUT of the bank
           // amount, each tax line against the agency.
           const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);

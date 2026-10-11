@@ -21,6 +21,7 @@ const pdfkit_1 = __importDefault(require("pdfkit"));
 const prisma_service_1 = require("../prisma/prisma.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
+const splits_util_1 = require("./splits.util");
 const statement_label_1 = require("./statement-label");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
@@ -34,8 +35,10 @@ function exportRowWithTaxes(row, offsetAccount, lines) {
     const split = (0, tax_util_1.taxSplit)({ ...row, offsetAccount }, lines);
     return [
         { ...row, amount: split.parent.amount },
-        ...split.taxes.map((e) => ({
+        ...split.taxes.map((e, i) => ({
             ...row,
+            split: undefined,
+            name: lines[i].name ?? row.name,
             amount: e.amount,
             debitAccount: e.debitAccount,
             creditAccount: e.creditAccount,
@@ -76,23 +79,34 @@ let LedgerExportService = class LedgerExportService {
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const openings = (0, opening_balance_util_1.openingRows)(statements);
+        const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
+        const exportRow = (r) => ({
+            id: r.splitOfId ?? r.id,
+            pendingDate: r.pendingDate,
+            postingDate: r.postingDate,
+            name: r.name ?? '',
+            description: r.description,
+            amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
+            debitAccount: r.debitAccount,
+            creditAccount: r.creditAccount,
+            statement: (0, statement_label_1.statementLabel)(r.statement),
+            ...(r.splitOfId && { split: true }),
+        });
+        const splitsOf = new Map();
+        for (const r of rows) {
+            if (!r.splitOfId)
+                continue;
+            splitsOf.set(r.splitOfId, [...(splitsOf.get(r.splitOfId) ?? []), r]);
+        }
         const sorted = [
-            ...rows.map((r) => ({
+            ...rows
+                .filter((r) => !r.splitOfId)
+                .map((r) => ({
                 statementId: r.statementId,
                 position: r.position,
                 id: r.id,
                 offsetAccount: r.offsetAccount,
-                row: {
-                    id: r.id,
-                    pendingDate: r.pendingDate,
-                    postingDate: r.postingDate,
-                    name: r.name ?? '',
-                    description: r.description,
-                    amount: Number(r.amount),
-                    debitAccount: r.debitAccount,
-                    creditAccount: r.creditAccount,
-                    statement: (0, statement_label_1.statementLabel)(r.statement),
-                },
+                row: exportRow(r),
             })),
             ...openings.map((o) => ({
                 statementId: o.statementId,
@@ -112,7 +126,12 @@ let LedgerExportService = class LedgerExportService {
                 },
             })),
         ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
-        return sorted.flatMap((p) => exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []));
+        return sorted.flatMap((p) => [
+            ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
+            ...(splitsOf.get(p.id) ?? [])
+                .sort((a, b) => a.id - b.id)
+                .flatMap((c) => exportRowWithTaxes(exportRow(c), c.offsetAccount, taxes.get(c.id) ?? [])),
+        ]);
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();
@@ -154,12 +173,14 @@ let LedgerExportService = class LedgerExportService {
             fgColor: { argb: 'FF169F96' },
         };
         for (const r of rows) {
-            const { tax, ...cells } = r;
+            const { tax, split, ...cells } = r;
             const row = ws.addRow(cells);
             if (tax)
                 row.font = { italic: true, color: { argb: 'FF8A8F98' } };
+            else if (split)
+                row.font = { color: { argb: 'FF5B6470' } };
         }
-        const count = rows.filter((r) => !r.tax).length;
+        const count = rows.filter((r) => !r.tax && !r.split).length;
         const total = ws.addRow({
             description: `Net change (${count} transactions)`,
             amount: netOf(rows),
@@ -207,7 +228,7 @@ let LedgerExportService = class LedgerExportService {
                 .fillColor('#333333')
                 .font('Helvetica')
                 .fontSize(10)
-                .text(`${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax).length} transactions  ·  generated ${ISO(new Date())}`);
+                .text(`${customerName}  ·  ${period}  ·  ${rows.filter((r) => !r.tax && !r.split).length} transactions  ·  generated ${ISO(new Date())}`);
             doc.moveDown(0.8);
             const drawHeader = () => {
                 const y = doc.y;

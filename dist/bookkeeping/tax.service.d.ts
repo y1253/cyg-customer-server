@@ -50,7 +50,9 @@ export interface NamesView {
 }
 export interface StoredTax {
     id: number;
+    agencyId: number;
     agency: string;
+    name: string | null;
     kind: TaxKind;
     rate: number;
     amount: number;
@@ -87,5 +89,7 @@ export declare class TaxService {
     tagStatement(customerId: number, statementId: number): Promise<void>;
     retagRows(customerId: number, ids: readonly number[]): Promise<boolean>;
     private tag;
+    private splitTotalsOf;
+    renameLine(customerId: number, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;
     private ask;
 }

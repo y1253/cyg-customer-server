@@ -129,7 +129,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 },
             });
             const bank = extracted.accountName ?? 'Bank account';
-            const { lines, customAccounts } = await this.names.resolveStatement(row.customerId, extracted.transactions);
+            const { lines, customAccounts } = await this.names.resolveStatement(row.customerId, extracted.transactions, extracted.bankName);
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;

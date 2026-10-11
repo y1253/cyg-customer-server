@@ -23,8 +23,26 @@ const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
 const tax_service_1 = require("./tax.service");
+const splits_util_1 = require("./splits.util");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
+function withTaxLines(p, lines) {
+    if (!lines?.length)
+        return [p];
+    const split = (0, tax_util_1.taxSplit)(p, lines);
+    return [
+        split.parent,
+        ...split.taxes.map((entry, i) => ({
+            ...p,
+            ...entry,
+            key: `x:${lines[i].id}`,
+            name: lines[i].name ?? p.name,
+            kind: 'tax',
+            taxRate: lines[i].rate,
+            taxAgencyId: lines[i].agencyId,
+        })),
+    ];
+}
 function toView(s) {
     return {
         id: s.id,
@@ -125,27 +143,42 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             this.tax.linesFor(customerId, statementIds),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
+        const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
+        const viewOf = (r) => ({
+            key: r.splitOfId ? `s:${r.id}` : `t:${r.id}`,
+            id: r.id,
+            statementId: r.statementId,
+            pendingDate: day(r.pendingDate),
+            postingDate: day(r.postingDate),
+            description: r.description,
+            name: r.name,
+            amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
+            offsetAccount: r.offsetAccount,
+            debitAccount: r.debitAccount,
+            creditAccount: r.creditAccount,
+            statementLabel: (0, statement_label_1.statementLabel)(r.statement),
+            ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' }),
+        });
+        const splitsOf = new Map();
+        for (const r of rows) {
+            if (!r.splitOfId)
+                continue;
+            const list = splitsOf.get(r.splitOfId) ?? [];
+            list.push(viewOf(r));
+            splitsOf.set(r.splitOfId, list);
+        }
+        for (const list of splitsOf.values())
+            list.sort((a, b) => a.id - b.id);
         const wanted = statementIds?.length ? new Set(statementIds) : null;
         const openings = (0, opening_balance_util_1.openingRows)(statements).filter((o) => !wanted || wanted.has(o.statementId));
         const keyed = [
-            ...rows.map((r) => ({
+            ...rows
+                .filter((r) => !r.splitOfId)
+                .map((r) => ({
                 postingDate: r.postingDate,
                 statementId: r.statementId,
                 position: r.position,
-                view: {
-                    key: `t:${r.id}`,
-                    id: r.id,
-                    statementId: r.statementId,
-                    pendingDate: day(r.pendingDate),
-                    postingDate: day(r.postingDate),
-                    description: r.description,
-                    name: r.name,
-                    amount: Number(r.amount),
-                    offsetAccount: r.offsetAccount,
-                    debitAccount: r.debitAccount,
-                    creditAccount: r.creditAccount,
-                    statementLabel: (0, statement_label_1.statementLabel)(r.statement),
-                },
+                view: viewOf(r),
             })),
             ...openings.map((o) => ({
                 postingDate: o.postingDate,
@@ -169,22 +202,12 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         ];
         const sorted = keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
-        return sorted.flatMap((p) => {
-            const lines = p.kind ? undefined : taxes.get(p.id);
-            if (!lines?.length)
-                return [p];
-            const split = (0, tax_util_1.taxSplit)(p, lines);
-            return [
-                split.parent,
-                ...split.taxes.map((entry, i) => ({
-                    ...p,
-                    ...entry,
-                    key: `x:${lines[i].id}`,
-                    kind: 'tax',
-                    taxRate: lines[i].rate,
-                })),
-            ];
-        });
+        return sorted.flatMap((p) => p.kind
+            ? [p]
+            : [
+                ...withTaxLines(p, taxes.get(p.id)),
+                ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id))),
+            ]);
     }
     async file(customerId, id) {
         const s = await this.owned(customerId, id);
