@@ -384,6 +384,25 @@ let TaxService = TaxService_1 = class TaxService {
             await this.markStale(customerId).catch(() => undefined);
         }
     }
+    async retagRows(customerId, ids) {
+        if (!ids.length)
+            return true;
+        try {
+            const c = await this.prisma.customer.findUnique({
+                where: { id: customerId },
+                select: { salesTaxEnabled: true },
+            });
+            if (!c?.salesTaxEnabled)
+                return true;
+            await this.tag(customerId, { id: { in: [...ids] } });
+            return true;
+        }
+        catch (err) {
+            this.logger.error(`tax for ${ids.length} edited row(s) of customer #${customerId} failed: ${err.message}`);
+            await this.markStale(customerId).catch(() => undefined);
+            return false;
+        }
+    }
     async tag(customerId, where) {
         const started = Date.now();
         const [agencyRows, rows] = await Promise.all([

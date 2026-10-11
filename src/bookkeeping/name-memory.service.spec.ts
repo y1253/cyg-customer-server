@@ -1,5 +1,6 @@
 import type { PrismaService } from '../prisma/prisma.service';
 import { NameMemoryService } from './name-memory.service';
+import type { TaxService } from './tax.service';
 
 type Tx = {
   id: number;
@@ -57,8 +58,14 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
   return { prisma, updates };
 }
 
-const service = (prisma: object) =>
-  new NameMemoryService(prisma as unknown as PrismaService);
+/** The tax step: re-tags the rows an edit changed (succeeds unless told otherwise). */
+const fakeTax = () => ({ retagRows: jest.fn().mockResolvedValue(true) });
+
+const service = (prisma: object, tax = fakeTax()) =>
+  new NameMemoryService(
+    prisma as unknown as PrismaService,
+    tax as unknown as TaxService,
+  );
 
 describe('NameMemoryService.saveRule', () => {
   it('rewrites the offset side of money OUT and money IN, and marks taxes stale', async () => {
@@ -108,10 +115,6 @@ describe('NameMemoryService.saveRule', () => {
         },
       },
     ]);
-    expect(prisma.customer.update).toHaveBeenCalledWith({
-      where: { id: 7 },
-      data: { taxStale: true },
-    });
     expect(prisma.customerNameRule.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: {
@@ -206,6 +209,61 @@ describe('NameMemoryService.saveRule', () => {
       category: 'Supplies',
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('re-tags exactly the rows it changed, so the reports are right at once', async () => {
+    const { prisma } = fakePrisma([
+      {
+        id: 1,
+        description: 'WALMART 1',
+        name: 'Walmart',
+        amount: money(-20),
+        offsetAccount: 'Supplies',
+        debitAccount: 'Supplies',
+        creditAccount: 'BMO 1234',
+      },
+      {
+        id: 2,
+        description: 'WALMART 2',
+        name: 'Walmart',
+        amount: money(-5),
+        offsetAccount: 'Office Expense',
+        debitAccount: 'Office Expense',
+        creditAccount: 'BMO 1234',
+      },
+    ]);
+    const tax = fakeTax();
+    await service(prisma, tax).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: null,
+      category: 'Office Expense',
+    });
+    expect(tax.retagRows).toHaveBeenCalledWith(7, [1]);
+    // Re-tagged rather than left for Generate.
+    expect(prisma.customer.update).not.toHaveBeenCalled();
+  });
+
+  it('a no-change edit re-tags nothing', async () => {
+    const { prisma } = fakePrisma([
+      {
+        id: 1,
+        description: 'WALMART',
+        name: 'Walmart',
+        amount: money(-20),
+        offsetAccount: 'Supplies',
+        debitAccount: 'Supplies',
+        creditAccount: 'BMO 1234',
+      },
+    ]);
+    const tax = fakeTax();
+    await service(prisma, tax).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: 'Walmart',
+      category: 'Supplies',
+    });
+    expect(tax.retagRows).not.toHaveBeenCalled();
   });
 });
 

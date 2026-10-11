@@ -579,6 +579,34 @@ export class TaxService {
     }
   }
 
+  /**
+   * After a customer changes rows' name or category: re-decide THEIR taxes at once, so the
+   * ledger and the reports are right without a Generate (a new category can change which
+   * rows are taxed, and how). Never throws — a failure leaves the "Generate" hint, exactly
+   * like `tagStatement`. Returns false when it failed.
+   */
+  async retagRows(
+    customerId: number,
+    ids: readonly number[],
+  ): Promise<boolean> {
+    if (!ids.length) return true;
+    try {
+      const c = await this.prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { salesTaxEnabled: true },
+      });
+      if (!c?.salesTaxEnabled) return true;
+      await this.tag(customerId, { id: { in: [...ids] } });
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `tax for ${ids.length} edited row(s) of customer #${customerId} failed: ${(err as Error).message}`,
+      );
+      await this.markStale(customerId).catch(() => undefined);
+      return false;
+    }
+  }
+
   /** Decides and REPLACES the tax links of the matching rows. */
   private async tag(
     customerId: number,

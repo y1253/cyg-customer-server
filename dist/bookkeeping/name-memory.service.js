@@ -15,12 +15,15 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
+const tax_service_1 = require("./tax.service");
 const name_memory_util_1 = require("./name-memory.util");
 let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     prisma;
+    tax;
     logger = new common_1.Logger(NameMemoryService_1.name);
-    constructor(prisma) {
+    constructor(prisma, tax) {
         this.prisma = prisma;
+        this.tax = tax;
     }
     async contextFor(customerId, descriptions) {
         const keys = [...new Set(descriptions.map(name_memory_util_1.descriptionKey).filter(Boolean))];
@@ -245,10 +248,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             .map(toMatched);
     }
     async writeRows(customerId, rows, next, manual = false) {
+        const changed = [];
         const updates = rows.flatMap((row) => {
             const { name, category } = next(row);
             if (name === row.name && category === row.offsetAccount)
                 return [];
+            changed.push(row.id);
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
             return [
                 this.prisma.bankTransaction.update({
@@ -264,13 +269,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
         if (!updates.length)
             return;
-        await this.prisma.$transaction([
-            ...updates,
-            this.prisma.customer.update({
-                where: { id: customerId },
-                data: { taxStale: true },
-            }),
-        ]);
+        await this.prisma.$transaction(updates);
+        await this.tax.retagRows(customerId, changed);
     }
     async carryTaxSwitch(customerId, oldNames, newName) {
         const exempt = await this.prisma.ledgerName.findFirst({
@@ -289,7 +289,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
 exports.NameMemoryService = NameMemoryService;
 exports.NameMemoryService = NameMemoryService = NameMemoryService_1 = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        tax_service_1.TaxService])
 ], NameMemoryService);
 const MATCH_SELECT = {
     id: true,

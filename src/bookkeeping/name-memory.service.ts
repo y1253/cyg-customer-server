@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { UNCATEGORIZED, normalizeAccount } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
+import { TaxService } from './tax.service';
 import {
   cleanName,
   descriptionKey,
@@ -43,7 +44,10 @@ export type EditScope = 'ALWAYS' | 'ONCE';
 export class NameMemoryService {
   private readonly logger = new Logger(NameMemoryService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tax: TaxService,
+  ) {}
 
   /** Everything `resolveRow` needs for these descriptions: three queries, whatever the count. */
   async contextFor(
@@ -393,8 +397,10 @@ export class NameMemoryService {
   }
 
   /**
-   * Apply `next` to these rows; marks the customer's taxes stale. `manual` flags them as a
-   * one-time edit (or, false, leaves the flag as it is).
+   * Apply `next` to these rows, then re-decide THEIR taxes at once (`TaxService.retagRows`),
+   * so the ledger, the chart of accounts and the income statement are right as soon as the
+   * request returns — no Generate. A failed re-tag leaves the "Generate" hint instead.
+   * `manual` flags the rows as a one-time edit (or, false, leaves the flag as it is).
    */
   private async writeRows(
     customerId: number,
@@ -402,9 +408,11 @@ export class NameMemoryService {
     next: (row: MatchedRow) => { name: string | null; category: string },
     manual = false,
   ): Promise<void> {
+    const changed: number[] = [];
     const updates = rows.flatMap((row) => {
       const { name, category } = next(row);
       if (name === row.name && category === row.offsetAccount) return [];
+      changed.push(row.id);
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
       return [
@@ -420,14 +428,9 @@ export class NameMemoryService {
       ];
     });
     if (!updates.length) return;
-    await this.prisma.$transaction([
-      ...updates,
-      // A new category can change which rows are taxed — Generate re-tags.
-      this.prisma.customer.update({
-        where: { id: customerId },
-        data: { taxStale: true },
-      }),
-    ]);
+    await this.prisma.$transaction(updates);
+    // A new category can change which rows are taxed, and how.
+    await this.tax.retagRows(customerId, changed);
   }
 
   private async carryTaxSwitch(

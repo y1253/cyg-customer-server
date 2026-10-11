@@ -47,7 +47,11 @@ function buildReports(rows, from = null, to = null, liabilityAccounts = [], cust
         : (customTypes.get(name) ?? chartType(name));
     const period = tally(rows, from, to);
     const chartNames = chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => a.name);
-    const extra = [...period.offsets.keys()].filter((n) => !TYPE_OF.has(n));
+    const own = [...customTypes.keys()].filter((n) => !TYPE_OF.has(n));
+    const extra = [
+        ...own,
+        ...[...period.offsets.keys()].filter((n) => !TYPE_OF.has(n) && !customTypes.has(n)),
+    ];
     const accounts = [
         ...bankNames.map((name) => {
             const t = period.banks.get(name);

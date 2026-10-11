@@ -85,6 +85,7 @@ export declare class TaxService {
     needsRetag(customerId: number): Promise<boolean>;
     retagCustomer(customerId: number): Promise<boolean>;
     tagStatement(customerId: number, statementId: number): Promise<void>;
+    retagRows(customerId: number, ids: readonly number[]): Promise<boolean>;
     private tag;
     private ask;
 }

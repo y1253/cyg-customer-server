@@ -158,3 +158,19 @@ describe("the customer's own categories", () => {
     );
   });
 });
+
+it("lists the customer's own category in the chart before any row uses it", () => {
+  const r = buildReports(
+    [row(100, 'Sales Income')],
+    null,
+    null,
+    [],
+    new Map([['Groceries', 'EXPENSE']]),
+  );
+  expect(r.accounts.find((a) => a.name === 'Groceries')).toMatchObject({
+    type: 'EXPENSE',
+    balance: 0,
+    count: 0,
+  });
+  expect(line(r.incomeStatement.expenses, 'Groceries')).toBeUndefined();
+});

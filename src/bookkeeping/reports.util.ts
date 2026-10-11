@@ -142,7 +142,15 @@ export function buildReports(
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);
   const chartNames = CHART_OF_ACCOUNTS.map((a) => a.name);
-  const extra = [...period.offsets.keys()].filter((n) => !TYPE_OF.has(n));
+  // The customer's own categories are listed even before a row uses them — one they just
+  // created shows at once, at zero. Then anything else with rows that is not in the chart.
+  const own = [...customTypes.keys()].filter((n) => !TYPE_OF.has(n));
+  const extra = [
+    ...own,
+    ...[...period.offsets.keys()].filter(
+      (n) => !TYPE_OF.has(n) && !customTypes.has(n),
+    ),
+  ];
   const accounts: AccountBalance[] = [
     ...bankNames.map((name) => {
       const t = period.banks.get(name);

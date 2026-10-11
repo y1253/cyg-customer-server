@@ -1,11 +1,13 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { type ExtractedTransaction } from './ledger.util';
+import { TaxService } from './tax.service';
 import { type NameRule, type ResolveContext, type RuleMatchType } from './name-memory.util';
 export type EditScope = 'ALWAYS' | 'ONCE';
 export declare class NameMemoryService {
     private readonly prisma;
+    private readonly tax;
     private readonly logger;
-    constructor(prisma: PrismaService);
+    constructor(prisma: PrismaService, tax: TaxService);
     contextFor(customerId: number, descriptions: readonly string[]): Promise<ResolveContext & {
         customAccounts: Set<string>;
     }>;
