@@ -30,6 +30,7 @@ import type {
 import {
   TYPE_OF,
   candidates,
+  fits,
   taxLines,
   type Agency,
   type TaxCandidate,
@@ -133,10 +134,12 @@ const SCHEMA = {
 } as const;
 
 const SYSTEM = [
-  'You are a bookkeeper deciding which sales taxes apply to bank transactions.',
-  'You get the tax agencies (id, name, salesRate, purchaseRate) and the transactions (id, description, payee name, amount, category, kind).',
+  'You are a bookkeeper deciding which taxes apply to bank transactions: the tax collected on SALES and the tax paid on PURCHASES (claimed back as input tax credits). Both kinds matter equally.',
+  'You get the tax agencies (id, name, salesRate, purchaseRate) and the transactions (id, description, payee name, amount, category, kind, allowedAgencyIds).',
   'kind SALES = money the business received for a sale; kind PURCHASE = money it spent on a purchase.',
   'An agency can only tax a SALES transaction when it has a salesRate, and a PURCHASE transaction when it has a purchaseRate (null = it never taxes that kind).',
+  'Pick agencies ONLY from each transaction’s allowedAgencyIds — those are the agencies with a rate for its kind.',
+  'A PURCHASE of goods or services from a business is taxable by its allowed agencies exactly like a sale is. Never leave a purchase empty just because an agency looks like a sales tax.',
   'For EVERY transaction return its id and the ids of the agencies whose tax applies to it — an empty list when none does.',
   'Decide from the category, the payee and the description. Taxable: sales of goods and services, and purchases of goods and services from businesses (supplies, equipment, software, advertising, meals, fuel, repairs, professional services).',
   'Usually NOT taxable: payroll and wages, bank fees and interest, insurance, rent of a residence, taxes and government payments, loan and credit-card payments, transfers, owner money, refunds of tax.',
@@ -688,9 +691,17 @@ export class TaxService {
         })),
       }),
     ]);
+    // Per kind, so purchases the model leaves untaxed show up in the log.
+    const perKind = (['SALES', 'PURCHASE'] as const)
+      .map(
+        (k) =>
+          `${k} ${lines.filter((l) => l.kind === k).length} line(s)/` +
+          `${todo.filter((r) => r.kind === k).length} row(s)`,
+      )
+      .join(', ');
     this.logger.log(
       `customer #${customerId}: ${lines.length} tax line(s) on ${todo.length} candidate row(s) ` +
-        `of ${rows.length}, ${Math.ceil(todo.length / BATCH)} call(s), ${Date.now() - started}ms`,
+        `of ${rows.length} (${perKind}), ${Math.ceil(todo.length / BATCH)} call(s), ${Date.now() - started}ms`,
     );
   }
 
@@ -747,6 +758,9 @@ export class TaxService {
           amount: r.amount,
           category: r.offsetAccount,
           kind: r.kind,
+          allowedAgencyIds: agencies
+            .filter((a) => fits(a, r.kind))
+            .map((a) => a.id),
         })),
       }),
       jsonSchema: { name: 'transaction_taxes', schema: SCHEMA },
