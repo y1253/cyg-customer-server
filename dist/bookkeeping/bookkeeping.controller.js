@@ -51,7 +51,7 @@ let BookkeepingController = class BookkeepingController {
         this.splits = splits;
     }
     generate(req) {
-        return this.bookkeeping.generate(req.user.customerId);
+        return this.bookkeeping.generateIfFree(req.user.customerId);
     }
     taxSettings(req) {
         return this.tax.settings(req.user.customerId);

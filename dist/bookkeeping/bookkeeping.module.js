@@ -39,6 +39,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             statement_processor_service_1.StatementProcessorService,
             tax_service_1.TaxService,
         ],
+        exports: [bookkeeping_service_1.BookkeepingService],
     })
 ], BookkeepingModule);
 //# sourceMappingURL=bookkeeping.module.js.map

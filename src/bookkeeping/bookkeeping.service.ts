@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -10,6 +12,7 @@ import {
 import { StatementStatus, type BankStatement } from '@prisma/client';
 import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
+import { readPricing } from '../billing/pricing';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { loadOpeningStatements } from './opening-balance.query';
@@ -182,6 +185,31 @@ export class BookkeepingService {
         (files ?? []).map((f) => unlink(f.path).catch(() => undefined)),
       );
     }
+  }
+
+  /**
+   * The customer's own `POST /bookkeeping/generate`: allowed only when it costs nothing —
+   * the admin price is $0, or there are no new statements (a tax-only re-run is free).
+   * A paid Generate goes through billing (`BillingService`), which calls `generate` itself
+   * once the payment is recorded.
+   */
+  async generateIfFree(
+    customerId: number,
+  ): Promise<{ queued: number; taxing: boolean }> {
+    const waiting = await this.waitingCount(customerId);
+    if (waiting && (await readPricing(this.prisma)).generatePriceCents > 0)
+      throw new HttpException(
+        'Payment required — pay to read your new statements.',
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    return this.generate(customerId);
+  }
+
+  /** Statements uploaded but not read yet — what the next Generate would queue. */
+  waitingCount(customerId: number): Promise<number> {
+    return this.prisma.bankStatement.count({
+      where: { customerId, deletedAt: null, status: StatementStatus.UPLOADED },
+    });
   }
 
   /**

@@ -30,6 +30,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     salesTaxEnabled: false,
     taxStale: false,
     taxRunningSince: null,
+    stripeCustomerId: null,
     ...over,
   };
 }

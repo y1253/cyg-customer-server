@@ -4,7 +4,10 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // rawBody: the Stripe webhook verifies its signature over the exact bytes sent.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   // One proxy hop (nginx) in production, so `req.ip` is the client, not 127.0.0.1.
   app.set('trust proxy', 1);

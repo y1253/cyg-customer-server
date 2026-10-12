@@ -27,5 +27,6 @@ import { TaxService } from './tax.service';
     StatementProcessorService,
     TaxService,
   ],
+  exports: [BookkeepingService],
 })
 export class BookkeepingModule {}

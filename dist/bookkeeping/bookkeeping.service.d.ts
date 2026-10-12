@@ -47,6 +47,11 @@ export declare class BookkeepingService {
     private readonly logger;
     constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService);
     upload(customerId: number, files: Express.Multer.File[]): Promise<StatementView[]>;
+    generateIfFree(customerId: number): Promise<{
+        queued: number;
+        taxing: boolean;
+    }>;
+    waitingCount(customerId: number): Promise<number>;
     generate(customerId: number): Promise<{
         queued: number;
         taxing: boolean;

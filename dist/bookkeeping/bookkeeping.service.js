@@ -16,6 +16,7 @@ const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
+const pricing_1 = require("../billing/pricing");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const opening_balance_query_1 = require("./opening-balance.query");
@@ -100,6 +101,17 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         finally {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
         }
+    }
+    async generateIfFree(customerId) {
+        const waiting = await this.waitingCount(customerId);
+        if (waiting && (await (0, pricing_1.readPricing)(this.prisma)).generatePriceCents > 0)
+            throw new common_1.HttpException('Payment required — pay to read your new statements.', common_1.HttpStatus.PAYMENT_REQUIRED);
+        return this.generate(customerId);
+    }
+    waitingCount(customerId) {
+        return this.prisma.bankStatement.count({
+            where: { customerId, deletedAt: null, status: client_1.StatementStatus.UPLOADED },
+        });
     }
     async generate(customerId) {
         const { count } = await this.prisma.bankStatement.updateMany({

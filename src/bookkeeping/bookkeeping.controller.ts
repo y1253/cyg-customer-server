@@ -85,12 +85,15 @@ export class BookkeepingController {
     private readonly splits: SplitsService,
   ) {}
 
-  /** Reads every UPLOADED statement and re-applies changed tax settings. */
+  /**
+   * Reads every UPLOADED statement and re-applies changed tax settings — only when it is
+   * free (402 otherwise; a paid Generate is `POST /billing/checkout`).
+   */
   @Post('generate')
   generate(
     @Req() req: AuthedRequest,
   ): Promise<{ queued: number; taxing: boolean }> {
-    return this.bookkeeping.generate(req.user.customerId);
+    return this.bookkeeping.generateIfFree(req.user.customerId);
   }
 
   @Get('tax')

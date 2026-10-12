@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { BillingModule } from './billing/billing.module';
 import { BookkeepingModule } from './bookkeeping/bookkeeping.module';
 import { ContactModule } from './contact/contact.module';
 import { CustomerAuthModule } from './customer-auth/customer-auth.module';
@@ -20,6 +21,7 @@ import { StorageModule } from './storage/storage.module';
     ContactModule,
     CustomerAuthModule,
     BookkeepingModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
