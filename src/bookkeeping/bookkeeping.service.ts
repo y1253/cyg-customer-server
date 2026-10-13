@@ -9,7 +9,11 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { StatementStatus, type BankStatement } from '@prisma/client';
+import {
+  StatementStatus,
+  type AttachmentKind,
+  type BankStatement,
+} from '@prisma/client';
 import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { readPricing } from '../billing/pricing';
@@ -64,6 +68,8 @@ export interface TransactionView {
   description: string;
   /** The payee / payer the AI read out of the description; null when it found none. */
   name: string | null;
+  /** On a split made for a receipt line: that line ("Pampers"). */
+  itemName?: string | null;
   amount: number;
   offsetAccount: string;
   debitAccount: string;
@@ -82,6 +88,8 @@ export interface TransactionView {
   taxRate?: number;
   /** On a tax row: the agency — the key for renaming the line. */
   taxAgencyId?: number;
+  /** On a transaction row: its receipts, cheques and voice notes. */
+  attachments?: Array<{ id: number; kind: AttachmentKind; filename: string }>;
 }
 
 const day = (d: Date | null): string | null =>
@@ -101,6 +109,7 @@ function withTaxLines(
         ...p,
         ...entry,
         key: `x:${lines[i].id}`,
+        attachments: undefined,
         name: lines[i].name ?? p.name,
         kind: 'tax',
         taxRate: lines[i].rate,
@@ -242,7 +251,7 @@ export class BookkeepingService {
     customerId: number,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const [rows, statements, taxes] = await Promise.all([
+    const [rows, statements, taxes, attached] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           customerId,
@@ -265,7 +274,25 @@ export class BookkeepingService {
       // ledger is filtered to a few of them.
       loadOpeningStatements(this.prisma, customerId),
       this.tax.linesFor(customerId, statementIds),
+      this.prisma.transactionAttachment.findMany({
+        where: {
+          customerId,
+          deletedAt: null,
+          transactionId: { not: null },
+        },
+        select: { id: true, kind: true, filename: true, transactionId: true },
+        orderBy: { id: 'asc' },
+      }),
     ]);
+    const attachmentsOf = new Map<
+      number,
+      Array<{ id: number; kind: AttachmentKind; filename: string }>
+    >();
+    for (const a of attached) {
+      const list = attachmentsOf.get(a.transactionId!) ?? [];
+      list.push({ id: a.id, kind: a.kind, filename: a.filename });
+      attachmentsOf.set(a.transactionId!, list);
+    }
 
     const byId = new Map(statements.map((s) => [s.id, s]));
     const totals = splitTotals(
@@ -279,12 +306,14 @@ export class BookkeepingService {
       postingDate: day(r.postingDate),
       description: r.description,
       name: r.name,
+      ...(r.itemName && { itemName: r.itemName }),
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
       offsetAccount: r.offsetAccount,
       debitAccount: r.debitAccount,
       creditAccount: r.creditAccount,
       statementLabel: statementLabel(r.statement),
       ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' as const }),
+      ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
     });
     const splitsOf = new Map<number, TransactionView[]>();
     for (const r of rows) {

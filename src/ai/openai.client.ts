@@ -2,12 +2,14 @@ import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 
 export type ChatContent =
   | string
   | Array<
       | { type: 'text'; text: string }
       | { type: 'file'; file: { filename: string; file_data: string } }
+      | { type: 'image_url'; image_url: { url: string } }
     >;
 
 export interface ChatRequest {
@@ -108,5 +110,63 @@ export class OpenAiClient {
     if (!content)
       throw new BadGatewayException('The AI returned an empty reply');
     return content;
+  }
+
+  /**
+   * Speech to text (`/v1/audio/transcriptions`), the internal app's `transcribeAudio`
+   * shape: multipart `file` + `model` + `response_format`. No steering prompt — the
+   * internal app measured that a prompt makes near-silence come back as the prompt.
+   * An empty string is silence, not an error.
+   */
+  async transcribe(
+    audio: Buffer,
+    filename: string,
+    mimeType: string,
+    timeoutMs = 120_000,
+  ): Promise<string> {
+    const key = this.config.get<string>('OPENAI_API_KEY')?.trim();
+    if (!key) throw new BadGatewayException('The AI service is not configured');
+    const model =
+      this.config.get<string>('OPENAI_TRANSCRIBE_MODEL')?.trim() ||
+      'gpt-4o-mini-transcribe';
+    const form = new FormData();
+    form.append(
+      'file',
+      new Blob([new Uint8Array(audio)], { type: mimeType }),
+      filename,
+    );
+    form.append('model', model);
+    form.append('response_format', 'json');
+
+    const started = Date.now();
+    let res: Response;
+    try {
+      // No Content-Type: fetch sets the multipart boundary itself.
+      res = await fetch(TRANSCRIBE_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.name : 'error';
+      this.logger.warn(
+        `openai ${model} transcribe FAILED ${reason} ${Date.now() - started}ms`,
+      );
+      throw new BadGatewayException('The AI service could not be reached');
+    }
+    const data = (await res.json().catch(() => null)) as {
+      text?: string;
+      error?: { message?: string };
+    } | null;
+    this.logger.log(
+      `openai ${model} transcribe ${res.status} ${Date.now() - started}ms`,
+    );
+    if (!res.ok) {
+      throw new BadGatewayException(
+        data?.error?.message ?? `The AI service answered ${res.status}`,
+      );
+    }
+    return (data?.text ?? '').trim();
   }
 }

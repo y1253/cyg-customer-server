@@ -116,7 +116,8 @@ export class LedgerExportService {
       id: r.splitOfId ?? r.id,
       pendingDate: r.pendingDate,
       postingDate: r.postingDate,
-      name: r.name ?? '',
+      // A receipt item reads "Walmart · Pampers".
+      name: [r.name, r.itemName].filter(Boolean).join(' · '),
       description: r.description,
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
       debitAccount: r.debitAccount,

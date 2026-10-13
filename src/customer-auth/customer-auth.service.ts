@@ -13,6 +13,7 @@ import { CustomerAuthType, type Customer } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
 import { OAuth2Client } from 'google-auth-library';
 import { PrismaService } from '../prisma/prisma.service';
+import { toE164 } from './phone-number.util';
 import type { GoogleLoginDto } from './dto/google-login.dto';
 import type { LoginDto } from './dto/login.dto';
 import type { SignupDto } from './dto/signup.dto';
@@ -199,9 +200,17 @@ export class CustomerAuthService {
   }
 
   async updateMe(id: number, dto: UpdateMeDto): Promise<PublicCustomer> {
-    const data: { name?: string; phone?: string | null } = {};
+    const data: {
+      name?: string;
+      phone?: string | null;
+      phoneE164?: string | null;
+    } = {};
     if (dto.name !== undefined) data.name = dto.name;
-    if (dto.phone !== undefined) data.phone = dto.phone || null;
+    if (dto.phone !== undefined) {
+      data.phone = dto.phone || null;
+      // What a text to an intake number is matched on (`IntakeSmsService`, internal API).
+      data.phoneE164 = toE164(dto.phone);
+    }
     const customer = await this.prisma.customer.update({
       where: { id },
       data,

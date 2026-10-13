@@ -25,6 +25,15 @@ import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import {
+  AttachmentsService,
+  type AttachmentView,
+  type IntakeView,
+} from './attachments.service';
+import {
+  ATTACHMENT_UPLOAD_OPTIONS,
+  MAX_FILES_PER_REQUEST as MAX_ATTACHMENTS_PER_REQUEST,
+} from './attachment-uploads';
+import {
   BookkeepingService,
   type StatementView,
   type TransactionView,
@@ -42,6 +51,7 @@ import {
   ResetNameRuleDto,
   SaveSplitsDto,
   SaveNameRuleDto,
+  SetAttachmentTransactionDto,
   UpdateAgencyDto,
   UpdateNameDto,
   UpdateTaxDto,
@@ -83,6 +93,7 @@ export class BookkeepingController {
     private readonly nameMemory: NameMemoryService,
     private readonly accounts: CustomerAccountsService,
     private readonly splits: SplitsService,
+    private readonly attachments: AttachmentsService,
   ) {}
 
   /**
@@ -244,6 +255,99 @@ export class BookkeepingController {
   ): Promise<NamesView> {
     await this.nameMemory.resetRule(req.user.customerId, dto);
     return this.tax.names(req.user.customerId);
+  }
+
+  /**
+   * Receipts, cheques and voice notes. Read and matched to a transaction in the
+   * background (free). `transactionId` (a form field) adds them to that transaction.
+   */
+  @Post('attachments')
+  @UseInterceptors(
+    FilesInterceptor(
+      'files',
+      MAX_ATTACHMENTS_PER_REQUEST,
+      ATTACHMENT_UPLOAD_OPTIONS,
+    ),
+  )
+  uploadAttachments(
+    @Req() req: AuthedRequest,
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body('transactionId') rawTransactionId?: string,
+  ): Promise<AttachmentView[]> {
+    const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
+    if (
+      transactionId !== null &&
+      (!Number.isInteger(transactionId) || transactionId < 1)
+    ) {
+      throw new BadRequestException('transactionId must be a transaction id');
+    }
+    return this.attachments.upload(req.user.customerId, files, transactionId);
+  }
+
+  /** Where to text receipts, and whether this customer's texts will be recognised. */
+  @Get('intake')
+  intake(@Req() req: AuthedRequest): Promise<IntakeView> {
+    return this.attachments.intake(req.user.customerId);
+  }
+
+  @Get('attachments')
+  listAttachments(@Req() req: AuthedRequest): Promise<AttachmentView[]> {
+    return this.attachments.list(req.user.customerId);
+  }
+
+  @Get('attachments/:id/file')
+  async attachmentFile(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const f = await this.attachments.file(req.user.customerId, id);
+    res.set({
+      'Content-Type': f.mimeType,
+      'Content-Length': String(f.size),
+      'Content-Disposition': attachment(f.filename, true),
+      'Cache-Control': 'private, no-store',
+    });
+    return new StreamableFile(f.stream);
+  }
+
+  @Patch('attachments/:id')
+  setAttachmentTransaction(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetAttachmentTransactionDto,
+  ): Promise<AttachmentView> {
+    return this.attachments.setTransaction(
+      req.user.customerId,
+      id,
+      dto.transactionId ?? null,
+    );
+  }
+
+  /** Replace the transaction's splits with the receipt's items. */
+  @Post('attachments/:id/apply-items')
+  applyAttachmentItems(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<AttachmentView> {
+    return this.attachments.applyItems(req.user.customerId, id);
+  }
+
+  @Post('attachments/:id/retry')
+  retryAttachment(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<AttachmentView> {
+    return this.attachments.retry(req.user.customerId, id);
+  }
+
+  @Delete('attachments/:id')
+  @HttpCode(204)
+  removeAttachment(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    return this.attachments.remove(req.user.customerId, id);
   }
 
   @Post('statements')

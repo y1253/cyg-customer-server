@@ -2,10 +2,11 @@ import { StreamableFile } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
+import { AttachmentsService, type AttachmentView, type IntakeView } from './attachments.service';
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
 import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, SaveSplitsDto, SaveNameRuleDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, SaveSplitsDto, SaveNameRuleDto, SetAttachmentTransactionDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
@@ -24,7 +25,8 @@ export declare class BookkeepingController {
     private readonly nameMemory;
     private readonly accounts;
     private readonly splits;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService);
+    private readonly attachments;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService);
     generate(req: AuthedRequest): Promise<{
         queued: number;
         taxing: boolean;
@@ -42,6 +44,14 @@ export declare class BookkeepingController {
     renameTaxLine(req: AuthedRequest, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
     private editValues;
     resetNameRule(req: AuthedRequest, dto: ResetNameRuleDto): Promise<NamesView>;
+    uploadAttachments(req: AuthedRequest, files: Express.Multer.File[], rawTransactionId?: string): Promise<AttachmentView[]>;
+    intake(req: AuthedRequest): Promise<IntakeView>;
+    listAttachments(req: AuthedRequest): Promise<AttachmentView[]>;
+    attachmentFile(req: AuthedRequest, id: number, res: Response): Promise<StreamableFile>;
+    setAttachmentTransaction(req: AuthedRequest, id: number, dto: SetAttachmentTransactionDto): Promise<AttachmentView>;
+    applyAttachmentItems(req: AuthedRequest, id: number): Promise<AttachmentView>;
+    retryAttachment(req: AuthedRequest, id: number): Promise<AttachmentView>;
+    removeAttachment(req: AuthedRequest, id: number): Promise<void>;
     upload(req: AuthedRequest, files: Express.Multer.File[]): Promise<StatementView[]>;
     list(req: AuthedRequest): Promise<StatementView[]>;
     transactions(req: AuthedRequest, statementIds?: string): Promise<TransactionView[]>;

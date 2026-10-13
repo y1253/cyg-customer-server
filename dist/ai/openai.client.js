@@ -14,6 +14,7 @@ exports.OpenAiClient = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
     config;
     logger = new common_1.Logger(OpenAiClient_1.name);
@@ -79,6 +80,38 @@ let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
         if (!content)
             throw new common_1.BadGatewayException('The AI returned an empty reply');
         return content;
+    }
+    async transcribe(audio, filename, mimeType, timeoutMs = 120_000) {
+        const key = this.config.get('OPENAI_API_KEY')?.trim();
+        if (!key)
+            throw new common_1.BadGatewayException('The AI service is not configured');
+        const model = this.config.get('OPENAI_TRANSCRIBE_MODEL')?.trim() ||
+            'gpt-4o-mini-transcribe';
+        const form = new FormData();
+        form.append('file', new Blob([new Uint8Array(audio)], { type: mimeType }), filename);
+        form.append('model', model);
+        form.append('response_format', 'json');
+        const started = Date.now();
+        let res;
+        try {
+            res = await fetch(TRANSCRIBE_URL, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${key}` },
+                body: form,
+                signal: AbortSignal.timeout(timeoutMs),
+            });
+        }
+        catch (err) {
+            const reason = err instanceof Error ? err.name : 'error';
+            this.logger.warn(`openai ${model} transcribe FAILED ${reason} ${Date.now() - started}ms`);
+            throw new common_1.BadGatewayException('The AI service could not be reached');
+        }
+        const data = (await res.json().catch(() => null));
+        this.logger.log(`openai ${model} transcribe ${res.status} ${Date.now() - started}ms`);
+        if (!res.ok) {
+            throw new common_1.BadGatewayException(data?.error?.message ?? `The AI service answered ${res.status}`);
+        }
+        return (data?.text ?? '').trim();
     }
 };
 exports.OpenAiClient = OpenAiClient;

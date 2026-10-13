@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
+import { AttachmentExtractor } from './attachment-extractor';
+import { AttachmentProcessorService } from './attachment-processor.service';
+import { AttachmentsService } from './attachments.service';
 import { BookkeepingController } from './bookkeeping.controller';
 import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
@@ -16,6 +19,9 @@ import { TaxService } from './tax.service';
   imports: [CustomerAuthModule],
   controllers: [BookkeepingController],
   providers: [
+    AttachmentExtractor,
+    AttachmentProcessorService,
+    AttachmentsService,
     BookkeepingService,
     CustomerAccountsService,
     LedgerExportService,

@@ -37,6 +37,7 @@ function withTaxLines(p, lines) {
             ...p,
             ...entry,
             key: `x:${lines[i].id}`,
+            attachments: undefined,
             name: lines[i].name ?? p.name,
             kind: 'tax',
             taxRate: lines[i].rate,
@@ -132,7 +133,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return rows.map(toView);
     }
     async transactions(customerId, statementIds) {
-        const [rows, statements, taxes] = await Promise.all([
+        const [rows, statements, taxes, attached] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     customerId,
@@ -153,7 +154,22 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
             this.tax.linesFor(customerId, statementIds),
+            this.prisma.transactionAttachment.findMany({
+                where: {
+                    customerId,
+                    deletedAt: null,
+                    transactionId: { not: null },
+                },
+                select: { id: true, kind: true, filename: true, transactionId: true },
+                orderBy: { id: 'asc' },
+            }),
         ]);
+        const attachmentsOf = new Map();
+        for (const a of attached) {
+            const list = attachmentsOf.get(a.transactionId) ?? [];
+            list.push({ id: a.id, kind: a.kind, filename: a.filename });
+            attachmentsOf.set(a.transactionId, list);
+        }
         const byId = new Map(statements.map((s) => [s.id, s]));
         const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
         const viewOf = (r) => ({
@@ -164,12 +180,14 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             postingDate: day(r.postingDate),
             description: r.description,
             name: r.name,
+            ...(r.itemName && { itemName: r.itemName }),
             amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
             offsetAccount: r.offsetAccount,
             debitAccount: r.debitAccount,
             creditAccount: r.creditAccount,
             statementLabel: (0, statement_label_1.statementLabel)(r.statement),
             ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' }),
+            ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
         });
         const splitsOf = new Map();
         for (const r of rows) {

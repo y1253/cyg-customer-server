@@ -19,6 +19,7 @@ const client_1 = require("@prisma/client");
 const bcryptjs_1 = require("bcryptjs");
 const google_auth_library_1 = require("google-auth-library");
 const prisma_service_1 = require("../prisma/prisma.service");
+const phone_number_util_1 = require("./phone-number.util");
 exports.CUSTOMER_TOKEN_TYPE = 'customer';
 const BCRYPT_COST = 12;
 exports.AUTH_LIMIT = 5;
@@ -137,8 +138,10 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         const data = {};
         if (dto.name !== undefined)
             data.name = dto.name;
-        if (dto.phone !== undefined)
+        if (dto.phone !== undefined) {
             data.phone = dto.phone || null;
+            data.phoneE164 = (0, phone_number_util_1.toE164)(dto.phone);
+        }
         const customer = await this.prisma.customer.update({
             where: { id },
             data,

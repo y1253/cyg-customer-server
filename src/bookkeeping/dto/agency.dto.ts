@@ -7,6 +7,7 @@ import {
   IsBoolean,
   IsEnum,
   IsIn,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -177,6 +178,13 @@ export class SplitDto {
   @MaxLength(191)
   name?: string | null;
 
+  /** The receipt line this split is for ("Pampers"). */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  itemName?: string | null;
+
   @Transform(trim)
   @IsString()
   @IsNotEmpty()
@@ -186,6 +194,11 @@ export class SplitDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   amount!: number;
+
+  /** Remember the item's category for later receipts. */
+  @IsOptional()
+  @IsBoolean()
+  always?: boolean;
 }
 
 /**
@@ -207,4 +220,12 @@ export class RenameTaxLineDto {
   @IsString()
   @MaxLength(191)
   name?: string | null;
+}
+
+/** `PATCH /api/bookkeeping/attachments/:id` — attach to a transaction, or `null` to detach. */
+export class SetAttachmentTransactionDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  transactionId!: number | null;
 }

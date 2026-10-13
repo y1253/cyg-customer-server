@@ -17,6 +17,8 @@ const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const customer_auth_service_1 = require("../customer-auth/customer-auth.service");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
+const attachments_service_1 = require("./attachments.service");
+const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
@@ -40,7 +42,8 @@ let BookkeepingController = class BookkeepingController {
     nameMemory;
     accounts;
     splits;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits) {
+    attachments;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -49,6 +52,7 @@ let BookkeepingController = class BookkeepingController {
         this.nameMemory = nameMemory;
         this.accounts = accounts;
         this.splits = splits;
+        this.attachments = attachments;
     }
     generate(req) {
         return this.bookkeeping.generateIfFree(req.user.customerId);
@@ -115,6 +119,42 @@ let BookkeepingController = class BookkeepingController {
     async resetNameRule(req, dto) {
         await this.nameMemory.resetRule(req.user.customerId, dto);
         return this.tax.names(req.user.customerId);
+    }
+    uploadAttachments(req, files, rawTransactionId) {
+        const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
+        if (transactionId !== null &&
+            (!Number.isInteger(transactionId) || transactionId < 1)) {
+            throw new common_1.BadRequestException('transactionId must be a transaction id');
+        }
+        return this.attachments.upload(req.user.customerId, files, transactionId);
+    }
+    intake(req) {
+        return this.attachments.intake(req.user.customerId);
+    }
+    listAttachments(req) {
+        return this.attachments.list(req.user.customerId);
+    }
+    async attachmentFile(req, id, res) {
+        const f = await this.attachments.file(req.user.customerId, id);
+        res.set({
+            'Content-Type': f.mimeType,
+            'Content-Length': String(f.size),
+            'Content-Disposition': attachment(f.filename, true),
+            'Cache-Control': 'private, no-store',
+        });
+        return new common_1.StreamableFile(f.stream);
+    }
+    setAttachmentTransaction(req, id, dto) {
+        return this.attachments.setTransaction(req.user.customerId, id, dto.transactionId ?? null);
+    }
+    applyAttachmentItems(req, id) {
+        return this.attachments.applyItems(req.user.customerId, id);
+    }
+    retryAttachment(req, id) {
+        return this.attachments.retry(req.user.customerId, id);
+    }
+    removeAttachment(req, id) {
+        return this.attachments.remove(req.user.customerId, id);
     }
     upload(req, files) {
         return this.bookkeeping.upload(req.user.customerId, files);
@@ -291,6 +331,73 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "resetNameRule", null);
 __decorate([
+    (0, common_1.Post)('attachments'),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', attachment_uploads_1.MAX_FILES_PER_REQUEST, attachment_uploads_1.ATTACHMENT_UPLOAD_OPTIONS)),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.UploadedFiles)()),
+    __param(2, (0, common_1.Body)('transactionId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Array, String]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "uploadAttachments", null);
+__decorate([
+    (0, common_1.Get)('intake'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "intake", null);
+__decorate([
+    (0, common_1.Get)('attachments'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "listAttachments", null);
+__decorate([
+    (0, common_1.Get)('attachments/:id/file'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Res)({ passthrough: true })),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "attachmentFile", null);
+__decorate([
+    (0, common_1.Patch)('attachments/:id'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SetAttachmentTransactionDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setAttachmentTransaction", null);
+__decorate([
+    (0, common_1.Post)('attachments/:id/apply-items'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "applyAttachmentItems", null);
+__decorate([
+    (0, common_1.Post)('attachments/:id/retry'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "retryAttachment", null);
+__decorate([
+    (0, common_1.Delete)('attachments/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "removeAttachment", null);
+__decorate([
     (0, common_1.Post)('statements'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', statement_uploads_1.MAX_FILES_PER_REQUEST, statement_uploads_1.STATEMENT_UPLOAD_OPTIONS)),
     __param(0, (0, common_1.Req)()),
@@ -382,6 +489,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         tax_service_1.TaxService,
         name_memory_service_1.NameMemoryService,
         customer_accounts_service_1.CustomerAccountsService,
-        splits_service_1.SplitsService])
+        splits_service_1.SplitsService,
+        attachments_service_1.AttachmentsService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

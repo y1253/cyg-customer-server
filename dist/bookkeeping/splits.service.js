@@ -16,6 +16,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_util_1 = require("./name-memory.util");
+const receipt_items_util_1 = require("./receipt-items.util");
 const splits_util_1 = require("./splits.util");
 const tax_service_1 = require("./tax.service");
 let SplitsService = class SplitsService {
@@ -54,6 +55,8 @@ let SplitsService = class SplitsService {
         const rows = await Promise.all(input.map(async (s) => ({
             id: s.id,
             name: (0, name_memory_util_1.cleanName)(s.name ?? null),
+            itemName: (0, name_memory_util_1.cleanName)(s.itemName ?? null),
+            always: s.always === true,
             category: await this.accounts.validCategory(customerId, s.category),
             amount: (0, splits_util_1.signedLike)(amount, s.amount),
         })));
@@ -67,6 +70,7 @@ let SplitsService = class SplitsService {
             for (const r of rows) {
                 const data = {
                     name: r.name,
+                    itemName: r.itemName,
                     amount: r.amount.toFixed(2),
                     offsetAccount: r.category,
                     ...(0, ledger_util_1.doubleEntry)(r.amount, bank, r.category),
@@ -93,9 +97,26 @@ let SplitsService = class SplitsService {
                     out.push(made.id);
                 }
             }
+            for (const r of rows) {
+                const key = r.always && r.itemName ? (0, receipt_items_util_1.itemKey)(r.itemName) : '';
+                if (!key)
+                    continue;
+                await tx.customerItemRule.upsert({
+                    where: { customerId_itemKey: { customerId, itemKey: key } },
+                    create: { customerId, itemKey: key, category: r.category },
+                    update: { category: r.category },
+                });
+            }
             return out;
         });
         await this.tax.retagRows(customerId, [parent.id, ...ids]);
+    }
+    async itemRules(customerId) {
+        const rules = await this.prisma.customerItemRule.findMany({
+            where: { customerId },
+            select: { itemKey: true, category: true },
+        });
+        return new Map(rules.map((r) => [r.itemKey, r.category]));
     }
 };
 exports.SplitsService = SplitsService;

@@ -1,4 +1,4 @@
-import { StatementStatus } from '@prisma/client';
+import { StatementStatus, type AttachmentKind } from '@prisma/client';
 import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -29,6 +29,7 @@ export interface TransactionView {
     postingDate: string | null;
     description: string;
     name: string | null;
+    itemName?: string | null;
     amount: number;
     offsetAccount: string;
     debitAccount: string;
@@ -37,6 +38,11 @@ export interface TransactionView {
     kind?: 'opening' | 'tax' | 'split';
     taxRate?: number;
     taxAgencyId?: number;
+    attachments?: Array<{
+        id: number;
+        kind: AttachmentKind;
+        filename: string;
+    }>;
 }
 export declare class BookkeepingService {
     private readonly prisma;

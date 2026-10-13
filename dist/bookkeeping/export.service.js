@@ -84,7 +84,7 @@ let LedgerExportService = class LedgerExportService {
             id: r.splitOfId ?? r.id,
             pendingDate: r.pendingDate,
             postingDate: r.postingDate,
-            name: r.name ?? '',
+            name: [r.name, r.itemName].filter(Boolean).join(' · '),
             description: r.description,
             amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
             debitAccount: r.debitAccount,

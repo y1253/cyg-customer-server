@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -202,8 +202,10 @@ __decorate([
 class SplitDto {
     id;
     name;
+    itemName;
     category;
     amount;
+    always;
 }
 exports.SplitDto = SplitDto;
 __decorate([
@@ -219,6 +221,13 @@ __decorate([
     __metadata("design:type", Object)
 ], SplitDto.prototype, "name", void 0);
 __decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", Object)
+], SplitDto.prototype, "itemName", void 0);
+__decorate([
     (0, class_transformer_1.Transform)(trim),
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsNotEmpty)(),
@@ -230,6 +239,11 @@ __decorate([
     (0, class_validator_1.Min)(0.01),
     __metadata("design:type", Number)
 ], SplitDto.prototype, "amount", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], SplitDto.prototype, "always", void 0);
 class SaveSplitsDto {
     splits;
 }
@@ -252,4 +266,14 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", Object)
 ], RenameTaxLineDto.prototype, "name", void 0);
+class SetAttachmentTransactionDto {
+    transactionId;
+}
+exports.SetAttachmentTransactionDto = SetAttachmentTransactionDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsInt)(),
+    (0, class_validator_1.Min)(1),
+    __metadata("design:type", Object)
+], SetAttachmentTransactionDto.prototype, "transactionId", void 0);
 //# sourceMappingURL=agency.dto.js.map

@@ -43,12 +43,17 @@ export declare class CreateAccountDto {
 export declare class SplitDto {
     id?: number;
     name?: string | null;
+    itemName?: string | null;
     category: string;
     amount: number;
+    always?: boolean;
 }
 export declare class SaveSplitsDto {
     splits: SplitDto[];
 }
 export declare class RenameTaxLineDto {
     name?: string | null;
+}
+export declare class SetAttachmentTransactionDto {
+    transactionId: number | null;
 }

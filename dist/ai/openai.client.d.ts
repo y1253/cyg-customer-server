@@ -8,6 +8,11 @@ export type ChatContent = string | Array<{
         filename: string;
         file_data: string;
     };
+} | {
+    type: 'image_url';
+    image_url: {
+        url: string;
+    };
 }>;
 export interface ChatRequest {
     model: string;
@@ -27,4 +32,5 @@ export declare class OpenAiClient {
     constructor(config: ConfigService);
     get configured(): boolean;
     chat(req: ChatRequest): Promise<string>;
+    transcribe(audio: Buffer, filename: string, mimeType: string, timeoutMs?: number): Promise<string>;
 }

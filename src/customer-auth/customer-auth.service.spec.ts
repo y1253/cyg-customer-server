@@ -23,6 +23,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     passwordHash: null,
     avatarUrl: null,
     phone: null,
+    phoneE164: null,
     createdAt: new Date('2026-10-01'),
     updatedAt: new Date('2026-10-01'),
     lastLoginAt: null,
