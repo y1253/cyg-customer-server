@@ -10,10 +10,37 @@ type Tx = {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  manualEdit?: boolean;
+  splitOfId?: number | null;
 };
 
 const money = (n: number) => ({ toString: () => n.toFixed(2) });
 
+type Where = {
+  name?: string | { in: string[] };
+  manualEdit?: boolean;
+  splitOfId?: null;
+};
+
+/** MySQL compares names case-insensitively; so does this fake. */
+function matches(row: Tx, where: Where): boolean {
+  const n = row.name?.toLowerCase() ?? null;
+  if (typeof where.name === 'string' && n !== where.name.toLowerCase()) {
+    return false;
+  }
+  if (
+    where.name &&
+    typeof where.name === 'object' &&
+    !where.name.in.some((x) => x.toLowerCase() === n)
+  ) {
+    return false;
+  }
+  if (where.manualEdit === false && row.manualEdit) return false;
+  if (where.splitOfId === null && row.splitOfId) return false;
+  return true;
+}
+
+/** A Prisma stand-in whose rows CHANGE with each update, so multi-step edits read true. */
 function fakePrisma(rows: Tx[], existingRule: object | null = null) {
   const updates: Array<{ id: number; data: Record<string, unknown> }> = [];
   const prisma = {
@@ -22,6 +49,15 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
       upsert: jest.fn().mockResolvedValue({}),
       delete: jest.fn().mockResolvedValue({}),
       findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    nameMemory: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      update: jest.fn(),
+      updateMany: jest.fn(),
     },
     descriptionMemory: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -33,8 +69,11 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
       findMany: jest.fn().mockResolvedValue([]),
     },
     bankTransaction: {
-      findMany: jest.fn().mockResolvedValue(rows),
+      findMany: jest.fn(({ where }: { where: Where }) =>
+        Promise.resolve(rows.filter((r) => matches(r, where))),
+      ),
       findFirst: jest.fn().mockResolvedValue(null),
+      groupBy: jest.fn().mockResolvedValue([]),
       update: jest.fn(
         ({
           where,
@@ -44,6 +83,8 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
           data: Record<string, unknown>;
         }) => {
           updates.push({ id: where.id, data });
+          const row = rows.find((r) => r.id === where.id);
+          if (row) Object.assign(row, data);
           return { id: where.id };
         },
       ),
@@ -55,7 +96,7 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
     },
     $transaction: jest.fn((ops: unknown[]) => Promise.resolve(ops)),
   };
-  return { prisma, updates };
+  return { prisma, updates, rows };
 }
 
 /** The tax step: re-tags the rows an edit changed (succeeds unless told otherwise). */
@@ -67,9 +108,17 @@ const service = (prisma: object, tax = fakeTax()) =>
     tax as unknown as TaxService,
   );
 
+/** What a row ends up as: name, category, debit, credit. */
+const state = (r: Tx) => [
+  r.name,
+  r.offsetAccount,
+  r.debitAccount,
+  r.creditAccount,
+];
+
 describe('NameMemoryService.saveRule', () => {
-  it('rewrites the offset side of money OUT and money IN, and marks taxes stale', async () => {
-    const { prisma, updates } = fakePrisma([
+  it('a payee rename + category moves every row of the name, both money OUT and IN', async () => {
+    const { prisma, rows } = fakePrisma([
       {
         id: 1,
         description: 'WALMART 1',
@@ -95,25 +144,9 @@ describe('NameMemoryService.saveRule', () => {
       name: 'Walmart Canada',
       category: 'Office Expense',
     });
-    expect(updates).toEqual([
-      {
-        id: 1,
-        data: {
-          name: 'Walmart Canada',
-          offsetAccount: 'Office Expense',
-          debitAccount: 'Office Expense',
-          creditAccount: 'BMO 1234',
-        },
-      },
-      {
-        id: 2,
-        data: {
-          name: 'Walmart Canada',
-          offsetAccount: 'Office Expense',
-          debitAccount: 'BMO 1234',
-          creditAccount: 'Office Expense',
-        },
-      },
+    expect(rows.map(state)).toEqual([
+      ['Walmart Canada', 'Office Expense', 'Office Expense', 'BMO 1234'],
+      ['Walmart Canada', 'Office Expense', 'BMO 1234', 'Office Expense'],
     ]);
     expect(prisma.customerNameRule.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -122,10 +155,18 @@ describe('NameMemoryService.saveRule', () => {
           matchType: 'NAME',
           matchKey: 'walmart',
           name: 'Walmart Canada',
-          category: 'Office Expense',
         },
       }),
     );
+    // The category is the NEW name's, kept on a rule for that name.
+    expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
+      data: {
+        customerId: 7,
+        matchType: 'NAME',
+        matchKey: 'walmart canada',
+        category: 'Office Expense',
+      },
+    });
   });
 
   it('a second edit also reaches rows the first edit renamed', async () => {
@@ -146,7 +187,7 @@ describe('NameMemoryService.saveRule', () => {
   });
 
   it('a DESCRIPTION rule names only the rows whose description matches', async () => {
-    const { prisma, updates } = fakePrisma([
+    const { prisma, rows } = fakePrisma([
       {
         id: 1,
         description: 'SERVICE CHARGE 0923',
@@ -181,13 +222,45 @@ describe('NameMemoryService.saveRule', () => {
       name: 'BMO',
       category: 'Bank Fees',
     });
-    expect(updates.map((u) => u.id)).toEqual([1, 2]);
-    expect(updates[0].data).toEqual({
-      name: 'BMO',
-      offsetAccount: 'Bank Fees',
-      debitAccount: 'Bank Fees',
-      creditAccount: 'BMO 1234',
+    expect(rows.map(state)).toEqual([
+      ['BMO', 'Bank Fees', 'Bank Fees', 'BMO 1234'],
+      ['BMO', 'Bank Fees', 'Bank Fees', 'BMO 1234'],
+      [null, 'Interest Income', 'BMO 1234', 'Interest Income'],
+    ]);
+  });
+
+  it('a nameless description gets its own category, and only its nameless rows move', async () => {
+    const { prisma, rows } = fakePrisma([
+      {
+        id: 1,
+        description: 'DEPOSIT 0923',
+        name: null,
+        amount: money(40),
+        offsetAccount: 'Uncategorized',
+        debitAccount: 'BMO 1234',
+        creditAccount: 'Uncategorized',
+        manualEdit: true,
+      },
+      {
+        id: 2,
+        description: 'DEPOSIT 1023',
+        name: 'Acme',
+        amount: money(40),
+        offsetAccount: 'Sales Income',
+        debitAccount: 'BMO 1234',
+        creditAccount: 'Sales Income',
+      },
+    ]);
+    await service(prisma).saveRule(7, {
+      matchType: 'DESCRIPTION',
+      matchKey: 'deposit',
+      name: null,
+      category: 'Other Income',
     });
+    expect(rows.map((r) => r.offsetAccount)).toEqual([
+      'Other Income',
+      'Sales Income',
+    ]);
   });
 
   it('writes nothing (and leaves taxes alone) when no row changes', async () => {
@@ -202,13 +275,15 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'BMO 1234',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    const tax = fakeTax();
+    await service(prisma, tax).saveRule(7, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: 'Walmart',
       category: 'Supplies',
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tax.retagRows).not.toHaveBeenCalled();
   });
 
   it('re-tags exactly the rows it changed, so the reports are right at once', async () => {
@@ -242,28 +317,6 @@ describe('NameMemoryService.saveRule', () => {
     expect(tax.retagRows).toHaveBeenCalledWith(7, [1]);
     // Re-tagged rather than left for Generate.
     expect(prisma.customer.update).not.toHaveBeenCalled();
-  });
-
-  it('a no-change edit re-tags nothing', async () => {
-    const { prisma } = fakePrisma([
-      {
-        id: 1,
-        description: 'WALMART',
-        name: 'Walmart',
-        amount: money(-20),
-        offsetAccount: 'Supplies',
-        debitAccount: 'Supplies',
-        creditAccount: 'BMO 1234',
-      },
-    ]);
-    const tax = fakeTax();
-    await service(prisma, tax).saveRule(7, {
-      matchType: 'NAME',
-      matchKey: 'walmart',
-      name: 'Walmart',
-      category: 'Supplies',
-    });
-    expect(tax.retagRows).not.toHaveBeenCalled();
   });
 });
 
@@ -334,8 +387,8 @@ describe('NameMemoryService.resolveStatement', () => {
   });
 });
 
-describe('one time vs always', () => {
-  const walmart = (id: number, manual = false) => ({
+describe('one category per name; "Always / Only this row" is for the name', () => {
+  const walmart = (id: number, manual = false): Tx => ({
     id,
     description: `WALMART ${id}`,
     name: 'Walmart',
@@ -346,82 +399,141 @@ describe('one time vs always', () => {
     manualEdit: manual,
   });
 
-  it('ONCE changes the rows and flags them, but saves no rule', async () => {
-    const { prisma, updates } = fakePrisma([walmart(1), walmart(2)]);
+  it('a category reaches EVERY row of the name — one-time edits too, splits never', async () => {
+    const split = { ...walmart(3), splitOfId: 1 };
+    const { prisma, rows } = fakePrisma([walmart(1), walmart(2, true), split]);
     await service(prisma).saveRule(7, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: null,
       category: 'Office Expense',
+      // The Names tab never sends ONCE for a payee any more; it is ignored if it does.
+      scope: 'ONCE',
+    });
+    expect(rows.map((r) => r.offsetAccount)).toEqual([
+      'Office Expense',
+      'Office Expense',
+      'Supplies',
+    ]);
+  });
+
+  it('a payee rename skips rows a one-time rename flagged', async () => {
+    const { prisma, rows } = fakePrisma([walmart(1), walmart(2, true)]);
+    await service(prisma).saveRule(7, {
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: 'Walmart Canada',
+      category: null,
+    });
+    expect(rows.map((r) => r.name)).toEqual(['Walmart Canada', 'Walmart']);
+  });
+
+  it('an unrecognised group ONCE names the rows there now and saves no rule', async () => {
+    const { prisma, updates } = fakePrisma([
+      { ...walmart(1), name: null, description: 'POS 0923' },
+      { ...walmart(2), name: null, description: 'POS 1023' },
+    ]);
+    await service(prisma).saveRule(7, {
+      matchType: 'DESCRIPTION',
+      matchKey: 'pos',
+      name: 'Corner Store',
+      category: null,
       scope: 'ONCE',
     });
     expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
-    expect(updates.map((u) => u.data.manualEdit)).toEqual([true, true]);
-    // A one-time change reaches rows an earlier one-time change touched.
-    const [args] = prisma.bankTransaction.findMany.mock.calls[0] as [
-      { where: Record<string, unknown> },
-    ];
-    expect(args.where).not.toHaveProperty('manualEdit');
+    expect(updates.map((u) => [u.data.name, u.data.manualEdit])).toEqual([
+      ['Corner Store', true],
+      ['Corner Store', true],
+    ]);
   });
 
-  it('ALWAYS never touches a row a one-time edit flagged', async () => {
-    const { prisma } = fakePrisma([walmart(1)]);
-    await service(prisma).saveRule(7, {
-      matchType: 'NAME',
-      matchKey: 'walmart',
-      name: null,
-      category: 'Office Expense',
-    });
-    const [args] = prisma.bankTransaction.findMany.mock.calls[0] as [
-      { where: Record<string, unknown> },
-    ];
-    expect(args.where.manualEdit).toBe(false);
-  });
-
-  it('a ledger ONCE edit changes only that row, with debit/credit re-derived', async () => {
-    const { prisma, updates } = fakePrisma([]);
-    prisma.bankTransaction.findFirst.mockResolvedValue({
+  it('a ledger ONCE rename changes only that row; the category goes to the new name', async () => {
+    const row5 = {
       ...walmart(5),
       amount: money(30),
       debitAccount: 'BMO 1234',
       creditAccount: 'Supplies',
-    });
+    };
+    const { prisma, rows } = fakePrisma([row5, walmart(6)]);
+    prisma.bankTransaction.findFirst.mockResolvedValue({ ...row5 });
     await service(prisma).editTransaction(7, 5, {
       name: 'Walmart Refund',
       category: 'Other Income',
       scope: 'ONCE',
     });
-    expect(updates).toEqual([
-      {
-        id: 5,
-        data: {
-          name: 'Walmart Refund',
-          offsetAccount: 'Other Income',
-          debitAccount: 'BMO 1234',
-          creditAccount: 'Other Income',
-          manualEdit: true,
-        },
-      },
+    expect(rows.map(state)).toEqual([
+      ['Walmart Refund', 'Other Income', 'BMO 1234', 'Other Income'],
+      ['Walmart', 'Supplies', 'Supplies', 'BMO 1234'],
     ]);
+    expect(rows[0].manualEdit).toBe(true);
     expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
+    expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
+      data: {
+        customerId: 7,
+        matchType: 'NAME',
+        matchKey: 'walmart refund',
+        category: 'Other Income',
+      },
+    });
   });
 
-  it('a ledger ALWAYS edit saves a rule for the payee', async () => {
+  it('a ledger ALWAYS rename names every row with that description (a DESCRIPTION rule)', async () => {
     const { prisma } = fakePrisma([]);
+    prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
+    await service(prisma).editTransaction(7, 5, {
+      name: 'Walmart Canada',
+      category: null,
+      scope: 'ALWAYS',
+    });
+    const [upsert] = prisma.customerNameRule.upsert.mock.calls[0] as [
+      { create: Record<string, unknown> },
+    ];
+    expect(upsert.create).toMatchObject({
+      matchType: 'DESCRIPTION',
+      matchKey: 'walmart',
+      name: 'Walmart Canada',
+    });
+  });
+
+  it("a ledger category edit is the NAME's category, whatever the scope", async () => {
+    const { prisma, rows } = fakePrisma([walmart(5), walmart(6, true)]);
     prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
     await service(prisma).editTransaction(7, 5, {
       name: null,
       category: 'Office Expense',
-      scope: 'ALWAYS',
+      scope: 'ONCE',
     });
-    const [upsert] = prisma.customerNameRule.upsert.mock.calls[0] as [
-      { create: { matchType: string; matchKey: string; category: string } },
-    ];
-    expect(upsert.create).toMatchObject({
-      matchType: 'NAME',
-      matchKey: 'walmart',
-      category: 'Office Expense',
+    expect(rows.map((r) => r.offsetAccount)).toEqual([
+      'Office Expense',
+      'Office Expense',
+    ]);
+    expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
+      data: {
+        customerId: 7,
+        matchType: 'NAME',
+        matchKey: 'walmart',
+        category: 'Office Expense',
+      },
     });
+  });
+
+  it('a renamed row takes the category its new name already has', async () => {
+    const { prisma, rows } = fakePrisma([walmart(5)]);
+    prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
+    prisma.nameMemory.findUnique.mockResolvedValue({
+      category: 'Meals & Entertainment',
+    });
+    await service(prisma).editTransaction(7, 5, {
+      name: 'Tim Hortons',
+      category: null,
+      scope: 'ONCE',
+    });
+    expect(state(rows[0])).toEqual([
+      'Tim Hortons',
+      'Meals & Entertainment',
+      'Meals & Entertainment',
+      'BMO 1234',
+    ]);
   });
 
   it("keeps the customer's own category instead of turning it into Uncategorized", async () => {

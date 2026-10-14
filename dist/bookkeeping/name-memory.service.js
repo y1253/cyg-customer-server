@@ -25,7 +25,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         this.prisma = prisma;
         this.tax = tax;
     }
-    async contextFor(customerId, descriptions) {
+    async contextFor(customerId, descriptions, names = []) {
         const keys = [...new Set(descriptions.map(name_memory_util_1.descriptionKey).filter(Boolean))];
         const [memoryRows, rules, customAccounts] = await Promise.all([
             keys.length
@@ -41,7 +41,27 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             m.descriptionKey,
             { name: m.name, category: m.category },
         ]));
-        return { memory, ...(0, name_memory_util_1.indexRules)(rules), customAccounts };
+        const nameKeys = new Set();
+        for (const n of [
+            ...names,
+            ...memoryRows.map((m) => m.name),
+            ...rules.map((r) => r.name),
+        ]) {
+            const clean = (0, name_memory_util_1.cleanName)(n);
+            if (clean)
+                nameKeys.add((0, name_memory_util_1.nameKey)(clean));
+        }
+        const nameMemory = await this.nameMemoryFor([...nameKeys]);
+        return { memory, ...(0, name_memory_util_1.indexRules)(rules), customAccounts, nameMemory };
+    }
+    async nameMemoryFor(keys) {
+        if (!keys.length)
+            return new Map();
+        const rows = await this.prisma.nameMemory.findMany({
+            where: { nameKey: { in: keys } },
+            select: { nameKey: true, category: true },
+        });
+        return new Map(rows.map((r) => [r.nameKey, r.category]));
     }
     async rulesOf(customerId) {
         const rows = await this.prisma.customerNameRule.findMany({
@@ -63,14 +83,17 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async resolveStatement(customerId, rows, bankName = null) {
         try {
             const ctx = {
-                ...(await this.contextFor(customerId, rows.map((r) => r.description))),
+                ...(await this.contextFor(customerId, rows.map((r) => r.description), rows.map((r) => r.name))),
                 bankName,
             };
-            const lines = rows.map((r) => {
-                const out = (0, name_memory_util_1.resolveRow)(r, ctx);
-                return { ...r, name: out.name, offsetAccount: out.category };
-            });
+            const { resolved } = (0, name_memory_util_1.resolveRows)(rows, ctx);
+            const lines = rows.map((r, i) => ({
+                ...r,
+                name: resolved[i].name,
+                offsetAccount: resolved[i].category,
+            }));
             await this.learn(rows, ctx.memory);
+            await this.learnNames(resolved, ctx.nameMemory ?? new Map());
             return { lines, customAccounts: ctx.customAccounts };
         }
         catch (err) {
@@ -113,8 +136,31 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             });
         }
     }
+    async learnNames(resolved, known) {
+        const { creates, fills } = (0, name_memory_util_1.nameMemoryWrites)(resolved, known);
+        if (creates.length) {
+            await this.prisma.nameMemory.createMany({
+                data: creates,
+                skipDuplicates: true,
+            });
+        }
+        for (const f of fills) {
+            await this.prisma.nameMemory.update({
+                where: { nameKey: f.nameKey },
+                data: { category: f.category },
+            });
+        }
+        const reused = [
+            ...new Set(resolved.flatMap((r) => r.followsName && r.name ? [(0, name_memory_util_1.nameKey)(r.name)] : [])),
+        ].filter((k) => known.has(k));
+        if (reused.length) {
+            await this.prisma.nameMemory.updateMany({
+                where: { nameKey: { in: reused } },
+                data: { hits: { increment: 1 } },
+            });
+        }
+    }
     async saveRule(customerId, input) {
-        const scope = input.scope ?? 'ALWAYS';
         const matchKey = ruleKeyOf(input.matchType, input.matchKey);
         const name = (0, name_memory_util_1.cleanName)(input.name);
         const category = input.category
@@ -128,30 +174,59 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             },
         };
         const previous = await this.prisma.customerNameRule.findUnique({ where });
-        if (scope === 'ALWAYS') {
+        if (input.matchType === 'NAME') {
+            const names = new Set([matchKey]);
+            if (previous?.name)
+                names.add((0, name_memory_util_1.nameKey)(previous.name));
+            if (!name) {
+                if (category) {
+                    await this.setNameCategory(customerId, (0, name_memory_util_1.cleanName)(previous?.name) ?? matchKey, category);
+                }
+                return;
+            }
+            const target = await this.categoryOfName(customerId, name);
             await this.prisma.customerNameRule.upsert({
                 where,
-                create: {
-                    customerId,
-                    matchType: input.matchType,
-                    matchKey,
-                    name,
-                    category,
-                },
-                update: { name, category },
+                create: { customerId, matchType: 'NAME', matchKey, name },
+                update: { name },
             });
-        }
-        const names = new Set([matchKey]);
-        if (previous?.name)
-            names.add((0, name_memory_util_1.nameKey)(previous.name));
-        const rows = await this.matchingRows(customerId, input.matchType, matchKey, names, scope === 'ONCE');
-        await this.writeRows(customerId, rows, (row) => ({
-            name: name ?? row.name,
-            category: category ?? row.offsetAccount,
-        }), scope === 'ONCE');
-        if (name && input.matchType === 'NAME') {
+            const rows = await this.matchingRows(customerId, 'NAME', matchKey, names, false);
+            await this.writeRows(customerId, rows, (row) => ({
+                name,
+                category: row.offsetAccount,
+            }));
             await this.carryTaxSwitch(customerId, [...names], name);
+            const adopt = category ?? target;
+            if (adopt)
+                await this.setNameCategory(customerId, name, adopt);
+            return;
         }
+        const scope = input.scope ?? 'ALWAYS';
+        if (name) {
+            const target = await this.categoryOfName(customerId, name);
+            if (scope === 'ALWAYS') {
+                await this.prisma.customerNameRule.upsert({
+                    where,
+                    create: { customerId, matchType: 'DESCRIPTION', matchKey, name },
+                    update: { name, category: null },
+                });
+            }
+            const rows = await this.matchingRows(customerId, 'DESCRIPTION', matchKey, new Set(), scope === 'ONCE');
+            await this.writeRows(customerId, rows, (row) => ({ name, category: row.offsetAccount }), scope === 'ONCE');
+            const adopt = category ?? target;
+            if (adopt)
+                await this.setNameCategory(customerId, name, adopt);
+            return;
+        }
+        if (!category)
+            return;
+        await this.prisma.customerNameRule.upsert({
+            where,
+            create: { customerId, matchType: 'DESCRIPTION', matchKey, category },
+            update: { category },
+        });
+        const rows = await this.matchingRows(customerId, 'DESCRIPTION', matchKey, new Set(), true);
+        await this.writeRows(customerId, rows.filter((r) => !(0, name_memory_util_1.cleanName)(r.name)), () => ({ name: null, category }));
     }
     async editTransaction(customerId, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
@@ -166,36 +241,107 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             ? (0, chart_of_accounts_1.normalizeAccount)(input.category, custom)
             : null;
         const matched = toMatched(row);
-        const next = (r) => ({
-            name: name ?? r.name,
-            category: category ?? r.offsetAccount,
-        });
-        if (input.scope === 'ONCE' || row.splitOfId) {
-            await this.writeRows(customerId, [matched], next, true);
+        if (row.splitOfId) {
+            await this.writeRows(customerId, [matched], (r) => ({
+                name: name ?? r.name,
+                category: category ?? r.offsetAccount,
+            }), true);
             return;
         }
-        if (row.name) {
-            await this.saveRule(customerId, {
-                matchType: 'NAME',
-                matchKey: await this.ruleKeyForName(customerId, row.name),
-                name,
-                category,
-            });
-        }
-        else {
-            const key = (0, name_memory_util_1.descriptionKey)(row.description);
+        const key = (0, name_memory_util_1.descriptionKey)(row.description);
+        if (name && name !== row.name) {
+            if (input.scope === 'ONCE') {
+                const target = await this.categoryOfName(customerId, name);
+                await this.writeRows(customerId, [matched], (r) => ({ name, category: r.offsetAccount }), true);
+                const adopt = category ?? target;
+                if (adopt)
+                    await this.setNameCategory(customerId, name, adopt);
+                return;
+            }
             if (!key) {
-                throw new common_1.BadRequestException('This transaction has no description to remember. Change it for this row only.');
+                throw new common_1.BadRequestException('This transaction has no description to remember. Apply the name to this row only.');
+            }
+            if (row.manualEdit) {
+                await this.writeRows(customerId, [matched], (r) => ({
+                    name,
+                    category: r.offsetAccount,
+                }));
             }
             await this.saveRule(customerId, {
                 matchType: 'DESCRIPTION',
                 matchKey: key,
                 name,
                 category,
+                scope: 'ALWAYS',
+            });
+            return;
+        }
+        if (!category)
+            return;
+        const current = (0, name_memory_util_1.cleanName)(row.name);
+        if (current) {
+            await this.setNameCategory(customerId, current, category);
+        }
+        else if (key) {
+            await this.saveRule(customerId, {
+                matchType: 'DESCRIPTION',
+                matchKey: key,
+                name: null,
+                category,
             });
         }
-        if (row.manualEdit)
-            await this.writeRows(customerId, [matched], next);
+        else {
+            await this.writeRows(customerId, [matched], (r) => ({ name: r.name, category }), true);
+        }
+    }
+    async setNameCategory(customerId, name, category) {
+        const key = (0, name_memory_util_1.nameKey)(name);
+        const rules = await this.prisma.customerNameRule.findMany({
+            where: { customerId, matchType: 'NAME' },
+            select: { id: true, matchKey: true, name: true },
+        });
+        const targeting = rules.filter((r) => ((0, name_memory_util_1.cleanName)(r.name) ? (0, name_memory_util_1.nameKey)(r.name) : r.matchKey) === key);
+        if (targeting.length) {
+            await this.prisma.customerNameRule.updateMany({
+                where: { id: { in: targeting.map((r) => r.id) } },
+                data: { category },
+            });
+        }
+        else if (!rules.some((r) => r.matchKey === key)) {
+            await this.prisma.customerNameRule.create({
+                data: { customerId, matchType: 'NAME', matchKey: key, category },
+            });
+        }
+        const rows = await this.prisma.bankTransaction.findMany({
+            where: { customerId, name: key, splitOfId: null },
+            select: MATCH_SELECT,
+        });
+        await this.writeRows(customerId, rows.map(toMatched), (r) => ({
+            name: r.name,
+            category,
+        }));
+    }
+    async categoryOfName(customerId, name) {
+        const key = (0, name_memory_util_1.nameKey)(name);
+        const own = (0, name_memory_util_1.indexRules)(await this.rulesOf(customerId)).nameCategories.get(key);
+        if (own)
+            return own;
+        const remembered = await this.prisma.nameMemory.findUnique({
+            where: { nameKey: key },
+            select: { category: true },
+        });
+        if (remembered && remembered.category !== chart_of_accounts_1.UNCATEGORIZED) {
+            return remembered.category;
+        }
+        const groups = await this.prisma.bankTransaction.groupBy({
+            by: ['offsetAccount'],
+            where: { customerId, name: key, splitOfId: null },
+            _count: { _all: true },
+        });
+        const usual = groups
+            .filter((g) => g.offsetAccount !== chart_of_accounts_1.UNCATEGORIZED)
+            .sort((a, b) => b._count._all - a._count._all)[0];
+        return usual?.offsetAccount ?? null;
     }
     async ruleKeyForName(customerId, name) {
         const key = (0, name_memory_util_1.nameKey)(name);
@@ -225,7 +371,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const rows = await this.matchingRows(customerId, input.matchType, matchKey, names, false);
         if (!rows.length)
             return;
-        const ctx = await this.contextFor(customerId, rows.map((r) => r.description));
+        const ctx = await this.contextFor(customerId, rows.map((r) => r.description), rows.map((r) => r.name));
         await this.writeRows(customerId, rows, (row) => {
             const key = (0, name_memory_util_1.descriptionKey)(row.description);
             const remembered = key ? ctx.memory.get(key) : undefined;
@@ -245,7 +391,9 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
     }
     async matchingRows(customerId, matchType, matchKey, names, includeManual) {
-        const manual = includeManual ? {} : { manualEdit: false };
+        const manual = includeManual
+            ? { splitOfId: null }
+            : { manualEdit: false, splitOfId: null };
         if (matchType === 'NAME') {
             const rows = await this.prisma.bankTransaction.findMany({
                 where: { customerId, name: { in: [...names] }, ...manual },

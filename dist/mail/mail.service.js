@@ -33,7 +33,7 @@ let MailService = MailService_1 = class MailService {
         }
         const started = Date.now();
         await this.transport().sendMail({
-            from: `"${this.config.get('SMTP_FROM_NAME') ?? 'CYG Finance website'}" <${this.user()}>`,
+            from: `"${opts.fromName ?? this.config.get('SMTP_FROM_NAME') ?? 'CYG Finance website'}" <${this.from()}>`,
             to: opts.to,
             subject: opts.subject,
             text: opts.text,
@@ -44,6 +44,9 @@ let MailService = MailService_1 = class MailService {
     }
     user() {
         return (this.config.get('SMTP_USER') ?? '').trim();
+    }
+    from() {
+        return (this.config.get('SMTP_FROM') ?? '').trim() || this.user();
     }
     pass() {
         return (this.config.get('SMTP_PASS') ?? '').replace(/\s+/g, '');

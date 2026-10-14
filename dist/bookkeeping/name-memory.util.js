@@ -6,6 +6,8 @@ exports.cleanName = cleanName;
 exports.bankPayeeName = bankPayeeName;
 exports.isOwnersLoanMove = isOwnersLoanMove;
 exports.resolveRow = resolveRow;
+exports.resolveRows = resolveRows;
+exports.nameMemoryWrites = nameMemoryWrites;
 exports.memoryWrites = memoryWrites;
 exports.indexRules = indexRules;
 const chart_of_accounts_1 = require("./chart-of-accounts");
@@ -88,16 +90,23 @@ function resolveRow(row, ctx) {
     }
     if (!name && (0, exports.isBankCharge)(category))
         name = bankPayeeName(ctx.bankName);
-    if (isOwnersLoanMove(row.description, category))
+    const ownMove = isOwnersLoanMove(row.description, category);
+    if (ownMove)
         category = chart_of_accounts_1.OWNERS_LOAN;
+    const forced = ownMove || (0, exports.isBankCharge)(category);
+    let customerName = false;
+    let customerCategory = false;
     const apply = (rule) => {
         if (!rule)
             return;
         const ruleName = cleanName(rule.name);
-        if (ruleName)
+        if (ruleName) {
             name = ruleName;
+            customerName = true;
+        }
         if (rule.category) {
             category = (0, chart_of_accounts_1.normalizeAccount)(rule.category, ctx.customAccounts);
+            customerCategory = true;
         }
         source = 'customer';
     };
@@ -105,7 +114,71 @@ function resolveRow(row, ctx) {
         apply(ctx.descRules.get(key));
     if (name)
         apply(ctx.nameRules.get((0, exports.nameKey)(name)));
-    return { name, category, source };
+    const own = name ? ctx.nameCategories?.get((0, exports.nameKey)(name)) : undefined;
+    if (own) {
+        category = (0, chart_of_accounts_1.normalizeAccount)(own, ctx.customAccounts);
+        customerCategory = true;
+        source = 'customer';
+    }
+    const followsName = !!name && !forced && !customerCategory;
+    if (followsName) {
+        const known = ctx.nameMemory?.get((0, exports.nameKey)(name));
+        if (known && (0, chart_of_accounts_1.normalizeAccount)(known) !== chart_of_accounts_1.UNCATEGORIZED) {
+            category = (0, chart_of_accounts_1.normalizeAccount)(known);
+            if (source === 'ai')
+                source = 'memory';
+        }
+    }
+    return {
+        name,
+        category,
+        source,
+        followsName,
+        learnable: followsName && !customerName,
+    };
+}
+function resolveRows(rows, ctx) {
+    const nameMemory = new Map(ctx.nameMemory ?? []);
+    const first = rows.map((r) => resolveRow(r, ctx));
+    let added = false;
+    for (const out of first) {
+        if (!out.followsName || !out.name || out.category === chart_of_accounts_1.UNCATEGORIZED) {
+            continue;
+        }
+        const k = (0, exports.nameKey)(out.name);
+        const known = nameMemory.get(k);
+        if (known && (0, chart_of_accounts_1.normalizeAccount)(known) !== chart_of_accounts_1.UNCATEGORIZED)
+            continue;
+        nameMemory.set(k, out.category);
+        added = true;
+    }
+    if (!added)
+        return { resolved: first, nameMemory };
+    const next = { ...ctx, nameMemory };
+    return { resolved: rows.map((r) => resolveRow(r, next)), nameMemory };
+}
+function nameMemoryWrites(resolved, known) {
+    const creates = new Map();
+    const fills = new Map();
+    for (const r of resolved) {
+        if (!r.learnable || !r.name || r.category === chart_of_accounts_1.UNCATEGORIZED)
+            continue;
+        if (!chart_of_accounts_1.ACCOUNT_NAMES.includes(r.category))
+            continue;
+        const k = (0, exports.nameKey)(r.name).slice(0, KEY_MAX);
+        if (!k)
+            continue;
+        const write = { nameKey: k, sampleName: r.name, category: r.category };
+        const had = known.get(k);
+        if (had === undefined) {
+            if (!creates.has(k))
+                creates.set(k, write);
+        }
+        else if ((0, chart_of_accounts_1.normalizeAccount)(had) === chart_of_accounts_1.UNCATEGORIZED && !fills.has(k)) {
+            fills.set(k, write);
+        }
+    }
+    return { creates: [...creates.values()], fills: [...fills.values()] };
 }
 function memoryWrites(rows, memory) {
     const creates = new Map();
@@ -146,12 +219,24 @@ function memoryWrites(rows, memory) {
 function indexRules(rules) {
     const descRules = new Map();
     const nameRules = new Map();
+    const nameCategories = new Map();
     for (const r of rules) {
         if (r.matchType === 'DESCRIPTION')
             descRules.set(r.matchKey, r);
         else
             nameRules.set(r.matchKey, r);
     }
-    return { descRules, nameRules };
+    for (const r of nameRules.values()) {
+        if (!r.category || !cleanName(r.name))
+            continue;
+        const k = (0, exports.nameKey)(r.name);
+        if (!nameCategories.has(k))
+            nameCategories.set(k, r.category);
+    }
+    for (const r of nameRules.values()) {
+        if (r.category && !cleanName(r.name))
+            nameCategories.set(r.matchKey, r.category);
+    }
+    return { descRules, nameRules, nameCategories };
 }
 //# sourceMappingURL=name-memory.util.js.map

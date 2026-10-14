@@ -4,8 +4,8 @@ import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 
 /**
- * Plain SMTP mail from the firm's own Google Workspace mailbox (today: the public
- * contact form).
+ * Plain SMTP mail from the firm's own Google Workspace mailbox: the public contact form
+ * and the signup verification code.
  *
  * A copy of the internal app's `mail/mail.service.ts`, deliberately not a shared
  * package: the two apps deploy independently and share no code. Keep the transport
@@ -13,6 +13,10 @@ import type { Transporter } from 'nodemailer';
  *
  * `SMTP_PASS` is a Google APP password (Account → Security → App passwords), not the
  * account password. It lives in `.env` only.
+ *
+ * `SMTP_FROM` is the address mail goes out FROM (office@cygfinance.com) — an alias of the
+ * `SMTP_USER` mailbox. Gmail keeps it only if it is set up under that account's
+ * Settings → Accounts → "Send mail as"; otherwise Gmail rewrites From to `SMTP_USER`.
  */
 @Injectable()
 export class MailService {
@@ -33,13 +37,15 @@ export class MailService {
     html?: string;
     /** Where a reply goes — the visitor, not our own mailbox. */
     replyTo?: string;
+    /** Display name on From; defaults to `SMTP_FROM_NAME`. */
+    fromName?: string;
   }): Promise<void> {
     if (!this.configured) {
       throw new Error('SMTP_USER / SMTP_PASS are not set');
     }
     const started = Date.now();
     await this.transport().sendMail({
-      from: `"${this.config.get<string>('SMTP_FROM_NAME') ?? 'CYG Finance website'}" <${this.user()}>`,
+      from: `"${opts.fromName ?? this.config.get<string>('SMTP_FROM_NAME') ?? 'CYG Finance website'}" <${this.from()}>`,
       to: opts.to,
       subject: opts.subject,
       text: opts.text,
@@ -53,6 +59,11 @@ export class MailService {
 
   private user(): string {
     return (this.config.get<string>('SMTP_USER') ?? '').trim();
+  }
+
+  /** The From address: the `SMTP_FROM` alias, else the login mailbox itself. */
+  private from(): string {
+    return (this.config.get<string>('SMTP_FROM') ?? '').trim() || this.user();
   }
 
   /** Google shows an app password in groups of four; the spaces are not part of it. */

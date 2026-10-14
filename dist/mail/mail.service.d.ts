@@ -11,8 +11,10 @@ export declare class MailService {
         text: string;
         html?: string;
         replyTo?: string;
+        fromName?: string;
     }): Promise<void>;
     private user;
+    private from;
     private pass;
     private transport;
 }

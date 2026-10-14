@@ -186,8 +186,9 @@ export class BookkeepingController {
   }
 
   /**
-   * Change ONE ledger row's name and/or category: just that row (`ONCE`), or saved for its
-   * payee from now on (`ALWAYS`, the same rule the Names tab saves).
+   * Change ONE ledger row's name and/or category. The name goes on just that row (`ONCE`)
+   * or on every row with its description (`ALWAYS`); a category is always the name's one
+   * category, so every row of that name moves.
    */
   @Patch('transactions/:id')
   @HttpCode(204)

@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_NAMES,
   OWNERS_LOAN,
   UNCATEGORIZED,
   normalizeAccount,
@@ -70,6 +71,10 @@ export interface ResolveContext {
   customAccounts?: ReadonlySet<string>;
   /** The statement's bank ("TD Canada Trust") — the payee of its own fees and interest. */
   bankName?: string | null;
+  /** The customer's category for each final name (`indexRules`), by `nameKey`. */
+  nameCategories?: ReadonlyMap<string, string>;
+  /** FIRM memory of each name's ONE category (`NameMemory`), by `nameKey`. */
+  nameMemory?: ReadonlyMap<string, string>;
 }
 
 /** Common banks by the name their customers use for them; anything else stays as printed. */
@@ -139,6 +144,13 @@ export interface Resolved {
   name: string | null;
   category: string;
   source: NameSource;
+  /**
+   * The row's category is its NAME's category (not a customer's category, not a forced
+   * default), so every row of that name in a batch must share it.
+   */
+  followsName: boolean;
+  /** …and the name too came from the AI / firm memory, so `NameMemory` may learn it. */
+  learnable: boolean;
 }
 
 /**
@@ -153,7 +165,11 @@ export interface Resolved {
  * 4. a transfer between the owner's accounts or a credit-card payment: Owner's Loan
  *    (`isOwnersLoanMove`) — never written to the firm memory either;
  * 5. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
- * 6. the customer's NAME rule, matched on the name as it stands after 1–5.
+ * 6. the customer's NAME rule, matched on the name as it stands after 1–5;
+ * 7. the name's ONE category (user's rule 2026-10-14: a name never has two categories):
+ *    the customer's category for the FINAL name (`nameCategories`), else — unless a rule
+ *    set the category — the firm `NameMemory` category of that name. Bank fees/interest and Owner's Loan moves are forced
+ *    defaults and keep theirs ("TD Bank" both charges fees and pays interest).
  *
  * So a customer's own edit always wins, and the AI is the last resort, never the first.
  * The category always goes through `normalizeAccount`: nothing outside the chart gets in.
@@ -177,21 +193,120 @@ export function resolveRow(
   }
 
   if (!name && isBankCharge(category)) name = bankPayeeName(ctx.bankName);
-  if (isOwnersLoanMove(row.description, category)) category = OWNERS_LOAN;
+  const ownMove = isOwnersLoanMove(row.description, category);
+  if (ownMove) category = OWNERS_LOAN;
+  const forced = ownMove || isBankCharge(category);
 
+  let customerName = false;
+  let customerCategory = false;
   const apply = (rule: NameRule | undefined) => {
     if (!rule) return;
     const ruleName = cleanName(rule.name);
-    if (ruleName) name = ruleName;
+    if (ruleName) {
+      name = ruleName;
+      customerName = true;
+    }
     if (rule.category) {
       category = normalizeAccount(rule.category, ctx.customAccounts);
+      customerCategory = true;
     }
     source = 'customer';
   };
   if (key) apply(ctx.descRules.get(key));
   if (name) apply(ctx.nameRules.get(nameKey(name)));
 
-  return { name, category, source };
+  // The customer's category for the name the row ends up with wins over everything.
+  const own = name ? ctx.nameCategories?.get(nameKey(name)) : undefined;
+  if (own) {
+    category = normalizeAccount(own, ctx.customAccounts);
+    customerCategory = true;
+    source = 'customer';
+  }
+
+  const followsName = !!name && !forced && !customerCategory;
+  if (followsName) {
+    const known = ctx.nameMemory?.get(nameKey(name!));
+    if (known && normalizeAccount(known) !== UNCATEGORIZED) {
+      category = normalizeAccount(known);
+      if (source === 'ai') source = 'memory';
+    }
+  }
+
+  return {
+    name,
+    category,
+    source,
+    followsName,
+    learnable: followsName && !customerName,
+  };
+}
+
+/**
+ * Resolve a whole statement so that every row of one name gets ONE category: a name the
+ * firm memory does not know yet takes the FIRST category it was given in this batch.
+ * Returns the rows and the name memory as extended by the batch.
+ */
+export function resolveRows<
+  T extends {
+    description: string;
+    name?: string | null;
+    offsetAccount: string;
+  },
+>(
+  rows: readonly T[],
+  ctx: ResolveContext,
+): { resolved: Resolved[]; nameMemory: Map<string, string> } {
+  const nameMemory = new Map(ctx.nameMemory ?? []);
+  const first = rows.map((r) => resolveRow(r, ctx));
+  let added = false;
+  for (const out of first) {
+    if (!out.followsName || !out.name || out.category === UNCATEGORIZED) {
+      continue;
+    }
+    const k = nameKey(out.name);
+    const known = nameMemory.get(k);
+    if (known && normalizeAccount(known) !== UNCATEGORIZED) continue;
+    nameMemory.set(k, out.category);
+    added = true;
+  }
+  if (!added) return { resolved: first, nameMemory };
+  const next = { ...ctx, nameMemory };
+  return { resolved: rows.map((r) => resolveRow(r, next)), nameMemory };
+}
+
+/** One write to the firm name memory. */
+export interface NameMemoryWrite {
+  nameKey: string;
+  sampleName: string;
+  category: string;
+}
+
+/**
+ * Which names the firm `NameMemory` should learn from a resolved batch: a name it has
+ * never seen is stored with its category; one it holds as Uncategorized is filled; one
+ * it knows is never replaced. Only names AND categories the AI / firm memory produced —
+ * a customer's rename or category never goes in (`learnable`).
+ */
+export function nameMemoryWrites(
+  resolved: readonly Resolved[],
+  known: ReadonlyMap<string, string>,
+): { creates: NameMemoryWrite[]; fills: NameMemoryWrite[] } {
+  const creates = new Map<string, NameMemoryWrite>();
+  const fills = new Map<string, NameMemoryWrite>();
+  for (const r of resolved) {
+    if (!r.learnable || !r.name || r.category === UNCATEGORIZED) continue;
+    if (!ACCOUNT_NAMES.includes(r.category)) continue;
+    const k = nameKey(r.name).slice(0, KEY_MAX);
+    if (!k) continue;
+    const write = { nameKey: k, sampleName: r.name, category: r.category };
+    const had = known.get(k);
+    if (had === undefined) {
+      if (!creates.has(k)) creates.set(k, write);
+    } else if (normalizeAccount(had) === UNCATEGORIZED && !fills.has(k)) {
+      fills.set(k, write);
+    }
+  }
+  return { creates: [...creates.values()], fills: [...fills.values()] };
 }
 
 /** One write to the firm memory. */
@@ -260,12 +375,25 @@ export function memoryWrites(
 export function indexRules(rules: readonly NameRule[]): {
   descRules: Map<string, NameRule>;
   nameRules: Map<string, NameRule>;
+  nameCategories: Map<string, string>;
 } {
   const descRules = new Map<string, NameRule>();
   const nameRules = new Map<string, NameRule>();
+  const nameCategories = new Map<string, string>();
   for (const r of rules) {
     if (r.matchType === 'DESCRIPTION') descRules.set(r.matchKey, r);
     else nameRules.set(r.matchKey, r);
   }
-  return { descRules, nameRules };
+  // The customer's category for each FINAL name: a rule keyed on the name itself first,
+  // then any rename rule that leads to it.
+  for (const r of nameRules.values()) {
+    if (!r.category || !cleanName(r.name)) continue;
+    const k = nameKey(r.name!);
+    if (!nameCategories.has(k)) nameCategories.set(k, r.category);
+  }
+  for (const r of nameRules.values()) {
+    if (r.category && !cleanName(r.name))
+      nameCategories.set(r.matchKey, r.category);
+  }
+  return { descRules, nameRules, nameCategories };
 }

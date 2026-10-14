@@ -10,20 +10,28 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 var CustomerAuthService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CustomerAuthService = exports.AUTH_WINDOW_MS = exports.AUTH_LIMIT = exports.CUSTOMER_TOKEN_TYPE = void 0;
+exports.CustomerAuthService = exports.SIGNUP_RESEND_MS = exports.SIGNUP_CODE_TRIES = exports.SIGNUP_CODE_TTL_MS = exports.AUTH_WINDOW_MS = exports.AUTH_LIMIT = exports.CUSTOMER_TOKEN_TYPE = void 0;
 exports.toPublicCustomer = toPublicCustomer;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
 const client_1 = require("@prisma/client");
 const bcryptjs_1 = require("bcryptjs");
+const crypto_1 = require("crypto");
 const google_auth_library_1 = require("google-auth-library");
+const mail_service_1 = require("../mail/mail.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const phone_number_util_1 = require("./phone-number.util");
+const signup_code_email_1 = require("./signup-code-email");
 exports.CUSTOMER_TOKEN_TYPE = 'customer';
 const BCRYPT_COST = 12;
 exports.AUTH_LIMIT = 5;
 exports.AUTH_WINDOW_MS = 15 * 60_000;
+exports.SIGNUP_CODE_TTL_MS = 10 * 60_000;
+exports.SIGNUP_CODE_TRIES = 5;
+exports.SIGNUP_RESEND_MS = 60_000;
+const sha256 = (code) => (0, crypto_1.createHash)('sha256').update(code).digest();
+const CODE_EXPIRED = 'This code has expired. Please sign up again.';
 const BAD_CREDENTIALS = 'Email or password is incorrect';
 function toPublicCustomer(c) {
     return {
@@ -40,13 +48,16 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     prisma;
     jwt;
     config;
+    mail;
     logger = new common_1.Logger(CustomerAuthService_1.name);
     hits = new Map();
+    pending = new Map();
     googleClient = null;
-    constructor(prisma, jwt, config) {
+    constructor(prisma, jwt, config, mail) {
         this.prisma = prisma;
         this.jwt = jwt;
         this.config = config;
+        this.mail = mail;
     }
     googleClientId() {
         return this.config.get('GOOGLE_CLIENT_ID')?.trim() || null;
@@ -54,23 +65,107 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     async signup(dto, ip) {
         this.throttle(ip);
         this.note(ip);
+        this.prunePending();
         const email = dto.email.toLowerCase();
+        await this.assertEmailFree(email);
+        const entry = {
+            name: dto.name,
+            email,
+            passwordHash: await (0, bcryptjs_1.hash)(dto.password, BCRYPT_COST),
+            codeHash: Buffer.alloc(0),
+            expiresAt: 0,
+            tries: 0,
+            sentAt: 0,
+        };
+        this.pending.set(email, entry);
+        await this.sendCode(entry);
+        return { email };
+    }
+    async verifySignup(dto, ip) {
+        this.throttle(ip);
+        const email = dto.email.toLowerCase();
+        const entry = this.livePending(email);
+        if (!(0, crypto_1.timingSafeEqual)(sha256(dto.code), entry.codeHash)) {
+            this.note(ip);
+            entry.tries += 1;
+            if (entry.tries >= exports.SIGNUP_CODE_TRIES) {
+                this.pending.delete(email);
+                throw new common_1.BadRequestException('Too many wrong codes. Please sign up again.');
+            }
+            throw new common_1.BadRequestException('That code is not right. Please try again.');
+        }
+        this.pending.delete(email);
+        await this.assertEmailFree(email);
+        const customer = await this.prisma.customer.create({
+            data: {
+                name: entry.name,
+                email,
+                authType: client_1.CustomerAuthType.PASSWORD,
+                passwordHash: entry.passwordHash,
+                lastLoginAt: new Date(),
+            },
+        });
+        return this.sign(customer);
+    }
+    async resendSignupCode(dto) {
+        const entry = this.livePending(dto.email.toLowerCase());
+        if (Date.now() - entry.sentAt < exports.SIGNUP_RESEND_MS) {
+            throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
+        }
+        await this.sendCode(entry);
+        return { email: entry.email };
+    }
+    livePending(email) {
+        const entry = this.pending.get(email);
+        if (!entry || entry.expiresAt < Date.now()) {
+            this.pending.delete(email);
+            throw new common_1.BadRequestException(CODE_EXPIRED);
+        }
+        return entry;
+    }
+    async assertEmailFree(email) {
         const existing = await this.prisma.customer.findUnique({
             where: { email },
         });
         if (existing) {
             throw new common_1.ConflictException('An account with this email already exists — log in instead');
         }
-        const customer = await this.prisma.customer.create({
-            data: {
-                name: dto.name,
-                email,
-                authType: client_1.CustomerAuthType.PASSWORD,
-                passwordHash: await (0, bcryptjs_1.hash)(dto.password, BCRYPT_COST),
-                lastLoginAt: new Date(),
-            },
-        });
-        return this.sign(customer);
+    }
+    async sendCode(entry) {
+        const code = String((0, crypto_1.randomInt)(0, 1_000_000)).padStart(6, '0');
+        entry.codeHash = sha256(code);
+        entry.expiresAt = Date.now() + exports.SIGNUP_CODE_TTL_MS;
+        entry.tries = 0;
+        entry.sentAt = Date.now();
+        if (this.config.get('CUSTOMER_SIGNUP_LOG_CODE') === '1' &&
+            process.env.NODE_ENV !== 'production') {
+            this.logger.warn(`[dev] signup code for ${entry.email}: ${code}`);
+            return;
+        }
+        if (!this.mail.configured) {
+            this.pending.delete(entry.email);
+            this.logger.error('signup code not sent: SMTP_USER / SMTP_PASS are not set');
+            throw new common_1.ServiceUnavailableException('We could not send the verification email right now. Please try again later.');
+        }
+        try {
+            await this.mail.send({
+                to: entry.email,
+                fromName: 'CYG Finance',
+                ...(0, signup_code_email_1.buildSignupCodeEmail)(code, exports.SIGNUP_CODE_TTL_MS / 60_000),
+            });
+        }
+        catch (err) {
+            this.pending.delete(entry.email);
+            this.logger.error(`signup code mail failed: ${err.message}`);
+            throw new common_1.ServiceUnavailableException('We could not send the verification email. Please check the address and try again.');
+        }
+    }
+    prunePending() {
+        const now = Date.now();
+        for (const [key, entry] of this.pending) {
+            if (entry.expiresAt < now)
+                this.pending.delete(key);
+        }
     }
     async login(dto, ip) {
         this.throttle(ip);
@@ -221,6 +316,7 @@ exports.CustomerAuthService = CustomerAuthService = CustomerAuthService_1 = __de
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         jwt_1.JwtService,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        mail_service_1.MailService])
 ], CustomerAuthService);
 //# sourceMappingURL=customer-auth.service.js.map

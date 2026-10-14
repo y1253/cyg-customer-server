@@ -8,9 +8,10 @@ export declare class NameMemoryService {
     private readonly tax;
     private readonly logger;
     constructor(prisma: PrismaService, tax: TaxService);
-    contextFor(customerId: number, descriptions: readonly string[]): Promise<ResolveContext & {
+    contextFor(customerId: number, descriptions: readonly string[], names?: ReadonlyArray<string | null | undefined>): Promise<ResolveContext & {
         customAccounts: Set<string>;
     }>;
+    private nameMemoryFor;
     rulesOf(customerId: number): Promise<NameRule[]>;
     private customAccountsOf;
     resolveStatement(customerId: number, rows: ExtractedTransaction[], bankName?: string | null): Promise<{
@@ -18,6 +19,7 @@ export declare class NameMemoryService {
         customAccounts: Set<string>;
     }>;
     private learn;
+    private learnNames;
     saveRule(customerId: number, input: {
         matchType: RuleMatchType;
         matchKey: string;
@@ -30,6 +32,8 @@ export declare class NameMemoryService {
         category: string | null;
         scope: EditScope;
     }): Promise<void>;
+    private setNameCategory;
+    private categoryOfName;
     private ruleKeyForName;
     resetRule(customerId: number, input: {
         matchType: RuleMatchType;

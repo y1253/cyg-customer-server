@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   HttpException,
   HttpStatus,
@@ -11,13 +12,18 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { CustomerAuthType, type Customer } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
+import { createHash, randomInt, timingSafeEqual } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toE164 } from './phone-number.util';
+import { buildSignupCodeEmail } from './signup-code-email';
 import type { GoogleLoginDto } from './dto/google-login.dto';
 import type { LoginDto } from './dto/login.dto';
+import type { ResendSignupDto } from './dto/resend-signup.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { UpdateMeDto } from './dto/update-me.dto';
+import type { VerifySignupDto } from './dto/verify-signup.dto';
 
 /** Marks a token as a CUSTOMER token. The strategy refuses anything else. */
 export const CUSTOMER_TOKEN_TYPE = 'customer';
@@ -57,6 +63,38 @@ const BCRYPT_COST = 12;
 export const AUTH_LIMIT = 5;
 export const AUTH_WINDOW_MS = 15 * 60_000;
 
+/** How long an emailed signup code stays valid. */
+export const SIGNUP_CODE_TTL_MS = 10 * 60_000;
+/** Wrong codes allowed before the pending signup is thrown away. */
+export const SIGNUP_CODE_TRIES = 5;
+/** Least time between two codes for the same email. */
+export const SIGNUP_RESEND_MS = 60_000;
+
+/** What `signup` answers: the account does not exist yet, a code was emailed. */
+export interface SignupStarted {
+  email: string;
+}
+
+/**
+ * A signup waiting for its emailed code. The account is created only once the code checks
+ * out, so an address nobody confirmed never gets a row. In memory: pm2 runs one fork, and a
+ * restart losing a pending signup only means signing up again.
+ */
+interface PendingSignup {
+  name: string;
+  email: string;
+  passwordHash: string;
+  codeHash: Buffer;
+  expiresAt: number;
+  tries: number;
+  sentAt: number;
+}
+
+const sha256 = (code: string): Buffer =>
+  createHash('sha256').update(code).digest();
+
+const CODE_EXPIRED = 'This code has expired. Please sign up again.';
+
 /** One message for every password failure, so the response never says whether an email exists. */
 const BAD_CREDENTIALS = 'Email or password is incorrect';
 
@@ -86,12 +124,15 @@ export class CustomerAuthService {
   private readonly logger = new Logger(CustomerAuthService.name);
   /** Failed logins + signups per IP, for the in-memory throttle. */
   private readonly hits = new Map<string, number[]>();
+  /** Signups waiting for their emailed code, by lower-cased email. */
+  private readonly pending = new Map<string, PendingSignup>();
   private googleClient: OAuth2Client | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly mail: MailService,
   ) {}
 
   /** The Google client id, for the browser's Sign in with Google button. Null = not configured. */
@@ -99,10 +140,87 @@ export class CustomerAuthService {
     return this.config.get<string>('GOOGLE_CLIENT_ID')?.trim() || null;
   }
 
-  async signup(dto: SignupDto, ip: string): Promise<AuthResult> {
+  /**
+   * Step 1 of signup: check the email is free and email a 6-digit code. Nothing is written
+   * to the database until `verifySignup`.
+   */
+  async signup(dto: SignupDto, ip: string): Promise<SignupStarted> {
     this.throttle(ip);
     this.note(ip);
+    this.prunePending();
     const email = dto.email.toLowerCase();
+    await this.assertEmailFree(email);
+    const entry: PendingSignup = {
+      name: dto.name,
+      email,
+      passwordHash: await hash(dto.password, BCRYPT_COST),
+      codeHash: Buffer.alloc(0),
+      expiresAt: 0,
+      tries: 0,
+      sentAt: 0,
+    };
+    this.pending.set(email, entry);
+    await this.sendCode(entry);
+    return { email };
+  }
+
+  /** Step 2 of signup: the emailed code is right → create the account and sign in. */
+  async verifySignup(dto: VerifySignupDto, ip: string): Promise<AuthResult> {
+    this.throttle(ip);
+    const email = dto.email.toLowerCase();
+    const entry = this.livePending(email);
+    if (!timingSafeEqual(sha256(dto.code), entry.codeHash)) {
+      this.note(ip);
+      entry.tries += 1;
+      if (entry.tries >= SIGNUP_CODE_TRIES) {
+        this.pending.delete(email);
+        throw new BadRequestException(
+          'Too many wrong codes. Please sign up again.',
+        );
+      }
+      throw new BadRequestException(
+        'That code is not right. Please try again.',
+      );
+    }
+    this.pending.delete(email);
+    // The address may have been taken (e.g. Google sign-in) while the code was in the mail.
+    await this.assertEmailFree(email);
+    const customer = await this.prisma.customer.create({
+      data: {
+        name: entry.name,
+        email,
+        authType: CustomerAuthType.PASSWORD,
+        passwordHash: entry.passwordHash,
+        lastLoginAt: new Date(),
+      },
+    });
+    return this.sign(customer);
+  }
+
+  /** A new code for a pending signup — at most one a minute. */
+  async resendSignupCode(dto: ResendSignupDto): Promise<SignupStarted> {
+    const entry = this.livePending(dto.email.toLowerCase());
+    if (Date.now() - entry.sentAt < SIGNUP_RESEND_MS) {
+      throw new HttpException(
+        'Please wait a minute before asking for another code.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    await this.sendCode(entry);
+    return { email: entry.email };
+  }
+
+  /** The pending signup for this email, or 400 when there is none or it has expired. */
+  private livePending(email: string): PendingSignup {
+    const entry = this.pending.get(email);
+    if (!entry || entry.expiresAt < Date.now()) {
+      this.pending.delete(email);
+      throw new BadRequestException(CODE_EXPIRED);
+    }
+    return entry;
+  }
+
+  private async assertEmailFree(email: string): Promise<void> {
     const existing = await this.prisma.customer.findUnique({
       where: { email },
     });
@@ -111,16 +229,56 @@ export class CustomerAuthService {
         'An account with this email already exists — log in instead',
       );
     }
-    const customer = await this.prisma.customer.create({
-      data: {
-        name: dto.name,
-        email,
-        authType: CustomerAuthType.PASSWORD,
-        passwordHash: await hash(dto.password, BCRYPT_COST),
-        lastLoginAt: new Date(),
-      },
-    });
-    return this.sign(customer);
+  }
+
+  /**
+   * Issues a fresh code (resetting tries and expiry) and emails it. A failed send drops the
+   * pending signup, so a code nobody received can never be guessed at.
+   */
+  private async sendCode(entry: PendingSignup): Promise<void> {
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    entry.codeHash = sha256(code);
+    entry.expiresAt = Date.now() + SIGNUP_CODE_TTL_MS;
+    entry.tries = 0;
+    entry.sentAt = Date.now();
+    if (
+      this.config.get<string>('CUSTOMER_SIGNUP_LOG_CODE') === '1' &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      // Dev only: SMTP is unreachable from the office network.
+      this.logger.warn(`[dev] signup code for ${entry.email}: ${code}`);
+      return;
+    }
+    if (!this.mail.configured) {
+      this.pending.delete(entry.email);
+      this.logger.error(
+        'signup code not sent: SMTP_USER / SMTP_PASS are not set',
+      );
+      throw new ServiceUnavailableException(
+        'We could not send the verification email right now. Please try again later.',
+      );
+    }
+    try {
+      await this.mail.send({
+        to: entry.email,
+        fromName: 'CYG Finance',
+        ...buildSignupCodeEmail(code, SIGNUP_CODE_TTL_MS / 60_000),
+      });
+    } catch (err) {
+      this.pending.delete(entry.email);
+      // The reason only — never the code.
+      this.logger.error(`signup code mail failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException(
+        'We could not send the verification email. Please check the address and try again.',
+      );
+    }
+  }
+
+  private prunePending(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.pending) {
+      if (entry.expiresAt < now) this.pending.delete(key);
+    }
   }
 
   async login(dto: LoginDto, ip: string): Promise<AuthResult> {

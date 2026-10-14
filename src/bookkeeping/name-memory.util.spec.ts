@@ -5,7 +5,9 @@ import {
   indexRules,
   isOwnersLoanMove,
   memoryWrites,
+  nameMemoryWrites,
   resolveRow,
+  resolveRows,
   type MemoryEntry,
   type NameRule,
   type ResolveContext,
@@ -63,7 +65,7 @@ const KEY = 'pos walmart toronto on';
 
 describe('resolveRow precedence: customer rule > firm memory > AI', () => {
   it("keeps the AI's answer when nothing is known", () => {
-    expect(resolveRow(row(), ctx())).toEqual({
+    expect(resolveRow(row(), ctx())).toMatchObject({
       name: 'Walmart',
       category: 'Supplies',
       source: 'ai',
@@ -75,7 +77,7 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
       row({ name: 'Wal Mart Store', offsetAccount: 'Office Expense' }),
       ctx({ [KEY]: { name: 'Walmart', category: 'Supplies' } }),
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       name: 'Walmart',
       category: 'Supplies',
       source: 'memory',
@@ -87,7 +89,7 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
       row({ name: 'Walmart', offsetAccount: 'Supplies' }),
       ctx({ [KEY]: { name: null, category: UNCATEGORIZED } }),
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       name: 'Walmart',
       category: 'Supplies',
       source: 'ai',
@@ -106,7 +108,7 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
         },
       ]),
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       name: 'Walmart Canada',
       category: 'Office Expense',
       source: 'customer',
@@ -129,7 +131,7 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
         },
       ]),
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       name: 'BMO',
       category: 'Bank Fees',
       source: 'customer',
@@ -154,7 +156,7 @@ describe('resolveRow precedence: customer rule > firm memory > AI', () => {
         },
       ]),
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       name: 'BMO',
       category: 'Bank Fees',
       source: 'customer',
@@ -366,5 +368,111 @@ describe("transfers and credit-card payments go to Owner's Loan", () => {
       ]),
     );
     expect(out.category).toBe('Owner Draw');
+  });
+});
+
+describe('one category per name (NameMemory)', () => {
+  const named = (c: ResolveContext, nameMemory: Record<string, string>) => ({
+    ...c,
+    nameMemory: new Map(Object.entries(nameMemory)),
+  });
+
+  it("the name's remembered category beats the AI's answer for this row", () => {
+    const out = resolveRow(
+      row({ offsetAccount: 'Meals & Entertainment' }),
+      named(ctx(), { walmart: 'Supplies' }),
+    );
+    expect(out).toMatchObject({ category: 'Supplies', followsName: true });
+  });
+
+  it("the customer's category for the name beats the memory — also after a rename", () => {
+    const rules: NameRule[] = [
+      {
+        matchType: 'NAME',
+        matchKey: 'wal-mart',
+        name: 'Walmart',
+        category: 'Office Expense',
+      },
+    ];
+    const out = resolveRow(
+      row(),
+      named(ctx({}, rules), { walmart: 'Supplies' }),
+    );
+    expect(out).toMatchObject({
+      category: 'Office Expense',
+      followsName: false,
+    });
+  });
+
+  it("bank fees / interest and Owner's Loan moves keep their own category", () => {
+    const c = named(
+      { ...ctx(), bankName: 'TD Canada Trust' },
+      { 'td bank': 'Bank Fees' },
+    );
+    const interest = resolveRow(
+      {
+        description: 'INTEREST PAID',
+        name: null,
+        offsetAccount: 'Interest Income',
+      },
+      c,
+    );
+    expect(interest).toMatchObject({
+      name: 'TD Bank',
+      category: 'Interest Income',
+    });
+    const visa = resolveRow(
+      {
+        description: 'VISA PAYMENT',
+        name: 'Walmart',
+        offsetAccount: 'Supplies',
+      },
+      named(ctx(), { walmart: 'Supplies' }),
+    );
+    expect(visa.category).toBe(OWNERS_LOAN);
+  });
+
+  it('within one statement, a new name takes its FIRST category on every row', () => {
+    const { resolved, nameMemory } = resolveRows(
+      [
+        row({
+          description: 'COSTCO 1',
+          name: 'Costco',
+          offsetAccount: 'Supplies',
+        }),
+        row({
+          description: 'COSTCO 2',
+          name: 'COSTCO',
+          offsetAccount: 'Meals & Entertainment',
+        }),
+      ],
+      ctx(),
+    );
+    expect(resolved.map((r) => r.category)).toEqual(['Supplies', 'Supplies']);
+    expect(nameMemory.get('costco')).toBe('Supplies');
+  });
+
+  it('nameMemoryWrites: first answer only, gaps filled, never a customer edit', () => {
+    const base = { source: 'ai' as const, followsName: true, learnable: true };
+    const out = nameMemoryWrites(
+      [
+        { ...base, name: 'Costco', category: 'Supplies' },
+        { ...base, name: 'costco', category: 'Meals & Entertainment' },
+        { ...base, name: 'Staples', category: 'Office Expense' },
+        { ...base, name: 'Known', category: 'Supplies' },
+        { ...base, name: 'Blank', category: UNCATEGORIZED },
+        { ...base, name: 'Mine', category: 'Supplies', learnable: false },
+      ],
+      new Map([
+        ['staples', UNCATEGORIZED],
+        ['known', 'Meals & Entertainment'],
+      ]),
+    );
+    expect(out.creates).toEqual([
+      { nameKey: 'costco', sampleName: 'Costco', category: 'Supplies' },
+    ]);
+    expect(out.fills).toEqual([
+      { nameKey: 'staples', sampleName: 'Staples', category: 'Office Expense' },
+    ]);
   });
 });

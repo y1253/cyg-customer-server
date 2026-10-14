@@ -117,7 +117,11 @@ export class SaveNameRuleDto {
   @MaxLength(191)
   category?: string | null;
 
-  /** ALWAYS (default) = saved for the future; ONCE = only the rows in the ledger now. */
+  /**
+   * For the NAME only (a category is always the name's own): ALWAYS (default) = every row
+   * with this description, now and later; ONCE = only the rows in the ledger now. Ignored
+   * for a payee (NAME), which is always.
+   */
   @IsOptional()
   @IsIn(['ALWAYS', 'ONCE'])
   scope?: 'ALWAYS' | 'ONCE';
@@ -174,7 +178,10 @@ export class EditTransactionDto {
   @MaxLength(191)
   category?: string | null;
 
-  /** ONCE = only this row; ALWAYS = saved for this payee from now on. */
+  /**
+   * For the NAME only: ONCE = only this row; ALWAYS = every row with this description, now
+   * and on every later statement. A category always becomes the name's one category.
+   */
   @IsIn(['ALWAYS', 'ONCE'])
   scope!: 'ALWAYS' | 'ONCE';
 }

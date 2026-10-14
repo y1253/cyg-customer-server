@@ -1,12 +1,22 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { CustomerAuthType, type Customer } from '@prisma/client';
 import { hash } from 'bcryptjs';
+import type { MailService } from '../mail/mail.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   AUTH_LIMIT,
   CustomerAuthService,
+  SIGNUP_CODE_TRIES,
+  SIGNUP_CODE_TTL_MS,
+  SIGNUP_RESEND_MS,
   type GoogleIdentity,
 } from './customer-auth.service';
 import { CustomerJwtStrategy } from './customer-jwt.strategy';
@@ -60,10 +70,15 @@ function setup(existing: Customer | null = null) {
     secret: SECRET,
     signOptions: { expiresIn: '7d' },
   });
+  const mail = {
+    configured: true,
+    send: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new CustomerAuthService(
     prisma as unknown as PrismaService,
     jwt,
     config,
+    mail as unknown as MailService,
   );
   const google = (identity: Partial<GoogleIdentity>) =>
     jest.spyOn(service, 'verifyGoogleCredential').mockResolvedValue({
@@ -74,14 +89,41 @@ function setup(existing: Customer | null = null) {
       ...identity,
     });
   const strategy = new CustomerJwtStrategy(config, service);
-  return { service, prisma, jwt, google, strategy };
+  return { service, prisma, jwt, google, strategy, mail };
+}
+
+const SIGNUP = {
+  name: 'Ana',
+  email: 'Ana@Example.com',
+  password: 'longenough',
+};
+
+/** The code out of the last mail sent. */
+function sentCode(mail: { send: jest.Mock }): string {
+  const calls = mail.send.mock.calls as [{ text: string }][];
+  const text = calls[calls.length - 1][0].text;
+  return /code is: (\d{6})/.exec(text)![1];
 }
 
 describe('signup', () => {
-  it('creates a PASSWORD account with a hashed password and a customer token', async () => {
-    const { service, prisma, jwt } = setup();
-    const out = await service.signup(
-      { name: 'Ana', email: 'Ana@Example.com', password: 'longenough' },
+  afterEach(() => jest.useRealTimers());
+
+  it('emails a 6-digit code and creates no account yet', async () => {
+    const { service, prisma, mail } = setup();
+    const out = await service.signup(SIGNUP, IP);
+    expect(out).toEqual({ email: 'ana@example.com' });
+    expect(prisma.customer.create).not.toHaveBeenCalled();
+    expect(mail.send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'ana@example.com' }),
+    );
+    expect(sentCode(mail)).toMatch(/^\d{6}$/);
+  });
+
+  it('creates the PASSWORD account once the right code is entered', async () => {
+    const { service, prisma, mail, jwt } = setup();
+    await service.signup(SIGNUP, IP);
+    const out = await service.verifySignup(
+      { email: 'ANA@example.com', code: sentCode(mail) },
       IP,
     );
     const data = prisma.customer.create.mock.calls[0][0].data;
@@ -93,16 +135,103 @@ describe('signup', () => {
       sub: 2,
       typ: 'customer',
     });
+    // Used up: the same code cannot create a second account.
+    await expect(
+      service.verifySignup(
+        { email: 'ana@example.com', code: sentCode(mail) },
+        IP,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('refuses a wrong code and drops the signup after the last try', async () => {
+    const { service, prisma, mail } = setup();
+    await service.signup(SIGNUP, IP);
+    const right = sentCode(mail);
+    const wrong = right === '000000' ? '111111' : '000000';
+    for (let i = 1; i < SIGNUP_CODE_TRIES; i++) {
+      await expect(
+        service.verifySignup(
+          { email: 'ana@example.com', code: wrong },
+          '9.9.9.' + i,
+        ),
+      ).rejects.toThrow('not right');
+    }
+    await expect(
+      service.verifySignup(
+        { email: 'ana@example.com', code: wrong },
+        '9.9.9.9',
+      ),
+    ).rejects.toThrow('Too many wrong codes');
+    await expect(
+      service.verifySignup(
+        { email: 'ana@example.com', code: right },
+        '9.9.9.10',
+      ),
+    ).rejects.toThrow('expired');
+    expect(prisma.customer.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses an expired code', async () => {
+    jest.useFakeTimers();
+    const { service, mail } = setup();
+    await service.signup(SIGNUP, IP);
+    jest.advanceTimersByTime(SIGNUP_CODE_TTL_MS + 1);
+    await expect(
+      service.verifySignup(
+        { email: 'ana@example.com', code: sentCode(mail) },
+        IP,
+      ),
+    ).rejects.toThrow('expired');
+  });
+
+  it('resends at most once a minute, and only the newest code works', async () => {
+    jest.useFakeTimers();
+    const { service, mail } = setup();
+    await service.signup(SIGNUP, IP);
+    await expect(
+      service.resendSignupCode({ email: 'ana@example.com' }),
+    ).rejects.toBeInstanceOf(HttpException);
+    jest.advanceTimersByTime(SIGNUP_RESEND_MS);
+    await service.resendSignupCode({ email: 'ana@example.com' });
+    expect(mail.send).toHaveBeenCalledTimes(2);
+    const out = await service.verifySignup(
+      { email: 'ana@example.com', code: sentCode(mail) },
+      IP,
+    );
+    expect(out.customer.email).toBe('ana@example.com');
+  });
+
+  it('answers 503 and keeps nothing when the email cannot be sent', async () => {
+    const { service, mail } = setup();
+    mail.send.mockRejectedValueOnce(new Error('smtp down'));
+    await expect(service.signup(SIGNUP, IP)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await expect(
+      service.resendSignupCode({ email: 'ana@example.com' }),
+    ).rejects.toThrow('expired');
   });
 
   it('refuses an email that already has an account with 409', async () => {
-    const { service } = setup(customer());
+    const { service, mail } = setup(customer());
+    await expect(service.signup(SIGNUP, IP)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses with 409 when the email was taken while the code was in the mail', async () => {
+    const { service, prisma, mail } = setup();
+    await service.signup(SIGNUP, IP);
+    prisma.customer.findUnique.mockResolvedValueOnce(customer());
     await expect(
-      service.signup(
-        { name: 'Ana', email: 'ana@example.com', password: 'longenough' },
+      service.verifySignup(
+        { email: 'ana@example.com', code: sentCode(mail) },
         IP,
       ),
     ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.customer.create).not.toHaveBeenCalled();
   });
 });
 

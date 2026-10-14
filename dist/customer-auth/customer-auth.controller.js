@@ -18,8 +18,10 @@ const customer_auth_service_1 = require("./customer-auth.service");
 const customer_jwt_guard_1 = require("./customer-jwt.guard");
 const google_login_dto_1 = require("./dto/google-login.dto");
 const login_dto_1 = require("./dto/login.dto");
+const resend_signup_dto_1 = require("./dto/resend-signup.dto");
 const signup_dto_1 = require("./dto/signup.dto");
 const update_me_dto_1 = require("./dto/update-me.dto");
+const verify_signup_dto_1 = require("./dto/verify-signup.dto");
 let CustomerAuthController = class CustomerAuthController {
     auth;
     constructor(auth) {
@@ -30,6 +32,12 @@ let CustomerAuthController = class CustomerAuthController {
     }
     signup(dto, req) {
         return this.auth.signup(dto, req.ip ?? 'unknown');
+    }
+    verifySignup(dto, req) {
+        return this.auth.verifySignup(dto, req.ip ?? 'unknown');
+    }
+    resendSignup(dto) {
+        return this.auth.resendSignupCode(dto);
     }
     login(dto, req) {
         return this.auth.login(dto, req.ip ?? 'unknown');
@@ -53,12 +61,30 @@ __decorate([
 ], CustomerAuthController.prototype, "config", null);
 __decorate([
     (0, common_1.Post)('signup'),
+    (0, common_1.HttpCode)(202),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [signup_dto_1.SignupDto, Object]),
     __metadata("design:returntype", Promise)
 ], CustomerAuthController.prototype, "signup", null);
+__decorate([
+    (0, common_1.Post)('signup/verify'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [verify_signup_dto_1.VerifySignupDto, Object]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "verifySignup", null);
+__decorate([
+    (0, common_1.Post)('signup/resend'),
+    (0, common_1.HttpCode)(202),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [resend_signup_dto_1.ResendSignupDto]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "resendSignup", null);
 __decorate([
     (0, common_1.Post)('login'),
     (0, common_1.HttpCode)(200),
