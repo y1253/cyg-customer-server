@@ -20,10 +20,11 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_extractor_1 = require("./attachment-extractor");
 const attachment_match_util_1 = require("./attachment-match.util");
+const product_memory_service_1 = require("./product-memory.service");
 const receipt_items_util_1 = require("./receipt-items.util");
 const reconcile_util_1 = require("./reconcile.util");
 const splits_service_1 = require("./splits.service");
-const statement_processor_service_1 = require("./statement-processor.service");
+const queue_retry_1 = require("./queue-retry");
 const CONCURRENCY = 2;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 10 * 60_000;
@@ -50,13 +51,15 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     storage;
     extractor;
     splits;
+    products;
     logger = new common_1.Logger(AttachmentProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, splits) {
+    constructor(prisma, storage, extractor, splits, products) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.splits = splits;
+        this.products = products;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -93,7 +96,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         });
         const due = candidates
             .filter((a) => a.status === client_1.AttachmentStatus.PROCESSING ||
-            (0, statement_processor_service_1.claimableAt)(a.updatedAt, a.attempts) <= now)
+            (0, queue_retry_1.claimableAt)(a.updatedAt, a.attempts) <= now)
             .slice(0, BATCH);
         if (!due.length)
             return;
@@ -133,7 +136,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                 note = 'Added from the transaction.';
             }
             else {
-                const found = await this.match(row.customerId, reading, row.message);
+                const found = await this.match(row.customerId, reading, row.message, (0, attachment_match_util_1.statementOf)(row.sourceRef));
                 transactionId = found.transactionId;
                 note = found.note;
             }
@@ -168,7 +171,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     async recordFailure(row, err) {
         const message = err instanceof Error ? err.message : String(err);
         const attempts = row.attempts + 1;
-        const final = err instanceof attachment_extractor_1.UnreadableAttachmentError || attempts >= statement_processor_service_1.MAX_ATTEMPTS;
+        const final = err instanceof attachment_extractor_1.UnreadableAttachmentError || attempts >= queue_retry_1.MAX_ATTEMPTS;
         this.logger.warn(`attachment #${row.id} attempt ${attempts} failed${final ? ' (final)' : ''}: ${message}`);
         await this.prisma.transactionAttachment
             .update({
@@ -185,7 +188,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         })
             .catch(() => undefined);
     }
-    async match(customerId, reading, message) {
+    async match(customerId, reading, message, statementId = null) {
         const total = readingTotal(reading);
         if (total == null && !reading.date) {
             return {
@@ -202,7 +205,18 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             date: reading.date,
             total,
         };
-        const list = (0, attachment_match_util_1.shortlist)(q, await this.candidates(customerId, q));
+        let list = statementId
+            ? (0, attachment_match_util_1.shortlist)(q, await this.candidates(customerId, q, statementId))
+            : [];
+        if (!list.length)
+            list = (0, attachment_match_util_1.shortlist)(q, await this.candidates(customerId, q));
+        const byNumber = (0, attachment_match_util_1.chequeNumberMatch)(reading.checkNumber, total, list);
+        if (byNumber) {
+            return {
+                transactionId: byNumber.id,
+                note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
+            };
+        }
         if (!list.length) {
             return {
                 transactionId: null,
@@ -232,9 +246,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             note: `${pick.reason ? `${pick.reason} ` : ''}Choose the transaction yourself.`,
         };
     }
-    async candidates(customerId, q) {
+    async candidates(customerId, q, statementId) {
         const where = {
             customerId,
+            ...(statementId ? { statementId } : {}),
             splitOfId: null,
             statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
         };
@@ -312,8 +327,8 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         if (!replace && parent.splits.length) {
             return 'The transaction is already split; use "Use receipt items" to replace its splits.';
         }
-        const rules = await this.splits.itemRules(customerId);
-        const out = (0, receipt_items_util_1.itemSplits)(reading.items, reading.tax, Number(parent.amount), (name) => rules.get((0, receipt_items_util_1.itemKey)(name)) ?? parent.offsetAccount);
+        const categoryFor = await this.products.categoriesFor(customerId, reading.items.map((i) => i.name), { store: reading.vendor, parentCategory: parent.offsetAccount });
+        const out = (0, receipt_items_util_1.itemSplits)(reading.items, reading.tax, Number(parent.amount), categoryFor);
         if ('problem' in out)
             return `${out.problem}, so it was not split.`;
         await this.splits.save(customerId, parent.id, out.splits.map((s) => ({
@@ -337,6 +352,7 @@ exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProc
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         attachment_extractor_1.AttachmentExtractor,
-        splits_service_1.SplitsService])
+        splits_service_1.SplitsService,
+        product_memory_service_1.ProductMemoryService])
 ], AttachmentProcessorService);
 //# sourceMappingURL=attachment-processor.service.js.map

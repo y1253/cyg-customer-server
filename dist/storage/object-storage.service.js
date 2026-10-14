@@ -76,6 +76,15 @@ let ObjectStorageService = ObjectStorageService_1 = class ObjectStorageService {
             },
         }).done();
     }
+    async putBuffer(key, body, contentType) {
+        this.assertKey(key);
+        await this.s3().send(new client_s3_1.PutObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+            Body: body,
+            ContentType: contentType,
+        }));
+    }
     async head(key) {
         this.assertKey(key);
         try {

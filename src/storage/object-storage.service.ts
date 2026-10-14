@@ -5,6 +5,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
@@ -102,6 +103,23 @@ export class ObjectStorageService {
         ContentType: contentType,
       },
     }).done();
+  }
+
+  /** A small object already in memory (an image cut out of a statement). */
+  async putBuffer(
+    key: string,
+    body: Buffer,
+    contentType?: string,
+  ): Promise<void> {
+    this.assertKey(key);
+    await this.s3().send(
+      new PutObjectCommand({
+        Bucket: this.bucket!,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
   }
 
   /** Size, or null when the object is not there. */

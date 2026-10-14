@@ -9,9 +9,12 @@ import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
+import { ProductCategorizer } from './product-categorizer';
+import { ProductMemoryService } from './product-memory.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
 import { StatementExtractor } from './statement-extractor';
+import { StatementImagesService } from './statement-images.service';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
 
@@ -27,9 +30,12 @@ import { TaxService } from './tax.service';
     LedgerExportService,
     NameMemoryService,
     OpenAiClient,
+    ProductCategorizer,
+    ProductMemoryService,
     ReportsService,
     SplitsService,
     StatementExtractor,
+    StatementImagesService,
     StatementProcessorService,
     TaxService,
   ],

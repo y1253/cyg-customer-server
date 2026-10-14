@@ -4,6 +4,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { StatementProcessorService } from './statement-processor.service';
+import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
 export interface StatementView {
     id: number;
@@ -50,8 +51,9 @@ export declare class BookkeepingService {
     private readonly openai;
     private readonly processor;
     private readonly tax;
+    private readonly images;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService);
     upload(customerId: number, files: Express.Multer.File[]): Promise<StatementView[]>;
     generateIfFree(customerId: number): Promise<{
         queued: number;

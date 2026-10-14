@@ -282,7 +282,9 @@ describe('NameMemoryService.resolveStatement', () => {
         offsetAccount: 'Supplies',
       },
     ];
-    expect((await service(prisma).resolveStatement(7, rows)).lines).toBe(rows);
+    expect((await service(prisma).resolveStatement(7, rows)).lines).toEqual(
+      rows,
+    );
   });
 
   it('applies the memory and learns new descriptions', async () => {

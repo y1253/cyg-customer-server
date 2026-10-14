@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
 import { cleanName } from './name-memory.util';
+import { ProductMemoryService } from './product-memory.service';
 import { itemKey } from './receipt-items.util';
 import { signedLike, splitProblem } from './splits.util';
 import { TaxService } from './tax.service';
@@ -35,6 +36,7 @@ export class SplitsService {
     private readonly prisma: PrismaService,
     private readonly accounts: CustomerAccountsService,
     private readonly tax: TaxService,
+    private readonly products: ProductMemoryService,
   ) {}
 
   /**
@@ -122,27 +124,15 @@ export class SplitsService {
           out.push(made.id);
         }
       }
-      // "Always": this item goes in this category on every later receipt.
-      for (const r of rows) {
-        const key = r.always && r.itemName ? itemKey(r.itemName) : '';
-        if (!key) continue;
-        await tx.customerItemRule.upsert({
-          where: { customerId_itemKey: { customerId, itemKey: key } },
-          create: { customerId, itemKey: key, category: r.category },
-          update: { category: r.category },
-        });
-      }
       return out;
     });
     await this.tax.retagRows(customerId, [parent.id, ...ids]);
-  }
-
-  /** The category each remembered item goes in, keyed by `itemKey`. */
-  async itemRules(customerId: number): Promise<Map<string, string>> {
-    const rules = await this.prisma.customerItemRule.findMany({
-      where: { customerId },
-      select: { itemKey: true, category: true },
-    });
-    return new Map(rules.map((r) => [r.itemKey, r.category]));
+    // "Always": this item goes in this category on every later receipt, and the
+    // customer's other rows of it move too — the same rule as the Products tab.
+    for (const r of rows) {
+      if (r.always && r.itemName && itemKey(r.itemName)) {
+        await this.products.saveRule(customerId, r.itemName, r.category);
+      }
+    }
   }
 }

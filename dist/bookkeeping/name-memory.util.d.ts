@@ -22,6 +22,7 @@ export interface ResolveContext {
 }
 export declare function bankPayeeName(bankName: string | null | undefined): string | null;
 export declare const isBankCharge: (category: string) => boolean;
+export declare function isOwnersLoanMove(description: string, category: string): boolean;
 export type NameSource = 'ai' | 'memory' | 'customer';
 export interface Resolved {
     name: string | null;

@@ -10,8 +10,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 var StatementProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StatementProcessorService = exports.MAX_ATTEMPTS = void 0;
-exports.claimableAt = claimableAt;
+exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
 exports.needsReviewMessage = needsReviewMessage;
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
@@ -22,33 +21,31 @@ const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
 const reconcile_util_1 = require("./reconcile.util");
 const statement_extractor_1 = require("./statement-extractor");
+const statement_images_service_1 = require("./statement-images.service");
 const statement_uploads_1 = require("./statement-uploads");
 const tax_service_1 = require("./tax.service");
-exports.MAX_ATTEMPTS = 4;
-const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
+const queue_retry_1 = require("./queue-retry");
+Object.defineProperty(exports, "claimableAt", { enumerable: true, get: function () { return queue_retry_1.claimableAt; } });
+Object.defineProperty(exports, "MAX_ATTEMPTS", { enumerable: true, get: function () { return queue_retry_1.MAX_ATTEMPTS; } });
 const CONCURRENCY = 2;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 15 * 60_000;
-function claimableAt(updatedAt, attempts) {
-    if (attempts === 0)
-        return updatedAt.getTime();
-    const delay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
-    return updatedAt.getTime() + delay;
-}
 let StatementProcessorService = StatementProcessorService_1 = class StatementProcessorService {
     prisma;
     storage;
     extractor;
     tax;
     names;
+    images;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax, names) {
+    constructor(prisma, storage, extractor, tax, names, images) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.tax = tax;
         this.names = names;
+        this.images = images;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -90,7 +87,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         });
         const due = candidates
             .filter((s) => s.status === client_1.StatementStatus.PROCESSING ||
-            claimableAt(s.updatedAt, s.attempts) <= now)
+            (0, queue_retry_1.claimableAt)(s.updatedAt, s.attempts) <= now)
             .slice(0, BATCH);
         if (!due.length)
             return;
@@ -178,8 +175,16 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     },
                 }),
             ]);
-            if (!mismatch)
+            if (!mismatch) {
                 await this.tax.tagStatement(row.customerId, row.id);
+                await this.images.harvest({
+                    ...row,
+                    accountName: extracted.accountName,
+                    bankName: extracted.bankName,
+                    periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
+                    periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
+                }, pdf, extracted.imagePages);
+            }
             const level = mismatch ? 'warn' : 'log';
             this.logger[level](`statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
                 `${extracted.rereads} re-read(s), ${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
@@ -192,7 +197,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     async recordFailure(row, err) {
         const message = err instanceof Error ? err.message : String(err);
         const attempts = row.attempts + 1;
-        const final = err instanceof statement_extractor_1.UnreadableStatementError || attempts >= exports.MAX_ATTEMPTS;
+        const final = err instanceof statement_extractor_1.UnreadableStatementError || attempts >= queue_retry_1.MAX_ATTEMPTS;
         this.logger.warn(`statement #${row.id} attempt ${attempts} failed${final ? ' (final)' : ''}: ${message}`);
         await this.prisma.bankStatement
             .update({
@@ -229,7 +234,8 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
         tax_service_1.TaxService,
-        name_memory_service_1.NameMemoryService])
+        name_memory_service_1.NameMemoryService,
+        statement_images_service_1.StatementImagesService])
 ], StatementProcessorService);
 function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';

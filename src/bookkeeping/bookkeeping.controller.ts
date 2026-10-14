@@ -43,14 +43,18 @@ import {
   type AccountView,
 } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
+import { ProductMemoryService } from './product-memory.service';
+import type { ProductView } from './product-memory.util';
 import {
   CreateAccountDto,
   CreateAgencyDto,
   EditTransactionDto,
   RenameTaxLineDto,
   ResetNameRuleDto,
+  ResetProductRuleDto,
   SaveSplitsDto,
   SaveNameRuleDto,
+  SaveProductRuleDto,
   SetAttachmentTransactionDto,
   UpdateAgencyDto,
   UpdateNameDto,
@@ -94,6 +98,7 @@ export class BookkeepingController {
     private readonly accounts: CustomerAccountsService,
     private readonly splits: SplitsService,
     private readonly attachments: AttachmentsService,
+    private readonly productMemory: ProductMemoryService,
   ) {}
 
   /**
@@ -255,6 +260,39 @@ export class BookkeepingController {
   ): Promise<NamesView> {
     await this.nameMemory.resetRule(req.user.customerId, dto);
     return this.tax.names(req.user.customerId);
+  }
+
+  /** Every item on the customer's receipts, with its category and where that came from. */
+  @Get('products')
+  products(@Req() req: AuthedRequest): Promise<ProductView[]> {
+    return this.productMemory.products(req.user.customerId);
+  }
+
+  /**
+   * Always put this item in this category: saved as the customer's rule, applied to their
+   * existing rows of it at once and to every later receipt (`ProductMemoryService`).
+   */
+  @Put('products/rule')
+  async saveProductRule(
+    @Req() req: AuthedRequest,
+    @Body() dto: SaveProductRuleDto,
+  ): Promise<ProductView[]> {
+    await this.productMemory.saveRule(
+      req.user.customerId,
+      dto.itemKey,
+      dto.category,
+    );
+    return this.productMemory.products(req.user.customerId);
+  }
+
+  /** Drop the customer's rule: their rows go back to the memory's / the transaction's category. */
+  @Delete('products/rule')
+  async resetProductRule(
+    @Req() req: AuthedRequest,
+    @Body() dto: ResetProductRuleDto,
+  ): Promise<ProductView[]> {
+    await this.productMemory.resetRule(req.user.customerId, dto.itemKey);
+    return this.productMemory.products(req.user.customerId);
   }
 
   /**

@@ -31,6 +31,13 @@ export declare class ResetNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION';
     matchKey: string;
 }
+export declare class SaveProductRuleDto {
+    itemKey: string;
+    category: string;
+}
+export declare class ResetProductRuleDto {
+    itemKey: string;
+}
 export declare class EditTransactionDto {
     name?: string | null;
     category?: string | null;

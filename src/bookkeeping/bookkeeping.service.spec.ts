@@ -4,6 +4,7 @@ import type { OpenAiClient } from '../ai/openai.client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ObjectStorageService } from '../storage/object-storage.service';
 import { BookkeepingService } from './bookkeeping.service';
+import type { StatementImagesService } from './statement-images.service';
 import type { StatementProcessorService } from './statement-processor.service';
 import type { TaxService } from './tax.service';
 import { claimableAt } from './statement-processor.service';
@@ -21,6 +22,9 @@ function setup(found: unknown = null) {
     {} as OpenAiClient,
     { processSoon: jest.fn() } as unknown as StatementProcessorService,
     {} as TaxService,
+    {
+      removeFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StatementImagesService,
   );
   return { service, prisma };
 }

@@ -100,3 +100,41 @@ export function obviousMatch(
   const b = dayNumber(only.date);
   return a != null && b != null && Math.abs(a - b) <= 3 ? only : null;
 }
+
+/**
+ * A cheque whose number is printed in exactly one candidate's description ("CHEQUE 1042",
+ * "CHQ#001042") at the exact amount — or at any amount when none was read. Leading zeros
+ * are ignored on both sides. Null when the number is missing or not unique.
+ */
+export function chequeNumberMatch(
+  checkNumber: string | null | undefined,
+  total: number | null,
+  list: readonly MatchCandidate[],
+): MatchCandidate | null {
+  const wanted = (checkNumber ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  if (!wanted) return null;
+  const want = total != null && total > 0 ? cents(total) : null;
+  const hits = list.filter(
+    (r) =>
+      (r.description.match(/\d+/g) ?? []).some(
+        (n) => n.replace(/^0+/, '') === wanted,
+      ) &&
+      (want == null || Math.abs(cents(r.amount)) === want),
+  );
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** `TransactionAttachment.sourceRef` of an image cut out of a statement — one per image. */
+export const statementImageRef = (
+  statementId: number,
+  page: number,
+  index: number,
+): string => `stmt:${statementId}:p${page + 1}:${index + 1}`;
+
+/** The statement an attachment was cut out of, from its `sourceRef`; null for any other. */
+export function statementOf(
+  sourceRef: string | null | undefined,
+): number | null {
+  const m = /^stmt:(\d+):/.exec(sourceRef ?? '');
+  return m ? Number(m[1]) : null;
+}

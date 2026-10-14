@@ -16,6 +16,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_util_1 = require("./name-memory.util");
+const product_memory_service_1 = require("./product-memory.service");
 const receipt_items_util_1 = require("./receipt-items.util");
 const splits_util_1 = require("./splits.util");
 const tax_service_1 = require("./tax.service");
@@ -23,10 +24,12 @@ let SplitsService = class SplitsService {
     prisma;
     accounts;
     tax;
-    constructor(prisma, accounts, tax) {
+    products;
+    constructor(prisma, accounts, tax, products) {
         this.prisma = prisma;
         this.accounts = accounts;
         this.tax = tax;
+        this.products = products;
     }
     async save(customerId, id, input) {
         const parent = await this.prisma.bankTransaction.findFirst({
@@ -97,26 +100,14 @@ let SplitsService = class SplitsService {
                     out.push(made.id);
                 }
             }
-            for (const r of rows) {
-                const key = r.always && r.itemName ? (0, receipt_items_util_1.itemKey)(r.itemName) : '';
-                if (!key)
-                    continue;
-                await tx.customerItemRule.upsert({
-                    where: { customerId_itemKey: { customerId, itemKey: key } },
-                    create: { customerId, itemKey: key, category: r.category },
-                    update: { category: r.category },
-                });
-            }
             return out;
         });
         await this.tax.retagRows(customerId, [parent.id, ...ids]);
-    }
-    async itemRules(customerId) {
-        const rules = await this.prisma.customerItemRule.findMany({
-            where: { customerId },
-            select: { itemKey: true, category: true },
-        });
-        return new Map(rules.map((r) => [r.itemKey, r.category]));
+        for (const r of rows) {
+            if (r.always && r.itemName && (0, receipt_items_util_1.itemKey)(r.itemName)) {
+                await this.products.saveRule(customerId, r.itemName, r.category);
+            }
+        }
     }
 };
 exports.SplitsService = SplitsService;
@@ -124,6 +115,7 @@ exports.SplitsService = SplitsService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         customer_accounts_service_1.CustomerAccountsService,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        product_memory_service_1.ProductMemoryService])
 ], SplitsService);
 //# sourceMappingURL=splits.service.js.map

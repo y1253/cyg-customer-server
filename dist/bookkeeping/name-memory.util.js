@@ -4,6 +4,7 @@ exports.isBankCharge = exports.nameKey = exports.RULE_MATCH_TYPES = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
 exports.bankPayeeName = bankPayeeName;
+exports.isOwnersLoanMove = isOwnersLoanMove;
 exports.resolveRow = resolveRow;
 exports.memoryWrites = memoryWrites;
 exports.indexRules = indexRules;
@@ -48,6 +49,27 @@ function bankPayeeName(bankName) {
 }
 const isBankCharge = (category) => /interest|bank fee|bank charge|service charge/i.test(category);
 exports.isBankCharge = isBankCharge;
+const OWN_MOVE_CATEGORIES = new Set([
+    'Transfer Between Accounts',
+    'Credit Card Payment',
+]);
+const NOT_OWN_MOVE = /\binterac\b|\be[- ]?(?:transfer|tfr)\b|\bemail money\b|\bwire\b/i;
+const CARD = '(?:visa|master ?card|amex|american express|credit card|cc)';
+const PAID = '(?:payment|pymt|pmt|paiement)';
+const CARD_PAYMENT = new RegExp([
+    `\\b${CARD}\\b.*\\b${PAID}\\b`,
+    `\\b${PAID}\\b.*\\b${CARD}\\b`,
+    `\\b${PAID}\\b.*\\b(?:thank you|merci)\\b`,
+    '\\bpayment received\\b',
+].join('|'), 'i');
+const OWN_TRANSFER = /\b(?:transfer|xfer|tfr|virement)\b/i;
+function isOwnersLoanMove(description, category) {
+    if (OWN_MOVE_CATEGORIES.has(category))
+        return true;
+    if (NOT_OWN_MOVE.test(description))
+        return false;
+    return CARD_PAYMENT.test(description) || OWN_TRANSFER.test(description);
+}
 function resolveRow(row, ctx) {
     let name = cleanName(row.name);
     let category = (0, chart_of_accounts_1.normalizeAccount)(row.offsetAccount, ctx.customAccounts);
@@ -66,6 +88,8 @@ function resolveRow(row, ctx) {
     }
     if (!name && (0, exports.isBankCharge)(category))
         name = bankPayeeName(ctx.bankName);
+    if (isOwnersLoanMove(row.description, category))
+        category = chart_of_accounts_1.OWNERS_LOAN;
     const apply = (rule) => {
         if (!rule)
             return;

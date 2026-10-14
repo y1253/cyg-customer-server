@@ -135,6 +135,32 @@ export class ResetNameRuleDto {
   matchKey!: string;
 }
 
+/** `PUT /api/bookkeeping/products/rule` — "always put this item in this category". */
+export class SaveProductRuleDto {
+  /** The `itemKey` the Products tab gave (or a printed item name). */
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  itemKey!: string;
+
+  /** The chart or one of their own accounts. */
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  category!: string;
+}
+
+/** `DELETE /api/bookkeeping/products/rule` — back to the memory / the transaction's category. */
+export class ResetProductRuleDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  itemKey!: string;
+}
+
 /** `PATCH /api/bookkeeping/transactions/:id` — one ledger row's name and/or category. */
 export class EditTransactionDto {
   @IsOptional()

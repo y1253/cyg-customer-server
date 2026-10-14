@@ -23,6 +23,7 @@ const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
+const statement_images_service_1 = require("./statement-images.service");
 const tax_service_1 = require("./tax.service");
 const splits_util_1 = require("./splits.util");
 const tax_util_1 = require("./tax.util");
@@ -68,13 +69,15 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     openai;
     processor;
     tax;
+    images;
     logger = new common_1.Logger(BookkeepingService_1.name);
-    constructor(prisma, storage, openai, processor, tax) {
+    constructor(prisma, storage, openai, processor, tax, images) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
         this.tax = tax;
+        this.images = images;
     }
     async upload(customerId, files) {
         try {
@@ -274,6 +277,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             where: { id: s.id },
             data: { deletedAt: new Date() },
         });
+        await this.images.removeFor(customerId, s.id);
     }
     async owned(customerId, id) {
         const s = await this.prisma.bankStatement.findFirst({
@@ -291,6 +295,7 @@ exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decor
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
         statement_processor_service_1.StatementProcessorService,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        statement_images_service_1.StatementImagesService])
 ], BookkeepingService);
 //# sourceMappingURL=bookkeeping.service.js.map

@@ -1,8 +1,9 @@
-import { UNCATEGORIZED } from './chart-of-accounts';
+import { OWNERS_LOAN, UNCATEGORIZED } from './chart-of-accounts';
 import {
   bankPayeeName,
   descriptionKey,
   indexRules,
+  isOwnersLoanMove,
   memoryWrites,
   resolveRow,
   type MemoryEntry,
@@ -317,5 +318,53 @@ describe('bank fees and interest are named after the bank', () => {
       c,
     );
     expect(out).toMatchObject({ name: 'TD Bank', category: 'Office Expense' });
+  });
+});
+
+describe("transfers and credit-card payments go to Owner's Loan", () => {
+  it.each([
+    ['VISA PAYMENT', 'Uncategorized'],
+    ['PAYMENT - VISA 4512', 'Office Expense'],
+    ['MASTERCARD PYMT BMO', 'Uncategorized'],
+    ['PAYMENT - THANK YOU', 'Uncategorized'],
+    ['TFR-TO 1234', 'Uncategorized'],
+    ['Online Banking transfer 0042', 'Supplies'],
+    ['ANYTHING', 'Transfer Between Accounts'],
+    ['ANYTHING', 'Credit Card Payment'],
+  ])('%s (%s) is an own move', (description, category) => {
+    expect(isOwnersLoanMove(description, category)).toBe(true);
+  });
+
+  it.each([
+    ['INTERAC E-TRANSFER TO JOHN', 'Uncategorized'],
+    ['E-TRANSFER SENT 1234', 'Uncategorized'],
+    ['WIRE TRANSFER OUT ACME', 'Uncategorized'],
+    ['VISA DEBIT PURCHASE WALMART', 'Supplies'],
+    ['BELL CANADA PAYMENT', 'Telephone & Internet'],
+  ])('%s (%s) is not', (description, category) => {
+    expect(isOwnersLoanMove(description, category)).toBe(false);
+  });
+
+  it('overrides the AI and the firm memory', () => {
+    const out = resolveRow(
+      { description: 'VISA PAYMENT 4512', offsetAccount: 'Office Expense' },
+      ctx({ 'visa payment': { name: null, category: 'Supplies' } }),
+    );
+    expect(out.category).toBe(OWNERS_LOAN);
+  });
+
+  it("the customer's own rule still wins", () => {
+    const out = resolveRow(
+      { description: 'VISA PAYMENT 4512', offsetAccount: 'Office Expense' },
+      ctx({}, [
+        {
+          matchType: 'DESCRIPTION',
+          matchKey: 'visa payment',
+          name: null,
+          category: 'Owner Draw',
+        },
+      ]),
+    );
+    expect(out.category).toBe('Owner Draw');
   });
 });

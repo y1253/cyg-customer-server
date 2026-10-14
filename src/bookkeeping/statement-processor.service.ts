@@ -10,24 +10,17 @@ import {
   StatementExtractor,
   UnreadableStatementError,
 } from './statement-extractor';
+import { StatementImagesService } from './statement-images.service';
 import { sweepStaleStaging } from './statement-uploads';
 import { TaxService } from './tax.service';
+import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 
-export const MAX_ATTEMPTS = 4;
-/** Wait before attempt n+1 (index = attempts so far): 1 min, 5 min, 30 min. */
-const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
+export { claimableAt, MAX_ATTEMPTS };
+
 const CONCURRENCY = 2;
 const BATCH = 6;
 /** A row stuck in PROCESSING this long (a restart mid-read) is picked up again. */
 const STALE_PROCESSING_MS = 15 * 60_000;
-
-/** When a row with `attempts` failures may be claimed again. */
-export function claimableAt(updatedAt: Date, attempts: number): number {
-  if (attempts === 0) return updatedAt.getTime();
-  const delay =
-    RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
-  return updatedAt.getTime() + delay;
-}
 
 /**
  * Turns uploaded statements into ledger rows.
@@ -49,6 +42,7 @@ export class StatementProcessorService {
     private readonly extractor: StatementExtractor,
     private readonly tax: TaxService,
     private readonly names: NameMemoryService,
+    private readonly images: StatementImagesService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -205,7 +199,21 @@ export class StatementProcessorService {
           },
         }),
       ]);
-      if (!mismatch) await this.tax.tagStatement(row.customerId, row.id);
+      if (!mismatch) {
+        await this.tax.tagStatement(row.customerId, row.id);
+        // Cheque / deposit-slip images become attachments on their rows (never fails).
+        await this.images.harvest(
+          {
+            ...row,
+            accountName: extracted.accountName,
+            bankName: extracted.bankName,
+            periodStart: parseIsoDate(extracted.periodStart),
+            periodEnd: parseIsoDate(extracted.periodEnd),
+          },
+          pdf,
+          extracted.imagePages,
+        );
+      }
       const level = mismatch ? 'warn' : 'log';
       this.logger[level](
         `statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +

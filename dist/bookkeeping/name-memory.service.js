@@ -76,11 +76,16 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         catch (err) {
             this.logger.warn(`name memory unavailable for customer ${customerId}, keeping the AI's answers: ${String(err)}`);
             const bank = (0, name_memory_util_1.bankPayeeName)(bankName);
-            const lines = bank
-                ? rows.map((r) => !(0, name_memory_util_1.cleanName)(r.name) && (0, name_memory_util_1.isBankCharge)(r.offsetAccount)
-                    ? { ...r, name: bank }
-                    : r)
-                : rows;
+            const lines = rows.map((r) => {
+                let out = r;
+                if (bank && !(0, name_memory_util_1.cleanName)(r.name) && (0, name_memory_util_1.isBankCharge)(r.offsetAccount)) {
+                    out = { ...out, name: bank };
+                }
+                if ((0, name_memory_util_1.isOwnersLoanMove)(r.description, r.offsetAccount)) {
+                    out = { ...out, offsetAccount: chart_of_accounts_1.OWNERS_LOAN };
+                }
+                return out;
+            });
             return { lines, customAccounts: new Set() };
         }
     }

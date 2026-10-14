@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import type { ExtractedTransaction } from './ledger.util';
+import type { ImagePage } from './pdf-images';
 import { type ReconcileResult, type StatedFigures } from './reconcile.util';
 import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
@@ -16,9 +17,11 @@ export interface ExtractedStatement {
     calls: number;
     rereads: number;
     signFixes: number;
+    imagePages: ImagePage[];
 }
 export interface PageReading {
     isBankStatement: boolean;
+    hasItemImages?: boolean;
     accountName: string | null;
     bankName: string | null;
     periodStart: string | null;
@@ -30,7 +33,7 @@ export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
-    readonly required: readonly ["bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "isBankStatement"];
+    readonly required: readonly ["bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "hasItemImages", "isBankStatement"];
     readonly properties: {
         readonly bankName: {
             type: string[];
@@ -97,6 +100,9 @@ export declare const EXTRACTION_SCHEMA: {
                     };
                 };
             };
+        };
+        readonly hasItemImages: {
+            readonly type: "boolean";
         };
         readonly isBankStatement: {
             readonly type: "boolean";

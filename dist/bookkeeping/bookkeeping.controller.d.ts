@@ -6,7 +6,9 @@ import { AttachmentsService, type AttachmentView, type IntakeView } from './atta
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
 import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, SaveSplitsDto, SaveNameRuleDto, SetAttachmentTransactionDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
+import { ProductMemoryService } from './product-memory.service';
+import type { ProductView } from './product-memory.util';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, ResetProductRuleDto, SaveSplitsDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { ReportsService } from './reports.service';
@@ -26,7 +28,8 @@ export declare class BookkeepingController {
     private readonly accounts;
     private readonly splits;
     private readonly attachments;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService);
+    private readonly productMemory;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService);
     generate(req: AuthedRequest): Promise<{
         queued: number;
         taxing: boolean;
@@ -44,6 +47,9 @@ export declare class BookkeepingController {
     renameTaxLine(req: AuthedRequest, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
     private editValues;
     resetNameRule(req: AuthedRequest, dto: ResetNameRuleDto): Promise<NamesView>;
+    products(req: AuthedRequest): Promise<ProductView[]>;
+    saveProductRule(req: AuthedRequest, dto: SaveProductRuleDto): Promise<ProductView[]>;
+    resetProductRule(req: AuthedRequest, dto: ResetProductRuleDto): Promise<ProductView[]>;
     uploadAttachments(req: AuthedRequest, files: Express.Multer.File[], rawTransactionId?: string): Promise<AttachmentView[]>;
     intake(req: AuthedRequest): Promise<IntakeView>;
     listAttachments(req: AuthedRequest): Promise<AttachmentView[]>;

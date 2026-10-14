@@ -22,6 +22,7 @@ const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
+const product_memory_service_1 = require("./product-memory.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
 const export_service_1 = require("./export.service");
@@ -43,7 +44,8 @@ let BookkeepingController = class BookkeepingController {
     accounts;
     splits;
     attachments;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments) {
+    productMemory;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -53,6 +55,7 @@ let BookkeepingController = class BookkeepingController {
         this.accounts = accounts;
         this.splits = splits;
         this.attachments = attachments;
+        this.productMemory = productMemory;
     }
     generate(req) {
         return this.bookkeeping.generateIfFree(req.user.customerId);
@@ -119,6 +122,17 @@ let BookkeepingController = class BookkeepingController {
     async resetNameRule(req, dto) {
         await this.nameMemory.resetRule(req.user.customerId, dto);
         return this.tax.names(req.user.customerId);
+    }
+    products(req) {
+        return this.productMemory.products(req.user.customerId);
+    }
+    async saveProductRule(req, dto) {
+        await this.productMemory.saveRule(req.user.customerId, dto.itemKey, dto.category);
+        return this.productMemory.products(req.user.customerId);
+    }
+    async resetProductRule(req, dto) {
+        await this.productMemory.resetRule(req.user.customerId, dto.itemKey);
+        return this.productMemory.products(req.user.customerId);
     }
     uploadAttachments(req, files, rawTransactionId) {
         const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
@@ -331,6 +345,29 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "resetNameRule", null);
 __decorate([
+    (0, common_1.Get)('products'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "products", null);
+__decorate([
+    (0, common_1.Put)('products/rule'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.SaveProductRuleDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "saveProductRule", null);
+__decorate([
+    (0, common_1.Delete)('products/rule'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.ResetProductRuleDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "resetProductRule", null);
+__decorate([
     (0, common_1.Post)('attachments'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', attachment_uploads_1.MAX_FILES_PER_REQUEST, attachment_uploads_1.ATTACHMENT_UPLOAD_OPTIONS)),
     __param(0, (0, common_1.Req)()),
@@ -490,6 +527,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         name_memory_service_1.NameMemoryService,
         customer_accounts_service_1.CustomerAccountsService,
         splits_service_1.SplitsService,
-        attachments_service_1.AttachmentsService])
+        attachments_service_1.AttachmentsService,
+        product_memory_service_1.ProductMemoryService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

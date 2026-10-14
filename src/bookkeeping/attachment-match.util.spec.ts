@@ -1,4 +1,7 @@
 import {
+  chequeNumberMatch,
+  statementImageRef,
+  statementOf,
   obviousMatch,
   shortlist,
   type MatchCandidate,
@@ -70,5 +73,42 @@ describe('matching an attachment to a transaction', () => {
     expect(
       obviousMatch({ ...far, total: null }, [row(1, -100, null)]),
     ).toBeNull();
+  });
+});
+
+describe('chequeNumberMatch', () => {
+  const cheque = (id: number, amount: number, description: string) => ({
+    ...row(id, amount, '2026-09-10'),
+    description,
+  });
+  const rows = [
+    cheque(1, -250, 'CHEQUE 001042'),
+    cheque(2, -250, 'CHEQUE 1043'),
+    cheque(3, -90, 'CHQ#1044'),
+  ];
+
+  it('finds the one row printing the number, leading zeros ignored', () => {
+    expect(chequeNumberMatch('1042', 250, rows)?.id).toBe(1);
+    expect(chequeNumberMatch('#001044', null, rows)?.id).toBe(3);
+  });
+
+  it('needs the exact amount when one was read', () => {
+    expect(chequeNumberMatch('1042', 249.99, rows)).toBeNull();
+  });
+
+  it('gives up without a number or when it is not unique', () => {
+    expect(chequeNumberMatch(null, 250, rows)).toBeNull();
+    expect(
+      chequeNumberMatch('1042', null, [...rows, cheque(4, -5, 'REF 1042')]),
+    ).toBeNull();
+  });
+});
+
+describe('statement image refs', () => {
+  it('round-trips the statement id', () => {
+    expect(statementImageRef(42, 2, 0)).toBe('stmt:42:p3:1');
+    expect(statementOf(statementImageRef(42, 2, 0))).toBe(42);
+    expect(statementOf('SM123:0')).toBeNull();
+    expect(statementOf(null)).toBeNull();
   });
 });

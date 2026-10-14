@@ -1,8 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_FOR_AI = exports.TIP_SLACK = exports.DAYS_AFTER = exports.DAYS_BEFORE = void 0;
+exports.statementImageRef = exports.MAX_FOR_AI = exports.TIP_SLACK = exports.DAYS_AFTER = exports.DAYS_BEFORE = void 0;
 exports.shortlist = shortlist;
 exports.obviousMatch = obviousMatch;
+exports.chequeNumberMatch = chequeNumberMatch;
+exports.statementOf = statementOf;
 const reconcile_util_1 = require("./reconcile.util");
 exports.DAYS_BEFORE = 5;
 exports.DAYS_AFTER = 15;
@@ -63,5 +65,20 @@ function obviousMatch(q, list) {
     const a = dayNumber(q.date);
     const b = dayNumber(only.date);
     return a != null && b != null && Math.abs(a - b) <= 3 ? only : null;
+}
+function chequeNumberMatch(checkNumber, total, list) {
+    const wanted = (checkNumber ?? '').replace(/\D/g, '').replace(/^0+/, '');
+    if (!wanted)
+        return null;
+    const want = total != null && total > 0 ? (0, reconcile_util_1.cents)(total) : null;
+    const hits = list.filter((r) => (r.description.match(/\d+/g) ?? []).some((n) => n.replace(/^0+/, '') === wanted) &&
+        (want == null || Math.abs((0, reconcile_util_1.cents)(r.amount)) === want));
+    return hits.length === 1 ? hits[0] : null;
+}
+const statementImageRef = (statementId, page, index) => `stmt:${statementId}:p${page + 1}:${index + 1}`;
+exports.statementImageRef = statementImageRef;
+function statementOf(sourceRef) {
+    const m = /^stmt:(\d+):/.exec(sourceRef ?? '');
+    return m ? Number(m[1]) : null;
 }
 //# sourceMappingURL=attachment-match.util.js.map

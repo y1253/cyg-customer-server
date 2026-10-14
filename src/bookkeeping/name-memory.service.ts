@@ -5,13 +5,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { UNCATEGORIZED, normalizeAccount } from './chart-of-accounts';
+import {
+  OWNERS_LOAN,
+  UNCATEGORIZED,
+  normalizeAccount,
+} from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { TaxService } from './tax.service';
 import {
   bankPayeeName,
   cleanName,
   isBankCharge,
+  isOwnersLoanMove,
   descriptionKey,
   indexRules,
   memoryWrites,
@@ -127,13 +132,16 @@ export class NameMemoryService {
         `name memory unavailable for customer ${customerId}, keeping the AI's answers: ${String(err)}`,
       );
       const bank = bankPayeeName(bankName);
-      const lines = bank
-        ? rows.map((r) =>
-            !cleanName(r.name) && isBankCharge(r.offsetAccount)
-              ? { ...r, name: bank }
-              : r,
-          )
-        : rows;
+      const lines = rows.map((r) => {
+        let out = r;
+        if (bank && !cleanName(r.name) && isBankCharge(r.offsetAccount)) {
+          out = { ...out, name: bank };
+        }
+        if (isOwnersLoanMove(r.description, r.offsetAccount)) {
+          out = { ...out, offsetAccount: OWNERS_LOAN };
+        }
+        return out;
+      });
       return { lines, customAccounts: new Set() };
     }
   }

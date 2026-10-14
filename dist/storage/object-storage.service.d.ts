@@ -8,6 +8,7 @@ export declare class ObjectStorageService {
     private s3;
     assertKey(key: string): void;
     putFile(key: string, absolutePath: string, contentType?: string): Promise<void>;
+    putBuffer(key: string, body: Buffer, contentType?: string): Promise<void>;
     head(key: string): Promise<{
         size: number;
     } | null>;

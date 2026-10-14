@@ -19,16 +19,19 @@ import {
   DAYS_BEFORE,
   MAX_FOR_AI,
   TIP_SLACK,
+  chequeNumberMatch,
   obviousMatch,
   shortlist,
+  statementOf,
   type MatchCandidate,
   type MatchQuery,
 } from './attachment-match.util';
 import type { AttachmentClass } from './attachment-uploads';
-import { itemKey, itemSplits } from './receipt-items.util';
+import { ProductMemoryService } from './product-memory.service';
+import { itemSplits } from './receipt-items.util';
 import { cents } from './reconcile.util';
 import { SplitsService } from './splits.service';
-import { claimableAt, MAX_ATTEMPTS } from './statement-processor.service';
+import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 
 const CONCURRENCY = 2;
 const BATCH = 6;
@@ -77,6 +80,7 @@ export class AttachmentProcessorService {
     private readonly storage: ObjectStorageService,
     private readonly extractor: AttachmentExtractor,
     private readonly splits: SplitsService,
+    private readonly products: ProductMemoryService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -170,7 +174,12 @@ export class AttachmentProcessorService {
       if (transactionId) {
         note = 'Added from the transaction.';
       } else {
-        const found = await this.match(row.customerId, reading, row.message);
+        const found = await this.match(
+          row.customerId,
+          reading,
+          row.message,
+          statementOf(row.sourceRef),
+        );
         transactionId = found.transactionId;
         note = found.note;
       }
@@ -245,6 +254,8 @@ export class AttachmentProcessorService {
     customerId: number,
     reading: AttachmentReading,
     message: string | null,
+    /** Cut out of this statement (`StatementImagesService`): its own rows come first. */
+    statementId: number | null = null,
   ): Promise<{ transactionId: number | null; note: string }> {
     const total = readingTotal(reading);
     if (total == null && !reading.date) {
@@ -263,7 +274,19 @@ export class AttachmentProcessorService {
       date: reading.date,
       total,
     };
-    const list = shortlist(q, await this.candidates(customerId, q));
+    // An image cut out of a statement belongs to one of THAT statement's rows when any
+    // qualifies; otherwise (or for any other upload) every statement is searched.
+    let list = statementId
+      ? shortlist(q, await this.candidates(customerId, q, statementId))
+      : [];
+    if (!list.length) list = shortlist(q, await this.candidates(customerId, q));
+    const byNumber = chequeNumberMatch(reading.checkNumber, total, list);
+    if (byNumber) {
+      return {
+        transactionId: byNumber.id,
+        note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
+      };
+    }
     if (!list.length) {
       return {
         transactionId: null,
@@ -302,9 +325,11 @@ export class AttachmentProcessorService {
   private async candidates(
     customerId: number,
     q: MatchQuery,
+    statementId?: number,
   ): Promise<MatchCandidate[]> {
     const where: Prisma.BankTransactionWhereInput = {
       customerId,
+      ...(statementId ? { statementId } : {}),
       splitOfId: null,
       statement: { deletedAt: null, status: StatementStatus.DONE },
     };
@@ -394,12 +419,17 @@ export class AttachmentProcessorService {
     if (!replace && parent.splits.length) {
       return 'The transaction is already split; use "Use receipt items" to replace its splits.';
     }
-    const rules = await this.splits.itemRules(customerId);
+    // The customer's rule, else the firm memory, else the AI (remembered), else the parent's.
+    const categoryFor = await this.products.categoriesFor(
+      customerId,
+      reading.items.map((i) => i.name),
+      { store: reading.vendor, parentCategory: parent.offsetAccount },
+    );
     const out = itemSplits(
       reading.items,
       reading.tax,
       Number(parent.amount),
-      (name) => rules.get(itemKey(name)) ?? parent.offsetAccount,
+      categoryFor,
     );
     if ('problem' in out) return `${out.problem}, so it was not split.`;
     await this.splits.save(

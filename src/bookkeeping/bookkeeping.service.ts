@@ -27,6 +27,7 @@ import {
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
+import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
 import { remainderOf, splitTotals } from './splits.util';
 import type { StoredTax } from './tax.service';
@@ -156,6 +157,7 @@ export class BookkeepingService {
     private readonly openai: OpenAiClient,
     private readonly processor: StatementProcessorService,
     private readonly tax: TaxService,
+    private readonly images: StatementImagesService,
   ) {}
 
   /**
@@ -417,13 +419,17 @@ export class BookkeepingService {
     return toView(row);
   }
 
-  /** Soft delete: its rows leave the ledger at once; the PDF stays in R2. */
+  /**
+   * Soft delete: its rows leave the ledger at once, and the cheque images cut out of it
+   * leave the Receipts tab; the PDF stays in R2.
+   */
   async remove(customerId: number, id: number): Promise<void> {
     const s = await this.owned(customerId, id);
     await this.prisma.bankStatement.update({
       where: { id: s.id },
       data: { deletedAt: new Date() },
     });
+    await this.images.removeFor(customerId, s.id);
   }
 
   private async owned(customerId: number, id: number): Promise<BankStatement> {

@@ -1,4 +1,8 @@
-import { UNCATEGORIZED, normalizeAccount } from './chart-of-accounts';
+import {
+  OWNERS_LOAN,
+  UNCATEGORIZED,
+  normalizeAccount,
+} from './chart-of-accounts';
 
 /** How a customer rule is matched. */
 export type RuleMatchType = 'NAME' | 'DESCRIPTION';
@@ -92,6 +96,43 @@ export function bankPayeeName(
 export const isBankCharge = (category: string): boolean =>
   /interest|bank fee|bank charge|service charge/i.test(category);
 
+/** The categories an own-account move is read as before it is moved to Owner's Loan. */
+const OWN_MOVE_CATEGORIES: ReadonlySet<string> = new Set([
+  'Transfer Between Accounts',
+  'Credit Card Payment',
+]);
+
+/** Money sent to other people, which only LOOKS like a transfer. */
+const NOT_OWN_MOVE =
+  /\binterac\b|\be[- ]?(?:transfer|tfr)\b|\bemail money\b|\bwire\b/i;
+const CARD = '(?:visa|master ?card|amex|american express|credit card|cc)';
+const PAID = '(?:payment|pymt|pmt|paiement)';
+const CARD_PAYMENT = new RegExp(
+  [
+    `\\b${CARD}\\b.*\\b${PAID}\\b`,
+    `\\b${PAID}\\b.*\\b${CARD}\\b`,
+    `\\b${PAID}\\b.*\\b(?:thank you|merci)\\b`,
+    '\\bpayment received\\b',
+  ].join('|'),
+  'i',
+);
+const OWN_TRANSFER = /\b(?:transfer|xfer|tfr|virement)\b/i;
+
+/**
+ * A transfer between the owner's own accounts or a payment to a credit card (Visa, …).
+ * Always booked to Owner's Loan (user's decision 2026-10-13): by the category the AI or
+ * the firm memory chose for it, or by the description itself. Interac e-transfers and
+ * wires go to other people and are left alone.
+ */
+export function isOwnersLoanMove(
+  description: string,
+  category: string,
+): boolean {
+  if (OWN_MOVE_CATEGORIES.has(category)) return true;
+  if (NOT_OWN_MOVE.test(description)) return false;
+  return CARD_PAYMENT.test(description) || OWN_TRANSFER.test(description);
+}
+
 export type NameSource = 'ai' | 'memory' | 'customer';
 
 export interface Resolved {
@@ -109,8 +150,10 @@ export interface Resolved {
  *    AI's value);
  * 3. still no name, and a bank fee or interest: the statement's bank ("TD Bank") — never
  *    written to the firm memory, which serves every bank;
- * 4. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
- * 5. the customer's NAME rule, matched on the name as it stands after 1–4.
+ * 4. a transfer between the owner's accounts or a credit-card payment: Owner's Loan
+ *    (`isOwnersLoanMove`) — never written to the firm memory either;
+ * 5. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
+ * 6. the customer's NAME rule, matched on the name as it stands after 1–5.
  *
  * So a customer's own edit always wins, and the AI is the last resort, never the first.
  * The category always goes through `normalizeAccount`: nothing outside the chart gets in.
@@ -134,6 +177,7 @@ export function resolveRow(
   }
 
   if (!name && isBankCharge(category)) name = bankPayeeName(ctx.bankName);
+  if (isOwnersLoanMove(row.description, category)) category = OWNERS_LOAN;
 
   const apply = (rule: NameRule | undefined) => {
     if (!rule) return;

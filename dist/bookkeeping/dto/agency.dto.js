@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -160,6 +160,36 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
 ], ResetNameRuleDto.prototype, "matchKey", void 0);
+class SaveProductRuleDto {
+    itemKey;
+    category;
+}
+exports.SaveProductRuleDto = SaveProductRuleDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SaveProductRuleDto.prototype, "itemKey", void 0);
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SaveProductRuleDto.prototype, "category", void 0);
+class ResetProductRuleDto {
+    itemKey;
+}
+exports.ResetProductRuleDto = ResetProductRuleDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], ResetProductRuleDto.prototype, "itemKey", void 0);
 class EditTransactionDto {
     name;
     category;
