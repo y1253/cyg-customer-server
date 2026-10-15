@@ -20,6 +20,7 @@ export interface ExtractedStatement {
     calls: number;
     rereads: number;
     signFixes: number;
+    balanceFixes: number;
     imagePages: ImagePage[];
 }
 export interface PageReading {

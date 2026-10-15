@@ -42,7 +42,19 @@ export interface ReconcileRow {
   balanceAfter: number | null;
   /** 0-based page the row was read from. */
   page: number;
+  /** YYYY-MM-DD, when known — names the day a running balance breaks on. */
+  postingDate?: string | null;
 }
+
+/** One broken running-balance link, in the PRINTED sign. */
+export type RunningBreak = {
+  page: number;
+  date: string | null;
+  /** The balance printed on the row (cents). */
+  printed: number;
+  /** What the previous balance plus the rows add up to (cents). */
+  expected: number;
+};
 
 export type CheckName =
   | 'deposits'
@@ -67,6 +79,8 @@ export interface Check {
   skipped: string | null;
   /** 0-based page whose OWN summary box this checks (per-page totals); absent = whole statement. */
   page?: number;
+  /** runningBalance only: where it breaks, in row order — the re-read hint names them. */
+  breaks?: RunningBreak[];
 }
 
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
@@ -123,6 +137,19 @@ export function reconcile(
   const owed = balanceChecks(stated, rows, amounts, net, -1);
   const owes = fit(owed) > fit(asPrinted);
   const balances = owes ? owed : asPrinted;
+  // Balances on the rows that break on EVERY link while opening + net = closing holds to
+  // the cent are not a running balance: a card's "new purchases" subtotal copied onto its
+  // last row (2026-10-14, a statement no re-read could fix). A real misread can't break
+  // every link and still land on the closing balance.
+  if (
+    balances.running &&
+    balances.balance?.ok &&
+    balances.running.actual === 0
+  ) {
+    balances.running.skipped =
+      'the balances printed on the rows are not a running balance (a subtotal)';
+    balances.suspect.clear();
+  }
 
   const reason = skipReason(stated, balances);
   for (const c of [...totals, ...counts]) {
@@ -277,12 +304,25 @@ function balanceChecks(
     [...pages].reverse(),
     opening,
   );
-  const chain =
-    backward.links > 0 && backward.broken < forward.broken ? backward : forward;
+  const isBackward = backward.links > 0 && backward.broken < forward.broken;
+  const chain = isBackward ? backward : forward;
   const running =
     chain.links > 0
       ? check('runningBalance', chain.links, chain.links - chain.broken)
       : null;
+  if (running && chain.broken) {
+    // In row order, in the printed sign.
+    running.breaks = chain.at.map((b) => {
+      const i = isBackward ? rows.length - 1 - b.index : b.index;
+      return {
+        page: rows[i].page,
+        date: rows[i].postingDate ?? null,
+        printed: sign * b.printed,
+        expected: sign * b.expected,
+      };
+    });
+    if (isBackward) running.breaks.reverse();
+  }
 
   const dep = stated.totalDeposits;
   const wd = stated.totalWithdrawals;
@@ -328,8 +368,15 @@ function runningBalance(
   amounts: number[],
   pages: number[],
   opening: number | null,
-): { links: number; broken: number; suspect: Set<number> } {
+): {
+  links: number;
+  broken: number;
+  suspect: Set<number>;
+  /** Each broken link: its row index (in THIS order), printed and expected. */
+  at: Array<{ index: number; printed: number; expected: number }>;
+} {
   const suspect = new Set<number>();
+  const at: Array<{ index: number; printed: number; expected: number }> = [];
   let prev = opening;
   let links = 0;
   let broken = 0;
@@ -343,11 +390,12 @@ function runningBalance(
       if (prev + amounts[i] !== balance) {
         broken++;
         suspect.add(pages[i]);
+        at.push({ index: i, printed: balance, expected: prev + amounts[i] });
       }
     }
     prev = balance; // re-anchor on what the bank printed, so one bad row is one failure
   });
-  return { links, broken, suspect };
+  return { links, broken, suspect, at };
 }
 
 /** How many checks pass — used to keep the better of two readings of a page. */
@@ -394,9 +442,18 @@ function describe(c: Check): string {
         ? `${c.expected} ${label} ✓`
         : `Number of ${label}: statement ${c.expected}, read ${c.actual}`;
     }
-    case 'runningBalance':
-      return c.ok
-        ? 'Running balance ✓'
-        : `Running balance breaks on ${c.expected - c.actual} of ${c.expected} rows`;
+    case 'runningBalance': {
+      if (c.ok) return 'Running balance ✓';
+      const where = (c.breaks ?? [])
+        .slice(0, 3)
+        .map(
+          (b) =>
+            `after the ${b.date ?? `page ${b.page + 1}`} row: printed ${money(b.printed)}, the rows add up to ${money(b.expected)}`,
+        );
+      return (
+        `Running balance breaks on ${c.expected - c.actual} of ${c.expected} rows` +
+        (where.length ? ` (${where.join('; ')})` : '')
+      );
+    }
   }
 }

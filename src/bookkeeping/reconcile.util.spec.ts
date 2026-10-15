@@ -218,3 +218,47 @@ describe('reconcile', () => {
     });
   });
 });
+
+describe('reconcile: balances that are not a running balance', () => {
+  // January 9, 2024.pdf (a card, production 2026-10-14): the model copied the "new
+  // purchases" subtotal onto the last row. Opening + net = closing holds to the cent.
+  const card: StatedFigures = {
+    ...NONE,
+    openingBalance: 21265.51,
+    closingBalance: 24348.87,
+  };
+
+  it('skips the chain when every link breaks but the ending balance holds', () => {
+    const r = reconcile(card, [
+      { amount: -3000, balanceAfter: null, page: 0 },
+      { amount: -83.36, balanceAfter: 3083.36, page: 0 },
+    ]);
+    expect(r.verification).toBe('VERIFIED');
+    expect(r.balanceSign).toBe(-1);
+    expect(r.checks.find((c) => c.name === 'runningBalance')?.skipped).toMatch(
+      /not a running balance/,
+    );
+  });
+
+  it('still fails when the ending balance is off too', () => {
+    const r = reconcile({ ...NONE, openingBalance: 100, closingBalance: 50 }, [
+      { amount: -10, balanceAfter: null, page: 0 },
+      { amount: -20, balanceAfter: 75, page: 0 },
+    ]);
+    expect(r.verification).toBe('MISMATCH');
+  });
+
+  it('names the day a running balance breaks on, for the re-read hint', () => {
+    const r = reconcile({ ...NONE, openingBalance: 100 }, [
+      { amount: -10, balanceAfter: 90, page: 0, postingDate: '2024-04-26' },
+      { amount: -25, balanceAfter: 70, page: 1, postingDate: '2024-04-29' },
+    ]);
+    const running = r.checks.find((c) => c.name === 'runningBalance')!;
+    expect(running.breaks).toEqual([
+      { page: 1, date: '2024-04-29', printed: 7000, expected: 6500 },
+    ]);
+    expect(describeCheck(running)).toBe(
+      'Running balance breaks on 1 of 2 rows (after the 2024-04-29 row: printed $70.00, the rows add up to $65.00)',
+    );
+  });
+});

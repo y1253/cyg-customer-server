@@ -125,7 +125,7 @@ exports.SYSTEM_PROMPT = [
         chart_of_accounts_1.UNCATEGORIZED +
         '".',
     '',
-    '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one.',
+    '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one. An OVERDRAWN balance (printed with a trailing "-", "OD", "DR" or in brackets, e.g. "1,468.82-") is NEGATIVE: -1468.82. Never put a total, a subtotal or the new/closing balance in balanceAfter — a credit-card statement usually prints no running balance at all, so null on every row.',
     '',
     "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
     '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"). Never the balance printed after a transaction.',
@@ -232,6 +232,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
             (result.signFixes
                 ? `, ${result.signFixes} sign(s) fixed from the running balance`
+                : '') +
+            (result.balanceFixes
+                ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
                 : ''));
         return { ...result, calls, rereads };
     }
@@ -299,6 +302,8 @@ function assemble(pages) {
     };
     const read = pages.flatMap((p, page) => p.transactions.map((t) => ({ ...t, page })));
     const finite = read.filter((t) => Number.isFinite(t.amount));
+    const balances = (0, sign_repair_1.repairBalanceSigns)(finite, stated.openingBalance);
+    finite.forEach((t, i) => (t.balanceAfter = balances.balances[i]));
     const repair = (0, sign_repair_1.repairSigns)(finite, stated.openingBalance);
     finite.forEach((t, i) => (t.amount = repair.amounts[i]));
     const transactions = read;
@@ -307,6 +312,7 @@ function assemble(pages) {
         .map((t) => ({
         amount: t.amount,
         balanceAfter: t.balanceAfter,
+        postingDate: t.postingDate,
         page: t.page,
     }));
     const verification = (0, reconcile_util_1.reconcileStatement)(stated, pages.map((p, page) => ({ stated: p.stated, rows: rows(page) })));
@@ -323,6 +329,7 @@ function assemble(pages) {
         stated,
         transactions,
         signFixes: repair.flips,
+        balanceFixes: balances.fixes,
         imagePages: pages.flatMap((p, page) => p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : []),
         verification,
     };

@@ -12,7 +12,14 @@ export interface ReconcileRow {
     amount: number;
     balanceAfter: number | null;
     page: number;
+    postingDate?: string | null;
 }
+export type RunningBreak = {
+    page: number;
+    date: string | null;
+    printed: number;
+    expected: number;
+};
 export type CheckName = 'deposits' | 'withdrawals' | 'balance' | 'depositCount' | 'withdrawalCount' | 'runningBalance';
 export interface Check {
     name: CheckName;
@@ -21,6 +28,7 @@ export interface Check {
     ok: boolean;
     skipped: string | null;
     page?: number;
+    breaks?: RunningBreak[];
 }
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
 export interface ReconcileResult {

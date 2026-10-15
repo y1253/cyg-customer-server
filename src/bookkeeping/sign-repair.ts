@@ -28,6 +28,121 @@ export interface SignRepair {
   flips: number;
 }
 
+export interface BalanceRepair {
+  /** The printed balances to use (same order as the input), signs repaired. */
+  balances: Array<number | null>;
+  /** How many printed balances had their sign put back. */
+  fixes: number;
+}
+
+/**
+ * Puts back the minus sign of an OVERDRAWN running balance the model read as positive.
+ *
+ * Why: banks print an overdraft as "1,468.82-", "1,468.82 OD" or in brackets, and the
+ * model copies 1468.82. The rows were right, but each such balance broke TWO links of
+ * the running-balance check (the row, and the next one, re-anchored on the wrong value),
+ * and no re-read could change it — the same model reads the same sign every time. Six of
+ * the eight "needs review" statements of 2026-10-14 were this and nothing else.
+ *
+ * PURE, integer cents, exact only: a printed balance is negated when the rows since the
+ * previous balance land on its NEGATIVE to the cent. The previous balance is negated
+ * instead when IT was never confirmed by its own link (the first balance on a statement
+ * with no printed opening) and its negative is what fits. Run before `repairSigns`, so the
+ * row signs are judged against the true balances. Tried as printed and negated (credit
+ * cards) and in both row orders; the reading with the most links holding wins.
+ */
+export function repairBalanceSigns(
+  rows: SignRow[],
+  openingBalance: number | null,
+): BalanceRepair {
+  const unchanged: BalanceRepair = {
+    balances: rows.map((r) => r.balanceAfter),
+    fixes: 0,
+  };
+  if (!rows.some((r) => r.balanceAfter !== null)) return unchanged;
+
+  let best: {
+    links: number;
+    fixes: number;
+    balances: Array<number | null>;
+  } | null = null;
+  for (const sign of [1, -1] as const) {
+    for (const reversed of [false, true]) {
+      const order = rows.map((_, i) => i);
+      if (reversed) order.reverse();
+      const pass = walkBalances(
+        order.map((i) => rows[i]),
+        openingBalance,
+        sign,
+      );
+      const balances = new Array<number | null>(rows.length);
+      order.forEach((i, k) => (balances[i] = pass.balances[k]));
+      if (
+        !best ||
+        pass.links > best.links ||
+        (pass.links === best.links && pass.fixes < best.fixes)
+      ) {
+        best = { links: pass.links, fixes: pass.fixes, balances };
+      }
+    }
+  }
+  return best && best.fixes > 0
+    ? { balances: best.balances, fixes: best.fixes }
+    : unchanged;
+}
+
+/** One pass of `repairBalanceSigns` in one order, balances read as `sign`. */
+function walkBalances(
+  rows: SignRow[],
+  openingBalance: number | null,
+  sign: 1 | -1,
+): { balances: Array<number | null>; links: number; fixes: number } {
+  const out = rows.map((r) =>
+    r.balanceAfter === null ? null : sign * cents(r.balanceAfter),
+  );
+  let prev = openingBalance === null ? null : sign * cents(openingBalance);
+  // The anchor's index (−1 = the printed opening) and whether its own link held.
+  let prevIndex = -1;
+  let prevConfirmed = openingBalance !== null;
+  let sum = 0;
+  let links = 0;
+  let fixes = 0;
+  rows.forEach((r, i) => {
+    sum += cents(r.amount);
+    const printed = out[i];
+    if (printed === null) return;
+    let confirmed = false;
+    if (prev !== null) {
+      if (prev + sum === printed) {
+        confirmed = true;
+      } else if (printed !== 0 && prev + sum === -printed) {
+        out[i] = -printed;
+        fixes++;
+        confirmed = true;
+      } else if (
+        !prevConfirmed &&
+        prevIndex >= 0 &&
+        prev !== 0 &&
+        -prev + sum === printed
+      ) {
+        out[prevIndex] = -prev;
+        fixes++;
+        confirmed = true;
+      }
+      if (confirmed) links++;
+    }
+    prev = out[i];
+    prevIndex = i;
+    prevConfirmed = confirmed;
+    sum = 0;
+  });
+  return {
+    balances: out.map((v) => (v === null ? null : (sign * v) / 100)),
+    links,
+    fixes,
+  };
+}
+
 /** Brute force is 2^n per segment; past this a segment is left alone. */
 const MAX_SEGMENT = 18;
 

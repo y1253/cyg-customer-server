@@ -1,7 +1,80 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.repairBalanceSigns = repairBalanceSigns;
 exports.repairSigns = repairSigns;
 exports.segmentSigns = segmentSigns;
+function repairBalanceSigns(rows, openingBalance) {
+    const unchanged = {
+        balances: rows.map((r) => r.balanceAfter),
+        fixes: 0,
+    };
+    if (!rows.some((r) => r.balanceAfter !== null))
+        return unchanged;
+    let best = null;
+    for (const sign of [1, -1]) {
+        for (const reversed of [false, true]) {
+            const order = rows.map((_, i) => i);
+            if (reversed)
+                order.reverse();
+            const pass = walkBalances(order.map((i) => rows[i]), openingBalance, sign);
+            const balances = new Array(rows.length);
+            order.forEach((i, k) => (balances[i] = pass.balances[k]));
+            if (!best ||
+                pass.links > best.links ||
+                (pass.links === best.links && pass.fixes < best.fixes)) {
+                best = { links: pass.links, fixes: pass.fixes, balances };
+            }
+        }
+    }
+    return best && best.fixes > 0
+        ? { balances: best.balances, fixes: best.fixes }
+        : unchanged;
+}
+function walkBalances(rows, openingBalance, sign) {
+    const out = rows.map((r) => r.balanceAfter === null ? null : sign * cents(r.balanceAfter));
+    let prev = openingBalance === null ? null : sign * cents(openingBalance);
+    let prevIndex = -1;
+    let prevConfirmed = openingBalance !== null;
+    let sum = 0;
+    let links = 0;
+    let fixes = 0;
+    rows.forEach((r, i) => {
+        sum += cents(r.amount);
+        const printed = out[i];
+        if (printed === null)
+            return;
+        let confirmed = false;
+        if (prev !== null) {
+            if (prev + sum === printed) {
+                confirmed = true;
+            }
+            else if (printed !== 0 && prev + sum === -printed) {
+                out[i] = -printed;
+                fixes++;
+                confirmed = true;
+            }
+            else if (!prevConfirmed &&
+                prevIndex >= 0 &&
+                prev !== 0 &&
+                -prev + sum === printed) {
+                out[prevIndex] = -prev;
+                fixes++;
+                confirmed = true;
+            }
+            if (confirmed)
+                links++;
+        }
+        prev = out[i];
+        prevIndex = i;
+        prevConfirmed = confirmed;
+        sum = 0;
+    });
+    return {
+        balances: out.map((v) => (v === null ? null : (sign * v) / 100)),
+        links,
+        fixes,
+    };
+}
 const MAX_SEGMENT = 18;
 const cents = (n) => Math.round(n * 100);
 function repairSigns(rows, openingBalance) {

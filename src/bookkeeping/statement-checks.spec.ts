@@ -124,6 +124,22 @@ describe('assemble', () => {
     expect(out.verification.verification).toBe('MISMATCH');
     expect(out.verification.suspectPages).toEqual([1]);
   });
+
+  it('an overdrawn balance read without its minus is put back, stored, and verifies', () => {
+    const p1 = page({
+      stated: { ...page({}).stated, openingBalance: 100 },
+      transactions: [tx(-150, 50), tx(-20, null), tx(60, -10), tx(30, 20)],
+    });
+    const out = assemble([p1]);
+    expect(out.balanceFixes).toBe(1);
+    expect(out.transactions.map((t) => t.balanceAfter)).toEqual([
+      -50,
+      null,
+      -10,
+      20,
+    ]);
+    expect(out.verification.verification).toBe('VERIFIED');
+  });
 });
 
 describe('better', () => {

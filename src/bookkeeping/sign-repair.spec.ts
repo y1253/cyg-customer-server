@@ -1,4 +1,4 @@
-import { repairSigns, segmentSigns } from './sign-repair';
+import { repairBalanceSigns, repairSigns, segmentSigns } from './sign-repair';
 
 /** A TD-style day: balance printed only on the day's last row. Opening 1000. */
 const day = [
@@ -59,5 +59,53 @@ describe('repairSigns', () => {
       { amount: 200, balanceAfter: 420 },
     ];
     expect(repairSigns(card, 500)).toEqual({ amounts: [-120, 200], flips: 0 });
+  });
+});
+
+describe('repairBalanceSigns', () => {
+  it('puts back the minus of an overdrawn balance (2-2024.pdf, production 2026-10-14)', () => {
+    // The bank printed "1,468.82-"; the model read 1468.82. That broke two links.
+    const rows = [
+      { amount: -1.5, balanceAfter: 3028.78 },
+      { amount: -1448.8, balanceAfter: null },
+      { amount: -1448.8, balanceAfter: null },
+      { amount: -1600, balanceAfter: 1468.82 },
+      ...[39.2, 1500, 89.6, 1000, -1000, -1.5, 1316.4, -1000, 2000, -1000].map(
+        (amount) => ({ amount, balanceAfter: null }),
+      ),
+      { amount: -5, balanceAfter: 1469.88 },
+      { amount: 370.72, balanceAfter: null },
+      { amount: -800, balanceAfter: 1040.6 },
+    ];
+    const out = repairBalanceSigns(rows, null);
+    expect(out.fixes).toBe(1);
+    expect(out.balances[3]).toBe(-1468.82);
+    expect(out.balances.filter((b) => b !== null)).toEqual([
+      3028.78, -1468.82, 1469.88, 1040.6,
+    ]);
+  });
+
+  it('fixes the FIRST balance when no opening is printed and its negative is what fits', () => {
+    const out = repairBalanceSigns(
+      [
+        { amount: -100, balanceAfter: 50 }, // really -50
+        { amount: 200, balanceAfter: 150 },
+        { amount: -30, balanceAfter: 120 },
+        { amount: 10, balanceAfter: 130 },
+      ],
+      null,
+    );
+    expect(out).toEqual({ balances: [-50, 150, 120, 130], fixes: 1 });
+  });
+
+  it('leaves the balances alone when it is a ROW that is wrong', () => {
+    const rows = [
+      { amount: -10, balanceAfter: 90 },
+      { amount: -25, balanceAfter: 70 }, // really -20
+    ];
+    expect(repairBalanceSigns(rows, 100)).toEqual({
+      balances: [90, 70],
+      fixes: 0,
+    });
   });
 });

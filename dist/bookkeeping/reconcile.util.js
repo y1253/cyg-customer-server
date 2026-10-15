@@ -31,6 +31,13 @@ function reconcile(stated, rows) {
     const owed = balanceChecks(stated, rows, amounts, net, -1);
     const owes = fit(owed) > fit(asPrinted);
     const balances = owes ? owed : asPrinted;
+    if (balances.running &&
+        balances.balance?.ok &&
+        balances.running.actual === 0) {
+        balances.running.skipped =
+            'the balances printed on the rows are not a running balance (a subtotal)';
+        balances.suspect.clear();
+    }
     const reason = skipReason(stated, balances);
     for (const c of [...totals, ...counts]) {
         if (!c.ok && reason)
@@ -126,10 +133,24 @@ function balanceChecks(stated, rows, amounts, net, sign) {
     const pages = rows.map((r) => r.page);
     const forward = runningBalance(printed, amounts, pages, opening);
     const backward = runningBalance([...printed].reverse(), [...amounts].reverse(), [...pages].reverse(), opening);
-    const chain = backward.links > 0 && backward.broken < forward.broken ? backward : forward;
+    const isBackward = backward.links > 0 && backward.broken < forward.broken;
+    const chain = isBackward ? backward : forward;
     const running = chain.links > 0
         ? check('runningBalance', chain.links, chain.links - chain.broken)
         : null;
+    if (running && chain.broken) {
+        running.breaks = chain.at.map((b) => {
+            const i = isBackward ? rows.length - 1 - b.index : b.index;
+            return {
+                page: rows[i].page,
+                date: rows[i].postingDate ?? null,
+                printed: sign * b.printed,
+                expected: sign * b.expected,
+            };
+        });
+        if (isBackward)
+            running.breaks.reverse();
+    }
     const dep = stated.totalDeposits;
     const wd = stated.totalWithdrawals;
     const selfConsistent = opening !== null && closing !== null && dep !== null && wd !== null
@@ -156,6 +177,7 @@ function skipReason(stated, b) {
 }
 function runningBalance(printed, amounts, pages, opening) {
     const suspect = new Set();
+    const at = [];
     let prev = opening;
     let links = 0;
     let broken = 0;
@@ -170,11 +192,12 @@ function runningBalance(printed, amounts, pages, opening) {
             if (prev + amounts[i] !== balance) {
                 broken++;
                 suspect.add(pages[i]);
+                at.push({ index: i, printed: balance, expected: prev + amounts[i] });
             }
         }
         prev = balance;
     });
-    return { links, broken, suspect };
+    return { links, broken, suspect, at };
 }
 const score = (r) => r.checks.filter((c) => c.ok && !c.skipped).length;
 exports.score = score;
@@ -214,10 +237,15 @@ function describe(c) {
                 ? `${c.expected} ${label} ✓`
                 : `Number of ${label}: statement ${c.expected}, read ${c.actual}`;
         }
-        case 'runningBalance':
-            return c.ok
-                ? 'Running balance ✓'
-                : `Running balance breaks on ${c.expected - c.actual} of ${c.expected} rows`;
+        case 'runningBalance': {
+            if (c.ok)
+                return 'Running balance ✓';
+            const where = (c.breaks ?? [])
+                .slice(0, 3)
+                .map((b) => `after the ${b.date ?? `page ${b.page + 1}`} row: printed ${money(b.printed)}, the rows add up to ${money(b.expected)}`);
+            return (`Running balance breaks on ${c.expected - c.actual} of ${c.expected} rows` +
+                (where.length ? ` (${where.join('; ')})` : ''));
+        }
     }
 }
 //# sourceMappingURL=reconcile.util.js.map

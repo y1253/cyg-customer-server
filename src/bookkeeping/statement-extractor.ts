@@ -13,7 +13,7 @@ import {
   type ReconcileResult,
   type StatedFigures,
 } from './reconcile.util';
-import { repairSigns } from './sign-repair';
+import { repairBalanceSigns, repairSigns } from './sign-repair';
 import { UnreadableStatementError } from './statement-errors';
 
 /**
@@ -62,6 +62,8 @@ export interface ExtractedStatement {
   rereads: number;
   /** Amounts whose sign was corrected from the running balance (`repairSigns`). */
   signFixes: number;
+  /** Overdrawn running balances whose lost minus sign was put back (`repairBalanceSigns`). */
+  balanceFixes: number;
   /**
    * The pages that show images of cheques / deposit slips (`hasItemImages`) — cut out and
    * attached to their rows after the statement is saved (`StatementImagesService`).
@@ -196,7 +198,7 @@ export const SYSTEM_PROMPT = [
     UNCATEGORIZED +
     '".',
   '',
-  '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one.',
+  '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one. An OVERDRAWN balance (printed with a trailing "-", "OD", "DR" or in brackets, e.g. "1,468.82-") is NEGATIVE: -1468.82. Never put a total, a subtotal or the new/closing balance in balanceAfter — a credit-card statement usually prints no running balance at all, so null on every row.',
   '',
   "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
   '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"). Never the balance printed after a transaction.',
@@ -376,6 +378,9 @@ export class StatementExtractor {
         `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
         (result.signFixes
           ? `, ${result.signFixes} sign(s) fixed from the running balance`
+          : '') +
+        (result.balanceFixes
+          ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
           : ''),
     );
     return { ...result, calls, rereads };
@@ -466,12 +471,16 @@ export function assemble(
           p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null,
       )?.stated.totalsScope ?? null,
   };
-  // Signs the model put in the wrong column are fixed from the running balance first
-  // (`repairSigns`), so the checks below judge the corrected rows.
+  // An overdrawn balance read without its minus sign is put back first
+  // (`repairBalanceSigns`), then signs the model put in the wrong column are fixed from
+  // the running balance (`repairSigns`), so the checks below judge the corrected rows.
+  // Both write onto the rows, so the stored balance shows the minus too.
   const read = pages.flatMap((p, page) =>
     p.transactions.map((t) => ({ ...t, page })),
   );
   const finite = read.filter((t) => Number.isFinite(t.amount));
+  const balances = repairBalanceSigns(finite, stated.openingBalance);
+  finite.forEach((t, i) => (t.balanceAfter = balances.balances[i]));
   const repair = repairSigns(finite, stated.openingBalance);
   finite.forEach((t, i) => (t.amount = repair.amounts[i]));
   const transactions = read;
@@ -481,6 +490,7 @@ export function assemble(
       .map((t) => ({
         amount: t.amount,
         balanceAfter: t.balanceAfter,
+        postingDate: t.postingDate,
         page: t.page,
       }));
   const verification = reconcileStatement(
@@ -501,6 +511,7 @@ export function assemble(
     stated,
     transactions,
     signFixes: repair.flips,
+    balanceFixes: balances.fixes,
     // One page per chunk (`PAGES_PER_CHUNK`), so a reading's index is its PDF page.
     imagePages: pages.flatMap((p, page) =>
       p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : [],
