@@ -22,6 +22,7 @@ const google_auth_library_1 = require("google-auth-library");
 const mail_service_1 = require("../mail/mail.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const phone_number_util_1 = require("./phone-number.util");
+const password_reset_email_1 = require("./password-reset-email");
 const signup_code_email_1 = require("./signup-code-email");
 exports.CUSTOMER_TOKEN_TYPE = 'customer';
 const BCRYPT_COST = 12;
@@ -32,6 +33,7 @@ exports.SIGNUP_CODE_TRIES = 5;
 exports.SIGNUP_RESEND_MS = 60_000;
 const sha256 = (code) => (0, crypto_1.createHash)('sha256').update(code).digest();
 const CODE_EXPIRED = 'This code has expired. Please sign up again.';
+const RESET_EXPIRED = 'This code has expired. Please ask for a new one.';
 const BAD_CREDENTIALS = 'Email or password is incorrect';
 function toPublicCustomer(c) {
     return {
@@ -39,6 +41,7 @@ function toPublicCustomer(c) {
         name: c.name,
         email: c.email,
         authType: c.authType,
+        hasPassword: c.passwordHash !== null,
         avatarUrl: c.avatarUrl,
         phone: c.phone,
         createdAt: c.createdAt,
@@ -52,6 +55,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     logger = new common_1.Logger(CustomerAuthService_1.name);
     hits = new Map();
     pending = new Map();
+    resets = new Map();
     googleClient = null;
     constructor(prisma, jwt, config, mail) {
         this.prisma = prisma;
@@ -78,7 +82,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             sentAt: 0,
         };
         this.pending.set(email, entry);
-        await this.sendCode(entry);
+        await this.sendCode(entry, 'signup');
         return { email };
     }
     async verifySignup(dto, ip) {
@@ -112,7 +116,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         if (Date.now() - entry.sentAt < exports.SIGNUP_RESEND_MS) {
             throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
         }
-        await this.sendCode(entry);
+        await this.sendCode(entry, 'signup');
         return { email: entry.email };
     }
     livePending(email) {
@@ -131,7 +135,8 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             throw new common_1.ConflictException('An account with this email already exists — log in instead');
         }
     }
-    async sendCode(entry) {
+    async sendCode(entry, kind) {
+        const store = kind === 'signup' ? this.pending : this.resets;
         const code = String((0, crypto_1.randomInt)(0, 1_000_000)).padStart(6, '0');
         entry.codeHash = sha256(code);
         entry.expiresAt = Date.now() + exports.SIGNUP_CODE_TTL_MS;
@@ -139,33 +144,152 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         entry.sentAt = Date.now();
         if (this.config.get('CUSTOMER_SIGNUP_LOG_CODE') === '1' &&
             process.env.NODE_ENV !== 'production') {
-            this.logger.warn(`[dev] signup code for ${entry.email}: ${code}`);
+            this.logger.warn(`[dev] ${kind} code for ${entry.email}: ${code}`);
             return;
         }
         if (!this.mail.configured) {
-            this.pending.delete(entry.email);
-            this.logger.error('signup code not sent: SMTP_USER / SMTP_PASS are not set');
-            throw new common_1.ServiceUnavailableException('We could not send the verification email right now. Please try again later.');
+            store.delete(entry.email);
+            this.logger.error(`${kind} code not sent: SMTP_USER / SMTP_PASS are not set`);
+            throw new common_1.ServiceUnavailableException(kind === 'signup'
+                ? 'We could not send the verification email right now. Please try again later.'
+                : 'We could not send the email right now. Please try again later.');
         }
+        const minutes = exports.SIGNUP_CODE_TTL_MS / 60_000;
         try {
             await this.mail.send({
                 to: entry.email,
                 fromName: 'CYG Finance',
-                ...(0, signup_code_email_1.buildSignupCodeEmail)(code, exports.SIGNUP_CODE_TTL_MS / 60_000),
+                ...(kind === 'signup'
+                    ? (0, signup_code_email_1.buildSignupCodeEmail)(code, minutes)
+                    : (0, password_reset_email_1.buildPasswordCodeEmail)(code, minutes)),
             });
         }
         catch (err) {
-            this.pending.delete(entry.email);
-            this.logger.error(`signup code mail failed: ${err.message}`);
-            throw new common_1.ServiceUnavailableException('We could not send the verification email. Please check the address and try again.');
+            store.delete(entry.email);
+            this.logger.error(`${kind} code mail failed: ${err.message}`);
+            throw new common_1.ServiceUnavailableException(kind === 'signup'
+                ? 'We could not send the verification email. Please check the address and try again.'
+                : 'We could not send the email. Please try again later.');
         }
     }
     prunePending() {
         const now = Date.now();
-        for (const [key, entry] of this.pending) {
-            if (entry.expiresAt < now)
-                this.pending.delete(key);
+        const stores = [this.pending, this.resets];
+        for (const store of stores) {
+            for (const [key, entry] of store) {
+                if (entry.expiresAt < now)
+                    store.delete(key);
+            }
         }
+    }
+    async forgotPassword(dto, ip) {
+        this.throttle(ip);
+        this.note(ip);
+        this.prunePending();
+        const email = dto.email.toLowerCase();
+        const customer = await this.prisma.customer.findUnique({
+            where: { email },
+        });
+        if (customer && !customer.deletedAt)
+            await this.issuePasswordCode(email);
+        return { email };
+    }
+    async resetPassword(dto, ip) {
+        this.throttle(ip);
+        const email = dto.email.toLowerCase();
+        this.checkPasswordCode(email, dto.code, ip);
+        const customer = await this.prisma.customer.findUnique({
+            where: { email },
+        });
+        if (!customer || customer.deletedAt) {
+            throw new common_1.BadRequestException(RESET_EXPIRED);
+        }
+        const updated = await this.prisma.customer.update({
+            where: { id: customer.id },
+            data: {
+                ...(await this.passwordData(dto.newPassword)),
+                lastLoginAt: new Date(),
+            },
+        });
+        return this.sign(updated);
+    }
+    async changePassword(customerId, dto, ip) {
+        this.throttle(ip);
+        const customer = await this.findActive(customerId);
+        if (!customer)
+            throw new common_1.UnauthorizedException();
+        if (customer.passwordHash) {
+            if (!dto.currentPassword) {
+                throw new common_1.BadRequestException('Enter your current password');
+            }
+            if (!(await (0, bcryptjs_1.compare)(dto.currentPassword, customer.passwordHash))) {
+                this.note(ip);
+                throw new common_1.BadRequestException('Current password is incorrect');
+            }
+            if (dto.currentPassword === dto.newPassword) {
+                throw new common_1.BadRequestException('Choose a password different from your current one');
+            }
+        }
+        else {
+            if (!dto.code) {
+                throw new common_1.BadRequestException('Enter the 6-digit code from the email');
+            }
+            this.checkPasswordCode(customer.email, dto.code, ip);
+        }
+        const updated = await this.prisma.customer.update({
+            where: { id: customer.id },
+            data: await this.passwordData(dto.newPassword),
+        });
+        return this.sign(updated);
+    }
+    async sendPasswordCode(customerId) {
+        const customer = await this.findActive(customerId);
+        if (!customer)
+            throw new common_1.UnauthorizedException();
+        if (customer.passwordHash) {
+            throw new common_1.BadRequestException('Your account already has a password — enter it to change it');
+        }
+        this.prunePending();
+        await this.issuePasswordCode(customer.email);
+        return { email: customer.email };
+    }
+    async issuePasswordCode(email) {
+        const existing = this.resets.get(email);
+        if (existing && Date.now() - existing.sentAt < exports.SIGNUP_RESEND_MS) {
+            throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
+        }
+        const entry = existing ?? {
+            email,
+            codeHash: Buffer.alloc(0),
+            expiresAt: 0,
+            tries: 0,
+            sentAt: 0,
+        };
+        this.resets.set(email, entry);
+        await this.sendCode(entry, 'password');
+    }
+    checkPasswordCode(email, code, ip) {
+        const entry = this.resets.get(email);
+        if (!entry || entry.expiresAt < Date.now()) {
+            this.resets.delete(email);
+            throw new common_1.BadRequestException(RESET_EXPIRED);
+        }
+        if (!(0, crypto_1.timingSafeEqual)(sha256(code), entry.codeHash)) {
+            this.note(ip);
+            entry.tries += 1;
+            if (entry.tries >= exports.SIGNUP_CODE_TRIES) {
+                this.resets.delete(email);
+                throw new common_1.BadRequestException('Too many wrong codes. Please ask for a new one.');
+            }
+            throw new common_1.BadRequestException('That code is not right. Please try again.');
+        }
+        this.resets.delete(email);
+    }
+    async passwordData(password) {
+        return {
+            passwordHash: await (0, bcryptjs_1.hash)(password, BCRYPT_COST),
+            passwordChangedAt: new Date(),
+        };
     }
     async login(dto, ip) {
         this.throttle(ip);

@@ -16,8 +16,9 @@ export interface CustomerRequestUser {
 /**
  * Verifies a customer token. Two independent locks keep staff tokens out: the secret is
  * `CUSTOMER_JWT_SECRET`, never the internal app's `JWT_SECRET`, AND the payload must carry
- * `typ: 'customer'`. The customer is re-loaded on every request, so a closed account stops
- * working immediately even though sessions are stateless.
+ * `typ: 'customer'`. The customer is re-loaded on every request, so a closed account (or a
+ * token from before a password change) stops working immediately even though sessions are
+ * stateless.
  */
 @Injectable()
 export class CustomerJwtStrategy extends PassportStrategy(
@@ -46,6 +47,15 @@ export class CustomerJwtStrategy extends PassportStrategy(
     }
     const customer = await this.auth.findActive(payload.sub);
     if (!customer) throw new UnauthorizedException();
+    // A password change or reset signs every device out whose token is older. `iat` is in
+    // seconds; the token handed out right after the change shares or follows that second.
+    if (
+      customer.passwordChangedAt &&
+      (payload.iat ?? 0) <
+        Math.floor(customer.passwordChangedAt.getTime() / 1000)
+    ) {
+      throw new UnauthorizedException();
+    }
     return { customerId: customer.id };
   }
 }

@@ -17,9 +17,13 @@ import { OAuth2Client } from 'google-auth-library';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toE164 } from './phone-number.util';
+import { buildPasswordCodeEmail } from './password-reset-email';
 import { buildSignupCodeEmail } from './signup-code-email';
+import type { ChangePasswordDto } from './dto/change-password.dto';
+import type { ForgotPasswordDto } from './dto/forgot-password.dto';
 import type { GoogleLoginDto } from './dto/google-login.dto';
 import type { LoginDto } from './dto/login.dto';
+import type { ResetPasswordDto } from './dto/reset-password.dto';
 import type { ResendSignupDto } from './dto/resend-signup.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { UpdateMeDto } from './dto/update-me.dto';
@@ -33,6 +37,8 @@ export interface CustomerJwtPayload {
   email: string;
   name: string;
   typ: typeof CUSTOMER_TOKEN_TYPE;
+  /** Issued-at, seconds — set by the JWT library. Compared with `passwordChangedAt`. */
+  iat?: number;
 }
 
 /** The customer as the client sees it. Never carries `passwordHash`. */
@@ -41,6 +47,8 @@ export interface PublicCustomer {
   name: string;
   email: string;
   authType: CustomerAuthType;
+  /** False for an account created through Google that never set a password. */
+  hasPassword: boolean;
   avatarUrl: string | null;
   phone: string | null;
   createdAt: Date;
@@ -75,25 +83,33 @@ export interface SignupStarted {
   email: string;
 }
 
-/**
- * A signup waiting for its emailed code. The account is created only once the code checks
- * out, so an address nobody confirmed never gets a row. In memory: pm2 runs one fork, and a
- * restart losing a pending signup only means signing up again.
- */
-interface PendingSignup {
-  name: string;
+/** An emailed 6-digit code waiting to be entered. Only its sha256 is kept. */
+interface PendingCode {
   email: string;
-  passwordHash: string;
   codeHash: Buffer;
   expiresAt: number;
   tries: number;
   sentAt: number;
 }
 
+/**
+ * A signup waiting for its emailed code. The account is created only once the code checks
+ * out, so an address nobody confirmed never gets a row. In memory: pm2 runs one fork, and a
+ * restart losing a pending signup only means signing up again.
+ */
+interface PendingSignup extends PendingCode {
+  name: string;
+  passwordHash: string;
+}
+
+/** Which email a code goes out in. */
+type CodeKind = 'signup' | 'password';
+
 const sha256 = (code: string): Buffer =>
   createHash('sha256').update(code).digest();
 
 const CODE_EXPIRED = 'This code has expired. Please sign up again.';
+const RESET_EXPIRED = 'This code has expired. Please ask for a new one.';
 
 /** One message for every password failure, so the response never says whether an email exists. */
 const BAD_CREDENTIALS = 'Email or password is incorrect';
@@ -104,6 +120,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     name: c.name,
     email: c.email,
     authType: c.authType,
+    hasPassword: c.passwordHash !== null,
     avatarUrl: c.avatarUrl,
     phone: c.phone,
     createdAt: c.createdAt,
@@ -126,6 +143,8 @@ export class CustomerAuthService {
   private readonly hits = new Map<string, number[]>();
   /** Signups waiting for their emailed code, by lower-cased email. */
   private readonly pending = new Map<string, PendingSignup>();
+  /** Password codes (forgot password, or a Google account setting one), by lower-cased email. */
+  private readonly resets = new Map<string, PendingCode>();
   private googleClient: OAuth2Client | null = null;
 
   constructor(
@@ -160,7 +179,7 @@ export class CustomerAuthService {
       sentAt: 0,
     };
     this.pending.set(email, entry);
-    await this.sendCode(entry);
+    await this.sendCode(entry, 'signup');
     return { email };
   }
 
@@ -206,7 +225,7 @@ export class CustomerAuthService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    await this.sendCode(entry);
+    await this.sendCode(entry, 'signup');
     return { email: entry.email };
   }
 
@@ -233,9 +252,11 @@ export class CustomerAuthService {
 
   /**
    * Issues a fresh code (resetting tries and expiry) and emails it. A failed send drops the
-   * pending signup, so a code nobody received can never be guessed at.
+   * pending entry, so a code nobody received can never be guessed at.
    */
-  private async sendCode(entry: PendingSignup): Promise<void> {
+  private async sendCode(entry: PendingCode, kind: CodeKind): Promise<void> {
+    const store: Map<string, PendingCode> =
+      kind === 'signup' ? this.pending : this.resets;
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     entry.codeHash = sha256(code);
     entry.expiresAt = Date.now() + SIGNUP_CODE_TTL_MS;
@@ -246,39 +267,196 @@ export class CustomerAuthService {
       process.env.NODE_ENV !== 'production'
     ) {
       // Dev only: SMTP is unreachable from the office network.
-      this.logger.warn(`[dev] signup code for ${entry.email}: ${code}`);
+      this.logger.warn(`[dev] ${kind} code for ${entry.email}: ${code}`);
       return;
     }
     if (!this.mail.configured) {
-      this.pending.delete(entry.email);
+      store.delete(entry.email);
       this.logger.error(
-        'signup code not sent: SMTP_USER / SMTP_PASS are not set',
+        `${kind} code not sent: SMTP_USER / SMTP_PASS are not set`,
       );
       throw new ServiceUnavailableException(
-        'We could not send the verification email right now. Please try again later.',
+        kind === 'signup'
+          ? 'We could not send the verification email right now. Please try again later.'
+          : 'We could not send the email right now. Please try again later.',
       );
     }
+    const minutes = SIGNUP_CODE_TTL_MS / 60_000;
     try {
       await this.mail.send({
         to: entry.email,
         fromName: 'CYG Finance',
-        ...buildSignupCodeEmail(code, SIGNUP_CODE_TTL_MS / 60_000),
+        ...(kind === 'signup'
+          ? buildSignupCodeEmail(code, minutes)
+          : buildPasswordCodeEmail(code, minutes)),
       });
     } catch (err) {
-      this.pending.delete(entry.email);
+      store.delete(entry.email);
       // The reason only — never the code.
-      this.logger.error(`signup code mail failed: ${(err as Error).message}`);
+      this.logger.error(`${kind} code mail failed: ${(err as Error).message}`);
       throw new ServiceUnavailableException(
-        'We could not send the verification email. Please check the address and try again.',
+        kind === 'signup'
+          ? 'We could not send the verification email. Please check the address and try again.'
+          : 'We could not send the email. Please try again later.',
       );
     }
   }
 
   private prunePending(): void {
     const now = Date.now();
-    for (const [key, entry] of this.pending) {
-      if (entry.expiresAt < now) this.pending.delete(key);
+    const stores: Map<string, PendingCode>[] = [this.pending, this.resets];
+    for (const store of stores) {
+      for (const [key, entry] of store) {
+        if (entry.expiresAt < now) store.delete(key);
+      }
     }
+  }
+
+  /**
+   * Forgot password: emails a code to an existing account — with or without a password, so
+   * a Google account can set one this way. Answers the same for an unknown address.
+   */
+  async forgotPassword(
+    dto: ForgotPasswordDto,
+    ip: string,
+  ): Promise<SignupStarted> {
+    this.throttle(ip);
+    this.note(ip);
+    this.prunePending();
+    const email = dto.email.toLowerCase();
+    const customer = await this.prisma.customer.findUnique({
+      where: { email },
+    });
+    if (customer && !customer.deletedAt) await this.issuePasswordCode(email);
+    return { email };
+  }
+
+  /** The emailed code is right → the new password is saved and the customer signed in. */
+  async resetPassword(dto: ResetPasswordDto, ip: string): Promise<AuthResult> {
+    this.throttle(ip);
+    const email = dto.email.toLowerCase();
+    this.checkPasswordCode(email, dto.code, ip);
+    const customer = await this.prisma.customer.findUnique({
+      where: { email },
+    });
+    if (!customer || customer.deletedAt) {
+      throw new BadRequestException(RESET_EXPIRED);
+    }
+    const updated = await this.prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        ...(await this.passwordData(dto.newPassword)),
+        lastLoginAt: new Date(),
+      },
+    });
+    return this.sign(updated);
+  }
+
+  /**
+   * Change password from My account. An account with a password must give the current one;
+   * one without (created through Google) gives the code from `sendPasswordCode`. Every other
+   * device is signed out; the fresh token returned keeps this one in. A wrong current
+   * password is a 400, never a 401 — the client treats 401 as "signed out".
+   */
+  async changePassword(
+    customerId: number,
+    dto: ChangePasswordDto,
+    ip: string,
+  ): Promise<AuthResult> {
+    this.throttle(ip);
+    const customer = await this.findActive(customerId);
+    if (!customer) throw new UnauthorizedException();
+    if (customer.passwordHash) {
+      if (!dto.currentPassword) {
+        throw new BadRequestException('Enter your current password');
+      }
+      if (!(await compare(dto.currentPassword, customer.passwordHash))) {
+        this.note(ip);
+        throw new BadRequestException('Current password is incorrect');
+      }
+      if (dto.currentPassword === dto.newPassword) {
+        throw new BadRequestException(
+          'Choose a password different from your current one',
+        );
+      }
+    } else {
+      if (!dto.code) {
+        throw new BadRequestException('Enter the 6-digit code from the email');
+      }
+      this.checkPasswordCode(customer.email, dto.code, ip);
+    }
+    const updated = await this.prisma.customer.update({
+      where: { id: customer.id },
+      data: await this.passwordData(dto.newPassword),
+    });
+    return this.sign(updated);
+  }
+
+  /** Emails a code to a signed-in account that has no password yet, to set one. */
+  async sendPasswordCode(customerId: number): Promise<SignupStarted> {
+    const customer = await this.findActive(customerId);
+    if (!customer) throw new UnauthorizedException();
+    if (customer.passwordHash) {
+      throw new BadRequestException(
+        'Your account already has a password — enter it to change it',
+      );
+    }
+    this.prunePending();
+    await this.issuePasswordCode(customer.email);
+    return { email: customer.email };
+  }
+
+  /** A new password code for this email — at most one a minute. */
+  private async issuePasswordCode(email: string): Promise<void> {
+    const existing = this.resets.get(email);
+    if (existing && Date.now() - existing.sentAt < SIGNUP_RESEND_MS) {
+      throw new HttpException(
+        'Please wait a minute before asking for another code.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const entry: PendingCode = existing ?? {
+      email,
+      codeHash: Buffer.alloc(0),
+      expiresAt: 0,
+      tries: 0,
+      sentAt: 0,
+    };
+    this.resets.set(email, entry);
+    await this.sendCode(entry, 'password');
+  }
+
+  /** Throws unless `code` is this email's live password code; a right code is used up. */
+  private checkPasswordCode(email: string, code: string, ip: string): void {
+    const entry = this.resets.get(email);
+    if (!entry || entry.expiresAt < Date.now()) {
+      this.resets.delete(email);
+      throw new BadRequestException(RESET_EXPIRED);
+    }
+    if (!timingSafeEqual(sha256(code), entry.codeHash)) {
+      this.note(ip);
+      entry.tries += 1;
+      if (entry.tries >= SIGNUP_CODE_TRIES) {
+        this.resets.delete(email);
+        throw new BadRequestException(
+          'Too many wrong codes. Please ask for a new one.',
+        );
+      }
+      throw new BadRequestException(
+        'That code is not right. Please try again.',
+      );
+    }
+    this.resets.delete(email);
+  }
+
+  /** The columns a new password writes. `passwordChangedAt` signs the other devices out. */
+  private async passwordData(
+    password: string,
+  ): Promise<{ passwordHash: string; passwordChangedAt: Date }> {
+    return {
+      passwordHash: await hash(password, BCRYPT_COST),
+      passwordChangedAt: new Date(),
+    };
   }
 
   async login(dto: LoginDto, ip: string): Promise<AuthResult> {

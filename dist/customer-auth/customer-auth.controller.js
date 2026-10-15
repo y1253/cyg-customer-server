@@ -16,9 +16,12 @@ exports.CustomerAuthController = void 0;
 const common_1 = require("@nestjs/common");
 const customer_auth_service_1 = require("./customer-auth.service");
 const customer_jwt_guard_1 = require("./customer-jwt.guard");
+const change_password_dto_1 = require("./dto/change-password.dto");
+const forgot_password_dto_1 = require("./dto/forgot-password.dto");
 const google_login_dto_1 = require("./dto/google-login.dto");
 const login_dto_1 = require("./dto/login.dto");
 const resend_signup_dto_1 = require("./dto/resend-signup.dto");
+const reset_password_dto_1 = require("./dto/reset-password.dto");
 const signup_dto_1 = require("./dto/signup.dto");
 const update_me_dto_1 = require("./dto/update-me.dto");
 const verify_signup_dto_1 = require("./dto/verify-signup.dto");
@@ -45,11 +48,23 @@ let CustomerAuthController = class CustomerAuthController {
     google(dto) {
         return this.auth.google(dto);
     }
+    forgotPassword(dto, req) {
+        return this.auth.forgotPassword(dto, req.ip ?? 'unknown');
+    }
+    resetPassword(dto, req) {
+        return this.auth.resetPassword(dto, req.ip ?? 'unknown');
+    }
     me(req) {
         return this.auth.me(req.user.customerId);
     }
     updateMe(req, dto) {
         return this.auth.updateMe(req.user.customerId, dto);
+    }
+    changePassword(req, dto) {
+        return this.auth.changePassword(req.user.customerId, dto, req.ip ?? 'unknown');
+    }
+    sendPasswordCode(req) {
+        return this.auth.sendPasswordCode(req.user.customerId);
     }
 };
 exports.CustomerAuthController = CustomerAuthController;
@@ -103,6 +118,24 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], CustomerAuthController.prototype, "google", null);
 __decorate([
+    (0, common_1.Post)('password/forgot'),
+    (0, common_1.HttpCode)(202),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [forgot_password_dto_1.ForgotPasswordDto, Object]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "forgotPassword", null);
+__decorate([
+    (0, common_1.Post)('password/reset'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [reset_password_dto_1.ResetPasswordDto, Object]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "resetPassword", null);
+__decorate([
     (0, common_1.Get)('me'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
     __param(0, (0, common_1.Req)()),
@@ -119,6 +152,25 @@ __decorate([
     __metadata("design:paramtypes", [Object, update_me_dto_1.UpdateMeDto]),
     __metadata("design:returntype", Promise)
 ], CustomerAuthController.prototype, "updateMe", null);
+__decorate([
+    (0, common_1.Post)('me/password'),
+    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, change_password_dto_1.ChangePasswordDto]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "changePassword", null);
+__decorate([
+    (0, common_1.Post)('me/password/code'),
+    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
+    (0, common_1.HttpCode)(202),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "sendPasswordCode", null);
 exports.CustomerAuthController = CustomerAuthController = __decorate([
     (0, common_1.Controller)('customer-auth'),
     __metadata("design:paramtypes", [customer_auth_service_1.CustomerAuthService])

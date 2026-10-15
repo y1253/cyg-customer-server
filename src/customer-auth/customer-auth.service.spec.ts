@@ -31,6 +31,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     email: 'ana@example.com',
     authType: CustomerAuthType.PASSWORD,
     passwordHash: null,
+    passwordChangedAt: null,
     avatarUrl: null,
     phone: null,
     phoneE164: null,
@@ -287,6 +288,167 @@ describe('login', () => {
   });
 });
 
+describe('forgot / reset password', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('emails a code, and the code sets the new password and signs in', async () => {
+    const { service, prisma, mail, jwt } = setup(
+      customer({ passwordHash: await hash('old-password', 4) }),
+    );
+    const out = await service.forgotPassword({ email: 'ANA@example.com' }, IP);
+    expect(out).toEqual({ email: 'ana@example.com' });
+    expect(mail.send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'ana@example.com' }),
+    );
+    const done = await service.resetPassword(
+      {
+        email: 'ana@example.com',
+        code: sentCode(mail),
+        newPassword: 'brand-new-pw',
+      },
+      IP,
+    );
+    const data = prisma.customer.update.mock.calls[0][0].data;
+    expect(data.passwordHash).toMatch(/^\$2[aby]\$12\$/);
+    expect(data.passwordChangedAt).toBeInstanceOf(Date);
+    expect(jwt.verify(done.access_token)).toMatchObject({ sub: 1 });
+    // Used up.
+    await expect(
+      service.resetPassword(
+        {
+          email: 'ana@example.com',
+          code: sentCode(mail),
+          newPassword: 'another-pw-1',
+        },
+        IP,
+      ),
+    ).rejects.toThrow('expired');
+  });
+
+  it('answers the same for an unknown email and sends nothing', async () => {
+    const { service, mail } = setup(null);
+    await expect(
+      service.forgotPassword({ email: 'who@example.com' }, IP),
+    ).resolves.toEqual({ email: 'who@example.com' });
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+
+  it('lets a Google account (no password) set one this way', async () => {
+    const { service, prisma, mail } = setup(
+      customer({ authType: CustomerAuthType.GOOGLE }),
+    );
+    await service.forgotPassword({ email: 'ana@example.com' }, IP);
+    const done = await service.resetPassword(
+      {
+        email: 'ana@example.com',
+        code: sentCode(mail),
+        newPassword: 'brand-new-pw',
+      },
+      IP,
+    );
+    expect(prisma.customer.update.mock.calls[0][0].data.passwordHash).toEqual(
+      expect.any(String),
+    );
+    expect(done.customer.hasPassword).toBe(true);
+    expect(done.customer.authType).toBe(CustomerAuthType.GOOGLE);
+  });
+
+  it('refuses wrong codes, then drops the code after the last try', async () => {
+    const { service, prisma, mail } = setup(customer());
+    await service.forgotPassword({ email: 'ana@example.com' }, IP);
+    const right = sentCode(mail);
+    const wrong = right === '000000' ? '111111' : '000000';
+    const reset = (code: string, ip: string) =>
+      service.resetPassword(
+        { email: 'ana@example.com', code, newPassword: 'brand-new-pw' },
+        ip,
+      );
+    for (let i = 1; i < SIGNUP_CODE_TRIES; i++) {
+      await expect(reset(wrong, '9.9.9.' + i)).rejects.toThrow('not right');
+    }
+    await expect(reset(wrong, '9.9.9.9')).rejects.toThrow(
+      'Too many wrong codes',
+    );
+    await expect(reset(right, '9.9.9.10')).rejects.toThrow('expired');
+    expect(prisma.customer.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses an expired code, and a second code within a minute', async () => {
+    jest.useFakeTimers();
+    const { service, mail } = setup(customer());
+    await service.forgotPassword({ email: 'ana@example.com' }, IP);
+    await expect(
+      service.forgotPassword({ email: 'ana@example.com' }, IP),
+    ).rejects.toMatchObject({ status: 429 });
+    jest.advanceTimersByTime(SIGNUP_CODE_TTL_MS + 1);
+    await expect(
+      service.resetPassword(
+        {
+          email: 'ana@example.com',
+          code: sentCode(mail),
+          newPassword: 'brand-new-pw',
+        },
+        IP,
+      ),
+    ).rejects.toThrow('expired');
+  });
+});
+
+describe('changePassword', () => {
+  it('needs the right current password — a wrong one is 400, never 401', async () => {
+    const { service, prisma } = setup(
+      customer({ passwordHash: await hash('old-password', 4) }),
+    );
+    await expect(
+      service.changePassword(
+        1,
+        { currentPassword: 'not-it-at-all', newPassword: 'brand-new-pw' },
+        IP,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.changePassword(
+        1,
+        { currentPassword: 'old-password', newPassword: 'old-password' },
+        IP,
+      ),
+    ).rejects.toThrow('different');
+    const out = await service.changePassword(
+      1,
+      { currentPassword: 'old-password', newPassword: 'brand-new-pw' },
+      IP,
+    );
+    expect(prisma.customer.update).toHaveBeenCalledTimes(1);
+    expect(out.access_token).toEqual(expect.any(String));
+  });
+
+  it('a Google account sets a password with an emailed code', async () => {
+    const { service, prisma, mail } = setup(
+      customer({ authType: CustomerAuthType.GOOGLE }),
+    );
+    await expect(
+      service.changePassword(1, { newPassword: 'brand-new-pw' }, IP),
+    ).rejects.toThrow('code');
+    await service.sendPasswordCode(1);
+    await service.changePassword(
+      1,
+      { code: sentCode(mail), newPassword: 'brand-new-pw' },
+      IP,
+    );
+    expect(
+      prisma.customer.update.mock.calls[0][0].data.passwordChangedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('will not email a set-password code to an account that has a password', async () => {
+    const { service, mail } = setup(customer({ passwordHash: 'x' }));
+    await expect(service.sendPasswordCode(1)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+});
+
 describe('google', () => {
   it('creates a GOOGLE account with no password for a new email', async () => {
     const { service, prisma, google } = setup(null);
@@ -332,6 +494,27 @@ describe('CustomerJwtStrategy', () => {
     await expect(strategy.validate({ sub: 1 } as never)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+
+  it('refuses a token issued before the password changed, accepts the new one', async () => {
+    const { strategy, service, prisma, jwt } = setup(
+      customer({ passwordHash: await hash('old-password', 4) }),
+    );
+    const old = { sub: 1, typ: 'customer' as const, email: 'a', name: 'b' };
+    const before = Math.floor(Date.now() / 1000) - 60;
+    const out = await service.changePassword(
+      1,
+      { currentPassword: 'old-password', newPassword: 'brand-new-pw' },
+      IP,
+    );
+    const changed = customer(prisma.customer.update.mock.calls[0][0].data);
+    prisma.customer.findUnique.mockResolvedValue(changed);
+    await expect(
+      strategy.validate({ ...old, iat: before }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      strategy.validate(jwt.verify(out.access_token)),
+    ).resolves.toEqual({ customerId: 1 });
   });
 
   it("refuses a deleted customer's token", async () => {

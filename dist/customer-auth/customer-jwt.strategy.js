@@ -33,6 +33,11 @@ let CustomerJwtStrategy = class CustomerJwtStrategy extends (0, passport_1.Passp
         const customer = await this.auth.findActive(payload.sub);
         if (!customer)
             throw new common_1.UnauthorizedException();
+        if (customer.passwordChangedAt &&
+            (payload.iat ?? 0) <
+                Math.floor(customer.passwordChangedAt.getTime() / 1000)) {
+            throw new common_1.UnauthorizedException();
+        }
         return { customerId: customer.id };
     }
 };

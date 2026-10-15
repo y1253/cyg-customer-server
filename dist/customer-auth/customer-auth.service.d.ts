@@ -3,8 +3,11 @@ import { JwtService } from '@nestjs/jwt';
 import { CustomerAuthType, type Customer } from '@prisma/client';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { ChangePasswordDto } from './dto/change-password.dto';
+import type { ForgotPasswordDto } from './dto/forgot-password.dto';
 import type { GoogleLoginDto } from './dto/google-login.dto';
 import type { LoginDto } from './dto/login.dto';
+import type { ResetPasswordDto } from './dto/reset-password.dto';
 import type { ResendSignupDto } from './dto/resend-signup.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { UpdateMeDto } from './dto/update-me.dto';
@@ -15,12 +18,14 @@ export interface CustomerJwtPayload {
     email: string;
     name: string;
     typ: typeof CUSTOMER_TOKEN_TYPE;
+    iat?: number;
 }
 export interface PublicCustomer {
     id: number;
     name: string;
     email: string;
     authType: CustomerAuthType;
+    hasPassword: boolean;
     avatarUrl: string | null;
     phone: string | null;
     createdAt: Date;
@@ -52,6 +57,7 @@ export declare class CustomerAuthService {
     private readonly logger;
     private readonly hits;
     private readonly pending;
+    private readonly resets;
     private googleClient;
     constructor(prisma: PrismaService, jwt: JwtService, config: ConfigService, mail: MailService);
     googleClientId(): string | null;
@@ -62,6 +68,13 @@ export declare class CustomerAuthService {
     private assertEmailFree;
     private sendCode;
     private prunePending;
+    forgotPassword(dto: ForgotPasswordDto, ip: string): Promise<SignupStarted>;
+    resetPassword(dto: ResetPasswordDto, ip: string): Promise<AuthResult>;
+    changePassword(customerId: number, dto: ChangePasswordDto, ip: string): Promise<AuthResult>;
+    sendPasswordCode(customerId: number): Promise<SignupStarted>;
+    private issuePasswordCode;
+    private checkPasswordCode;
+    private passwordData;
     login(dto: LoginDto, ip: string): Promise<AuthResult>;
     google(dto: GoogleLoginDto): Promise<AuthResult>;
     findActive(id: number): Promise<Customer | null>;
