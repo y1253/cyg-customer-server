@@ -6,6 +6,7 @@ import { ObjectStorageService } from '../storage/object-storage.service';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
+import { FxService } from './fx.service';
 export interface StatementView {
     id: number;
     filename: string;
@@ -13,6 +14,8 @@ export interface StatementView {
     status: StatementStatus;
     error: string | null;
     accountName: string | null;
+    accountKind: string | null;
+    currency: string | null;
     bankName: string | null;
     label: string;
     periodStart: string | null;
@@ -36,7 +39,7 @@ export interface TransactionView {
     debitAccount: string;
     creditAccount: string;
     statementLabel: string;
-    kind?: 'opening' | 'tax' | 'split';
+    kind?: 'opening' | 'tax' | 'split' | 'fx';
     taxRate?: number;
     taxAgencyId?: number;
     attachments?: Array<{
@@ -44,6 +47,9 @@ export interface TransactionView {
         kind: AttachmentKind;
         filename: string;
     }>;
+    currency?: string;
+    fxRate?: number | null;
+    homeAmount?: number;
 }
 export declare class BookkeepingService {
     private readonly prisma;
@@ -52,8 +58,9 @@ export declare class BookkeepingService {
     private readonly processor;
     private readonly tax;
     private readonly images;
+    private readonly fx;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService);
     upload(customerId: number, files: Express.Multer.File[]): Promise<StatementView[]>;
     generateIfFree(customerId: number): Promise<{
         queued: number;

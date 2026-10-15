@@ -8,13 +8,14 @@ import { CustomerAccountsService, type AccountView } from './customer-accounts.s
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, ResetProductRuleDto, SaveSplitsDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, UpdateAgencyDto, UpdateNameDto, UpdateTaxDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
+import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
 import { TaxService, type AgencyView, type NamesView, type TaxSettingsView } from './tax.service';
-import type { ReportsView } from './reports.util';
+import { type ReportsView } from './reports.util';
 type AuthedRequest = Request & {
     user: CustomerRequestUser;
 };
@@ -29,18 +30,18 @@ export declare class BookkeepingController {
     private readonly splits;
     private readonly attachments;
     private readonly productMemory;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService);
+    private readonly fx;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService);
     generate(req: AuthedRequest): Promise<{
         queued: number;
         taxing: boolean;
     }>;
     taxSettings(req: AuthedRequest): Promise<TaxSettingsView>;
-    setTax(req: AuthedRequest, dto: UpdateTaxDto): Promise<TaxSettingsView>;
     createAgency(req: AuthedRequest, dto: CreateAgencyDto): Promise<AgencyView>;
     updateAgency(req: AuthedRequest, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     removeAgency(req: AuthedRequest, id: number): Promise<void>;
     names(req: AuthedRequest): Promise<NamesView>;
-    updateName(req: AuthedRequest, dto: UpdateNameDto): Promise<NamesView>;
+    setNameAgencies(req: AuthedRequest, dto: SetNameAgenciesDto): Promise<NamesView>;
     saveNameRule(req: AuthedRequest, dto: SaveNameRuleDto): Promise<NamesView>;
     editTransaction(req: AuthedRequest, id: number, dto: EditTransactionDto): Promise<void>;
     saveSplits(req: AuthedRequest, id: number, dto: SaveSplitsDto): Promise<void>;
@@ -68,5 +69,15 @@ export declare class BookkeepingController {
     reports(req: AuthedRequest, q: ReportsQueryDto): Promise<ReportsView>;
     accountList(req: AuthedRequest): Promise<AccountView[]>;
     createAccount(req: AuthedRequest, dto: CreateAccountDto): Promise<AccountView>;
+    setAccountType(req: AuthedRequest, dto: SetAccountTypeDto): Promise<void>;
+    resetAccountType(req: AuthedRequest, dto: ResetAccountTypeDto): Promise<void>;
+    currency(req: AuthedRequest): Promise<{
+        home: string;
+        currencies: readonly string[];
+    }>;
+    setCurrency(req: AuthedRequest, dto: SetCurrencyDto): Promise<{
+        home: string;
+        currencies: readonly string[];
+    }>;
 }
 export {};

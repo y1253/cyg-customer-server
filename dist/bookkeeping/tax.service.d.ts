@@ -1,6 +1,5 @@
-import { ConfigService } from '@nestjs/config';
-import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { type TypeContext } from './chart-of-accounts';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import type { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
@@ -21,7 +20,7 @@ export interface NameView {
     otherCategories: number;
     type: NameType;
     rows: number;
-    taxExempt: boolean;
+    agencyIds: number[];
     descriptions: Array<{
         description: string;
         category: string;
@@ -32,6 +31,7 @@ export interface NameView {
         matchType: RuleMatchType;
         matchKey: string;
     } | null;
+    unclarified?: true;
 }
 export interface UnrecognizedView {
     key: string;
@@ -49,7 +49,6 @@ export interface NamesView {
     unrecognized: UnrecognizedView[];
 }
 export interface StoredTax {
-    id: number;
     agencyId: number;
     agency: string;
     name: string | null;
@@ -58,38 +57,24 @@ export interface StoredTax {
     amount: number;
 }
 export interface TaxSettingsView {
-    enabled: boolean;
-    stale: boolean;
-    running: boolean;
     agencies: AgencyView[];
 }
 export declare class TaxService {
     private readonly prisma;
-    private readonly openai;
-    private readonly config;
     private readonly accounts;
-    private readonly logger;
-    constructor(prisma: PrismaService, openai: OpenAiClient, config: ConfigService, accounts: CustomerAccountsService);
-    private model;
+    constructor(prisma: PrismaService, accounts: CustomerAccountsService);
     settings(customerId: number): Promise<TaxSettingsView>;
-    setEnabled(customerId: number, enabled: boolean): Promise<TaxSettingsView>;
     createAgency(customerId: number, dto: CreateAgencyDto): Promise<AgencyView>;
     updateAgency(customerId: number, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     removeAgency(customerId: number, id: number): Promise<void>;
-    private markStale;
     private ownedAgency;
     private checkName;
-    linesFor(customerId: number, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
-    private exemptNames;
-    names(customerId: number): Promise<NamesView>;
-    setNameTax(customerId: number, name: string, taxExempt: boolean): Promise<NamesView>;
     agencyNames(customerId: number): Promise<string[]>;
-    needsRetag(customerId: number): Promise<boolean>;
-    retagCustomer(customerId: number): Promise<boolean>;
-    tagStatement(customerId: number, statementId: number): Promise<void>;
-    retagRows(customerId: number, ids: readonly number[]): Promise<boolean>;
-    private tag;
-    private splitTotalsOf;
+    typeContext(customerId: number): Promise<TypeContext>;
+    linesFor(customerId: number, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
+    private compute;
+    names(customerId: number): Promise<NamesView>;
+    setNameAgencies(customerId: number, name: string, agencyIds: number[]): Promise<NamesView>;
+    carryAgencies(customerId: number, oldNames: readonly string[], newName: string): Promise<void>;
     renameLine(customerId: number, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;
-    private ask;
 }

@@ -29,7 +29,8 @@ function reconcile(stated, rows) {
     }
     const asPrinted = balanceChecks(stated, rows, amounts, net, 1);
     const owed = balanceChecks(stated, rows, amounts, net, -1);
-    const balances = fit(owed) > fit(asPrinted) ? owed : asPrinted;
+    const owes = fit(owed) > fit(asPrinted);
+    const balances = owes ? owed : asPrinted;
     const reason = skipReason(stated, balances);
     for (const c of [...totals, ...counts]) {
         if (!c.ok && reason)
@@ -51,6 +52,7 @@ function reconcile(stated, rows) {
         verification: verdict(checks),
         checks,
         suspectPages: [...suspect].sort((a, b) => a - b),
+        balanceSign: owes ? -1 : 1,
     };
 }
 function verdict(checks) {
@@ -103,6 +105,7 @@ function reconcileStatement(stated, pages) {
         verification: verdict(checks),
         checks,
         suspectPages: [...suspect].sort((a, b) => a - b),
+        balanceSign: whole.balanceSign,
     };
 }
 const check = (name, expected, actual) => ({
@@ -117,7 +120,7 @@ function balanceChecks(stated, rows, amounts, net, sign) {
     const opening = bal(stated.openingBalance);
     const closing = bal(stated.closingBalance);
     const balance = opening !== null && closing !== null
-        ? check('balance', closing, opening + net)
+        ? check('balance', sign * closing, sign * (opening + net))
         : null;
     const printed = rows.map((r) => bal(r.balanceAfter));
     const pages = rows.map((r) => r.page);

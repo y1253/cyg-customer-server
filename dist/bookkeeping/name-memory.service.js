@@ -195,7 +195,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 name,
                 category: row.offsetAccount,
             }));
-            await this.carryTaxSwitch(customerId, [...names], name);
+            await this.tax.carryAgencies(customerId, [...names], name);
             const adopt = category ?? target;
             if (adopt)
                 await this.setNameCategory(customerId, name, adopt);
@@ -410,12 +410,10 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             .map(toMatched);
     }
     async writeRows(customerId, rows, next, manual = false) {
-        const changed = [];
         const updates = rows.flatMap((row) => {
             const { name, category } = next(row);
             if (name === row.name && category === row.offsetAccount)
                 return [];
-            changed.push(row.id);
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
             return [
                 this.prisma.bankTransaction.update({
@@ -432,20 +430,6 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (!updates.length)
             return;
         await this.prisma.$transaction(updates);
-        await this.tax.retagRows(customerId, changed);
-    }
-    async carryTaxSwitch(customerId, oldNames, newName) {
-        const exempt = await this.prisma.ledgerName.findFirst({
-            where: { customerId, name: { in: oldNames }, taxExempt: true },
-            select: { id: true },
-        });
-        if (!exempt)
-            return;
-        await this.prisma.ledgerName.upsert({
-            where: { customerId_name: { customerId, name: newName } },
-            create: { customerId, name: newName, taxExempt: true },
-            update: { taxExempt: true },
-        });
     }
 };
 exports.NameMemoryService = NameMemoryService;

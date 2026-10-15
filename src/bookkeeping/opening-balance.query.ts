@@ -20,6 +20,7 @@ export async function loadOpeningStatements(
       bankName: string | null;
       filename: string;
       periodEnd: Date | null;
+      currency: string | null;
     }
   >
 > {

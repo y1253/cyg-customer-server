@@ -20,12 +20,15 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_extractor_1 = require("./attachment-extractor");
 const attachment_match_util_1 = require("./attachment-match.util");
+const name_memory_service_1 = require("./name-memory.service");
+const name_memory_util_1 = require("./name-memory.util");
 const product_memory_service_1 = require("./product-memory.service");
 const receipt_items_util_1 = require("./receipt-items.util");
 const reconcile_util_1 = require("./reconcile.util");
 const splits_service_1 = require("./splits.service");
 const queue_retry_1 = require("./queue-retry");
 const CONCURRENCY = 2;
+const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 10 * 60_000;
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -52,14 +55,16 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     extractor;
     splits;
     products;
+    names;
     logger = new common_1.Logger(AttachmentProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, splits, products) {
+    constructor(prisma, storage, extractor, splits, products, names) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.splits = splits;
         this.products = products;
+        this.names = names;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -153,6 +158,9 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                     error: null,
                 },
             });
+            if (transactionId && kind === client_1.AttachmentKind.CHECK) {
+                await this.nameFromCheque(row.customerId, transactionId, reading).catch((err) => this.logger.warn(`attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`));
+            }
             if (transactionId) {
                 const itemsNote = await this.applyItems(row.customerId, row.id, false).catch((err) => `The items could not be split: ${err instanceof Error ? err.message : String(err)}`);
                 if (itemsNote) {
@@ -167,6 +175,23 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         catch (err) {
             await this.recordFailure(row, err);
         }
+    }
+    async nameFromCheque(customerId, transactionId, reading) {
+        const payee = (0, name_memory_util_1.cleanName)(reading.payee);
+        if (!payee)
+            return;
+        const tx = await this.prisma.bankTransaction.findFirst({
+            where: { id: transactionId, customerId },
+            select: { name: true },
+        });
+        if (!tx || (tx.name && !GENERIC_CHEQUE_NAME.test(tx.name)))
+            return;
+        const known = await this.names.categoryOfName(customerId, payee);
+        await this.names.editTransaction(customerId, transactionId, {
+            name: payee,
+            category: known ? null : (reading.category ?? null),
+            scope: 'ONCE',
+        });
     }
     async recordFailure(row, err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -215,6 +240,13 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             return {
                 transactionId: byNumber.id,
                 note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
+            };
+        }
+        const byAmount = statementId && q.kind === 'CHECK' ? (0, attachment_match_util_1.chequeAmountMatch)(total, list) : null;
+        if (byAmount) {
+            return {
+                transactionId: byAmount.id,
+                note: `Matched to the cheque of $${total.toFixed(2)} on this statement (${byAmount.name ?? byAmount.description}).`,
             };
         }
         if (!list.length) {
@@ -353,6 +385,7 @@ exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProc
         object_storage_service_1.ObjectStorageService,
         attachment_extractor_1.AttachmentExtractor,
         splits_service_1.SplitsService,
-        product_memory_service_1.ProductMemoryService])
+        product_memory_service_1.ProductMemoryService,
+        name_memory_service_1.NameMemoryService])
 ], AttachmentProcessorService);
 //# sourceMappingURL=attachment-processor.service.js.map

@@ -91,6 +91,7 @@ describe('reconcile', () => {
       verification: 'UNVERIFIED',
       checks: [],
       suspectPages: [],
+      balanceSign: 1,
     });
   });
 
@@ -133,6 +134,7 @@ describe('reconcile', () => {
       );
       expect(r.verification).toBe('VERIFIED');
       expect(r.checks.every((c) => c.ok)).toBe(true);
+      expect(r.balanceSign).toBe(-1);
     });
 
     it("the bank's own figures disagree (one category only) → totals skipped, balance decides", () => {

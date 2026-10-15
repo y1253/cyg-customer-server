@@ -47,6 +47,48 @@ export class CustomerAccountsService {
     return new Map((await this.own(customerId)).map((a) => [a.name, a.type]));
   }
 
+  /** Accounts the customer moved to another section (`CustomerAccountType`), by name. */
+  async overrides(customerId: number): Promise<Map<string, AccountType>> {
+    const rows = await this.prisma.customerAccountType.findMany({
+      where: { customerId },
+      select: { account: true, type: true },
+    });
+    return new Map(
+      rows
+        .filter((r) => ACCOUNT_TYPES.includes(r.type as AccountType))
+        .map((r) => [r.account, r.type as AccountType]),
+    );
+  }
+
+  /**
+   * Move an account to another section ("drag it to Liabilities") — any chart account,
+   * their own category, a tax agency or a statement account. Its rows never change: the
+   * type is read wherever an account's section matters (`typeFor`).
+   */
+  async setType(
+    customerId: number,
+    account: string,
+    type: AccountType,
+  ): Promise<void> {
+    const name = account.trim();
+    if (!name) throw new BadRequestException('Which account?');
+    if (!ACCOUNT_TYPES.includes(type)) {
+      throw new BadRequestException('Choose a section');
+    }
+    await this.prisma.customerAccountType.upsert({
+      where: { customerId_account: { customerId, account: name } },
+      create: { customerId, account: name, type },
+      update: { type },
+    });
+  }
+
+  /** Back to where the chart (or their own category) puts it. */
+  async resetType(customerId: number, account: string): Promise<void> {
+    await this.prisma.customerAccountType.deleteMany({
+      where: { customerId, account: account.trim() },
+    });
+  }
+
   /** The customer's own account names — what `normalizeAccount` accepts beyond the chart. */
   async names(customerId: number): Promise<Set<string>> {
     return new Set((await this.own(customerId)).map((a) => a.name));

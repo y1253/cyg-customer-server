@@ -6,6 +6,8 @@ import { cents } from './reconcile.util';
 export interface OpeningStatement {
   id: number;
   accountName: string | null;
+  /** 'CREDIT_CARD' = the printed balances are the amount OWED. Anything else = a bank. */
+  accountKind?: string | null;
   openingBalance: number | null;
   closingBalance: number | null;
   periodStart: Date | null;
@@ -41,6 +43,11 @@ export const STARTING_BALANCE = 'Starting balance';
  * credit card prints the balance OWED. Any other statement (the first one, or one after a gap
  * or a mismatch) gets its full printed balance. No opening balance, or zero → no row.
  *
+ * A CREDIT CARD's printed balance is a DEBT: "Previous balance $500" is −$500 on the card
+ * (debit Owner's Loan / credit the card), so with purchases negative and payments positive
+ * the card ends at −(New balance) — a liability in the reports (`buildReports`). Posting it
+ * as +$500 showed an Amex owing $600 as $400 of cash (2026-10-14).
+ *
  * Computed when the ledger, exports and reports are READ, so it is never part of the
  * AI rows `reconcile()` checks, and it follows uploads, deletes and retries by itself.
  */
@@ -61,7 +68,8 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
       if (s.openingBalance === null || cents(s.openingBalance) === 0) return;
       const prev = list[i - 1];
       if (prev && endingsOf(prev).includes(cents(s.openingBalance))) return;
-      const amount = cents(s.openingBalance) / 100;
+      const sign = isCreditCard(s.accountKind) ? -1 : 1;
+      const amount = (sign * cents(s.openingBalance)) / 100;
       out.push({
         statementId: s.id,
         bankAccount,
@@ -75,6 +83,10 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
   }
   return out;
 }
+
+export const CREDIT_CARD = 'CREDIT_CARD';
+export const isCreditCard = (kind: string | null | undefined): boolean =>
+  kind === CREDIT_CARD;
 
 /** Where a statement may have ended, in cents (see `openingRows`). */
 function endingsOf(s: OpeningStatement): number[] {
@@ -93,6 +105,8 @@ export const num = (d: { toString(): string } | null): number | null =>
 export const OPENING_STATEMENT_SELECT = {
   id: true,
   accountName: true,
+  accountKind: true,
+  currency: true,
   bankName: true,
   filename: true,
   openingBalance: true,

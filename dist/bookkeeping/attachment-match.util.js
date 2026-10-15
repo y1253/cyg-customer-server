@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.statementImageRef = exports.MAX_FOR_AI = exports.TIP_SLACK = exports.DAYS_AFTER = exports.DAYS_BEFORE = void 0;
+exports.statementImageRef = exports.looksLikeCheque = exports.MAX_FOR_AI = exports.TIP_SLACK = exports.DAYS_AFTER = exports.DAYS_BEFORE = void 0;
 exports.shortlist = shortlist;
 exports.obviousMatch = obviousMatch;
 exports.chequeNumberMatch = chequeNumberMatch;
+exports.chequeAmountMatch = chequeAmountMatch;
 exports.statementOf = statementOf;
 const reconcile_util_1 = require("./reconcile.util");
 exports.DAYS_BEFORE = 5;
@@ -73,6 +74,17 @@ function chequeNumberMatch(checkNumber, total, list) {
     const want = total != null && total > 0 ? (0, reconcile_util_1.cents)(total) : null;
     const hits = list.filter((r) => (r.description.match(/\d+/g) ?? []).some((n) => n.replace(/^0+/, '') === wanted) &&
         (want == null || Math.abs((0, reconcile_util_1.cents)(r.amount)) === want));
+    return hits.length === 1 ? hits[0] : null;
+}
+const looksLikeCheque = (description) => /\b(cheque|check|chq|chk)\b/i.test(description);
+exports.looksLikeCheque = looksLikeCheque;
+function chequeAmountMatch(total, list) {
+    if (total == null || total <= 0)
+        return null;
+    const want = (0, reconcile_util_1.cents)(total);
+    const hits = list.filter((r) => (0, exports.looksLikeCheque)(r.description) &&
+        Math.abs((0, reconcile_util_1.cents)(r.amount)) === want &&
+        !r.attachedTotals.includes(want));
     return hits.length === 1 ? hits[0] : null;
 }
 const statementImageRef = (statementId, page, index) => `stmt:${statementId}:p${page + 1}:${index + 1}`;

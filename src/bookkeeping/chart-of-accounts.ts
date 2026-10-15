@@ -21,6 +21,8 @@ export interface ChartAccount {
 export const UNCATEGORIZED = 'Uncategorized';
 /** The offset of every statement's "Starting balance" row (`opening-balance.util.ts`). */
 export const OWNERS_LOAN = "Owner's Loan";
+/** The offset of every revaluation row of a foreign-currency account (`fx.util.ts`). */
+export const FX_GAIN_LOSS = 'Exchange Gain or Loss';
 
 export const CHART_OF_ACCOUNTS: readonly ChartAccount[] = [
   // Income
@@ -28,6 +30,8 @@ export const CHART_OF_ACCOUNTS: readonly ChartAccount[] = [
   { name: 'Service Income', type: 'INCOME' },
   { name: 'Interest Income', type: 'INCOME' },
   { name: 'Other Income', type: 'INCOME' },
+  // A gain is income, a loss lowers it (negative).
+  { name: FX_GAIN_LOSS, type: 'INCOME' },
   // Expenses
   { name: 'Office Expense', type: 'EXPENSE' },
   { name: 'Advertising & Marketing', type: 'EXPENSE' },
@@ -59,6 +63,33 @@ export const CHART_OF_ACCOUNTS: readonly ChartAccount[] = [
   { name: 'Owner Draw', type: 'EQUITY' },
   { name: UNCATEGORIZED, type: 'EXPENSE' },
 ];
+
+const CHART_TYPE = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
+
+/** What decides an account's type, for one customer. */
+export interface TypeContext {
+  /** The customer moved this account to another section (`CustomerAccountType`). */
+  overrides?: ReadonlyMap<string, AccountType>;
+  /** Tax agencies — LIABILITY accounts outside the chart. */
+  liabilities?: ReadonlySet<string>;
+  /** The customer's OWN categories (`CustomerAccount`) and the type they picked. */
+  custom?: ReadonlyMap<string, AccountType>;
+}
+
+/**
+ * THE type of an account for a customer, everywhere (reports, tax kind, Names tab): their
+ * own move first, then a tax agency (liability), their own category, the chart — and an
+ * account no longer in the chart (renamed) lands in expenses.
+ */
+export function typeFor(name: string, ctx: TypeContext = {}): AccountType {
+  return (
+    ctx.overrides?.get(name) ??
+    (ctx.liabilities?.has(name) ? 'LIABILITY' : undefined) ??
+    ctx.custom?.get(name) ??
+    CHART_TYPE.get(name) ??
+    'EXPENSE'
+  );
+}
 
 export const ACCOUNT_NAMES: readonly string[] = CHART_OF_ACCOUNTS.map(
   (a) => a.name,

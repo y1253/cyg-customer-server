@@ -18,6 +18,7 @@ const opening_balance_util_1 = require("./opening-balance.util");
 const reports_util_1 = require("./reports.util");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const splits_util_1 = require("./splits.util");
+const fx_service_1 = require("./fx.service");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -25,25 +26,29 @@ let ReportsService = class ReportsService {
     prisma;
     tax;
     accounts;
-    constructor(prisma, tax, accounts) {
+    fx;
+    constructor(prisma, tax, accounts, fx) {
         this.prisma = prisma;
         this.tax = tax;
         this.accounts = accounts;
+        this.fx = fx;
     }
     async reports(customerId, from, to) {
         const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
-        const [rows, statements, taxes, agencies, customTypes] = await Promise.all([
+        const [rows, statements, taxes, agencies, customTypes, overrides] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: { customerId, statement: done },
                 select: {
                     id: true,
                     splitOfId: true,
+                    name: true,
                     amount: true,
                     offsetAccount: true,
                     debitAccount: true,
                     creditAccount: true,
                     postingDate: true,
                     pendingDate: true,
+                    statementId: true,
                     statement: { select: { periodEnd: true } },
                 },
             }),
@@ -51,15 +56,26 @@ let ReportsService = class ReportsService {
             this.tax.linesFor(customerId),
             this.tax.agencyNames(customerId),
             this.accounts.types(customerId),
+            this.accounts.overrides(customerId),
         ]);
+        const creditCards = new Set(statements
+            .filter((s) => (0, opening_balance_util_1.isCreditCard)(s.accountKind))
+            .map((s) => s.accountName ?? 'Bank account'));
+        const fx = await this.fx.context(customerId, statements);
+        const entries = [];
+        const home = (statementId, date, amount, bankAccount) => {
+            const { home: converted } = fx.convert(statementId, date, amount);
+            entries.push({ statementId, bankAccount, amount, home: converted });
+            return converted;
+        };
         const openings = (0, opening_balance_util_1.openingRows)(statements).map((o) => ({
-            amount: o.amount,
+            amount: home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
             offsetAccount: o.offsetAccount,
             bankAccount: o.bankAccount,
             date: day(o.postingDate),
         }));
         const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
-        return (0, reports_util_1.buildReports)([
+        const ledgerRows = [
             ...openings,
             ...rows.flatMap((r) => {
                 const amount = (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals);
@@ -68,14 +84,29 @@ let ReportsService = class ReportsService {
                     day(r.statement.periodEnd);
                 const bankAccount = Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
                 const split = (0, tax_util_1.taxSplit)({ ...r, amount }, taxes.get(r.id) ?? []);
+                const rowDate = day(r.postingDate) ?? day(r.pendingDate);
                 return [split.parent, ...split.taxes].map((e) => ({
-                    amount: e.amount,
+                    amount: home(r.statementId, rowDate, e.amount, bankAccount),
                     offsetAccount: e.offsetAccount,
                     bankAccount,
                     date,
+                    name: r.name,
                 }));
             }),
-        ], from, to, agencies, customTypes);
+        ];
+        const revaluations = fx.revaluations(entries).map((f) => ({
+            amount: f.homeAmount,
+            offsetAccount: f.offsetAccount,
+            bankAccount: f.bankAccount,
+            date: f.date,
+            name: null,
+        }));
+        return (0, reports_util_1.buildReports)([...ledgerRows, ...revaluations], from, to, {
+            liabilityAccounts: agencies,
+            customTypes,
+            overrides,
+            creditCards,
+        });
     }
 };
 exports.ReportsService = ReportsService;
@@ -83,6 +114,7 @@ exports.ReportsService = ReportsService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         tax_service_1.TaxService,
-        customer_accounts_service_1.CustomerAccountsService])
+        customer_accounts_service_1.CustomerAccountsService,
+        fx_service_1.FxService])
 ], ReportsService);
 //# sourceMappingURL=reports.service.js.map

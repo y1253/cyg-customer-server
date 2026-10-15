@@ -23,6 +23,7 @@ const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const splits_util_1 = require("./splits.util");
 const statement_label_1 = require("./statement-label");
+const fx_service_1 = require("./fx.service");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const BRAND = '#169F96';
@@ -54,9 +55,11 @@ const MONEY = (n) => n.toLocaleString('en-US', {
 let LedgerExportService = class LedgerExportService {
     prisma;
     tax;
-    constructor(prisma, tax) {
+    fx;
+    constructor(prisma, tax, fx) {
         this.prisma = prisma;
         this.tax = tax;
+        this.fx = fx;
     }
     async rowsFor(customerId) {
         const [rows, statements, taxes] = await Promise.all([
@@ -82,6 +85,7 @@ let LedgerExportService = class LedgerExportService {
         const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
         const exportRow = (r) => ({
             id: r.splitOfId ?? r.id,
+            statementId: r.statementId,
             pendingDate: r.pendingDate,
             postingDate: r.postingDate,
             name: [r.name, r.itemName].filter(Boolean).join(' · '),
@@ -115,6 +119,7 @@ let LedgerExportService = class LedgerExportService {
                 offsetAccount: o.offsetAccount,
                 row: {
                     id: null,
+                    statementId: o.statementId,
                     pendingDate: null,
                     postingDate: o.postingDate,
                     name: '',
@@ -126,12 +131,59 @@ let LedgerExportService = class LedgerExportService {
                 },
             })),
         ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
-        return sorted.flatMap((p) => [
+        const out = sorted.flatMap((p) => [
             ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
             ...(splitsOf.get(p.id) ?? [])
                 .sort((a, b) => a.id - b.id)
                 .flatMap((c) => exportRowWithTaxes(exportRow(c), c.offsetAccount, taxes.get(c.id) ?? [])),
         ]);
+        const fx = await this.fx.context(customerId, statements);
+        if (!fx.anyForeign)
+            return out;
+        const entries = [];
+        const converted = out.map((r) => {
+            const id = r.statementId;
+            if (!fx.isForeign(id))
+                return r;
+            const { home, rate } = fx.convert(id, ISO(r.postingDate ?? r.pendingDate) || null, r.amount);
+            entries.push({
+                statementId: id,
+                bankAccount: r.amount < 0 ? r.creditAccount : r.debitAccount,
+                amount: r.amount,
+                home,
+            });
+            return {
+                ...r,
+                currency: fx.currencyOf(id),
+                fxRate: rate,
+                homeAmount: home,
+            };
+        });
+        const revalued = new Map(fx.revaluations(entries).map((f) => [f.statementId, f]));
+        const lastOf = new Map(converted.map((r, i) => [r.statementId, i]));
+        return converted.flatMap((r, i) => {
+            const f = revalued.get(r.statementId);
+            if (!f || lastOf.get(r.statementId) !== i)
+                return [r];
+            return [
+                r,
+                {
+                    id: null,
+                    statementId: f.statementId,
+                    pendingDate: null,
+                    postingDate: new Date(`${f.date}T00:00:00Z`),
+                    name: '',
+                    description: `Exchange rate on ${f.date}: ${f.rate.toFixed(4)}`,
+                    amount: 0,
+                    debitAccount: f.debitAccount,
+                    creditAccount: f.creditAccount,
+                    statement: r.statement,
+                    currency: fx.currencyOf(f.statementId),
+                    fxRate: f.rate,
+                    homeAmount: f.homeAmount,
+                },
+            ];
+        });
     }
     async excel(rows, customerName) {
         const wb = new exceljs_1.default.Workbook();
@@ -165,6 +217,25 @@ let LedgerExportService = class LedgerExportService {
             { header: 'Credit', key: 'creditAccount', width: 28 },
             { header: 'Statement', key: 'statement', width: 32 },
         ];
+        const foreign = rows.some((r) => r.currency);
+        if (foreign) {
+            ws.columns = [
+                ...ws.columns,
+                { header: 'Currency', key: 'currency', width: 10 },
+                {
+                    header: 'Rate',
+                    key: 'fxRate',
+                    width: 11,
+                    style: { numFmt: '0.0000' },
+                },
+                {
+                    header: 'Home amount',
+                    key: 'homeAmount',
+                    width: 15,
+                    style: { numFmt: '#,##0.00;[Red]-#,##0.00' },
+                },
+            ];
+        }
         const header = ws.getRow(1);
         header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
         header.fill = {
@@ -174,7 +245,9 @@ let LedgerExportService = class LedgerExportService {
         };
         for (const r of rows) {
             const { tax, split, ...cells } = r;
-            const row = ws.addRow(cells);
+            const row = ws.addRow(foreign
+                ? { ...cells, homeAmount: cells.homeAmount ?? cells.amount }
+                : cells);
             if (tax)
                 row.font = { italic: true, color: { argb: 'FF8A8F98' } };
             else if (split)
@@ -184,9 +257,12 @@ let LedgerExportService = class LedgerExportService {
         const total = ws.addRow({
             description: `Net change (${count} transactions)`,
             amount: netOf(rows),
+            ...(foreign && {
+                homeAmount: netOf(rows.map((r) => ({ amount: r.homeAmount ?? r.amount }))),
+            }),
         });
         total.font = { bold: true };
-        ws.autoFilter = { from: 'A1', to: 'I1' };
+        ws.autoFilter = { from: 'A1', to: foreign ? 'L1' : 'I1' };
         wb.title = `${customerName} — ledger`;
         return Buffer.from(await wb.xlsx.writeBuffer());
     }
@@ -306,6 +382,7 @@ exports.LedgerExportService = LedgerExportService;
 exports.LedgerExportService = LedgerExportService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        fx_service_1.FxService])
 ], LedgerExportService);
 //# sourceMappingURL=export.service.js.map

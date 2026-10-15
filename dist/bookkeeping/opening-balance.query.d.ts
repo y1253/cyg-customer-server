@@ -4,4 +4,5 @@ export declare function loadOpeningStatements(prisma: PrismaService, customerId:
     bankName: string | null;
     filename: string;
     periodEnd: Date | null;
+    currency: string | null;
 }>>;

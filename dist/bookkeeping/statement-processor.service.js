@@ -153,6 +153,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                         status,
                         runs,
                         accountName: extracted.accountName,
+                        accountKind: extracted.accountKind,
+                        currency: extracted.currency,
                         bankName: extracted.bankName,
                         periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
                         periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
@@ -176,7 +178,6 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 }),
             ]);
             if (!mismatch) {
-                await this.tax.tagStatement(row.customerId, row.id);
                 await this.images.harvest({
                     ...row,
                     accountName: extracted.accountName,

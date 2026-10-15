@@ -13,6 +13,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -75,21 +76,18 @@ export class UpdateAgencyDto {
 }
 
 /** `PATCH /api/bookkeeping/tax` — the sales-tax switch. */
-export class UpdateTaxDto {
-  @IsBoolean()
-  enabled!: boolean;
-}
-
-/** `PATCH /api/bookkeeping/names` — switch tax on/off for one AI-read payee name. */
-export class UpdateNameDto {
+/** `PUT /api/bookkeeping/names/agencies` — the agencies that tax one payee name. */
+export class SetNameAgenciesDto {
   @Transform(trim)
   @IsString()
   @IsNotEmpty()
   @MaxLength(191)
   name!: string;
 
-  @IsBoolean()
-  taxExempt!: boolean;
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  agencyIds!: number[];
 }
 
 /** `PUT /api/bookkeeping/names/rule` — a customer's own name and/or category. */
@@ -196,6 +194,34 @@ export class CreateAccountDto {
 
   @IsIn(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY'])
   type!: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
+}
+
+/** `PUT /api/bookkeeping/currency` — the customer's home currency (ISO 4217). */
+export class SetCurrencyDto {
+  @IsString()
+  @Matches(/^[A-Za-z]{3}$/)
+  home!: string;
+}
+
+/** Move an account to another section of the chart (`PUT accounts/type`). */
+export class SetAccountTypeDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  account!: string;
+
+  @IsIn(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY'])
+  type!: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
+}
+
+/** Put a moved account back (`DELETE accounts/type`). */
+export class ResetAccountTypeDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  account!: string;
 }
 
 /** One hand-made split of a transaction. `amount` is positive; it takes the parent's sign. */

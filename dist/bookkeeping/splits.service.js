@@ -65,7 +65,7 @@ let SplitsService = class SplitsService {
         })));
         const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
         const keep = new Set(rows.flatMap((r) => (r.id != null ? [r.id] : [])));
-        const ids = await this.prisma.$transaction(async (tx) => {
+        await this.prisma.$transaction(async (tx) => {
             await tx.bankTransaction.deleteMany({
                 where: { splitOfId: parent.id, id: { notIn: [...keep] } },
             });
@@ -102,7 +102,6 @@ let SplitsService = class SplitsService {
             }
             return out;
         });
-        await this.tax.retagRows(customerId, [parent.id, ...ids]);
         for (const r of rows) {
             if (r.always && r.itemName && (0, receipt_items_util_1.itemKey)(r.itemName)) {
                 await this.products.saveRule(customerId, r.itemName, r.category);

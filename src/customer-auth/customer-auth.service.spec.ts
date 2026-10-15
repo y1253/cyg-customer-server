@@ -39,6 +39,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     lastLoginAt: null,
     deletedAt: null,
     salesTaxEnabled: false,
+    homeCurrency: 'CAD',
     taxStale: false,
     taxRunningSince: null,
     stripeCustomerId: null,

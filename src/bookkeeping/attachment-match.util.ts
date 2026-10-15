@@ -124,6 +124,30 @@ export function chequeNumberMatch(
   return hits.length === 1 ? hits[0] : null;
 }
 
+/** A statement row that pays a cheque: "CHEQUE 1042", "CHQ#001042", "Check 55". */
+export const looksLikeCheque = (description: string): boolean =>
+  /\b(cheque|check|chq|chk)\b/i.test(description);
+
+/**
+ * A cheque image cut out of a statement whose number could not be matched: the ONE
+ * cheque row of that statement at the exact amount (not already holding it) is its row —
+ * no AI. Null when none or several qualify.
+ */
+export function chequeAmountMatch(
+  total: number | null,
+  list: readonly MatchCandidate[],
+): MatchCandidate | null {
+  if (total == null || total <= 0) return null;
+  const want = cents(total);
+  const hits = list.filter(
+    (r) =>
+      looksLikeCheque(r.description) &&
+      Math.abs(cents(r.amount)) === want &&
+      !r.attachedTotals.includes(want),
+  );
+  return hits.length === 1 ? hits[0] : null;
+}
+
 /** `TransactionAttachment.sourceRef` of an image cut out of a statement — one per image. */
 export const statementImageRef = (
   statementId: number,

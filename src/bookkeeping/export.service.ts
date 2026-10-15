@@ -10,6 +10,7 @@ import {
 } from './opening-balance.util';
 import { remainderOf, splitTotals } from './splits.util';
 import { statementLabel } from './statement-label';
+import { FxService, type FxEntry } from './fx.service';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -32,6 +33,12 @@ export interface LedgerExportRow {
   tax?: boolean;
   /** A part the customer split off the transaction above by hand: grey. */
   split?: boolean;
+  /** Not a cell: the statement it belongs to (for the home-currency conversion). */
+  statementId?: number;
+  /** A foreign statement's row: its currency, the day's rate and the amount converted. */
+  currency?: string;
+  fxRate?: number | null;
+  homeAmount?: number;
 }
 
 const BRAND = '#169F96';
@@ -86,6 +93,7 @@ export class LedgerExportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tax: TaxService,
+    private readonly fx: FxService,
   ) {}
 
   async rowsFor(customerId: number): Promise<LedgerExportRow[]> {
@@ -114,6 +122,7 @@ export class LedgerExportService {
     );
     const exportRow = (r: (typeof rows)[number]) => ({
       id: r.splitOfId ?? r.id,
+      statementId: r.statementId,
       pendingDate: r.pendingDate,
       postingDate: r.postingDate,
       // A receipt item reads "Walmart · Pampers".
@@ -150,6 +159,7 @@ export class LedgerExportService {
         offsetAccount: o.offsetAccount,
         row: {
           id: null,
+          statementId: o.statementId,
           pendingDate: null,
           postingDate: o.postingDate,
           name: '',
@@ -167,7 +177,7 @@ export class LedgerExportService {
       ),
     );
     // Each transaction, then its splits — every one followed by its own tax lines.
-    return sorted.flatMap((p) => [
+    const out = sorted.flatMap((p) => [
       ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
       ...(splitsOf.get(p.id) ?? [])
         .sort((a, b) => a.id - b.id)
@@ -179,6 +189,58 @@ export class LedgerExportService {
           ),
         ),
     ]);
+    const fx = await this.fx.context(customerId, statements);
+    if (!fx.anyForeign) return out;
+    // Foreign rows carry their rate and home amount; each foreign statement ends with its
+    // revaluation row (0 in its currency, the home difference to Exchange Gain or Loss).
+    const entries: FxEntry[] = [];
+    const converted = out.map((r) => {
+      const id = r.statementId!;
+      if (!fx.isForeign(id)) return r;
+      const { home, rate } = fx.convert(
+        id,
+        ISO(r.postingDate ?? r.pendingDate) || null,
+        r.amount,
+      );
+      entries.push({
+        statementId: id,
+        bankAccount: r.amount < 0 ? r.creditAccount : r.debitAccount,
+        amount: r.amount,
+        home,
+      });
+      return {
+        ...r,
+        currency: fx.currencyOf(id),
+        fxRate: rate,
+        homeAmount: home,
+      };
+    });
+    const revalued = new Map(
+      fx.revaluations(entries).map((f) => [f.statementId, f]),
+    );
+    const lastOf = new Map(converted.map((r, i) => [r.statementId!, i]));
+    return converted.flatMap((r, i): LedgerExportRow[] => {
+      const f = revalued.get(r.statementId!);
+      if (!f || lastOf.get(r.statementId!) !== i) return [r];
+      return [
+        r,
+        {
+          id: null,
+          statementId: f.statementId,
+          pendingDate: null,
+          postingDate: new Date(`${f.date}T00:00:00Z`),
+          name: '',
+          description: `Exchange rate on ${f.date}: ${f.rate.toFixed(4)}`,
+          amount: 0,
+          debitAccount: f.debitAccount,
+          creditAccount: f.creditAccount,
+          statement: r.statement,
+          currency: fx.currencyOf(f.statementId),
+          fxRate: f.rate,
+          homeAmount: f.homeAmount,
+        },
+      ];
+    });
   }
 
   async excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer> {
@@ -213,6 +275,26 @@ export class LedgerExportService {
       { header: 'Credit', key: 'creditAccount', width: 28 },
       { header: 'Statement', key: 'statement', width: 32 },
     ];
+    // Foreign statements: the currency, the day's rate and the amount in the home currency.
+    const foreign = rows.some((r) => r.currency);
+    if (foreign) {
+      ws.columns = [
+        ...ws.columns,
+        { header: 'Currency', key: 'currency', width: 10 },
+        {
+          header: 'Rate',
+          key: 'fxRate',
+          width: 11,
+          style: { numFmt: '0.0000' },
+        },
+        {
+          header: 'Home amount',
+          key: 'homeAmount',
+          width: 15,
+          style: { numFmt: '#,##0.00;[Red]-#,##0.00' },
+        },
+      ];
+    }
     const header = ws.getRow(1);
     header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     header.fill = {
@@ -221,8 +303,14 @@ export class LedgerExportService {
       fgColor: { argb: 'FF169F96' },
     };
     for (const r of rows) {
+      // Cells are matched to the columns by key; `statementId` has no column.
       const { tax, split, ...cells } = r;
-      const row = ws.addRow(cells);
+      // A home-currency row's home amount is its amount.
+      const row = ws.addRow(
+        foreign
+          ? { ...cells, homeAmount: cells.homeAmount ?? cells.amount }
+          : cells,
+      );
       if (tax) row.font = { italic: true, color: { argb: 'FF8A8F98' } };
       else if (split) row.font = { color: { argb: 'FF5B6470' } };
     }
@@ -230,9 +318,14 @@ export class LedgerExportService {
     const total = ws.addRow({
       description: `Net change (${count} transactions)`,
       amount: netOf(rows),
+      ...(foreign && {
+        homeAmount: netOf(
+          rows.map((r) => ({ amount: r.homeAmount ?? r.amount })),
+        ),
+      }),
     });
     total.font = { bold: true };
-    ws.autoFilter = { from: 'A1', to: 'I1' };
+    ws.autoFilter = { from: 'A1', to: foreign ? 'L1' : 'I1' };
     wb.title = `${customerName} — ledger`;
     return Buffer.from(await wb.xlsx.writeBuffer());
   }

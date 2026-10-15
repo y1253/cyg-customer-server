@@ -1,37 +1,16 @@
+import { type TypeContext } from './chart-of-accounts';
 export type TaxKind = 'SALES' | 'PURCHASE';
 export interface Agency {
     id: number;
     name: string;
     rates: Partial<Record<TaxKind, number>>;
 }
-export interface TaxableRow {
-    id: number;
-    description: string;
-    name: string | null;
-    amount: number;
-    offsetAccount: string;
-}
-export interface TaxCandidate extends TaxableRow {
-    kind: TaxKind;
-}
-export interface TaxLine {
-    transactionId: number;
-    agencyId: number;
-    kind: TaxKind;
-    rate: number;
-    amount: number;
-}
 export declare const TYPE_OF: Map<string, import("./chart-of-accounts").AccountType>;
-export declare function kindOf(offsetAccount: string, customTypes?: ReadonlyMap<string, string>): TaxKind | null;
+export declare function kindOf(offsetAccount: string, ctx?: TypeContext): TaxKind | null;
 export declare const rateFor: (agency: Agency, kind: TaxKind) => number | undefined;
 export declare const fits: (agency: Agency, kind: TaxKind) => boolean;
-export declare function candidates(rows: TaxableRow[], agencies: Agency[], customTypes?: ReadonlyMap<string, string>): TaxCandidate[];
 export declare function includedTaxes(amount: number, rates: readonly number[]): number[];
 export declare const taxAmount: (amount: number, rate: number) => number;
-export declare function taxLines(rows: TaxCandidate[], verdicts: Array<{
-    id: number;
-    agencyIds: number[];
-}>, agencies: Agency[]): TaxLine[];
 export interface SplitEntry {
     amount: number;
     offsetAccount: string;
@@ -45,3 +24,17 @@ export declare function taxSplit<E extends SplitEntry>(parent: E, lines: Array<{
     parent: E;
     taxes: SplitEntry[];
 };
+export declare const nameTaxKey: (name: string | null | undefined) => string;
+export interface NameTaxRow {
+    id: number;
+    name: string | null;
+    offsetAccount: string;
+    amount: number;
+}
+export interface NameTax {
+    agencyId: number;
+    agency: string;
+    kind: TaxKind;
+    rate: number;
+}
+export declare function nameTaxLines(rows: readonly NameTaxRow[], agenciesOf: ReadonlyMap<string, readonly number[]>, agencies: readonly Agency[], ctx?: TypeContext): Map<number, NameTax[]>;

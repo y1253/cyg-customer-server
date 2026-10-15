@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OPENING_POSITION = exports.OPENING_STATEMENT_SELECT = exports.num = exports.STARTING_BALANCE = void 0;
+exports.OPENING_POSITION = exports.OPENING_STATEMENT_SELECT = exports.num = exports.isCreditCard = exports.CREDIT_CARD = exports.STARTING_BALANCE = void 0;
 exports.openingRows = openingRows;
 exports.ledgerOrder = ledgerOrder;
 const chart_of_accounts_1 = require("./chart-of-accounts");
@@ -23,7 +23,8 @@ function openingRows(statements) {
             const prev = list[i - 1];
             if (prev && endingsOf(prev).includes((0, reconcile_util_1.cents)(s.openingBalance)))
                 return;
-            const amount = (0, reconcile_util_1.cents)(s.openingBalance) / 100;
+            const sign = (0, exports.isCreditCard)(s.accountKind) ? -1 : 1;
+            const amount = (sign * (0, reconcile_util_1.cents)(s.openingBalance)) / 100;
             out.push({
                 statementId: s.id,
                 bankAccount,
@@ -37,6 +38,9 @@ function openingRows(statements) {
     }
     return out;
 }
+exports.CREDIT_CARD = 'CREDIT_CARD';
+const isCreditCard = (kind) => kind === exports.CREDIT_CARD;
+exports.isCreditCard = isCreditCard;
 function endingsOf(s) {
     if (s.closingBalance !== null)
         return [(0, reconcile_util_1.cents)(s.closingBalance)];
@@ -51,6 +55,8 @@ exports.num = num;
 exports.OPENING_STATEMENT_SELECT = {
     id: true,
     accountName: true,
+    accountKind: true,
+    currency: true,
     bankName: true,
     filename: true,
     openingBalance: true,

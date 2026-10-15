@@ -19,6 +19,7 @@ import {
   DAYS_BEFORE,
   MAX_FOR_AI,
   TIP_SLACK,
+  chequeAmountMatch,
   chequeNumberMatch,
   obviousMatch,
   shortlist,
@@ -27,6 +28,8 @@ import {
   type MatchQuery,
 } from './attachment-match.util';
 import type { AttachmentClass } from './attachment-uploads';
+import { NameMemoryService } from './name-memory.service';
+import { cleanName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
 import { itemSplits } from './receipt-items.util';
 import { cents } from './reconcile.util';
@@ -34,6 +37,8 @@ import { SplitsService } from './splits.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 
 const CONCURRENCY = 2;
+/** A row name that says nothing about who was paid ("Cheque", "CHQ 123", "Check #55"). */
+const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
 /** A row stuck in PROCESSING this long (a restart mid-read) is picked up again. */
 const STALE_PROCESSING_MS = 10 * 60_000;
@@ -81,6 +86,7 @@ export class AttachmentProcessorService {
     private readonly extractor: AttachmentExtractor,
     private readonly splits: SplitsService,
     private readonly products: ProductMemoryService,
+    private readonly names: NameMemoryService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -197,6 +203,15 @@ export class AttachmentProcessorService {
           error: null,
         },
       });
+      if (transactionId && kind === AttachmentKind.CHECK) {
+        // Never fails the match: the cheque is attached either way.
+        await this.nameFromCheque(row.customerId, transactionId, reading).catch(
+          (err: unknown) =>
+            this.logger.warn(
+              `attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        );
+      }
       if (transactionId) {
         // The match stands even if splitting fails (e.g. a category since removed).
         const itemsNote = await this.applyItems(
@@ -220,6 +235,34 @@ export class AttachmentProcessorService {
     } catch (err) {
       await this.recordFailure(row, err);
     }
+  }
+
+  /**
+   * A matched cheque names its row (user's request 2026-10-14): the bank prints "CHEQUE 123",
+   * the cheque says who it was made out to. Only a row with no real name yet — none, or a
+   * generic "Cheque…" — takes the payee, as a ONE-TIME edit (`manualEdit`, so "Always"
+   * rules leave it). Its category is the payee's own (their rule, the firm memory, their
+   * rows); for a payee new to them, what the cheque reader assumed from the payee and memo.
+   * Nothing goes into the firm memory.
+   */
+  private async nameFromCheque(
+    customerId: number,
+    transactionId: number,
+    reading: AttachmentReading,
+  ): Promise<void> {
+    const payee = cleanName(reading.payee);
+    if (!payee) return;
+    const tx = await this.prisma.bankTransaction.findFirst({
+      where: { id: transactionId, customerId },
+      select: { name: true },
+    });
+    if (!tx || (tx.name && !GENERIC_CHEQUE_NAME.test(tx.name))) return;
+    const known = await this.names.categoryOfName(customerId, payee);
+    await this.names.editTransaction(customerId, transactionId, {
+      name: payee,
+      category: known ? null : (reading.category ?? null),
+      scope: 'ONCE',
+    });
   }
 
   private async recordFailure(
@@ -285,6 +328,15 @@ export class AttachmentProcessorService {
       return {
         transactionId: byNumber.id,
         note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
+      };
+    }
+    // A cheque cut out of a statement: that statement's one cheque row at its amount.
+    const byAmount =
+      statementId && q.kind === 'CHECK' ? chequeAmountMatch(total, list) : null;
+    if (byAmount) {
+      return {
+        transactionId: byAmount.id,
+        note: `Matched to the cheque of $${total!.toFixed(2)} on this statement (${byAmount.name ?? byAmount.description}).`,
       };
     }
     if (!list.length) {

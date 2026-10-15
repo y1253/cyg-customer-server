@@ -90,7 +90,7 @@ export class SplitsService {
     // The bank side of the parent is the bank side of every split.
     const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
     const keep = new Set(rows.flatMap((r) => (r.id != null ? [r.id] : [])));
-    const ids = await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       await tx.bankTransaction.deleteMany({
         where: { splitOfId: parent.id, id: { notIn: [...keep] } },
       });
@@ -126,7 +126,6 @@ export class SplitsService {
       }
       return out;
     });
-    await this.tax.retagRows(customerId, [parent.id, ...ids]);
     // "Always": this item goes in this category on every later receipt, and the
     // customer's other rows of it move too — the same rule as the Products tab.
     for (const r of rows) {

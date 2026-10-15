@@ -6,8 +6,11 @@ import { type ReconcileResult, type StatedFigures } from './reconcile.util';
 import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
 export declare const MAX_REREADS = 10;
+export type AccountKind = 'BANK' | 'CREDIT_CARD';
 export interface ExtractedStatement {
     accountName: string | null;
+    accountKind: AccountKind;
+    currency: string | null;
     bankName: string | null;
     periodStart: string | null;
     periodEnd: string | null;
@@ -23,6 +26,8 @@ export interface PageReading {
     isBankStatement: boolean;
     hasItemImages?: boolean;
     accountName: string | null;
+    accountKind?: AccountKind | null;
+    currency?: string | null;
     bankName: string | null;
     periodStart: string | null;
     periodEnd: string | null;
@@ -33,12 +38,19 @@ export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
-    readonly required: readonly ["bankName", "accountName", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "hasItemImages", "isBankStatement"];
+    readonly required: readonly ["bankName", "accountName", "accountKind", "currency", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "hasItemImages", "isBankStatement"];
     readonly properties: {
         readonly bankName: {
             type: string[];
         };
         readonly accountName: {
+            type: string[];
+        };
+        readonly accountKind: {
+            readonly type: readonly ["string", "null"];
+            readonly enum: readonly ["BANK", "CREDIT_CARD", null];
+        };
+        readonly currency: {
             type: string[];
         };
         readonly periodStart: {
@@ -139,3 +151,4 @@ export declare function splitPdf(pdf: Buffer, pagesPerChunk: number, decrypt?: (
 }>>;
 export declare function looksLikeStatement(page: PageReading): boolean;
 export declare function parseExtraction(reply: string): PageReading;
+export declare function currencyCode(v: unknown): string | null;

@@ -35,6 +35,33 @@ let CustomerAccountsService = class CustomerAccountsService {
     async types(customerId) {
         return new Map((await this.own(customerId)).map((a) => [a.name, a.type]));
     }
+    async overrides(customerId) {
+        const rows = await this.prisma.customerAccountType.findMany({
+            where: { customerId },
+            select: { account: true, type: true },
+        });
+        return new Map(rows
+            .filter((r) => exports.ACCOUNT_TYPES.includes(r.type))
+            .map((r) => [r.account, r.type]));
+    }
+    async setType(customerId, account, type) {
+        const name = account.trim();
+        if (!name)
+            throw new common_1.BadRequestException('Which account?');
+        if (!exports.ACCOUNT_TYPES.includes(type)) {
+            throw new common_1.BadRequestException('Choose a section');
+        }
+        await this.prisma.customerAccountType.upsert({
+            where: { customerId_account: { customerId, account: name } },
+            create: { customerId, account: name, type },
+            update: { type },
+        });
+    }
+    async resetType(customerId, account) {
+        await this.prisma.customerAccountType.deleteMany({
+            where: { customerId, account: account.trim() },
+        });
+    }
     async names(customerId) {
         return new Set((await this.own(customerId)).map((a) => a.name));
     }

@@ -18,6 +18,7 @@ exports.better = better;
 exports.splitPdf = splitPdf;
 exports.looksLikeStatement = looksLikeStatement;
 exports.parseExtraction = parseExtraction;
+exports.currencyCode = currencyCode;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const pdf_lib_1 = require("pdf-lib");
@@ -43,6 +44,8 @@ exports.EXTRACTION_SCHEMA = {
     required: [
         'bankName',
         'accountName',
+        'accountKind',
+        'currency',
         'periodStart',
         'periodEnd',
         'openingBalance',
@@ -59,6 +62,11 @@ exports.EXTRACTION_SCHEMA = {
     properties: {
         bankName: nullableString,
         accountName: nullableString,
+        accountKind: {
+            type: ['string', 'null'],
+            enum: ['BANK', 'CREDIT_CARD', null],
+        },
+        currency: nullableString,
         periodStart: nullableString,
         periodEnd: nullableString,
         openingBalance: nullableNumber,
@@ -131,6 +139,8 @@ exports.SYSTEM_PROMPT = [
     '',
     'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
     'accountName: the bank name plus the last 4 digits of the account number, e.g. "Chase 4362" (null if not on these pages).',
+    'accountKind: "CREDIT_CARD" for a credit-card statement (American Express, Visa, Mastercard — it prints a "New balance" owed, a minimum payment, a credit limit), "BANK" for a chequing/savings account statement, null if these pages do not show which.',
+    'currency: the ISO 4217 code of the currency the amounts are in, e.g. "CAD", "USD", "EUR" — from a printed code, an account name like "US$ account", or the currency symbol and the bank country; null if these pages do not show it.',
     'periodStart / periodEnd: the statement period as YYYY-MM-DD (null if not on these pages).',
     'hasItemImages: true if these pages show IMAGES or copies of cheques, deposit slips or "items enclosed" (whole pages of them, or some printed below the transactions); else false.',
     'isBankStatement: true if these pages are part of a bank or credit-card statement (including its continuation, summary or terms pages); false ONLY for a document that is clearly something else (an invoice, receipt, letter, tax form…).',
@@ -299,8 +309,14 @@ function assemble(pages) {
         balanceAfter: t.balanceAfter,
         page: t.page,
     }));
+    const verification = (0, reconcile_util_1.reconcileStatement)(stated, pages.map((p, page) => ({ stated: p.stated, rows: rows(page) })));
+    const said = pages.map((p) => p.accountKind).filter(Boolean);
     return {
         accountName: first((p) => p.accountName),
+        accountKind: said.includes('CREDIT_CARD') || verification.balanceSign === -1
+            ? 'CREDIT_CARD'
+            : 'BANK',
+        currency: first((p) => p.currency ?? null),
         bankName: first((p) => p.bankName),
         periodStart: first((p) => p.periodStart),
         periodEnd: first((p) => p.periodEnd),
@@ -308,7 +324,7 @@ function assemble(pages) {
         transactions,
         signFixes: repair.flips,
         imagePages: pages.flatMap((p, page) => p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : []),
-        verification: (0, reconcile_util_1.reconcileStatement)(stated, pages.map((p, page) => ({ stated: p.stated, rows: rows(page) }))),
+        verification,
     };
 }
 function closingOf(pages) {
@@ -418,6 +434,10 @@ function parseExtraction(reply) {
         hasItemImages: raw.hasItemImages === true,
         bankName: str(raw.bankName),
         accountName: str(raw.accountName),
+        accountKind: raw.accountKind === 'BANK' || raw.accountKind === 'CREDIT_CARD'
+            ? raw.accountKind
+            : null,
+        currency: currencyCode(raw.currency),
         periodStart: str(raw.periodStart),
         periodEnd: str(raw.periodEnd),
         stated: {
@@ -445,5 +465,11 @@ function parseExtraction(reply) {
             offsetAccount: str(t.offsetAccount) ?? chart_of_accounts_1.UNCATEGORIZED,
         })),
     };
+}
+function currencyCode(v) {
+    if (typeof v !== 'string')
+        return null;
+    const code = v.trim().toUpperCase();
+    return /^[A-Z]{3}$/.test(code) ? code : null;
 }
 //# sourceMappingURL=statement-extractor.js.map

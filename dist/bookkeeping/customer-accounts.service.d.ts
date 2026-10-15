@@ -11,6 +11,9 @@ export declare class CustomerAccountsService {
     constructor(prisma: PrismaService);
     list(customerId: number): Promise<AccountView[]>;
     types(customerId: number): Promise<Map<string, AccountType>>;
+    overrides(customerId: number): Promise<Map<string, AccountType>>;
+    setType(customerId: number, account: string, type: AccountType): Promise<void>;
+    resetType(customerId: number, account: string): Promise<void>;
     names(customerId: number): Promise<Set<string>>;
     validCategory(customerId: number, name: string): Promise<string>;
     create(customerId: number, input: {

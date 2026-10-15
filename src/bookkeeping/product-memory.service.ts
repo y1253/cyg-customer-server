@@ -227,11 +227,9 @@ export class ProductMemoryService {
     rows: readonly ItemRow[],
     next: (row: ItemRow) => string,
   ): Promise<void> {
-    const changed: number[] = [];
     const updates = rows.flatMap((row) => {
       const category = next(row);
       if (category === row.offsetAccount) return [];
-      changed.push(row.id);
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
       return [
@@ -246,7 +244,6 @@ export class ProductMemoryService {
     });
     if (!updates.length) return;
     await this.prisma.$transaction(updates);
-    await this.tax.retagRows(customerId, changed);
   }
 }
 

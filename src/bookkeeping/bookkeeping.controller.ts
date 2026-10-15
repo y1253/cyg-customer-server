@@ -51,17 +51,20 @@ import {
   EditTransactionDto,
   RenameTaxLineDto,
   ResetNameRuleDto,
+  ResetAccountTypeDto,
   ResetProductRuleDto,
   SaveSplitsDto,
+  SetAccountTypeDto,
   SaveNameRuleDto,
   SaveProductRuleDto,
   SetAttachmentTransactionDto,
+  SetCurrencyDto,
+  SetNameAgenciesDto,
   UpdateAgencyDto,
-  UpdateNameDto,
-  UpdateTaxDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
+import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
 import {
@@ -70,7 +73,7 @@ import {
   type NamesView,
   type TaxSettingsView,
 } from './tax.service';
-import type { ReportsView } from './reports.util';
+import { UNCLARIFIED_NAME, type ReportsView } from './reports.util';
 import {
   MAX_FILES_PER_REQUEST,
   STATEMENT_UPLOAD_OPTIONS,
@@ -99,6 +102,7 @@ export class BookkeepingController {
     private readonly splits: SplitsService,
     private readonly attachments: AttachmentsService,
     private readonly productMemory: ProductMemoryService,
+    private readonly fx: FxService,
   ) {}
 
   /**
@@ -115,14 +119,6 @@ export class BookkeepingController {
   @Get('tax')
   taxSettings(@Req() req: AuthedRequest): Promise<TaxSettingsView> {
     return this.tax.settings(req.user.customerId);
-  }
-
-  @Patch('tax')
-  setTax(
-    @Req() req: AuthedRequest,
-    @Body() dto: UpdateTaxDto,
-  ): Promise<TaxSettingsView> {
-    return this.tax.setEnabled(req.user.customerId, dto.enabled);
   }
 
   @Post('agencies')
@@ -157,12 +153,17 @@ export class BookkeepingController {
     return this.tax.names(req.user.customerId);
   }
 
-  @Patch('names')
-  updateName(
+  /** Which tax agencies tax one name — the whole set; [] = not taxed (the default). */
+  @Put('names/agencies')
+  setNameAgencies(
     @Req() req: AuthedRequest,
-    @Body() dto: UpdateNameDto,
+    @Body() dto: SetNameAgenciesDto,
   ): Promise<NamesView> {
-    return this.tax.setNameTax(req.user.customerId, dto.name, dto.taxExempt);
+    return this.tax.setNameAgencies(
+      req.user.customerId,
+      dto.name,
+      dto.agencyIds,
+    );
   }
 
   /**
@@ -246,6 +247,12 @@ export class BookkeepingController {
     const raw = dto.category?.trim() || null;
     if (!name && !raw) {
       throw new BadRequestException('Enter a name or choose a category');
+    }
+    // "Unclarified name" stands for the rows with NO name — it is never stored as one.
+    if (name && name.toLowerCase() === UNCLARIFIED_NAME.toLowerCase()) {
+      throw new BadRequestException(
+        `"${UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`,
+      );
     }
     const category = raw
       ? await this.accounts.validCategory(customerId, raw)
@@ -509,5 +516,54 @@ export class BookkeepingController {
     @Body() dto: CreateAccountDto,
   ): Promise<AccountView> {
     return this.accounts.create(req.user.customerId, dto);
+  }
+
+  /**
+   * Move an account to another section ("drag it to Liabilities"). Its rows never change;
+   * every report, the tax kind and the Names tab read the new type at once.
+   */
+  @Put('accounts/type')
+  @HttpCode(204)
+  setAccountType(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetAccountTypeDto,
+  ): Promise<void> {
+    return this.accounts.setType(req.user.customerId, dto.account, dto.type);
+  }
+
+  /** Put a moved account back where the chart (or their own category) puts it. */
+  @Delete('accounts/type')
+  @HttpCode(204)
+  resetAccountType(
+    @Req() req: AuthedRequest,
+    @Body() dto: ResetAccountTypeDto,
+  ): Promise<void> {
+    return this.accounts.resetType(req.user.customerId, dto.account);
+  }
+
+  /** The currency the books are kept in, and the ones we have daily rates for. */
+  @Get('currency')
+  async currency(
+    @Req() req: AuthedRequest,
+  ): Promise<{ home: string; currencies: readonly string[] }> {
+    return {
+      home: await this.fx.home(req.user.customerId),
+      currencies: this.fx.currencies(),
+    };
+  }
+
+  /**
+   * Change the home currency. Nothing is rewritten: every reader converts on read, so the
+   * ledger, reports and exports follow at once.
+   */
+  @Put('currency')
+  async setCurrency(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetCurrencyDto,
+  ): Promise<{ home: string; currencies: readonly string[] }> {
+    return {
+      home: await this.fx.setHome(req.user.customerId, dto.home),
+      currencies: this.fx.currencies(),
+    };
   }
 }

@@ -2,6 +2,7 @@ import { OWNERS_LOAN } from './chart-of-accounts';
 import {
   buildReports,
   RETAINED_EARNINGS,
+  UNCLARIFIED_NAME,
   type ReportRow,
 } from './reports.util';
 
@@ -119,7 +120,9 @@ describe('buildReports', () => {
         date: '2026-09-01',
       },
     ];
-    const r = buildReports(taxed, null, null, ['Federal Tax', 'Input Credit']);
+    const r = buildReports(taxed, null, null, {
+      liabilityAccounts: ['Federal Tax', 'Input Credit'],
+    });
     const bs = r.balanceSheet;
     expect(line(bs.liabilities, 'Federal Tax')).toBe(100);
     expect(line(bs.liabilities, 'Input Credit')).toBe(-6.01);
@@ -144,12 +147,13 @@ describe("the customer's own categories", () => {
       ],
       null,
       null,
-      [],
-      new Map([
-        ['Consulting Fees', 'INCOME'],
-        ['Groceries', 'EXPENSE'],
-        ['Car Loan', 'LIABILITY'],
-      ]),
+      {
+        customTypes: new Map([
+          ['Consulting Fees', 'INCOME'],
+          ['Groceries', 'EXPENSE'],
+          ['Car Loan', 'LIABILITY'],
+        ]),
+      },
     );
     expect(line(r.incomeStatement.income, 'Consulting Fees')).toBe(400);
     expect(line(r.incomeStatement.expenses, 'Groceries')).toBe(80);
@@ -160,17 +164,89 @@ describe("the customer's own categories", () => {
 });
 
 it("lists the customer's own category in the chart before any row uses it", () => {
-  const r = buildReports(
-    [row(100, 'Sales Income')],
-    null,
-    null,
-    [],
-    new Map([['Groceries', 'EXPENSE']]),
-  );
+  const r = buildReports([row(100, 'Sales Income')], null, null, {
+    customTypes: new Map([['Groceries', 'EXPENSE']]),
+  });
   expect(r.accounts.find((a) => a.name === 'Groceries')).toMatchObject({
     type: 'EXPENSE',
     balance: 0,
     count: 0,
   });
   expect(line(r.incomeStatement.expenses, 'Groceries')).toBeUndefined();
+});
+
+describe('a credit card', () => {
+  const AMEX = 'Amex 1009';
+  const card = (amount: number, offsetAccount: string): ReportRow => ({
+    amount,
+    offsetAccount,
+    bankAccount: AMEX,
+    date: '2026-09-10',
+  });
+  // Previous balance $500 OWED (the Starting balance row is −500), $200 of purchases,
+  // a $100 payment → New balance $600 owed.
+  const rows = [
+    card(-500, OWNERS_LOAN),
+    card(-200, 'Office Expense'),
+    card(100, 'Transfer Between Accounts'),
+  ];
+
+  it('is a liability showing the balance owed, and the sheet still balances', () => {
+    const r = buildReports(rows, null, null, { creditCards: new Set([AMEX]) });
+    expect(r.accounts.find((a) => a.name === AMEX)).toMatchObject({
+      type: 'LIABILITY',
+      bank: true,
+      balance: 600,
+    });
+    expect(line(r.balanceSheet.liabilities, AMEX)).toBe(600);
+    expect(line(r.balanceSheet.assets, AMEX)).toBeUndefined();
+    expect(r.balanceSheet.balanced).toBe(true);
+  });
+});
+
+describe('an account the customer moved to another section', () => {
+  it('lands where they put it, in every report', () => {
+    const r = buildReports(
+      [row(-50, 'Transfer Between Accounts'), row(-80, 'Supplies')],
+      null,
+      null,
+      {
+        overrides: new Map([
+          ['Transfer Between Accounts', 'EQUITY'],
+          ['Supplies', 'ASSET'],
+        ]),
+      },
+    );
+    const type = (n: string) => r.accounts.find((a) => a.name === n)?.type;
+    expect(type('Transfer Between Accounts')).toBe('EQUITY');
+    expect(type('Supplies')).toBe('ASSET');
+    expect(line(r.balanceSheet.assets, 'Supplies')).toBe(80);
+    expect(line(r.incomeStatement.expenses, 'Supplies')).toBeUndefined();
+    expect(r.balanceSheet.balanced).toBe(true);
+  });
+
+  it('a bank account can move between balance-sheet sections only', () => {
+    const r = buildReports([row(100, 'Sales Income')], null, null, {
+      overrides: new Map([[BANK, 'INCOME']]),
+    });
+    expect(r.accounts.find((a) => a.name === BANK)?.type).toBe('ASSET');
+  });
+});
+
+it('totals each income-statement line per name, the nameless as Unclarified name', () => {
+  const named = (amount: number, name: string | null): ReportRow => ({
+    ...row(amount, 'Office Expense'),
+    name,
+  });
+  const r = buildReports([
+    named(-30, 'Staples'),
+    named(-20, 'Staples'),
+    named(-70, 'Amazon'),
+    named(-5, null),
+  ]);
+  expect(r.incomeStatement.expenses[0].byName).toEqual([
+    { name: 'Amazon', amount: 70 },
+    { name: 'Staples', amount: 50 },
+    { name: UNCLARIFIED_NAME, amount: 5 },
+  ]);
 });

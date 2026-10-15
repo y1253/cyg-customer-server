@@ -33,7 +33,7 @@ export declare class NameMemoryService {
         scope: EditScope;
     }): Promise<void>;
     private setNameCategory;
-    private categoryOfName;
+    categoryOfName(customerId: number, name: string): Promise<string | null>;
     private ruleKeyForName;
     resetRule(customerId: number, input: {
         matchType: RuleMatchType;
@@ -41,7 +41,6 @@ export declare class NameMemoryService {
     }): Promise<void>;
     private matchingRows;
     private writeRows;
-    private carryTaxSwitch;
 }
 export interface MatchedRow {
     id: number;

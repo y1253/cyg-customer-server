@@ -177,6 +177,8 @@ export class StatementProcessorService {
             status,
             runs,
             accountName: extracted.accountName,
+            accountKind: extracted.accountKind,
+            currency: extracted.currency,
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
             periodEnd: parseIsoDate(extracted.periodEnd),
@@ -200,7 +202,6 @@ export class StatementProcessorService {
         }),
       ]);
       if (!mismatch) {
-        await this.tax.tagStatement(row.customerId, row.id);
         // Cheque / deposit-slip images become attachments on their rows (never fails).
         await this.images.harvest(
           {

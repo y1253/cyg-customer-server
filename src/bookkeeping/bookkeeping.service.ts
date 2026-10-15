@@ -31,6 +31,7 @@ import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
 import { remainderOf, splitTotals } from './splits.util';
 import type { StoredTax } from './tax.service';
+import { FxService, type FxContext, type FxEntry } from './fx.service';
 import { taxSplit } from './tax.util';
 
 export interface StatementView {
@@ -40,6 +41,10 @@ export interface StatementView {
   status: StatementStatus;
   error: string | null;
   accountName: string | null;
+  /** BANK | CREDIT_CARD (null = read before it was recorded). */
+  accountKind: string | null;
+  /** ISO code of its amounts; null = not printed (the home currency). */
+  currency: string | null;
   bankName: string | null;
   /** "Chase 4362 · Sep 2026" — what every ledger row of this statement shows. */
   label: string;
@@ -84,17 +89,88 @@ export interface TransactionView {
    * the bank moved. `split`: a part the customer split off the transaction above by hand,
    * with its own name, category and taxes; the transaction shows what is left of it.
    */
-  kind?: 'opening' | 'tax' | 'split';
+  kind?: 'opening' | 'tax' | 'split' | 'fx';
   /** On a tax row: the agency's rate, a percent. */
   taxRate?: number;
   /** On a tax row: the agency — the key for renaming the line. */
   taxAgencyId?: number;
   /** On a transaction row: its receipts, cheques and voice notes. */
   attachments?: Array<{ id: number; kind: AttachmentKind; filename: string }>;
+  /**
+   * A row of a statement in ANOTHER currency than the customer's home one: that currency,
+   * the rate of its day (null = no rate known yet) and the amount converted. `fx` rows (the
+   * revaluation at a statement's end, never stored) have amount 0 and only `homeAmount`.
+   */
+  currency?: string;
+  fxRate?: number | null;
+  homeAmount?: number;
 }
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
+
+/**
+ * A foreign statement's rows with their rate and home amount, and the revaluation row
+ * (`kind: 'fx'`) at each foreign statement's end, placed above that statement's newest row.
+ */
+function withFx(
+  views: TransactionView[],
+  ctx: FxContext,
+  statements: ReadonlyMap<number, Parameters<typeof statementLabel>[0]>,
+): TransactionView[] {
+  const entries: FxEntry[] = [];
+  const out = views.map((v) => {
+    if (!ctx.isForeign(v.statementId)) return v;
+    const { home, rate } = ctx.convert(
+      v.statementId,
+      v.postingDate ?? v.pendingDate,
+      v.amount,
+    );
+    entries.push({
+      statementId: v.statementId,
+      bankAccount: v.amount < 0 ? v.creditAccount : v.debitAccount,
+      amount: v.amount,
+      home,
+    });
+    return {
+      ...v,
+      currency: ctx.currencyOf(v.statementId),
+      fxRate: rate,
+      homeAmount: home,
+    };
+  });
+  const revalued = new Map(
+    ctx.revaluations(entries).map((r) => [r.statementId, r]),
+  );
+  return out.flatMap((v, i): TransactionView[] => {
+    const r = revalued.get(v.statementId);
+    if (!r || out.findIndex((x) => x.statementId === v.statementId) !== i) {
+      return [v];
+    }
+    const s = statements.get(r.statementId);
+    return [
+      {
+        key: `f:${r.statementId}`,
+        id: 0,
+        statementId: r.statementId,
+        pendingDate: null,
+        postingDate: r.date,
+        description: `Exchange rate on ${r.date}: ${r.rate.toFixed(4)}`,
+        name: null,
+        amount: 0,
+        offsetAccount: r.offsetAccount,
+        debitAccount: r.debitAccount,
+        creditAccount: r.creditAccount,
+        statementLabel: s ? statementLabel(s) : '',
+        kind: 'fx',
+        currency: ctx.currencyOf(r.statementId),
+        fxRate: r.rate,
+        homeAmount: r.homeAmount,
+      },
+      v,
+    ];
+  });
+}
 
 /** A row without its tax, then one line per agency (named by the customer, or as the row). */
 function withTaxLines(
@@ -109,7 +185,7 @@ function withTaxLines(
       (entry, i): TransactionView => ({
         ...p,
         ...entry,
-        key: `x:${lines[i].id}`,
+        key: `x:${p.id}:${lines[i].agencyId}`,
         attachments: undefined,
         name: lines[i].name ?? p.name,
         kind: 'tax',
@@ -132,6 +208,8 @@ function toView(s: BankStatement): StatementView {
     status: s.status,
     error: s.error,
     accountName: s.accountName,
+    accountKind: s.accountKind,
+    currency: s.currency,
     bankName: s.bankName,
     label: statementLabel(s),
     periodStart: day(s.periodStart),
@@ -158,6 +236,7 @@ export class BookkeepingService {
     private readonly processor: StatementProcessorService,
     private readonly tax: TaxService,
     private readonly images: StatementImagesService,
+    private readonly fx: FxService,
   ) {}
 
   /**
@@ -224,8 +303,8 @@ export class BookkeepingService {
   }
 
   /**
-   * Generate: queue every UPLOADED statement for reading, and re-run the tax step over the
-   * statements already read when the tax settings changed since the last run.
+   * Generate: queue every UPLOADED statement for reading. (Tax needs no run: it is decided
+   * per name on read.) `taxing` is always false, kept for the client.
    */
   async generate(
     customerId: number,
@@ -235,10 +314,7 @@ export class BookkeepingService {
       data: { status: StatementStatus.PENDING },
     });
     if (count) this.processor.processSoon();
-    const taxing =
-      (await this.tax.needsRetag(customerId)) &&
-      (await this.tax.retagCustomer(customerId));
-    return { queued: count, taxing };
+    return { queued: count, taxing: false };
   }
 
   async list(customerId: number): Promise<StatementView[]> {
@@ -368,7 +444,7 @@ export class BookkeepingService {
     // Newest first. A taxed row shows its amount without tax, its tax lines directly under
     // it; then its splits, each followed by its own tax lines.
     const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
-    return sorted.flatMap((p): TransactionView[] =>
+    const views = sorted.flatMap((p): TransactionView[] =>
       p.kind
         ? [p]
         : [
@@ -378,6 +454,8 @@ export class BookkeepingService {
             ),
           ],
     );
+    const ctx = await this.fx.context(customerId, statements);
+    return ctx.anyForeign ? withFx(views, ctx, byId) : views;
   }
 
   async file(

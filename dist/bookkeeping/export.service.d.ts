@@ -1,4 +1,5 @@
 import { PrismaService } from '../prisma/prisma.service';
+import { FxService } from './fx.service';
 import { TaxService } from './tax.service';
 export interface LedgerExportRow {
     id: number | null;
@@ -12,6 +13,10 @@ export interface LedgerExportRow {
     statement: string;
     tax?: boolean;
     split?: boolean;
+    statementId?: number;
+    currency?: string;
+    fxRate?: number | null;
+    homeAmount?: number;
 }
 export declare function netOf(rows: Array<{
     amount: number;
@@ -24,7 +29,8 @@ export declare function exportRowWithTaxes(row: Omit<LedgerExportRow, 'tax'>, of
 export declare class LedgerExportService {
     private readonly prisma;
     private readonly tax;
-    constructor(prisma: PrismaService, tax: TaxService);
+    private readonly fx;
+    constructor(prisma: PrismaService, tax: TaxService, fx: FxService);
     rowsFor(customerId: number): Promise<LedgerExportRow[]>;
     excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer>;
     pdf(rows: LedgerExportRow[], customerName: string): Promise<Buffer>;

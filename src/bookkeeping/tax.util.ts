@@ -1,11 +1,16 @@
-import { CHART_OF_ACCOUNTS } from './chart-of-accounts';
+import {
+  CHART_OF_ACCOUNTS,
+  typeFor,
+  type TypeContext,
+} from './chart-of-accounts';
 import { cents } from './reconcile.util';
+import { UNCLARIFIED_NAME } from './reports.util';
 
 export type TaxKind = 'SALES' | 'PURCHASE';
 
 /**
- * An ACTIVE agency, as the tax step sees it: its rate per kind, a percent (10 = 10%).
- * A kind it has no rate for, it never taxes.
+ * An ACTIVE agency: its rate per kind, a percent (10 = 10%). A kind it has no rate for,
+ * it never taxes.
  */
 export interface Agency {
   id: number;
@@ -13,42 +18,19 @@ export interface Agency {
   rates: Partial<Record<TaxKind, number>>;
 }
 
-/** A ledger row the AI may tax. */
-export interface TaxableRow {
-  id: number;
-  description: string;
-  name: string | null;
-  amount: number;
-  offsetAccount: string;
-}
-
-export interface TaxCandidate extends TaxableRow {
-  kind: TaxKind;
-}
-
-/** One stored verdict, ready for `TransactionTax`. */
-export interface TaxLine {
-  transactionId: number;
-  agencyId: number;
-  kind: TaxKind;
-  rate: number;
-  /** Always positive, rounded to cents. */
-  amount: number;
-}
-
 export const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
 
 /**
- * Which kind of tax a row can carry, from its category alone: income → sales tax,
+ * Which kind of tax a row can carry, from its category's type for this customer
+ * (`typeFor`: their own move, their own category, the chart): income → sales tax,
  * expense (Uncategorized included) → purchase tax. Balance-sheet offsets — transfers,
- * card and loan payments, owner money — are never taxed, and neither is an account no
- * longer in the chart.
+ * card and loan payments, owner money, tax agencies — are never taxed.
  */
 export function kindOf(
   offsetAccount: string,
-  customTypes?: ReadonlyMap<string, string>,
+  ctx: TypeContext = {},
 ): TaxKind | null {
-  const type = TYPE_OF.get(offsetAccount) ?? customTypes?.get(offsetAccount);
+  const type = typeFor(offsetAccount, ctx);
   if (type === 'INCOME') return 'SALES';
   if (type === 'EXPENSE') return 'PURCHASE';
   return null;
@@ -59,19 +41,6 @@ export const rateFor = (agency: Agency, kind: TaxKind): number | undefined =>
 
 export const fits = (agency: Agency, kind: TaxKind): boolean =>
   rateFor(agency, kind) !== undefined;
-
-/** The rows worth asking the AI about: a taxable kind with at least one agency of it. */
-export function candidates(
-  rows: TaxableRow[],
-  agencies: Agency[],
-  /** The customer's own categories: an INCOME one is a sale, an EXPENSE one a purchase. */
-  customTypes?: ReadonlyMap<string, string>,
-): TaxCandidate[] {
-  return rows.flatMap((r) => {
-    const kind = kindOf(r.offsetAccount, customTypes);
-    return kind && agencies.some((a) => fits(a, kind)) ? [{ ...r, kind }] : [];
-  });
-}
 
 /**
  * The taxes INCLUDED in a bank amount, one per rate, as positive cents-exact numbers.
@@ -99,49 +68,6 @@ export function includedTaxes(
 /** The tax included in `amount` at `rate` alone (one agency on the row). */
 export const taxAmount = (amount: number, rate: number): number =>
   includedTaxes(amount, [rate])[0];
-
-/**
- * The AI's verdicts as tax lines. Anything it should not have said is dropped: an unknown
- * row or agency id, an agency of the wrong kind, a repeat, or a zero amount.
- */
-export function taxLines(
-  rows: TaxCandidate[],
-  verdicts: Array<{ id: number; agencyIds: number[] }>,
-  agencies: Agency[],
-): TaxLine[] {
-  const rowOf = new Map(rows.map((r) => [r.id, r]));
-  const agencyOf = new Map(agencies.map((a) => [a.id, a]));
-  const seen = new Set<string>();
-  const out: TaxLine[] = [];
-  for (const v of verdicts) {
-    const row = rowOf.get(v.id);
-    if (!row) continue;
-    // Every agency on the row first: an included tax depends on the row's TOTAL rate.
-    const picked: Array<{ agencyId: number; rate: number }> = [];
-    for (const agencyId of v.agencyIds) {
-      const agency = agencyOf.get(agencyId);
-      const key = `${row.id}:${agencyId}`;
-      if (!agency || !fits(agency, row.kind) || seen.has(key)) continue;
-      seen.add(key);
-      picked.push({ agencyId, rate: rateFor(agency, row.kind)! });
-    }
-    const amounts = includedTaxes(
-      row.amount,
-      picked.map((p) => p.rate),
-    );
-    picked.forEach((p, i) => {
-      if (amounts[i] === 0) return;
-      out.push({
-        transactionId: row.id,
-        agencyId: p.agencyId,
-        kind: row.kind,
-        rate: p.rate,
-        amount: amounts[i],
-      });
-    });
-  }
-  return out;
-}
 
 /** A ledger entry as the tax split sees it: the bank side is the one that is not the offset. */
 export interface SplitEntry {
@@ -182,4 +108,59 @@ export function taxSplit<E extends SplitEntry>(
   const taxCents = amounts.reduce((n, a) => n + Math.round(a * 100), 0);
   const net = (cents(parent.amount) - sign * taxCents) / 100;
   return { parent: { ...parent, amount: net }, taxes };
+}
+
+/** The key a payee's agencies are stored under: lower-cased, "Unclarified name" for none. */
+export const nameTaxKey = (name: string | null | undefined): string =>
+  (name?.trim() || UNCLARIFIED_NAME).toLowerCase();
+
+/** A ledger row (or split) as the per-name tax sees it; `amount` is what is left of it. */
+export interface NameTaxRow {
+  id: number;
+  name: string | null;
+  offsetAccount: string;
+  amount: number;
+}
+
+/** One tax on one row, before it is split out of the bank amount (`taxSplit`). */
+export interface NameTax {
+  agencyId: number;
+  agency: string;
+  kind: TaxKind;
+  rate: number;
+}
+
+/**
+ * Which agencies tax which rows — decided by the row's NAME, with no AI (user's decision
+ * 2026-10-14). Each agency picked for the name (`agenciesOf`, keyed `nameTaxKey`) that has
+ * a rate for the row's kind gives it one line: a Customer (income) row takes the SALES
+ * rate, a Supplier (expense) row the PURCHASE rate; balance-sheet rows are never taxed. A
+ * name with no agencies is not taxed — the default. A fully split row (nothing left) gets
+ * none: its splits carry their own. Lines follow the agencies' order (oldest first).
+ */
+export function nameTaxLines(
+  rows: readonly NameTaxRow[],
+  agenciesOf: ReadonlyMap<string, readonly number[]>,
+  agencies: readonly Agency[],
+  ctx: TypeContext = {},
+): Map<number, NameTax[]> {
+  const out = new Map<number, NameTax[]>();
+  if (!agenciesOf.size || !agencies.length) return out;
+  for (const r of rows) {
+    if (cents(r.amount) === 0) continue;
+    const picked = agenciesOf.get(nameTaxKey(r.name));
+    if (!picked?.length) continue;
+    const kind = kindOf(r.offsetAccount, ctx);
+    if (!kind) continue;
+    const lines = agencies
+      .filter((a) => picked.includes(a.id) && fits(a, kind))
+      .map((a) => ({
+        agencyId: a.id,
+        agency: a.name,
+        kind,
+        rate: rateFor(a, kind)!,
+      }));
+    if (lines.length) out.set(r.id, lines);
+  }
+  return out;
 }

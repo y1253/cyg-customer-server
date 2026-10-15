@@ -114,4 +114,20 @@ describe('openingRows', () => {
       creditAccount: 'Bank account',
     });
   });
+
+  it('posts a credit card balance OWED as a debt on the card', () => {
+    // Amex: Previous balance $500 owed → −500 on the card, debit Owner's Loan.
+    const [r] = openingRows([
+      {
+        ...st(1, '2026-01-01', 500, 600, 'Amex 1009'),
+        accountKind: 'CREDIT_CARD',
+      },
+    ]);
+    expect(r).toMatchObject({
+      bankAccount: 'Amex 1009',
+      amount: -500,
+      debitAccount: OWNERS_LOAN,
+      creditAccount: 'Amex 1009',
+    });
+  });
 });

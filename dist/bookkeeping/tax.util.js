@@ -1,16 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.taxAmount = exports.fits = exports.rateFor = exports.TYPE_OF = void 0;
+exports.nameTaxKey = exports.taxAmount = exports.fits = exports.rateFor = exports.TYPE_OF = void 0;
 exports.kindOf = kindOf;
-exports.candidates = candidates;
 exports.includedTaxes = includedTaxes;
-exports.taxLines = taxLines;
 exports.taxSplit = taxSplit;
+exports.nameTaxLines = nameTaxLines;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const reconcile_util_1 = require("./reconcile.util");
+const reports_util_1 = require("./reports.util");
 exports.TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
-function kindOf(offsetAccount, customTypes) {
-    const type = exports.TYPE_OF.get(offsetAccount) ?? customTypes?.get(offsetAccount);
+function kindOf(offsetAccount, ctx = {}) {
+    const type = (0, chart_of_accounts_1.typeFor)(offsetAccount, ctx);
     if (type === 'INCOME')
         return 'SALES';
     if (type === 'EXPENSE')
@@ -21,12 +21,6 @@ const rateFor = (agency, kind) => agency.rates[kind];
 exports.rateFor = rateFor;
 const fits = (agency, kind) => (0, exports.rateFor)(agency, kind) !== undefined;
 exports.fits = fits;
-function candidates(rows, agencies, customTypes) {
-    return rows.flatMap((r) => {
-        const kind = kindOf(r.offsetAccount, customTypes);
-        return kind && agencies.some((a) => (0, exports.fits)(a, kind)) ? [{ ...r, kind }] : [];
-    });
-}
 function includedTaxes(amount, rates) {
     const total = rates.reduce((n, r) => n + r, 0);
     if (!rates.length || total <= 0)
@@ -40,39 +34,6 @@ function includedTaxes(amount, rates) {
 }
 const taxAmount = (amount, rate) => includedTaxes(amount, [rate])[0];
 exports.taxAmount = taxAmount;
-function taxLines(rows, verdicts, agencies) {
-    const rowOf = new Map(rows.map((r) => [r.id, r]));
-    const agencyOf = new Map(agencies.map((a) => [a.id, a]));
-    const seen = new Set();
-    const out = [];
-    for (const v of verdicts) {
-        const row = rowOf.get(v.id);
-        if (!row)
-            continue;
-        const picked = [];
-        for (const agencyId of v.agencyIds) {
-            const agency = agencyOf.get(agencyId);
-            const key = `${row.id}:${agencyId}`;
-            if (!agency || !(0, exports.fits)(agency, row.kind) || seen.has(key))
-                continue;
-            seen.add(key);
-            picked.push({ agencyId, rate: (0, exports.rateFor)(agency, row.kind) });
-        }
-        const amounts = includedTaxes(row.amount, picked.map((p) => p.rate));
-        picked.forEach((p, i) => {
-            if (amounts[i] === 0)
-                return;
-            out.push({
-                transactionId: row.id,
-                agencyId: p.agencyId,
-                kind: row.kind,
-                rate: p.rate,
-                amount: amounts[i],
-            });
-        });
-    }
-    return out;
-}
 function taxSplit(parent, lines) {
     if (!lines.length)
         return { parent, taxes: [] };
@@ -88,5 +49,33 @@ function taxSplit(parent, lines) {
     const taxCents = amounts.reduce((n, a) => n + Math.round(a * 100), 0);
     const net = ((0, reconcile_util_1.cents)(parent.amount) - sign * taxCents) / 100;
     return { parent: { ...parent, amount: net }, taxes };
+}
+const nameTaxKey = (name) => (name?.trim() || reports_util_1.UNCLARIFIED_NAME).toLowerCase();
+exports.nameTaxKey = nameTaxKey;
+function nameTaxLines(rows, agenciesOf, agencies, ctx = {}) {
+    const out = new Map();
+    if (!agenciesOf.size || !agencies.length)
+        return out;
+    for (const r of rows) {
+        if ((0, reconcile_util_1.cents)(r.amount) === 0)
+            continue;
+        const picked = agenciesOf.get((0, exports.nameTaxKey)(r.name));
+        if (!picked?.length)
+            continue;
+        const kind = kindOf(r.offsetAccount, ctx);
+        if (!kind)
+            continue;
+        const lines = agencies
+            .filter((a) => picked.includes(a.id) && (0, exports.fits)(a, kind))
+            .map((a) => ({
+            agencyId: a.id,
+            agency: a.name,
+            kind,
+            rate: (0, exports.rateFor)(a, kind),
+        }));
+        if (lines.length)
+            out.set(r.id, lines);
+    }
+    return out;
 }
 //# sourceMappingURL=tax.util.js.map

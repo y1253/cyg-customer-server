@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.UpdateNameDto = exports.UpdateTaxDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -83,30 +83,24 @@ __decorate([
     (0, class_validator_1.IsBoolean)(),
     __metadata("design:type", Boolean)
 ], UpdateAgencyDto.prototype, "active", void 0);
-class UpdateTaxDto {
-    enabled;
-}
-exports.UpdateTaxDto = UpdateTaxDto;
-__decorate([
-    (0, class_validator_1.IsBoolean)(),
-    __metadata("design:type", Boolean)
-], UpdateTaxDto.prototype, "enabled", void 0);
-class UpdateNameDto {
+class SetNameAgenciesDto {
     name;
-    taxExempt;
+    agencyIds;
 }
-exports.UpdateNameDto = UpdateNameDto;
+exports.SetNameAgenciesDto = SetNameAgenciesDto;
 __decorate([
     (0, class_transformer_1.Transform)(trim),
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsNotEmpty)(),
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
-], UpdateNameDto.prototype, "name", void 0);
+], SetNameAgenciesDto.prototype, "name", void 0);
 __decorate([
-    (0, class_validator_1.IsBoolean)(),
-    __metadata("design:type", Boolean)
-], UpdateNameDto.prototype, "taxExempt", void 0);
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(50),
+    (0, class_validator_1.IsInt)({ each: true }),
+    __metadata("design:type", Array)
+], SetNameAgenciesDto.prototype, "agencyIds", void 0);
 class SaveNameRuleDto {
     matchType;
     matchKey;
@@ -229,6 +223,42 @@ __decorate([
     (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY']),
     __metadata("design:type", String)
 ], CreateAccountDto.prototype, "type", void 0);
+class SetCurrencyDto {
+    home;
+}
+exports.SetCurrencyDto = SetCurrencyDto;
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^[A-Za-z]{3}$/),
+    __metadata("design:type", String)
+], SetCurrencyDto.prototype, "home", void 0);
+class SetAccountTypeDto {
+    account;
+    type;
+}
+exports.SetAccountTypeDto = SetAccountTypeDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SetAccountTypeDto.prototype, "account", void 0);
+__decorate([
+    (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY']),
+    __metadata("design:type", String)
+], SetAccountTypeDto.prototype, "type", void 0);
+class ResetAccountTypeDto {
+    account;
+}
+exports.ResetAccountTypeDto = ResetAccountTypeDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], ResetAccountTypeDto.prototype, "account", void 0);
 class SplitDto {
     id;
     name;

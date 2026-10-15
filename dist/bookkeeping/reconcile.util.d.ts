@@ -27,6 +27,7 @@ export interface ReconcileResult {
     verification: Verification;
     checks: Check[];
     suspectPages: number[];
+    balanceSign: 1 | -1;
 }
 export declare const cents: (n: number) => number;
 export declare function reconcile(stated: StatedFigures, rows: ReconcileRow[]): ReconcileResult;

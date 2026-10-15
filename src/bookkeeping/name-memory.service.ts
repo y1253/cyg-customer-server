@@ -315,8 +315,8 @@ export class NameMemoryService {
         name,
         category: row.offsetAccount,
       }));
-      // "Tax applies" lives on the payee NAME, so a rename carries it over.
-      await this.carryTaxSwitch(customerId, [...names], name);
+      // The tax agencies live on the payee NAME, so a rename carries them over.
+      await this.tax.carryAgencies(customerId, [...names], name);
       const adopt = category ?? target;
       if (adopt) await this.setNameCategory(customerId, name, adopt);
       return;
@@ -513,7 +513,8 @@ export class NameMemoryService {
    * The category a name already has for this customer: their own choice, else the firm
    * memory's, else what most of their rows of it are in. Null for a name new to everyone.
    */
-  private async categoryOfName(
+  /** The category a name has for this customer: their rule, the firm memory, their rows. */
+  async categoryOfName(
     customerId: number,
     name: string,
   ): Promise<string | null> {
@@ -645,9 +646,9 @@ export class NameMemoryService {
   }
 
   /**
-   * Apply `next` to these rows, then re-decide THEIR taxes at once (`TaxService.retagRows`),
-   * so the ledger, the chart of accounts and the income statement are right as soon as the
-   * request returns — no Generate. A failed re-tag leaves the "Generate" hint instead.
+   * Apply `next` to these rows. Their taxes follow by themselves — they are decided by the
+   * row's name and category on read (`TaxService.linesFor`), so the ledger, the chart of
+   * accounts and the income statement are right as soon as the request returns.
    * `manual` flags the rows as a one-time edit (or, false, leaves the flag as it is).
    */
   private async writeRows(
@@ -656,11 +657,9 @@ export class NameMemoryService {
     next: (row: MatchedRow) => { name: string | null; category: string },
     manual = false,
   ): Promise<void> {
-    const changed: number[] = [];
     const updates = rows.flatMap((row) => {
       const { name, category } = next(row);
       if (name === row.name && category === row.offsetAccount) return [];
-      changed.push(row.id);
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
       return [
@@ -677,25 +676,6 @@ export class NameMemoryService {
     });
     if (!updates.length) return;
     await this.prisma.$transaction(updates);
-    // A new category can change which rows are taxed, and how.
-    await this.tax.retagRows(customerId, changed);
-  }
-
-  private async carryTaxSwitch(
-    customerId: number,
-    oldNames: string[],
-    newName: string,
-  ): Promise<void> {
-    const exempt = await this.prisma.ledgerName.findFirst({
-      where: { customerId, name: { in: oldNames }, taxExempt: true },
-      select: { id: true },
-    });
-    if (!exempt) return;
-    await this.prisma.ledgerName.upsert({
-      where: { customerId_name: { customerId, name: newName } },
-      create: { customerId, name: newName, taxExempt: true },
-      update: { taxExempt: true },
-    });
   }
 }
 

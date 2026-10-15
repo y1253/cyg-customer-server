@@ -167,12 +167,10 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
         }));
     }
     async writeRows(customerId, rows, next) {
-        const changed = [];
         const updates = rows.flatMap((row) => {
             const category = next(row);
             if (category === row.offsetAccount)
                 return [];
-            changed.push(row.id);
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
             return [
                 this.prisma.bankTransaction.update({
@@ -187,7 +185,6 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
         if (!updates.length)
             return;
         await this.prisma.$transaction(updates);
-        await this.tax.retagRows(customerId, changed);
     }
 };
 exports.ProductMemoryService = ProductMemoryService;

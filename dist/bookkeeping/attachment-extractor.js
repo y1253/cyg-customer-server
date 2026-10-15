@@ -14,6 +14,7 @@ exports.cleanReading = cleanReading;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const openai_client_1 = require("../ai/openai.client");
+const chart_of_accounts_1 = require("./chart-of-accounts");
 class UnreadableAttachmentError extends Error {
 }
 exports.UnreadableAttachmentError = UnreadableAttachmentError;
@@ -33,6 +34,7 @@ const READING_SCHEMA = {
         'checkNumber',
         'payee',
         'memo',
+        'category',
     ],
     properties: {
         kind: { type: 'string', enum: ['RECEIPT', 'CHECK', 'OTHER'] },
@@ -53,6 +55,7 @@ const READING_SCHEMA = {
         checkNumber: text,
         payee: text,
         memo: text,
+        category: { type: ['string', 'null'], enum: [...chart_of_accounts_1.ACCOUNT_NAMES, null] },
     },
 };
 const READ_RULES = `
@@ -67,7 +70,11 @@ Return:
   and discount-only lines. A line bought several times is one item with its line total.
   NEVER invent an item — an empty list is correct when the lines cannot be read.
   Use a short readable name ("Pampers Size 4", not "PMPRS SZ4 0371").
-- checkNumber, payee, memo: for a cheque (payee = who it is made out to); else null.`;
+- checkNumber, payee, memo: for a cheque (payee = who it is made out to); else null.
+- category: for a cheque, the bookkeeping account the payment most likely belongs to,
+  judged from the payee and the memo (a landlord -> Rent, a contractor -> Contractors,
+  a person paid wages -> Payroll & Wages); "Uncategorized" when unclear; null for
+  anything that is not a cheque.`;
 const DOCUMENT_PROMPT = 'You read a receipt, invoice or cheque photographed or scanned for bookkeeping. ' +
     'Copy what is printed; never guess a number that is not there.' +
     READ_RULES;
@@ -219,6 +226,9 @@ function cleanReading(r) {
         checkNumber: str(r.checkNumber, 32),
         payee: str(r.payee),
         memo: str(r.memo, 255),
+        category: typeof r.category === 'string' && chart_of_accounts_1.ACCOUNT_NAMES.includes(r.category)
+            ? r.category
+            : null,
     };
 }
 //# sourceMappingURL=attachment-extractor.js.map

@@ -1,4 +1,5 @@
 import {
+  chequeAmountMatch,
   chequeNumberMatch,
   statementImageRef,
   statementOf,
@@ -110,5 +111,36 @@ describe('statement image refs', () => {
     expect(statementOf(statementImageRef(42, 2, 0))).toBe(42);
     expect(statementOf('SM123:0')).toBeNull();
     expect(statementOf(null)).toBeNull();
+  });
+});
+
+describe('chequeAmountMatch (a cheque image cut out of its own statement)', () => {
+  const cheque = (id: number, amount: number, description: string) => ({
+    ...row(id, amount, '2026-09-03'),
+    description,
+  });
+
+  it("matches the statement's ONE cheque row at the exact amount", () => {
+    const list = [
+      cheque(1, -250, 'CHEQUE 1042'),
+      cheque(2, -250, 'POS WALMART'),
+      cheque(3, -90, 'CHQ#1043'),
+    ];
+    expect(chequeAmountMatch(250, list)?.id).toBe(1);
+  });
+
+  it('refuses when two cheques share the amount, or one already holds it', () => {
+    expect(
+      chequeAmountMatch(250, [
+        cheque(1, -250, 'CHEQUE 1'),
+        cheque(2, -250, 'Check 2'),
+      ]),
+    ).toBeNull();
+    expect(
+      chequeAmountMatch(250, [
+        { ...cheque(1, -250, 'CHEQUE 1'), attachedTotals: [25000] },
+      ]),
+    ).toBeNull();
+    expect(chequeAmountMatch(null, [cheque(1, -250, 'CHEQUE 1')])).toBeNull();
   });
 });

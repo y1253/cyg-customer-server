@@ -1,9 +1,17 @@
 import { type AccountType } from './chart-of-accounts';
+export declare const UNCLARIFIED_NAME = "Unclarified name";
 export interface ReportRow {
     amount: number;
     offsetAccount: string;
     bankAccount: string | null;
     date: string | null;
+    name?: string | null;
+}
+export interface ReportOptions {
+    liabilityAccounts?: string[];
+    customTypes?: ReadonlyMap<string, AccountType>;
+    overrides?: ReadonlyMap<string, AccountType>;
+    creditCards?: ReadonlySet<string>;
 }
 export interface AccountBalance {
     name: string;
@@ -15,6 +23,8 @@ export interface AccountBalance {
 export interface ReportLine {
     name: string;
     amount: number;
+    bank?: boolean;
+    byName?: ReportLine[];
 }
 export interface ReportsView {
     from: string | null;
@@ -42,6 +52,7 @@ export interface ReportsView {
         count: number;
         amount: number;
     };
+    moved: string[];
 }
 export declare const RETAINED_EARNINGS = "Retained Earnings";
-export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null, liabilityAccounts?: string[], customTypes?: ReadonlyMap<string, AccountType>): ReportsView;
+export declare function buildReports(rows: ReportRow[], from?: string | null, to?: string | null, options?: ReportOptions): ReportsView;

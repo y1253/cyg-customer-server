@@ -1,6 +1,7 @@
 export interface OpeningStatement {
     id: number;
     accountName: string | null;
+    accountKind?: string | null;
     openingBalance: number | null;
     closingBalance: number | null;
     periodStart: Date | null;
@@ -18,12 +19,16 @@ export interface OpeningRow {
 }
 export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[]): OpeningRow[];
+export declare const CREDIT_CARD = "CREDIT_CARD";
+export declare const isCreditCard: (kind: string | null | undefined) => boolean;
 export declare const num: (d: {
     toString(): string;
 } | null) => number | null;
 export declare const OPENING_STATEMENT_SELECT: {
     readonly id: true;
     readonly accountName: true;
+    readonly accountKind: true;
+    readonly currency: true;
     readonly bankName: true;
     readonly filename: true;
     readonly openingBalance: true;

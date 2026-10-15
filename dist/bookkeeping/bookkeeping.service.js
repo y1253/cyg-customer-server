@@ -26,8 +26,58 @@ const statement_processor_service_1 = require("./statement-processor.service");
 const statement_images_service_1 = require("./statement-images.service");
 const tax_service_1 = require("./tax.service");
 const splits_util_1 = require("./splits.util");
+const fx_service_1 = require("./fx.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
+function withFx(views, ctx, statements) {
+    const entries = [];
+    const out = views.map((v) => {
+        if (!ctx.isForeign(v.statementId))
+            return v;
+        const { home, rate } = ctx.convert(v.statementId, v.postingDate ?? v.pendingDate, v.amount);
+        entries.push({
+            statementId: v.statementId,
+            bankAccount: v.amount < 0 ? v.creditAccount : v.debitAccount,
+            amount: v.amount,
+            home,
+        });
+        return {
+            ...v,
+            currency: ctx.currencyOf(v.statementId),
+            fxRate: rate,
+            homeAmount: home,
+        };
+    });
+    const revalued = new Map(ctx.revaluations(entries).map((r) => [r.statementId, r]));
+    return out.flatMap((v, i) => {
+        const r = revalued.get(v.statementId);
+        if (!r || out.findIndex((x) => x.statementId === v.statementId) !== i) {
+            return [v];
+        }
+        const s = statements.get(r.statementId);
+        return [
+            {
+                key: `f:${r.statementId}`,
+                id: 0,
+                statementId: r.statementId,
+                pendingDate: null,
+                postingDate: r.date,
+                description: `Exchange rate on ${r.date}: ${r.rate.toFixed(4)}`,
+                name: null,
+                amount: 0,
+                offsetAccount: r.offsetAccount,
+                debitAccount: r.debitAccount,
+                creditAccount: r.creditAccount,
+                statementLabel: s ? (0, statement_label_1.statementLabel)(s) : '',
+                kind: 'fx',
+                currency: ctx.currencyOf(r.statementId),
+                fxRate: r.rate,
+                homeAmount: r.homeAmount,
+            },
+            v,
+        ];
+    });
+}
 function withTaxLines(p, lines) {
     if (!lines?.length)
         return [p];
@@ -37,7 +87,7 @@ function withTaxLines(p, lines) {
         ...split.taxes.map((entry, i) => ({
             ...p,
             ...entry,
-            key: `x:${lines[i].id}`,
+            key: `x:${p.id}:${lines[i].agencyId}`,
             attachments: undefined,
             name: lines[i].name ?? p.name,
             kind: 'tax',
@@ -54,6 +104,8 @@ function toView(s) {
         status: s.status,
         error: s.error,
         accountName: s.accountName,
+        accountKind: s.accountKind,
+        currency: s.currency,
         bankName: s.bankName,
         label: (0, statement_label_1.statementLabel)(s),
         periodStart: day(s.periodStart),
@@ -70,14 +122,16 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     processor;
     tax;
     images;
+    fx;
     logger = new common_1.Logger(BookkeepingService_1.name);
-    constructor(prisma, storage, openai, processor, tax, images) {
+    constructor(prisma, storage, openai, processor, tax, images, fx) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
         this.tax = tax;
         this.images = images;
+        this.fx = fx;
     }
     async upload(customerId, files) {
         try {
@@ -124,9 +178,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
         if (count)
             this.processor.processSoon();
-        const taxing = (await this.tax.needsRetag(customerId)) &&
-            (await this.tax.retagCustomer(customerId));
-        return { queued: count, taxing };
+        return { queued: count, taxing: false };
     }
     async list(customerId) {
         const rows = await this.prisma.bankStatement.findMany({
@@ -235,12 +287,14 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         ];
         const sorted = keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
-        return sorted.flatMap((p) => p.kind
+        const views = sorted.flatMap((p) => p.kind
             ? [p]
             : [
                 ...withTaxLines(p, taxes.get(p.id)),
                 ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id))),
             ]);
+        const ctx = await this.fx.context(customerId, statements);
+        return ctx.anyForeign ? withFx(views, ctx, byId) : views;
     }
     async file(customerId, id) {
         const s = await this.owned(customerId, id);
@@ -296,6 +350,7 @@ exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decor
         openai_client_1.OpenAiClient,
         statement_processor_service_1.StatementProcessorService,
         tax_service_1.TaxService,
-        statement_images_service_1.StatementImagesService])
+        statement_images_service_1.StatementImagesService,
+        fx_service_1.FxService])
 ], BookkeepingService);
 //# sourceMappingURL=bookkeeping.service.js.map

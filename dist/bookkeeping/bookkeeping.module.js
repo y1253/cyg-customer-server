@@ -16,6 +16,7 @@ const attachments_service_1 = require("./attachments.service");
 const bookkeeping_controller_1 = require("./bookkeeping.controller");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
+const fx_service_1 = require("./fx.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
 const product_categorizer_1 = require("./product-categorizer");
@@ -39,6 +40,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             attachments_service_1.AttachmentsService,
             bookkeeping_service_1.BookkeepingService,
             customer_accounts_service_1.CustomerAccountsService,
+            fx_service_1.FxService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
             openai_client_1.OpenAiClient,

@@ -1,8 +1,12 @@
 import {
   CHART_OF_ACCOUNTS,
+  typeFor,
   UNCATEGORIZED,
   type AccountType,
 } from './chart-of-accounts';
+
+/** How a row with no payee is listed by name (never stored — the DB keeps null). */
+export const UNCLARIFIED_NAME = 'Unclarified name';
 
 /** One ledger row, as the reports need it. */
 export interface ReportRow {
@@ -13,6 +17,20 @@ export interface ReportRow {
   bankAccount: string | null;
   /** YYYY-MM-DD the row counts on; null when the statement printed no date. */
   date: string | null;
+  /** The payee, for the income statement's per-name totals; null = Unclarified name. */
+  name?: string | null;
+}
+
+/** What else decides the reports, besides the rows (all optional). */
+export interface ReportOptions {
+  /** Tax agencies: LIABILITY accounts outside the chart. */
+  liabilityAccounts?: string[];
+  /** The customer's OWN categories (`CustomerAccount`) and the type they picked. */
+  customTypes?: ReadonlyMap<string, AccountType>;
+  /** Accounts the customer moved to another section (`CustomerAccountType`). */
+  overrides?: ReadonlyMap<string, AccountType>;
+  /** Statement accounts that are credit cards — a LIABILITY, the balance owed shown positive. */
+  creditCards?: ReadonlySet<string>;
 }
 
 export interface AccountBalance {
@@ -29,6 +47,10 @@ export interface AccountBalance {
 export interface ReportLine {
   name: string;
   amount: number;
+  /** A statement account (bank / card) itself. */
+  bank?: boolean;
+  /** Income statement only: the account's total per payee, largest first. */
+  byName?: ReportLine[];
 }
 
 export interface ReportsView {
@@ -57,13 +79,13 @@ export interface ReportsView {
   };
   /** Rows the AI could not place, so the customer knows the reports are incomplete. */
   uncategorized: { count: number; amount: number };
+  /** Accounts the customer moved to another section (they can be put back). */
+  moved: string[];
 }
 
 export const RETAINED_EARNINGS = 'Retained Earnings';
 
 const TYPE_OF = new Map(CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
-/** An account no longer in the chart (renamed) still has to land somewhere. */
-const chartType = (name: string): AccountType => TYPE_OF.get(name) ?? 'EXPENSE';
 
 /** Credit-normal accounts grow with money IN; debit-normal ones with money OUT. */
 const CREDIT_NORMAL: ReadonlySet<AccountType> = new Set([
@@ -89,6 +111,8 @@ interface Tally {
 function tally(rows: ReportRow[], from: string | null, to: string | null) {
   const offsets = new Map<string, Tally>();
   const banks = new Map<string, Tally>();
+  /** offset account → payee → Σ cents. */
+  const names = new Map<string, Map<string, number>>();
   const add = (m: Map<string, Tally>, key: string, c: number) => {
     const t = m.get(key) ?? { sum: 0, count: 0 };
     t.sum += c;
@@ -102,20 +126,33 @@ function tally(rows: ReportRow[], from: string | null, to: string | null) {
     const c = cents(r.amount);
     add(offsets, r.offsetAccount, c);
     if (r.bankAccount !== null) add(banks, r.bankAccount, c);
+    const per = names.get(r.offsetAccount) ?? new Map<string, number>();
+    const who = r.name?.trim() || UNCLARIFIED_NAME;
+    per.set(who, (per.get(who) ?? 0) + c);
+    names.set(r.offsetAccount, per);
   }
-  return { offsets, banks };
+  return { offsets, banks, names };
 }
 
 /** The offset account's balance on its normal side, in cents. */
 const normal = (type: AccountType, sum: number): number =>
   CREDIT_NORMAL.has(type) ? sum : -sum;
+/** A statement account's own balance on its normal side (Σ amount is from ITS side). */
+const bankNormal = (type: AccountType, sum: number): number =>
+  -normal(type, sum);
+const BALANCE_SHEET: ReadonlySet<AccountType> = new Set([
+  'ASSET',
+  'LIABILITY',
+  'EQUITY',
+]);
 
 /**
  * Chart of accounts, income statement and balance sheet from the ledger.
  *
- * Every row is a double entry between a bank account (an asset) and its offset account,
- * so the balance sheet balances by construction: cash = Σ amount, and every Σ amount
+ * Every row is a double entry between a statement account and its offset account, so the
+ * balance sheet balances by construction: the account = Σ amount, and every Σ amount
  * lands on the other side in an income, expense, asset, liability or equity account.
+ * A bank account is an asset; a CREDIT CARD a liability (Σ amount is −owed, shown +owed).
  * The bank's printed starting balances arrive as rows too ("Starting balance" →
  * Owner's Loan, `opening-balance.util.ts`), and net income to date is Retained Earnings.
  */
@@ -123,21 +160,27 @@ export function buildReports(
   rows: ReportRow[],
   from: string | null = null,
   to: string | null = null,
-  /** Tax agencies: LIABILITY accounts outside the chart. */
-  liabilityAccounts: string[] = [],
-  /** The customer's OWN categories (`CustomerAccount`) and the type they picked. */
-  customTypes: ReadonlyMap<string, AccountType> = new Map(),
+  options: ReportOptions = {},
 ): ReportsView {
+  const customTypes = options.customTypes ?? new Map<string, AccountType>();
+  const overrides = options.overrides ?? new Map<string, AccountType>();
   const bankNames = [
     ...new Set(
       rows.map((r) => r.bankAccount).filter((b): b is string => b !== null),
     ),
   ].sort();
-  const liabilitySet = new Set(liabilityAccounts);
-  const typeOf = (name: string): AccountType =>
-    liabilitySet.has(name)
-      ? 'LIABILITY'
-      : (customTypes.get(name) ?? chartType(name));
+  const ctx = {
+    overrides,
+    liabilities: new Set(options.liabilityAccounts ?? []),
+    custom: customTypes,
+  };
+  const typeOf = (name: string): AccountType => typeFor(name, ctx);
+  /** A statement account's section: a card is a liability; a move keeps it on the sheet. */
+  const bankType = (name: string): AccountType => {
+    const moved = overrides.get(name);
+    if (moved && BALANCE_SHEET.has(moved)) return moved;
+    return options.creditCards?.has(name) ? 'LIABILITY' : 'ASSET';
+  };
 
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);
@@ -154,11 +197,12 @@ export function buildReports(
   const accounts: AccountBalance[] = [
     ...bankNames.map((name) => {
       const t = period.banks.get(name);
+      const type = bankType(name);
       return {
         name,
-        type: 'ASSET' as const,
+        type,
         bank: true,
-        balance: dollars(t?.sum ?? 0),
+        balance: dollars(bankNormal(type, t?.sum ?? 0)),
         count: t?.count ?? 0,
       };
     }),
@@ -175,10 +219,19 @@ export function buildReports(
     }),
   ];
 
+  const byName = (account: string, type: AccountType): ReportLine[] =>
+    [...(period.names.get(account) ?? new Map<string, number>())]
+      .map(([name, sum]) => ({ name, amount: dollars(normal(type, sum)) }))
+      .filter((l) => l.amount !== 0)
+      .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name));
   const lines = (type: AccountType): ReportLine[] =>
     accounts
       .filter((a) => !a.bank && a.type === type && a.count > 0)
-      .map((a) => ({ name: a.name, amount: a.balance }));
+      .map((a) => ({
+        name: a.name,
+        amount: a.balance,
+        byName: byName(a.name, type),
+      }));
   const total = (ls: ReportLine[]): number =>
     dollars(ls.reduce((s, l) => s + cents(l.amount), 0));
 
@@ -200,15 +253,18 @@ export function buildReports(
       .reduce((s, [, t]) => s + t.sum, 0),
   );
 
-  const assets: ReportLine[] = [
-    ...bankNames.map((name) => ({
-      name,
-      amount: dollars(all.banks.get(name)?.sum ?? 0),
-    })),
-    ...sheetLines('ASSET'),
-  ];
-  const liabilities = sheetLines('LIABILITY');
+  const banksIn = (type: AccountType): ReportLine[] =>
+    bankNames
+      .filter((name) => bankType(name) === type)
+      .map((name) => ({
+        name,
+        bank: true,
+        amount: dollars(bankNormal(type, all.banks.get(name)?.sum ?? 0)),
+      }));
+  const assets: ReportLine[] = [...banksIn('ASSET'), ...sheetLines('ASSET')];
+  const liabilities = [...banksIn('LIABILITY'), ...sheetLines('LIABILITY')];
   const equity: ReportLine[] = [
+    ...banksIn('EQUITY'),
     ...sheetLines('EQUITY'),
     { name: RETAINED_EARNINGS, amount: netToDate },
   ];
@@ -246,5 +302,6 @@ export function buildReports(
       count: unc?.count ?? 0,
       amount: dollars(-(unc?.sum ?? 0)),
     },
+    moved: [...overrides.keys()],
   };
 }

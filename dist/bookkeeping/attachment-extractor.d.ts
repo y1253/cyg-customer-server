@@ -16,6 +16,7 @@ export interface AttachmentReading {
     checkNumber: string | null;
     payee: string | null;
     memo: string | null;
+    category?: string | null;
     transcript?: string;
 }
 export declare class UnreadableAttachmentError extends Error {

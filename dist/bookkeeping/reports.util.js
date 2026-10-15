@@ -1,11 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RETAINED_EARNINGS = void 0;
+exports.RETAINED_EARNINGS = exports.UNCLARIFIED_NAME = void 0;
 exports.buildReports = buildReports;
 const chart_of_accounts_1 = require("./chart-of-accounts");
+exports.UNCLARIFIED_NAME = 'Unclarified name';
 exports.RETAINED_EARNINGS = 'Retained Earnings';
 const TYPE_OF = new Map(chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => [a.name, a.type]));
-const chartType = (name) => TYPE_OF.get(name) ?? 'EXPENSE';
 const CREDIT_NORMAL = new Set([
     'INCOME',
     'LIABILITY',
@@ -16,6 +16,7 @@ const dollars = (c) => c / 100 + 0;
 function tally(rows, from, to) {
     const offsets = new Map();
     const banks = new Map();
+    const names = new Map();
     const add = (m, key, c) => {
         const t = m.get(key) ?? { sum: 0, count: 0 };
         t.sum += c;
@@ -33,18 +34,38 @@ function tally(rows, from, to) {
         add(offsets, r.offsetAccount, c);
         if (r.bankAccount !== null)
             add(banks, r.bankAccount, c);
+        const per = names.get(r.offsetAccount) ?? new Map();
+        const who = r.name?.trim() || exports.UNCLARIFIED_NAME;
+        per.set(who, (per.get(who) ?? 0) + c);
+        names.set(r.offsetAccount, per);
     }
-    return { offsets, banks };
+    return { offsets, banks, names };
 }
 const normal = (type, sum) => CREDIT_NORMAL.has(type) ? sum : -sum;
-function buildReports(rows, from = null, to = null, liabilityAccounts = [], customTypes = new Map()) {
+const bankNormal = (type, sum) => -normal(type, sum);
+const BALANCE_SHEET = new Set([
+    'ASSET',
+    'LIABILITY',
+    'EQUITY',
+]);
+function buildReports(rows, from = null, to = null, options = {}) {
+    const customTypes = options.customTypes ?? new Map();
+    const overrides = options.overrides ?? new Map();
     const bankNames = [
         ...new Set(rows.map((r) => r.bankAccount).filter((b) => b !== null)),
     ].sort();
-    const liabilitySet = new Set(liabilityAccounts);
-    const typeOf = (name) => liabilitySet.has(name)
-        ? 'LIABILITY'
-        : (customTypes.get(name) ?? chartType(name));
+    const ctx = {
+        overrides,
+        liabilities: new Set(options.liabilityAccounts ?? []),
+        custom: customTypes,
+    };
+    const typeOf = (name) => (0, chart_of_accounts_1.typeFor)(name, ctx);
+    const bankType = (name) => {
+        const moved = overrides.get(name);
+        if (moved && BALANCE_SHEET.has(moved))
+            return moved;
+        return options.creditCards?.has(name) ? 'LIABILITY' : 'ASSET';
+    };
     const period = tally(rows, from, to);
     const chartNames = chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => a.name);
     const own = [...customTypes.keys()].filter((n) => !TYPE_OF.has(n));
@@ -55,11 +76,12 @@ function buildReports(rows, from = null, to = null, liabilityAccounts = [], cust
     const accounts = [
         ...bankNames.map((name) => {
             const t = period.banks.get(name);
+            const type = bankType(name);
             return {
                 name,
-                type: 'ASSET',
+                type,
                 bank: true,
-                balance: dollars(t?.sum ?? 0),
+                balance: dollars(bankNormal(type, t?.sum ?? 0)),
                 count: t?.count ?? 0,
             };
         }),
@@ -75,9 +97,17 @@ function buildReports(rows, from = null, to = null, liabilityAccounts = [], cust
             };
         }),
     ];
+    const byName = (account, type) => [...(period.names.get(account) ?? new Map())]
+        .map(([name, sum]) => ({ name, amount: dollars(normal(type, sum)) }))
+        .filter((l) => l.amount !== 0)
+        .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name));
     const lines = (type) => accounts
         .filter((a) => !a.bank && a.type === type && a.count > 0)
-        .map((a) => ({ name: a.name, amount: a.balance }));
+        .map((a) => ({
+        name: a.name,
+        amount: a.balance,
+        byName: byName(a.name, type),
+    }));
     const total = (ls) => dollars(ls.reduce((s, l) => s + cents(l.amount), 0));
     const income = lines('INCOME');
     const expenses = lines('EXPENSE');
@@ -91,15 +121,17 @@ function buildReports(rows, from = null, to = null, liabilityAccounts = [], cust
     const netToDate = dollars([...all.offsets.entries()]
         .filter(([name]) => ['INCOME', 'EXPENSE'].includes(typeOf(name)))
         .reduce((s, [, t]) => s + t.sum, 0));
-    const assets = [
-        ...bankNames.map((name) => ({
-            name,
-            amount: dollars(all.banks.get(name)?.sum ?? 0),
-        })),
-        ...sheetLines('ASSET'),
-    ];
-    const liabilities = sheetLines('LIABILITY');
+    const banksIn = (type) => bankNames
+        .filter((name) => bankType(name) === type)
+        .map((name) => ({
+        name,
+        bank: true,
+        amount: dollars(bankNormal(type, all.banks.get(name)?.sum ?? 0)),
+    }));
+    const assets = [...banksIn('ASSET'), ...sheetLines('ASSET')];
+    const liabilities = [...banksIn('LIABILITY'), ...sheetLines('LIABILITY')];
     const equity = [
+        ...banksIn('EQUITY'),
         ...sheetLines('EQUITY'),
         { name: exports.RETAINED_EARNINGS, amount: netToDate },
     ];
@@ -134,6 +166,7 @@ function buildReports(rows, from = null, to = null, liabilityAccounts = [], cust
             count: unc?.count ?? 0,
             amount: dollars(-(unc?.sum ?? 0)),
         },
+        moved: [...overrides.keys()],
     };
 }
 //# sourceMappingURL=reports.util.js.map

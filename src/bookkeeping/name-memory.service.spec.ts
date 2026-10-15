@@ -99,8 +99,10 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
   return { prisma, updates, rows };
 }
 
-/** The tax step: re-tags the rows an edit changed (succeeds unless told otherwise). */
-const fakeTax = () => ({ retagRows: jest.fn().mockResolvedValue(true) });
+/** Tax is per name, on read: an edit only carries a renamed name's agencies over. */
+const fakeTax = () => ({
+  carryAgencies: jest.fn().mockResolvedValue(undefined),
+});
 
 const service = (prisma: object, tax = fakeTax()) =>
   new NameMemoryService(
@@ -275,18 +277,16 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'BMO 1234',
       },
     ]);
-    const tax = fakeTax();
-    await service(prisma, tax).saveRule(7, {
+    await service(prisma).saveRule(7, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: 'Walmart',
       category: 'Supplies',
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(tax.retagRows).not.toHaveBeenCalled();
   });
 
-  it('re-tags exactly the rows it changed, so the reports are right at once', async () => {
+  it('writes exactly the rows it changed', async () => {
     const { prisma } = fakePrisma([
       {
         id: 1,
@@ -307,15 +307,17 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'BMO 1234',
       },
     ]);
-    const tax = fakeTax();
-    await service(prisma, tax).saveRule(7, {
+    await service(prisma).saveRule(7, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: null,
       category: 'Office Expense',
     });
-    expect(tax.retagRows).toHaveBeenCalledWith(7, [1]);
-    // Re-tagged rather than left for Generate.
+    expect(prisma.bankTransaction.update).toHaveBeenCalledTimes(1);
+    expect(prisma.bankTransaction.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 1 } }),
+    );
+    // Taxes follow on read — nothing is left for a Generate.
     expect(prisma.customer.update).not.toHaveBeenCalled();
   });
 });

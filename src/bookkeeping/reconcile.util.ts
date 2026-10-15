@@ -76,6 +76,11 @@ export interface ReconcileResult {
   checks: Check[];
   /** Pages the running balance says are wrong; empty = unknown (re-read them all). */
   suspectPages: number[];
+  /**
+   * How the printed balances fit the rows: 1 = as printed (a bank account), −1 = negated
+   * (a credit card printing the balance OWED). 1 when nothing decides it.
+   */
+  balanceSign: 1 | -1;
 }
 
 export const cents = (n: number): number => Math.round(n * 100);
@@ -116,7 +121,8 @@ export function reconcile(
   // purchases (negative rows) RAISE the printed balance. Keep the sign that fits better.
   const asPrinted = balanceChecks(stated, rows, amounts, net, 1);
   const owed = balanceChecks(stated, rows, amounts, net, -1);
-  const balances = fit(owed) > fit(asPrinted) ? owed : asPrinted;
+  const owes = fit(owed) > fit(asPrinted);
+  const balances = owes ? owed : asPrinted;
 
   const reason = skipReason(stated, balances);
   for (const c of [...totals, ...counts]) {
@@ -140,6 +146,7 @@ export function reconcile(
     verification: verdict(checks),
     checks,
     suspectPages: [...suspect].sort((a, b) => a - b),
+    balanceSign: owes ? -1 : 1,
   };
 }
 
@@ -220,6 +227,7 @@ export function reconcileStatement(
     verification: verdict(checks),
     checks,
     suspectPages: [...suspect].sort((a, b) => a - b),
+    balanceSign: whole.balanceSign,
   };
 }
 
@@ -250,9 +258,11 @@ function balanceChecks(
   const bal = (n: number | null) => (n === null ? null : sign * cents(n));
   const opening = bal(stated.openingBalance);
   const closing = bal(stated.closingBalance);
+  // Stated in the PRINTED sign, so a card's "Ending balance: statement $600.00" reads like
+  // its statement (owed − net = owed, the same test as −owed + net = −owed).
   const balance =
     opening !== null && closing !== null
-      ? check('balance', closing, opening + net)
+      ? check('balance', sign * closing, sign * (opening + net))
       : null;
 
   // Running balance: each printed balance must equal the previous one plus this row. A

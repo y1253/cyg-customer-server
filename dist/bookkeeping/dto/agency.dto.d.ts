@@ -13,12 +13,9 @@ export declare class UpdateAgencyDto {
     rates?: AgencyRateDto[];
     active?: boolean;
 }
-export declare class UpdateTaxDto {
-    enabled: boolean;
-}
-export declare class UpdateNameDto {
+export declare class SetNameAgenciesDto {
     name: string;
-    taxExempt: boolean;
+    agencyIds: number[];
 }
 export declare class SaveNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION';
@@ -46,6 +43,16 @@ export declare class EditTransactionDto {
 export declare class CreateAccountDto {
     name: string;
     type: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
+}
+export declare class SetCurrencyDto {
+    home: string;
+}
+export declare class SetAccountTypeDto {
+    account: string;
+    type: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
+}
+export declare class ResetAccountTypeDto {
+    account: string;
 }
 export declare class SplitDto {
     id?: number;

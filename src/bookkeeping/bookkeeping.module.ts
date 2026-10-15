@@ -7,6 +7,7 @@ import { AttachmentsService } from './attachments.service';
 import { BookkeepingController } from './bookkeeping.controller';
 import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
+import { FxService } from './fx.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { ProductCategorizer } from './product-categorizer';
@@ -27,6 +28,7 @@ import { TaxService } from './tax.service';
     AttachmentsService,
     BookkeepingService,
     CustomerAccountsService,
+    FxService,
     LedgerExportService,
     NameMemoryService,
     OpenAiClient,

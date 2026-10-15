@@ -1,12 +1,12 @@
 import {
-  candidates,
   kindOf,
   includedTaxes,
+  nameTaxKey,
+  nameTaxLines,
   taxAmount,
-  taxLines,
   taxSplit,
   type Agency,
-  type TaxableRow,
+  type NameTaxRow,
 } from './tax.util';
 
 const federal: Agency = { id: 1, name: 'Federal Tax', rates: { SALES: 10 } };
@@ -23,13 +23,8 @@ const row = (
   id: number,
   amount: number,
   offsetAccount: string,
-): TaxableRow => ({
-  id,
-  amount,
-  offsetAccount,
-  description: `row ${id}`,
-  name: null,
-});
+  name: string | null = 'Walmart',
+): NameTaxRow => ({ id, amount, offsetAccount, name });
 
 describe('kindOf', () => {
   it('maps income to sales, expenses to purchases, and never taxes the balance sheet', () => {
@@ -39,24 +34,70 @@ describe('kindOf', () => {
     expect(kindOf('Transfer Between Accounts')).toBeNull();
     expect(kindOf("Owner's Loan")).toBeNull();
     expect(kindOf('Owner Draw')).toBeNull();
-    expect(kindOf('Some Renamed Account')).toBeNull();
+    // An account no longer in the chart is an expense in the reports, so a purchase here.
+    expect(kindOf('Some Renamed Account')).toBe('PURCHASE');
+  });
+
+  it("follows the customer's own types and moves", () => {
+    const ctx = {
+      custom: new Map([['Consulting', 'INCOME' as const]]),
+      overrides: new Map([['Office Expense', 'ASSET' as const]]),
+      liabilities: new Set(['GST']),
+    };
+    expect(kindOf('Consulting', ctx)).toBe('SALES');
+    expect(kindOf('Office Expense', ctx)).toBeNull();
+    expect(kindOf('GST', ctx)).toBeNull();
   });
 });
 
-describe('candidates', () => {
-  const rows = [
-    row(1, 100, 'Sales Income'),
-    row(2, -50, 'Office Expense'),
-    row(3, -200, 'Credit Card Payment'),
-  ];
+describe('nameTaxLines (tax decided by the payee name, no AI)', () => {
+  const agencies = [federal, state, input, gst];
 
-  it('keeps only rows a matching agency could tax', () => {
-    expect(candidates(rows, [federal]).map((r) => [r.id, r.kind])).toEqual([
-      [1, 'SALES'],
+  it('taxes nothing for a name with no agencies — the default', () => {
+    expect(
+      nameTaxLines([row(1, 100, 'Sales Income')], new Map(), agencies).size,
+    ).toBe(0);
+  });
+
+  it("takes each picked agency's rate for the row's kind", () => {
+    const picked = new Map([[nameTaxKey('Walmart'), [4, 1]]]);
+    const lines = nameTaxLines(
+      [row(1, 100, 'Sales Income'), row(2, -50, 'Office Expense')],
+      picked,
+      agencies,
+    );
+    // Agencies keep their own order; Federal Tax has no purchase rate.
+    expect(lines.get(1)).toEqual([
+      { agencyId: 1, agency: 'Federal Tax', kind: 'SALES', rate: 10 },
+      { agencyId: 4, agency: 'GST', kind: 'SALES', rate: 2 },
     ]);
-    expect(candidates(rows, [input]).map((r) => r.id)).toEqual([2]);
-    expect(candidates(rows, [state]).map((r) => r.id)).toEqual([1, 2]);
-    expect(candidates(rows, [])).toEqual([]);
+    expect(lines.get(2)).toEqual([
+      { agencyId: 4, agency: 'GST', kind: 'PURCHASE', rate: 3 },
+    ]);
+  });
+
+  it('matches names case-insensitively and the nameless rows as Unclarified name', () => {
+    const picked = new Map([
+      [nameTaxKey('walmart'), [3]],
+      [nameTaxKey(null), [2]],
+    ]);
+    const lines = nameTaxLines(
+      [row(1, -10, 'Supplies', 'WALMART'), row(2, -20, 'Supplies', null)],
+      picked,
+      agencies,
+    );
+    expect(lines.get(1)?.map((l) => l.agencyId)).toEqual([3]);
+    expect(lines.get(2)?.map((l) => l.agencyId)).toEqual([2]);
+  });
+
+  it('never taxes a balance-sheet row or a fully split one', () => {
+    const picked = new Map([[nameTaxKey('Walmart'), [2]]]);
+    const lines = nameTaxLines(
+      [row(1, -200, 'Credit Card Payment'), row(2, 0, 'Supplies')],
+      picked,
+      agencies,
+    );
+    expect(lines.size).toBe(0);
   });
 });
 
@@ -77,63 +118,6 @@ describe('includedTaxes (tax INCLUDED in the bank amount)', () => {
   it('a zero or missing rate taxes nothing', () => {
     expect(includedTaxes(100, [])).toEqual([]);
     expect(includedTaxes(100, [0])).toEqual([0]);
-  });
-});
-
-describe('taxLines', () => {
-  const rows = candidates(
-    [row(1, 100, 'Sales Income'), row(2, -50, 'Office Expense')],
-    [federal, state, input],
-  );
-
-  // $100 with 10% + 5% INCLUDED: $13.04 of tax, split 8.70 / 4.34 (the last absorbs the cent).
-  it('allows several agencies on one row', () => {
-    const lines = taxLines(
-      rows,
-      [{ id: 1, agencyIds: [1, 2] }],
-      [federal, state],
-    );
-    expect(lines).toEqual([
-      { transactionId: 1, agencyId: 1, kind: 'SALES', rate: 10, amount: 8.7 },
-      { transactionId: 1, agencyId: 2, kind: 'SALES', rate: 5, amount: 4.34 },
-    ]);
-  });
-
-  it("uses the agency's rate for the row's kind", () => {
-    const lines = taxLines(
-      rows,
-      [
-        { id: 1, agencyIds: [4] },
-        { id: 2, agencyIds: [4] },
-      ],
-      [gst],
-    );
-    expect(lines).toEqual([
-      { transactionId: 1, agencyId: 4, kind: 'SALES', rate: 2, amount: 1.96 },
-      {
-        transactionId: 2,
-        agencyId: 4,
-        kind: 'PURCHASE',
-        rate: 3,
-        amount: 1.46,
-      },
-    ]);
-  });
-
-  it('drops unknown ids, wrong-kind agencies and repeats', () => {
-    const lines = taxLines(
-      rows,
-      [
-        { id: 1, agencyIds: [3, 99, 1, 1] }, // purchase agency on a sale; unknown; repeat
-        { id: 2, agencyIds: [1, 3] }, // sales agency on a purchase
-        { id: 42, agencyIds: [1] }, // not a candidate
-      ],
-      [federal, state, input],
-    );
-    expect(lines.map((l) => [l.transactionId, l.agencyId])).toEqual([
-      [1, 1],
-      [2, 3],
-    ]);
   });
 });
 

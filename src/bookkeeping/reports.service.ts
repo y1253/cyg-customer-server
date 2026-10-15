@@ -2,10 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
-import { openingRows } from './opening-balance.util';
+import { isCreditCard, openingRows } from './opening-balance.util';
 import { buildReports, type ReportRow, type ReportsView } from './reports.util';
 import { CustomerAccountsService } from './customer-accounts.service';
+import type { FxEntry } from './fx.service';
 import { remainderOf, splitTotals } from './splits.util';
+import { FxService } from './fx.service';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -22,6 +24,7 @@ export class ReportsService {
     private readonly prisma: PrismaService,
     private readonly tax: TaxService,
     private readonly accounts: CustomerAccountsService,
+    private readonly fx: FxService,
   ) {}
 
   async reports(
@@ -30,30 +33,54 @@ export class ReportsService {
     to: string | null,
   ): Promise<ReportsView> {
     const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
-    const [rows, statements, taxes, agencies, customTypes] = await Promise.all([
-      this.prisma.bankTransaction.findMany({
-        where: { customerId, statement: done },
-        select: {
-          id: true,
-          splitOfId: true,
-          amount: true,
-          offsetAccount: true,
-          debitAccount: true,
-          creditAccount: true,
-          postingDate: true,
-          pendingDate: true,
-          statement: { select: { periodEnd: true } },
-        },
-      }),
-      loadOpeningStatements(this.prisma, customerId),
-      this.tax.linesFor(customerId),
-      this.tax.agencyNames(customerId),
-      this.accounts.types(customerId),
-    ]);
+    const [rows, statements, taxes, agencies, customTypes, overrides] =
+      await Promise.all([
+        this.prisma.bankTransaction.findMany({
+          where: { customerId, statement: done },
+          select: {
+            id: true,
+            splitOfId: true,
+            name: true,
+            amount: true,
+            offsetAccount: true,
+            debitAccount: true,
+            creditAccount: true,
+            postingDate: true,
+            pendingDate: true,
+            statementId: true,
+            statement: { select: { periodEnd: true } },
+          },
+        }),
+        loadOpeningStatements(this.prisma, customerId),
+        this.tax.linesFor(customerId),
+        this.tax.agencyNames(customerId),
+        this.accounts.types(customerId),
+        this.accounts.overrides(customerId),
+      ]);
+    const creditCards = new Set(
+      statements
+        .filter((s) => isCreditCard(s.accountKind))
+        .map((s) => s.accountName ?? 'Bank account'),
+    );
+
+    // Every amount in the home currency: a foreign statement's rows at their own day's
+    // rate, and a revaluation at each foreign statement's end (`FxContext`).
+    const fx = await this.fx.context(customerId, statements);
+    const entries: FxEntry[] = [];
+    const home = (
+      statementId: number,
+      date: string | null,
+      amount: number,
+      bankAccount: string,
+    ): number => {
+      const { home: converted } = fx.convert(statementId, date, amount);
+      entries.push({ statementId, bankAccount, amount, home: converted });
+      return converted;
+    };
 
     // The printed starting balances — the same "Starting balance" rows the ledger shows.
     const openings = openingRows(statements).map((o) => ({
-      amount: o.amount,
+      amount: home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
       offsetAccount: o.offsetAccount,
       bankAccount: o.bankAccount,
       date: day(o.postingDate),
@@ -64,36 +91,44 @@ export class ReportsService {
       rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
     );
 
-    return buildReports(
-      [
-        ...openings,
-        ...rows.flatMap((r): ReportRow[] => {
-          const amount = remainderOf(
-            { ...r, amount: Number(r.amount) },
-            totals,
-          );
-          const date =
-            day(r.postingDate) ??
-            day(r.pendingDate) ??
-            day(r.statement.periodEnd);
-          // The bank is whichever side is not the offset (see `doubleEntry`).
-          const bankAccount =
-            Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
-          // A taxed row is split like the ledger shows it: the tax taken OUT of the bank
-          // amount, each tax line against the agency.
-          const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
-          return [split.parent, ...split.taxes].map((e) => ({
-            amount: e.amount,
-            offsetAccount: e.offsetAccount,
-            bankAccount,
-            date,
-          }));
-        }),
-      ],
-      from,
-      to,
-      agencies,
-      customTypes,
+    const ledgerRows: ReportRow[] = [
+      ...openings,
+      ...rows.flatMap((r): ReportRow[] => {
+        const amount = remainderOf({ ...r, amount: Number(r.amount) }, totals);
+        const date =
+          day(r.postingDate) ??
+          day(r.pendingDate) ??
+          day(r.statement.periodEnd);
+        // The bank is whichever side is not the offset (see `doubleEntry`).
+        const bankAccount =
+          Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
+        // A taxed row is split like the ledger shows it: the tax taken OUT of the bank
+        // amount, each tax line against the agency.
+        const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
+        const rowDate = day(r.postingDate) ?? day(r.pendingDate);
+        return [split.parent, ...split.taxes].map((e) => ({
+          amount: home(r.statementId, rowDate, e.amount, bankAccount),
+          offsetAccount: e.offsetAccount,
+          bankAccount,
+          date,
+          name: r.name,
+        }));
+      }),
+    ];
+    const revaluations = fx.revaluations(entries).map(
+      (f): ReportRow => ({
+        amount: f.homeAmount,
+        offsetAccount: f.offsetAccount,
+        bankAccount: f.bankAccount,
+        date: f.date,
+        name: null,
+      }),
     );
+    return buildReports([...ledgerRows, ...revaluations], from, to, {
+      liabilityAccounts: agencies,
+      customTypes,
+      overrides,
+      creditCards,
+    });
   }
 }

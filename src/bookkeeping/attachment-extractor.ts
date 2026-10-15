@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { OpenAiClient, type ChatContent } from '../ai/openai.client';
 import type { AttachmentClass } from './attachment-uploads';
 import type { MatchCandidate } from './attachment-match.util';
+import { ACCOUNT_NAMES } from './chart-of-accounts';
 
 /** What the AI read off an attachment. Money is positive dollars; dates are YYYY-MM-DD. */
 export interface AttachmentReading {
@@ -16,6 +17,11 @@ export interface AttachmentReading {
   checkNumber: string | null;
   payee: string | null;
   memo: string | null;
+  /**
+   * A cheque: the chart account the payment most likely is, judged from the payee and the
+   * memo — the category the cheque's row gets when its payee is a new name.
+   */
+  category?: string | null;
   /** Audio only: what was said. */
   transcript?: string;
 }
@@ -40,6 +46,7 @@ const READING_SCHEMA = {
     'checkNumber',
     'payee',
     'memo',
+    'category',
   ],
   properties: {
     kind: { type: 'string', enum: ['RECEIPT', 'CHECK', 'OTHER'] },
@@ -60,6 +67,7 @@ const READING_SCHEMA = {
     checkNumber: text,
     payee: text,
     memo: text,
+    category: { type: ['string', 'null'], enum: [...ACCOUNT_NAMES, null] },
   },
 };
 
@@ -75,7 +83,11 @@ Return:
   and discount-only lines. A line bought several times is one item with its line total.
   NEVER invent an item — an empty list is correct when the lines cannot be read.
   Use a short readable name ("Pampers Size 4", not "PMPRS SZ4 0371").
-- checkNumber, payee, memo: for a cheque (payee = who it is made out to); else null.`;
+- checkNumber, payee, memo: for a cheque (payee = who it is made out to); else null.
+- category: for a cheque, the bookkeeping account the payment most likely belongs to,
+  judged from the payee and the memo (a landlord -> Rent, a contractor -> Contractors,
+  a person paid wages -> Payroll & Wages); "Uncategorized" when unclear; null for
+  anything that is not a cheque.`;
 
 const DOCUMENT_PROMPT =
   'You read a receipt, invoice or cheque photographed or scanned for bookkeeping. ' +
@@ -291,5 +303,9 @@ export function cleanReading(r: AttachmentReading): AttachmentReading {
     checkNumber: str(r.checkNumber, 32),
     payee: str(r.payee),
     memo: str(r.memo, 255),
+    category:
+      typeof r.category === 'string' && ACCOUNT_NAMES.includes(r.category)
+        ? r.category
+        : null,
   };
 }
