@@ -142,10 +142,13 @@ export class StatementProcessorService {
       // the next) and an account IS its name everywhere downstream — so file the statement
       // under the account the customer already has when it is the same one
       // (`account-identity.util.ts`).
-      const accountName = canonicalAccountName(
-        extracted,
-        await this.knownAccounts(row.customerId, row.id),
-      );
+      // A statement the customer filed under an account themselves stays there.
+      const accountName =
+        row.accountNameByCustomer ??
+        canonicalAccountName(
+          extracted,
+          await this.knownAccounts(row.customerId, row.id),
+        );
       if (accountName !== extracted.accountName) {
         this.logger.log(
           `statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`,
@@ -191,7 +194,10 @@ export class StatementProcessorService {
             status,
             runs,
             accountName,
-            accountKind: extracted.accountKind,
+            // A customer-filed statement keeps the kind of the folder it was put in.
+            accountKind: row.accountNameByCustomer
+              ? (row.accountKind ?? extracted.accountKind)
+              : extracted.accountKind,
             currency: extracted.currency,
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),

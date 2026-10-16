@@ -8,7 +8,7 @@ import { CustomerAccountsService, type AccountView } from './customer-accounts.s
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -63,6 +63,7 @@ export declare class BookkeepingController {
     list(req: AuthedRequest): Promise<StatementView[]>;
     transactions(req: AuthedRequest, statementIds?: string): Promise<TransactionView[]>;
     file(req: AuthedRequest, id: number, res: Response): Promise<StreamableFile>;
+    moveStatement(req: AuthedRequest, id: number, dto: MoveStatementDto): Promise<StatementView>;
     retry(req: AuthedRequest, id: number): Promise<StatementView>;
     remove(req: AuthedRequest, id: number): Promise<void>;
     export(req: AuthedRequest, format: string, res: Response): Promise<StreamableFile>;

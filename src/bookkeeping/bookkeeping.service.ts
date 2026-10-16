@@ -53,6 +53,8 @@ export interface StatementView {
   transactionCount: number;
   createdAt: Date;
   processedAt: Date | null;
+  /** The customer filed it under this account themselves (it survives a Retry). */
+  movedByCustomer: boolean;
 }
 
 export interface TransactionView {
@@ -217,6 +219,7 @@ function toView(s: BankStatement): StatementView {
     transactionCount: s.transactionCount,
     createdAt: s.createdAt,
     processedAt: s.processedAt,
+    movedByCustomer: s.accountNameByCustomer !== null,
   };
 }
 
@@ -508,6 +511,92 @@ export class BookkeepingService {
       data: { deletedAt: new Date() },
     });
     await this.images.removeFor(customerId, s.id);
+  }
+
+  /**
+   * File a statement under another account — the customer dragged it into that folder.
+   * An account IS its name everywhere downstream, so this rewrites the statement's name
+   * and the bank side of each of its rows (`doubleEntry`: credit when the amount is
+   * negative, else debit — never the offset, which may share the old name). Opening
+   * balances chain on read, so they follow by themselves. `accountNameByCustomer`
+   * makes it stick through a Retry.
+   */
+  async moveStatement(
+    customerId: number,
+    id: number,
+    rawName: string,
+  ): Promise<StatementView> {
+    const s = await this.owned(customerId, id);
+    if (
+      s.status !== StatementStatus.DONE &&
+      s.status !== StatementStatus.NEEDS_REVIEW
+    ) {
+      throw new BadRequestException(
+        'Only a statement that has been read can be moved',
+      );
+    }
+    const name = rawName.trim().replace(/\s+/g, ' ');
+    if (!name || name.length > 191) {
+      throw new BadRequestException('Enter an account name');
+    }
+    const old = s.accountName;
+    if (name === old) return toView(s);
+
+    // Joining an existing account takes its kind: a card folder stays a card.
+    const target = await this.prisma.bankStatement.findFirst({
+      where: {
+        customerId,
+        accountName: name,
+        deletedAt: null,
+        id: { not: s.id },
+      },
+      select: { accountKind: true },
+    });
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.bankTransaction.updateMany({
+        where: { statementId: s.id, amount: { lt: 0 } },
+        data: { creditAccount: name },
+      });
+      await tx.bankTransaction.updateMany({
+        where: { statementId: s.id, amount: { gte: 0 } },
+        data: { debitAccount: name },
+      });
+      const updated = await tx.bankStatement.update({
+        where: { id: s.id },
+        data: {
+          accountName: name,
+          accountNameByCustomer: name,
+          accountKind: target ? target.accountKind : s.accountKind,
+        },
+      });
+      // The old account's section override goes with its LAST statement.
+      if (old) {
+        const left = await tx.bankStatement.count({
+          where: { customerId, accountName: old, deletedAt: null },
+        });
+        if (left === 0) {
+          const kept = await tx.customerAccountType.findUnique({
+            where: { customerId_account: { customerId, account: name } },
+          });
+          if (kept) {
+            await tx.customerAccountType.deleteMany({
+              where: { customerId, account: old },
+            });
+          } else {
+            await tx.customerAccountType.updateMany({
+              where: { customerId, account: old },
+              data: { account: name },
+            });
+          }
+        }
+      }
+      return updated;
+    });
+    this.logger.log(
+      `customer ${customerId}: statement #${s.id} moved "${old}" -> "${name}"`,
+    );
+    return toView(row);
   }
 
   private async owned(customerId: number, id: number): Promise<BankStatement> {

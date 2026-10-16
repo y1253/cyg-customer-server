@@ -71,3 +71,6 @@ export declare class RenameTaxLineDto {
 export declare class SetAttachmentTransactionDto {
     transactionId: number | null;
 }
+export declare class MoveStatementDto {
+    accountName: string;
+}

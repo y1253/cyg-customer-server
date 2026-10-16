@@ -49,6 +49,7 @@ import {
   CreateAccountDto,
   CreateAgencyDto,
   EditTransactionDto,
+  MoveStatementDto,
   RenameTaxLineDto,
   ResetNameRuleDto,
   ResetAccountTypeDto,
@@ -440,6 +441,19 @@ export class BookkeepingController {
       'Cache-Control': 'private, no-store',
     });
     return new StreamableFile(f.stream);
+  }
+
+  @Patch('statements/:id/account')
+  moveStatement(
+    @Req() req: AuthedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: MoveStatementDto,
+  ): Promise<StatementView> {
+    return this.bookkeeping.moveStatement(
+      req.user.customerId,
+      id,
+      dto.accountName,
+    );
   }
 
   @Post('statements/:id/retry')

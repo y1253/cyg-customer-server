@@ -126,7 +126,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     });
                 },
             });
-            const accountName = (0, account_identity_util_1.canonicalAccountName)(extracted, await this.knownAccounts(row.customerId, row.id));
+            const accountName = row.accountNameByCustomer ??
+                (0, account_identity_util_1.canonicalAccountName)(extracted, await this.knownAccounts(row.customerId, row.id));
             if (accountName !== extracted.accountName) {
                 this.logger.log(`statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`);
             }
@@ -158,7 +159,9 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                         status,
                         runs,
                         accountName,
-                        accountKind: extracted.accountKind,
+                        accountKind: row.accountNameByCustomer
+                            ? (row.accountKind ?? extracted.accountKind)
+                            : extracted.accountKind,
                         currency: extracted.currency,
                         bankName: extracted.bankName,
                         periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),

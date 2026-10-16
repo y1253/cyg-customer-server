@@ -113,6 +113,7 @@ function toView(s) {
         transactionCount: s.transactionCount,
         createdAt: s.createdAt,
         processedAt: s.processedAt,
+        movedByCustomer: s.accountNameByCustomer !== null,
     };
 }
 let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
@@ -332,6 +333,71 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             data: { deletedAt: new Date() },
         });
         await this.images.removeFor(customerId, s.id);
+    }
+    async moveStatement(customerId, id, rawName) {
+        const s = await this.owned(customerId, id);
+        if (s.status !== client_1.StatementStatus.DONE &&
+            s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
+            throw new common_1.BadRequestException('Only a statement that has been read can be moved');
+        }
+        const name = rawName.trim().replace(/\s+/g, ' ');
+        if (!name || name.length > 191) {
+            throw new common_1.BadRequestException('Enter an account name');
+        }
+        const old = s.accountName;
+        if (name === old)
+            return toView(s);
+        const target = await this.prisma.bankStatement.findFirst({
+            where: {
+                customerId,
+                accountName: name,
+                deletedAt: null,
+                id: { not: s.id },
+            },
+            select: { accountKind: true },
+        });
+        const row = await this.prisma.$transaction(async (tx) => {
+            await tx.bankTransaction.updateMany({
+                where: { statementId: s.id, amount: { lt: 0 } },
+                data: { creditAccount: name },
+            });
+            await tx.bankTransaction.updateMany({
+                where: { statementId: s.id, amount: { gte: 0 } },
+                data: { debitAccount: name },
+            });
+            const updated = await tx.bankStatement.update({
+                where: { id: s.id },
+                data: {
+                    accountName: name,
+                    accountNameByCustomer: name,
+                    accountKind: target ? target.accountKind : s.accountKind,
+                },
+            });
+            if (old) {
+                const left = await tx.bankStatement.count({
+                    where: { customerId, accountName: old, deletedAt: null },
+                });
+                if (left === 0) {
+                    const kept = await tx.customerAccountType.findUnique({
+                        where: { customerId_account: { customerId, account: name } },
+                    });
+                    if (kept) {
+                        await tx.customerAccountType.deleteMany({
+                            where: { customerId, account: old },
+                        });
+                    }
+                    else {
+                        await tx.customerAccountType.updateMany({
+                            where: { customerId, account: old },
+                            data: { account: name },
+                        });
+                    }
+                }
+            }
+            return updated;
+        });
+        this.logger.log(`customer ${customerId}: statement #${s.id} moved "${old}" -> "${name}"`);
+        return toView(row);
     }
     async owned(customerId, id) {
         const s = await this.prisma.bankStatement.findFirst({

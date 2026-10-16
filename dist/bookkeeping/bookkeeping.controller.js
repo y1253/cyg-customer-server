@@ -199,6 +199,9 @@ let BookkeepingController = class BookkeepingController {
         });
         return new common_1.StreamableFile(f.stream);
     }
+    moveStatement(req, id, dto) {
+        return this.bookkeeping.moveStatement(req.user.customerId, id, dto.accountName);
+    }
     retry(req, id) {
         return this.bookkeeping.retry(req.user.customerId, id);
     }
@@ -481,6 +484,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "file", null);
+__decorate([
+    (0, common_1.Patch)('statements/:id/account'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.MoveStatementDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "moveStatement", null);
 __decorate([
     (0, common_1.Post)('statements/:id/retry'),
     __param(0, (0, common_1.Req)()),

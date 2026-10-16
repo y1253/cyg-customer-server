@@ -288,3 +288,12 @@ export class SetAttachmentTransactionDto {
   @Min(1)
   transactionId!: number | null;
 }
+
+/** `PATCH /api/bookkeeping/statements/:id/account` — file it under this account. */
+export class MoveStatementDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty({ message: 'Enter an account name' })
+  @MaxLength(191)
+  accountName!: string;
+}

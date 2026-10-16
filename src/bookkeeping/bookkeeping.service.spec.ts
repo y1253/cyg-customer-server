@@ -65,3 +65,106 @@ describe('claimableAt backoff', () => {
     expect(claimableAt(t, 9) - t.getTime()).toBe(30 * 60_000);
   });
 });
+
+describe('BookkeepingService.moveStatement', () => {
+  function moveSetup(
+    statement: Record<string, unknown>,
+    opts: { target?: unknown; left?: number; kept?: unknown } = {},
+  ) {
+    const tx = {
+      bankTransaction: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      bankStatement: {
+        update: jest.fn().mockImplementation(({ data }: { data: object }) => ({
+          ...statement,
+          ...data,
+        })),
+        count: jest.fn().mockResolvedValue(opts.left ?? 0),
+      },
+      customerAccountType: {
+        findUnique: jest.fn().mockResolvedValue(opts.kept ?? null),
+        deleteMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    };
+    const prisma = {
+      bankStatement: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(statement)
+          .mockResolvedValueOnce(opts.target ?? null),
+      },
+      $transaction: jest.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
+    };
+    const service = new BookkeepingService(
+      prisma as unknown as PrismaService,
+      {} as ObjectStorageService,
+      {} as OpenAiClient,
+      {} as StatementProcessorService,
+      {} as TaxService,
+      {} as StatementImagesService,
+      {} as FxService,
+    );
+    return { service, tx };
+  }
+
+  const stmt = {
+    id: 5,
+    customerId: 7,
+    status: StatementStatus.DONE,
+    accountName: 'TD 5234',
+    accountNameByCustomer: null,
+    accountKind: 'BANK',
+    periodStart: null,
+    periodEnd: null,
+    filename: 'a.pdf',
+  };
+
+  it('rewrites only the bank side of its own rows and remembers the choice', async () => {
+    const { service, tx } = moveSetup(stmt, {
+      target: { accountKind: 'CREDIT_CARD' },
+    });
+    const view = await service.moveStatement(7, 5, '  BMO   2304 ');
+    expect(tx.bankTransaction.updateMany).toHaveBeenCalledWith({
+      where: { statementId: 5, amount: { lt: 0 } },
+      data: { creditAccount: 'BMO 2304' },
+    });
+    expect(tx.bankTransaction.updateMany).toHaveBeenCalledWith({
+      where: { statementId: 5, amount: { gte: 0 } },
+      data: { debitAccount: 'BMO 2304' },
+    });
+    expect(tx.bankStatement.update).toHaveBeenCalledWith({
+      where: { id: 5 },
+      data: {
+        accountName: 'BMO 2304',
+        accountNameByCustomer: 'BMO 2304',
+        accountKind: 'CREDIT_CARD',
+      },
+    });
+    expect(view.movedByCustomer).toBe(true);
+  });
+
+  it('carries the old account section override when its last statement leaves', async () => {
+    const { service, tx } = moveSetup(stmt, { left: 0 });
+    await service.moveStatement(7, 5, 'BMO 2304');
+    expect(tx.customerAccountType.updateMany).toHaveBeenCalledWith({
+      where: { customerId: 7, account: 'TD 5234' },
+      data: { account: 'BMO 2304' },
+    });
+  });
+
+  it('leaves the override while other statements still use the old name', async () => {
+    const { service, tx } = moveSetup(stmt, { left: 2 });
+    await service.moveStatement(7, 5, 'BMO 2304');
+    expect(tx.customerAccountType.updateMany).not.toHaveBeenCalled();
+    expect(tx.customerAccountType.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a statement that has not been read', async () => {
+    const { service } = moveSetup({ ...stmt, status: StatementStatus.FAILED });
+    await expect(service.moveStatement(7, 5, 'X')).rejects.toThrow(
+      'Only a statement that has been read can be moved',
+    );
+  });
+});

@@ -23,6 +23,7 @@ export interface StatementView {
     transactionCount: number;
     createdAt: Date;
     processedAt: Date | null;
+    movedByCustomer: boolean;
 }
 export interface TransactionView {
     key: string;
@@ -80,5 +81,6 @@ export declare class BookkeepingService {
     }>;
     retry(customerId: number, id: number): Promise<StatementView>;
     remove(customerId: number, id: number): Promise<void>;
+    moveStatement(customerId: number, id: number, rawName: string): Promise<StatementView>;
     private owned;
 }
