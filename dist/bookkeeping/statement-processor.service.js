@@ -17,6 +17,7 @@ const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const account_identity_util_1 = require("./account-identity.util");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
 const reconcile_util_1 = require("./reconcile.util");
@@ -125,7 +126,11 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     });
                 },
             });
-            const bank = extracted.accountName ?? 'Bank account';
+            const accountName = (0, account_identity_util_1.canonicalAccountName)(extracted, await this.knownAccounts(row.customerId, row.id));
+            if (accountName !== extracted.accountName) {
+                this.logger.log(`statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`);
+            }
+            const bank = accountName ?? 'Bank account';
             const { lines, customAccounts } = await this.names.resolveStatement(row.customerId, extracted.transactions, extracted.bankName);
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
@@ -152,7 +157,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     data: {
                         status,
                         runs,
-                        accountName: extracted.accountName,
+                        accountName,
                         accountKind: extracted.accountKind,
                         currency: extracted.currency,
                         bankName: extracted.bankName,
@@ -180,7 +185,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             if (!mismatch) {
                 await this.images.harvest({
                     ...row,
-                    accountName: extracted.accountName,
+                    accountName,
                     bankName: extracted.bankName,
                     periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
                     periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
@@ -194,6 +199,19 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         catch (err) {
             await this.recordFailure(row, err);
         }
+    }
+    async knownAccounts(customerId, exceptId) {
+        const rows = await this.prisma.bankStatement.findMany({
+            where: {
+                customerId,
+                id: { not: exceptId },
+                deletedAt: null,
+                accountName: { not: null },
+            },
+            distinct: ['accountName', 'accountKind'],
+            select: { accountName: true, accountKind: true },
+        });
+        return rows.map((r) => ({ name: r.accountName, kind: r.accountKind }));
     }
     async recordFailure(row, err) {
         const message = err instanceof Error ? err.message : String(err);

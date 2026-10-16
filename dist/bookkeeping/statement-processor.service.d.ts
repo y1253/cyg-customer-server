@@ -21,6 +21,7 @@ export declare class StatementProcessorService {
     sweep(): Promise<void>;
     private runSweep;
     private processOne;
+    private knownAccounts;
     private recordFailure;
 }
 export declare function needsReviewMessage(rereads: number, problems: string[]): string;

@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { StatementStatus, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { canonicalAccountName } from './account-identity.util';
 import { buildLedgerRows, parseIsoDate } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
 import { describeCheck } from './reconcile.util';
@@ -137,7 +138,20 @@ export class StatementProcessorService {
           });
         },
       });
-      const bank = extracted.accountName ?? 'Bank account';
+      // The AI's account name is free text ("TD 5234" on one statement, "TD 5234496" on
+      // the next) and an account IS its name everywhere downstream — so file the statement
+      // under the account the customer already has when it is the same one
+      // (`account-identity.util.ts`).
+      const accountName = canonicalAccountName(
+        extracted,
+        await this.knownAccounts(row.customerId, row.id),
+      );
+      if (accountName !== extracted.accountName) {
+        this.logger.log(
+          `statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`,
+        );
+      }
+      const bank = accountName ?? 'Bank account';
       // The customer's own rules first, then the firm memory, then the AI's guess — and
       // the memory learns this statement's new descriptions (`name-memory.util.ts`). Bank
       // fees and interest with no payee are named after the bank.
@@ -176,7 +190,7 @@ export class StatementProcessorService {
           data: {
             status,
             runs,
-            accountName: extracted.accountName,
+            accountName,
             accountKind: extracted.accountKind,
             currency: extracted.currency,
             bankName: extracted.bankName,
@@ -206,7 +220,7 @@ export class StatementProcessorService {
         await this.images.harvest(
           {
             ...row,
-            accountName: extracted.accountName,
+            accountName,
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
             periodEnd: parseIsoDate(extracted.periodEnd),
@@ -224,6 +238,21 @@ export class StatementProcessorService {
     } catch (err) {
       await this.recordFailure(row, err);
     }
+  }
+
+  /** The customer's accounts from their OTHER read statements (name + kind). */
+  private async knownAccounts(customerId: number, exceptId: number) {
+    const rows = await this.prisma.bankStatement.findMany({
+      where: {
+        customerId,
+        id: { not: exceptId },
+        deletedAt: null,
+        accountName: { not: null },
+      },
+      distinct: ['accountName', 'accountKind'],
+      select: { accountName: true, accountKind: true },
+    });
+    return rows.map((r) => ({ name: r.accountName!, kind: r.accountKind }));
   }
 
   private async recordFailure(row: BankStatement, err: unknown): Promise<void> {

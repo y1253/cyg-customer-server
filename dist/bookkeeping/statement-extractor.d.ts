@@ -9,6 +9,7 @@ export declare const MAX_REREADS = 10;
 export type AccountKind = 'BANK' | 'CREDIT_CARD';
 export interface ExtractedStatement {
     accountName: string | null;
+    accountNumber?: string | null;
     accountKind: AccountKind;
     currency: string | null;
     bankName: string | null;
@@ -27,6 +28,7 @@ export interface PageReading {
     isBankStatement: boolean;
     hasItemImages?: boolean;
     accountName: string | null;
+    accountNumber?: string | null;
     accountKind?: AccountKind | null;
     currency?: string | null;
     bankName: string | null;
@@ -39,12 +41,15 @@ export { UnreadableStatementError };
 export declare const EXTRACTION_SCHEMA: {
     readonly type: "object";
     readonly additionalProperties: false;
-    readonly required: readonly ["bankName", "accountName", "accountKind", "currency", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "hasItemImages", "isBankStatement"];
+    readonly required: readonly ["bankName", "accountName", "accountNumber", "accountKind", "currency", "periodStart", "periodEnd", "openingBalance", "closingBalance", "totalDeposits", "totalWithdrawals", "depositCount", "withdrawalCount", "totalsScope", "transactions", "hasItemImages", "isBankStatement"];
     readonly properties: {
         readonly bankName: {
             type: string[];
         };
         readonly accountName: {
+            type: string[];
+        };
+        readonly accountNumber: {
             type: string[];
         };
         readonly accountKind: {

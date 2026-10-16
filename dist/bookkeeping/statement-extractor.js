@@ -44,6 +44,7 @@ exports.EXTRACTION_SCHEMA = {
     required: [
         'bankName',
         'accountName',
+        'accountNumber',
         'accountKind',
         'currency',
         'periodStart',
@@ -62,6 +63,7 @@ exports.EXTRACTION_SCHEMA = {
     properties: {
         bankName: nullableString,
         accountName: nullableString,
+        accountNumber: nullableString,
         accountKind: {
             type: ['string', 'null'],
             enum: ['BANK', 'CREDIT_CARD', null],
@@ -138,7 +140,8 @@ exports.SYSTEM_PROMPT = [
     '- totalsScope: "all" if the totals you copied cover every transaction they are printed for (the whole statement, or every transaction on this page for a per-page box), "partial" if the only totals printed cover just part of them, "none" if no totals are printed on these pages.',
     '',
     'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
-    'accountName: the bank name plus the last 4 digits of the account number, e.g. "Chase 4362" (null if not on these pages).',
+    'accountName: the bank name plus the LAST 4 digits of the account number, e.g. "Chase 4362" — never the first digits, never the whole number (null if not on these pages).',
+    'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown).',
     'accountKind: "CREDIT_CARD" for a credit-card statement (American Express, Visa, Mastercard — it prints a "New balance" owed, a minimum payment, a credit limit), "BANK" for a chequing/savings account statement, null if these pages do not show which.',
     'currency: the ISO 4217 code of the currency the amounts are in, e.g. "CAD", "USD", "EUR" — from a printed code, an account name like "US$ account", or the currency symbol and the bank country; null if these pages do not show it.',
     'periodStart / periodEnd: the statement period as YYYY-MM-DD (null if not on these pages).',
@@ -319,6 +322,7 @@ function assemble(pages) {
     const said = pages.map((p) => p.accountKind).filter(Boolean);
     return {
         accountName: first((p) => p.accountName),
+        accountNumber: first((p) => p.accountNumber ?? null),
         accountKind: said.includes('CREDIT_CARD') || verification.balanceSign === -1
             ? 'CREDIT_CARD'
             : 'BANK',
@@ -421,6 +425,12 @@ function looksLikeStatement(page) {
         s.totalDeposits !== null ||
         s.totalWithdrawals !== null);
 }
+function digitsOnly(v) {
+    if (typeof v !== 'string')
+        return null;
+    const d = v.replace(/\D/g, '');
+    return d || null;
+}
 function parseExtraction(reply) {
     let raw;
     try {
@@ -441,6 +451,7 @@ function parseExtraction(reply) {
         hasItemImages: raw.hasItemImages === true,
         bankName: str(raw.bankName),
         accountName: str(raw.accountName),
+        accountNumber: digitsOnly(raw.accountNumber),
         accountKind: raw.accountKind === 'BANK' || raw.accountKind === 'CREDIT_CARD'
             ? raw.accountKind
             : null,

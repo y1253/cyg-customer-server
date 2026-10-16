@@ -40,6 +40,8 @@ export type AccountKind = 'BANK' | 'CREDIT_CARD';
 
 export interface ExtractedStatement {
   accountName: string | null;
+  /** The full account number as printed, digits only — identifies the account (`account-identity.util.ts`). */
+  accountNumber?: string | null;
   /**
    * A credit card prints the balance OWED — its starting balance is a debt, and the
    * account is a liability in the reports. CREDIT_CARD when the model says so OR the
@@ -77,6 +79,7 @@ export interface PageReading {
   /** The page shows images of cheques, deposit slips or items enclosed. */
   hasItemImages?: boolean;
   accountName: string | null;
+  accountNumber?: string | null;
   accountKind?: AccountKind | null;
   currency?: string | null;
   bankName: string | null;
@@ -110,6 +113,7 @@ export const EXTRACTION_SCHEMA = {
   required: [
     'bankName',
     'accountName',
+    'accountNumber',
     'accountKind',
     'currency',
     'periodStart',
@@ -128,6 +132,7 @@ export const EXTRACTION_SCHEMA = {
   properties: {
     bankName: nullableString,
     accountName: nullableString,
+    accountNumber: nullableString,
     accountKind: {
       type: ['string', 'null'],
       enum: ['BANK', 'CREDIT_CARD', null],
@@ -211,7 +216,8 @@ export const SYSTEM_PROMPT = [
   '- totalsScope: "all" if the totals you copied cover every transaction they are printed for (the whole statement, or every transaction on this page for a per-page box), "partial" if the only totals printed cover just part of them, "none" if no totals are printed on these pages.',
   '',
   'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
-  'accountName: the bank name plus the last 4 digits of the account number, e.g. "Chase 4362" (null if not on these pages).',
+  'accountName: the bank name plus the LAST 4 digits of the account number, e.g. "Chase 4362" — never the first digits, never the whole number (null if not on these pages).',
+  'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown).',
   'accountKind: "CREDIT_CARD" for a credit-card statement (American Express, Visa, Mastercard — it prints a "New balance" owed, a minimum payment, a credit limit), "BANK" for a chequing/savings account statement, null if these pages do not show which.',
   'currency: the ISO 4217 code of the currency the amounts are in, e.g. "CAD", "USD", "EUR" — from a printed code, an account name like "US$ account", or the currency symbol and the bank country; null if these pages do not show it.',
   'periodStart / periodEnd: the statement period as YYYY-MM-DD (null if not on these pages).',
@@ -500,6 +506,7 @@ export function assemble(
   const said = pages.map((p) => p.accountKind).filter(Boolean);
   return {
     accountName: first((p) => p.accountName),
+    accountNumber: first((p) => p.accountNumber ?? null),
     accountKind:
       said.includes('CREDIT_CARD') || verification.balanceSign === -1
         ? 'CREDIT_CARD'
@@ -659,6 +666,13 @@ export function looksLikeStatement(page: PageReading): boolean {
   );
 }
 
+/** "5234-496" / "**** 4362" → "5234496" / "4362"; null when there are no digits. */
+function digitsOnly(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const d = v.replace(/\D/g, '');
+  return d || null;
+}
+
 /** The model's JSON reply, defensively normalised. Never trusts a field's type. */
 export function parseExtraction(reply: string): PageReading {
   let raw: Record<string, unknown>;
@@ -681,6 +695,7 @@ export function parseExtraction(reply: string): PageReading {
     hasItemImages: raw.hasItemImages === true,
     bankName: str(raw.bankName),
     accountName: str(raw.accountName),
+    accountNumber: digitsOnly(raw.accountNumber),
     accountKind:
       raw.accountKind === 'BANK' || raw.accountKind === 'CREDIT_CARD'
         ? raw.accountKind
