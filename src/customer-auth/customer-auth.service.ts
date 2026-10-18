@@ -15,6 +15,11 @@ import { compare, hash } from 'bcryptjs';
 import { createHash, randomInt, timingSafeEqual } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { MailService } from '../mail/mail.service';
+import {
+  CODE_MAIL_PER_HOUR_DEFAULT,
+  CodeMailLimiter,
+  maskEmail,
+} from './code-mail-limiter';
 import { PrismaService } from '../prisma/prisma.service';
 import { toE164 } from './phone-number.util';
 import { buildPasswordCodeEmail } from './password-reset-email';
@@ -105,6 +110,18 @@ interface PendingSignup extends PendingCode {
 /** Which email a code goes out in. */
 type CodeKind = 'signup' | 'password';
 
+/**
+ * What to do when a code email is refused by the limits: tell the caller, or answer as if
+ * it was sent. Forgot-password is SILENT so its answer never says whether an account
+ * exists — and so a bot learns nothing from it.
+ */
+type OnLimit = 'throw' | 'silent';
+
+const TURNSTILE_VERIFY_URL =
+  'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const TURNSTILE_TIMEOUT_MS = 10_000;
+const NOT_HUMAN = 'Please confirm you are human and try again.';
+
 const sha256 = (code: string): Buffer =>
   createHash('sha256').update(code).digest();
 
@@ -146,13 +163,65 @@ export class CustomerAuthService {
   /** Password codes (forgot password, or a Google account setting one), by lower-cased email. */
   private readonly resets = new Map<string, PendingCode>();
   private googleClient: OAuth2Client | null = null;
+  /** Per-address and server-wide limits on code emails. */
+  private readonly codeMails: CodeMailLimiter;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly mail: MailService,
-  ) {}
+  ) {
+    const perHour = Number(this.config.get<string>('CODE_MAIL_MAX_PER_HOUR'));
+    this.codeMails = new CodeMailLimiter(
+      Number.isFinite(perHour) && perHour > 0
+        ? perHour
+        : CODE_MAIL_PER_HOUR_DEFAULT,
+    );
+  }
+
+  /** The Turnstile site key for the browser widget. Null = the check is off. */
+  turnstileSiteKey(): string | null {
+    return this.config.get<string>('TURNSTILE_SITE_KEY')?.trim() || null;
+  }
+
+  /**
+   * Cloudflare Turnstile ("are you human") on the routes that email a code to an address
+   * the caller types. Off while `TURNSTILE_SECRET_KEY` is unset (dev). A missing or
+   * rejected token is a 400. A transport failure lets the request through: a Cloudflare
+   * outage must not close signup, and the code-mail limits still apply behind it.
+   */
+  async verifyHuman(token: string | undefined, ip: string): Promise<void> {
+    const secret = this.config.get<string>('TURNSTILE_SECRET_KEY')?.trim();
+    if (!secret) return;
+    if (!token) throw new BadRequestException(NOT_HUMAN);
+    let ok: boolean;
+    try {
+      const body = new URLSearchParams({ secret, response: token });
+      if (ip && ip !== 'unknown') body.set('remoteip', ip);
+      const res = await fetch(TURNSTILE_VERIFY_URL, {
+        method: 'POST',
+        body,
+        signal: AbortSignal.timeout(TURNSTILE_TIMEOUT_MS),
+      });
+      const out = (await res.json()) as {
+        success?: boolean;
+        'error-codes'?: string[];
+      };
+      ok = out.success === true;
+      if (!ok) {
+        this.logger.warn(
+          `turnstile rejected ip=${ip} codes=${(out['error-codes'] ?? []).join(',')}`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `turnstile check failed, letting it through: ${(err as Error).message}`,
+      );
+      return;
+    }
+    if (!ok) throw new BadRequestException(NOT_HUMAN);
+  }
 
   /** The Google client id, for the browser's Sign in with Google button. Null = not configured. */
   googleClientId(): string | null {
@@ -179,7 +248,7 @@ export class CustomerAuthService {
       sentAt: 0,
     };
     this.pending.set(email, entry);
-    await this.sendCode(entry, 'signup');
+    await this.sendCode(entry, 'signup', ip);
     return { email };
   }
 
@@ -217,7 +286,10 @@ export class CustomerAuthService {
   }
 
   /** A new code for a pending signup — at most one a minute. */
-  async resendSignupCode(dto: ResendSignupDto): Promise<SignupStarted> {
+  async resendSignupCode(
+    dto: ResendSignupDto,
+    ip: string,
+  ): Promise<SignupStarted> {
     const entry = this.livePending(dto.email.toLowerCase());
     if (Date.now() - entry.sentAt < SIGNUP_RESEND_MS) {
       throw new HttpException(
@@ -225,7 +297,7 @@ export class CustomerAuthService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    await this.sendCode(entry, 'signup');
+    await this.sendCode(entry, 'signup', ip);
     return { email: entry.email };
   }
 
@@ -252,11 +324,38 @@ export class CustomerAuthService {
 
   /**
    * Issues a fresh code (resetting tries and expiry) and emails it. A failed send drops the
-   * pending entry, so a code nobody received can never be guessed at.
+   * pending entry, so a code nobody received can never be guessed at. Refused by the
+   * code-mail limits, it throws or (`silent`) returns quietly.
    */
-  private async sendCode(entry: PendingCode, kind: CodeKind): Promise<void> {
+  private async sendCode(
+    entry: PendingCode,
+    kind: CodeKind,
+    ip: string,
+    onLimit: OnLimit = 'throw',
+  ): Promise<void> {
     const store: Map<string, PendingCode> =
       kind === 'signup' ? this.pending : this.resets;
+    const verdict = this.codeMails.check(entry.email);
+    if (verdict !== 'ok') {
+      // Drop only an entry that never had a code. One already mailed stays usable, so a
+      // bot asking again for somebody's address cannot cancel the code they are typing.
+      if (entry.sentAt === 0) store.delete(entry.email);
+      this.logger.warn(
+        `${kind} code NOT sent (${verdict} limit) to=${maskEmail(entry.email)} ip=${ip}`,
+      );
+      if (onLimit === 'silent') return;
+      if (verdict === 'address') {
+        throw new HttpException(
+          'Too many codes were sent to this email. Please try again later.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      throw new ServiceUnavailableException(
+        'We cannot send emails right now. Please try again later.',
+      );
+    }
+    this.codeMails.record(entry.email);
+    this.logger.log(`${kind} code to=${maskEmail(entry.email)} ip=${ip}`);
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     entry.codeHash = sha256(code);
     entry.expiresAt = Date.now() + SIGNUP_CODE_TTL_MS;
@@ -327,7 +426,9 @@ export class CustomerAuthService {
     const customer = await this.prisma.customer.findUnique({
       where: { email },
     });
-    if (customer && !customer.deletedAt) await this.issuePasswordCode(email);
+    if (customer && !customer.deletedAt) {
+      await this.issuePasswordCode(email, ip, 'silent');
+    }
     return { email };
   }
 
@@ -393,7 +494,10 @@ export class CustomerAuthService {
   }
 
   /** Emails a code to a signed-in account that has no password yet, to set one. */
-  async sendPasswordCode(customerId: number): Promise<SignupStarted> {
+  async sendPasswordCode(
+    customerId: number,
+    ip: string,
+  ): Promise<SignupStarted> {
     const customer = await this.findActive(customerId);
     if (!customer) throw new UnauthorizedException();
     if (customer.passwordHash) {
@@ -402,12 +506,16 @@ export class CustomerAuthService {
       );
     }
     this.prunePending();
-    await this.issuePasswordCode(customer.email);
+    await this.issuePasswordCode(customer.email, ip, 'throw');
     return { email: customer.email };
   }
 
   /** A new password code for this email — at most one a minute. */
-  private async issuePasswordCode(email: string): Promise<void> {
+  private async issuePasswordCode(
+    email: string,
+    ip: string,
+    onLimit: OnLimit,
+  ): Promise<void> {
     const existing = this.resets.get(email);
     if (existing && Date.now() - existing.sentAt < SIGNUP_RESEND_MS) {
       throw new HttpException(
@@ -423,7 +531,7 @@ export class CustomerAuthService {
       sentAt: 0,
     };
     this.resets.set(email, entry);
-    await this.sendCode(entry, 'password');
+    await this.sendCode(entry, 'password', ip, onLimit);
   }
 
   /** Throws unless `code` is this email's live password code; a right code is used up. */

@@ -18,10 +18,11 @@ export declare class CustomerAuthController {
     constructor(auth: CustomerAuthService);
     config(): {
         googleClientId: string | null;
+        turnstileSiteKey: string | null;
     };
     signup(dto: SignupDto, req: Request): Promise<SignupStarted>;
     verifySignup(dto: VerifySignupDto, req: Request): Promise<AuthResult>;
-    resendSignup(dto: ResendSignupDto): Promise<SignupStarted>;
+    resendSignup(dto: ResendSignupDto, req: Request): Promise<SignupStarted>;
     login(dto: LoginDto, req: Request): Promise<AuthResult>;
     google(dto: GoogleLoginDto): Promise<AuthResult>;
     forgotPassword(dto: ForgotPasswordDto, req: Request): Promise<SignupStarted>;

@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   MaxLength,
   MinLength,
@@ -26,4 +27,10 @@ export class SignupDto {
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   @MaxLength(128)
   password!: string;
+
+  /** Cloudflare Turnstile token; required only while `TURNSTILE_SECRET_KEY` is set. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(4096)
+  turnstileToken?: string;
 }

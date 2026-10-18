@@ -17,6 +17,7 @@ class SignupDto {
     name;
     email;
     password;
+    turnstileToken;
 }
 exports.SignupDto = SignupDto;
 __decorate([
@@ -38,4 +39,10 @@ __decorate([
     (0, class_validator_1.MaxLength)(128),
     __metadata("design:type", String)
 ], SignupDto.prototype, "password", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(4096),
+    __metadata("design:type", String)
+], SignupDto.prototype, "turnstileToken", void 0);
 //# sourceMappingURL=signup.dto.js.map

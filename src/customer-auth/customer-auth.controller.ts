@@ -39,15 +39,26 @@ export class CustomerAuthController {
 
   /** What the login page needs before it can render the Google button. */
   @Get('config')
-  config(): { googleClientId: string | null } {
-    return { googleClientId: this.auth.googleClientId() };
+  config(): {
+    googleClientId: string | null;
+    turnstileSiteKey: string | null;
+  } {
+    return {
+      googleClientId: this.auth.googleClientId(),
+      turnstileSiteKey: this.auth.turnstileSiteKey(),
+    };
   }
 
   /** Emails a 6-digit code; the account is created by `signup/verify`. */
   @Post('signup')
   @HttpCode(202)
-  signup(@Body() dto: SignupDto, @Req() req: Request): Promise<SignupStarted> {
-    return this.auth.signup(dto, req.ip ?? 'unknown');
+  async signup(
+    @Body() dto: SignupDto,
+    @Req() req: Request,
+  ): Promise<SignupStarted> {
+    const ip = req.ip ?? 'unknown';
+    await this.auth.verifyHuman(dto.turnstileToken, ip);
+    return this.auth.signup(dto, ip);
   }
 
   @Post('signup/verify')
@@ -61,8 +72,11 @@ export class CustomerAuthController {
 
   @Post('signup/resend')
   @HttpCode(202)
-  resendSignup(@Body() dto: ResendSignupDto): Promise<SignupStarted> {
-    return this.auth.resendSignupCode(dto);
+  resendSignup(
+    @Body() dto: ResendSignupDto,
+    @Req() req: Request,
+  ): Promise<SignupStarted> {
+    return this.auth.resendSignupCode(dto, req.ip ?? 'unknown');
   }
 
   @Post('login')
@@ -80,11 +94,13 @@ export class CustomerAuthController {
   /** Emails a 6-digit code to an existing account; answers the same for an unknown email. */
   @Post('password/forgot')
   @HttpCode(202)
-  forgotPassword(
+  async forgotPassword(
     @Body() dto: ForgotPasswordDto,
     @Req() req: Request,
   ): Promise<SignupStarted> {
-    return this.auth.forgotPassword(dto, req.ip ?? 'unknown');
+    const ip = req.ip ?? 'unknown';
+    await this.auth.verifyHuman(dto.turnstileToken, ip);
+    return this.auth.forgotPassword(dto, ip);
   }
 
   /** The emailed code + a new password → saved, and signed in. */
@@ -132,6 +148,6 @@ export class CustomerAuthController {
   @UseGuards(CustomerJwtGuard)
   @HttpCode(202)
   sendPasswordCode(@Req() req: AuthedRequest): Promise<SignupStarted> {
-    return this.auth.sendPasswordCode(req.user.customerId);
+    return this.auth.sendPasswordCode(req.user.customerId, req.ip ?? 'unknown');
   }
 }

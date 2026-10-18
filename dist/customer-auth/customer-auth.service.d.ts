@@ -59,11 +59,14 @@ export declare class CustomerAuthService {
     private readonly pending;
     private readonly resets;
     private googleClient;
+    private readonly codeMails;
     constructor(prisma: PrismaService, jwt: JwtService, config: ConfigService, mail: MailService);
+    turnstileSiteKey(): string | null;
+    verifyHuman(token: string | undefined, ip: string): Promise<void>;
     googleClientId(): string | null;
     signup(dto: SignupDto, ip: string): Promise<SignupStarted>;
     verifySignup(dto: VerifySignupDto, ip: string): Promise<AuthResult>;
-    resendSignupCode(dto: ResendSignupDto): Promise<SignupStarted>;
+    resendSignupCode(dto: ResendSignupDto, ip: string): Promise<SignupStarted>;
     private livePending;
     private assertEmailFree;
     private sendCode;
@@ -71,7 +74,7 @@ export declare class CustomerAuthService {
     forgotPassword(dto: ForgotPasswordDto, ip: string): Promise<SignupStarted>;
     resetPassword(dto: ResetPasswordDto, ip: string): Promise<AuthResult>;
     changePassword(customerId: number, dto: ChangePasswordDto, ip: string): Promise<AuthResult>;
-    sendPasswordCode(customerId: number): Promise<SignupStarted>;
+    sendPasswordCode(customerId: number, ip: string): Promise<SignupStarted>;
     private issuePasswordCode;
     private checkPasswordCode;
     private passwordData;

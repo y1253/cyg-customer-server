@@ -31,16 +31,21 @@ let CustomerAuthController = class CustomerAuthController {
         this.auth = auth;
     }
     config() {
-        return { googleClientId: this.auth.googleClientId() };
+        return {
+            googleClientId: this.auth.googleClientId(),
+            turnstileSiteKey: this.auth.turnstileSiteKey(),
+        };
     }
-    signup(dto, req) {
-        return this.auth.signup(dto, req.ip ?? 'unknown');
+    async signup(dto, req) {
+        const ip = req.ip ?? 'unknown';
+        await this.auth.verifyHuman(dto.turnstileToken, ip);
+        return this.auth.signup(dto, ip);
     }
     verifySignup(dto, req) {
         return this.auth.verifySignup(dto, req.ip ?? 'unknown');
     }
-    resendSignup(dto) {
-        return this.auth.resendSignupCode(dto);
+    resendSignup(dto, req) {
+        return this.auth.resendSignupCode(dto, req.ip ?? 'unknown');
     }
     login(dto, req) {
         return this.auth.login(dto, req.ip ?? 'unknown');
@@ -48,8 +53,10 @@ let CustomerAuthController = class CustomerAuthController {
     google(dto) {
         return this.auth.google(dto);
     }
-    forgotPassword(dto, req) {
-        return this.auth.forgotPassword(dto, req.ip ?? 'unknown');
+    async forgotPassword(dto, req) {
+        const ip = req.ip ?? 'unknown';
+        await this.auth.verifyHuman(dto.turnstileToken, ip);
+        return this.auth.forgotPassword(dto, ip);
     }
     resetPassword(dto, req) {
         return this.auth.resetPassword(dto, req.ip ?? 'unknown');
@@ -64,7 +71,7 @@ let CustomerAuthController = class CustomerAuthController {
         return this.auth.changePassword(req.user.customerId, dto, req.ip ?? 'unknown');
     }
     sendPasswordCode(req) {
-        return this.auth.sendPasswordCode(req.user.customerId);
+        return this.auth.sendPasswordCode(req.user.customerId, req.ip ?? 'unknown');
     }
 };
 exports.CustomerAuthController = CustomerAuthController;
@@ -96,8 +103,9 @@ __decorate([
     (0, common_1.Post)('signup/resend'),
     (0, common_1.HttpCode)(202),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [resend_signup_dto_1.ResendSignupDto]),
+    __metadata("design:paramtypes", [resend_signup_dto_1.ResendSignupDto, Object]),
     __metadata("design:returntype", Promise)
 ], CustomerAuthController.prototype, "resendSignup", null);
 __decorate([

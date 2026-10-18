@@ -15,6 +15,7 @@ const class_validator_1 = require("class-validator");
 const trim = ({ value }) => typeof value === 'string' ? value.trim() : value;
 class ForgotPasswordDto {
     email;
+    turnstileToken;
 }
 exports.ForgotPasswordDto = ForgotPasswordDto;
 __decorate([
@@ -23,4 +24,10 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
 ], ForgotPasswordDto.prototype, "email", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(4096),
+    __metadata("design:type", String)
+], ForgotPasswordDto.prototype, "turnstileToken", void 0);
 //# sourceMappingURL=forgot-password.dto.js.map

@@ -48,7 +48,10 @@ function customer(over: Partial<Customer> = {}): Customer {
   };
 }
 
-function setup(existing: Customer | null = null) {
+function setup(
+  existing: Customer | null = null,
+  extraEnv: Record<string, string> = {},
+) {
   const prisma = {
     customer: {
       findUnique: jest.fn().mockResolvedValue(existing),
@@ -63,6 +66,7 @@ function setup(existing: Customer | null = null) {
   const env: Record<string, string> = {
     CUSTOMER_JWT_SECRET: SECRET,
     GOOGLE_CLIENT_ID: 'client-id.apps.googleusercontent.com',
+    ...extraEnv,
   };
   const config = {
     get: (k: string) => env[k],
@@ -192,10 +196,10 @@ describe('signup', () => {
     const { service, mail } = setup();
     await service.signup(SIGNUP, IP);
     await expect(
-      service.resendSignupCode({ email: 'ana@example.com' }),
+      service.resendSignupCode({ email: 'ana@example.com' }, IP),
     ).rejects.toBeInstanceOf(HttpException);
     jest.advanceTimersByTime(SIGNUP_RESEND_MS);
-    await service.resendSignupCode({ email: 'ana@example.com' });
+    await service.resendSignupCode({ email: 'ana@example.com' }, IP);
     expect(mail.send).toHaveBeenCalledTimes(2);
     const out = await service.verifySignup(
       { email: 'ana@example.com', code: sentCode(mail) },
@@ -211,7 +215,7 @@ describe('signup', () => {
       ServiceUnavailableException,
     );
     await expect(
-      service.resendSignupCode({ email: 'ana@example.com' }),
+      service.resendSignupCode({ email: 'ana@example.com' }, IP),
     ).rejects.toThrow('expired');
   });
 
@@ -429,7 +433,7 @@ describe('changePassword', () => {
     await expect(
       service.changePassword(1, { newPassword: 'brand-new-pw' }, IP),
     ).rejects.toThrow('code');
-    await service.sendPasswordCode(1);
+    await service.sendPasswordCode(1, IP);
     await service.changePassword(
       1,
       { code: sentCode(mail), newPassword: 'brand-new-pw' },
@@ -442,7 +446,7 @@ describe('changePassword', () => {
 
   it('will not email a set-password code to an account that has a password', async () => {
     const { service, mail } = setup(customer({ passwordHash: 'x' }));
-    await expect(service.sendPasswordCode(1)).rejects.toBeInstanceOf(
+    await expect(service.sendPasswordCode(1, IP)).rejects.toBeInstanceOf(
       BadRequestException,
     );
     expect(mail.send).not.toHaveBeenCalled();
@@ -522,5 +526,102 @@ describe('CustomerJwtStrategy', () => {
     await expect(
       strategy.validate({ sub: 1, typ: 'customer', email: 'a', name: 'b' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+describe('code-mail limits', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('a fresh signup for the same address within a minute is 429, not a second email', async () => {
+    const { service, mail } = setup();
+    await service.signup(SIGNUP, IP);
+    await expect(service.signup(SIGNUP, '5.6.7.8')).rejects.toMatchObject({
+      status: 429,
+    });
+    expect(mail.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgot password over the daily cap answers the same and sends nothing', async () => {
+    jest.useFakeTimers();
+    const { service, mail } = setup(customer());
+    for (let i = 0; i < 5; i++) {
+      await service.forgotPassword({ email: 'ana@example.com' }, '9.9.9.' + i);
+      jest.advanceTimersByTime(SIGNUP_RESEND_MS);
+    }
+    expect(mail.send).toHaveBeenCalledTimes(5);
+    await expect(
+      service.forgotPassword({ email: 'ana@example.com' }, '9.9.9.9'),
+    ).resolves.toEqual({ email: 'ana@example.com' });
+    expect(mail.send).toHaveBeenCalledTimes(5);
+  });
+
+  it('a refused forgot keeps the code already mailed usable', async () => {
+    jest.useFakeTimers();
+    const { service, mail, prisma } = setup(customer());
+    for (let i = 0; i < 5; i++) {
+      await service.forgotPassword({ email: 'ana@example.com' }, '9.9.9.' + i);
+      jest.advanceTimersByTime(SIGNUP_RESEND_MS);
+    }
+    const code = sentCode(mail);
+    await service.forgotPassword({ email: 'ana@example.com' }, '9.9.9.9');
+    await service.resetPassword(
+      { email: 'ana@example.com', code, newPassword: 'brand-new-pw' },
+      IP,
+    );
+    expect(prisma.customer.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops every code email past the hourly cap (CODE_MAIL_MAX_PER_HOUR)', async () => {
+    const { service, mail } = setup(null, { CODE_MAIL_MAX_PER_HOUR: '2' });
+    await service.signup({ ...SIGNUP, email: 'a@x.com' }, '1.1.1.1');
+    await service.signup({ ...SIGNUP, email: 'b@x.com' }, '1.1.1.2');
+    await expect(
+      service.signup({ ...SIGNUP, email: 'c@x.com' }, '1.1.1.3'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(mail.send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('verifyHuman (Turnstile)', () => {
+  const fetchMock = jest.fn();
+  beforeEach(() => {
+    fetchMock.mockReset();
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  const reply = (body: object) =>
+    fetchMock.mockResolvedValueOnce({ json: () => Promise.resolve(body) });
+
+  it('is off while TURNSTILE_SECRET_KEY is unset', async () => {
+    const { service } = setup();
+    await expect(service.verifyHuman(undefined, IP)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing token without asking Cloudflare', async () => {
+    const { service } = setup(null, { TURNSTILE_SECRET_KEY: 'sk' });
+    await expect(service.verifyHuman(undefined, IP)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token Cloudflare rejects, accepts one it passes', async () => {
+    const { service } = setup(null, { TURNSTILE_SECRET_KEY: 'sk' });
+    reply({ success: false, 'error-codes': ['invalid-input-response'] });
+    await expect(service.verifyHuman('bad', IP)).rejects.toThrow('human');
+    reply({ success: true });
+    await expect(service.verifyHuman('good', IP)).resolves.toBeUndefined();
+    const init = (fetchMock.mock.calls as [string, RequestInit][])[1][1];
+    const body = init.body as URLSearchParams;
+    expect(body.get('secret')).toBe('sk');
+    expect(body.get('response')).toBe('good');
+    expect(body.get('remoteip')).toBe(IP);
+  });
+
+  it('lets the request through when Cloudflare cannot be reached', async () => {
+    const { service } = setup(null, { TURNSTILE_SECRET_KEY: 'sk' });
+    fetchMock.mockRejectedValueOnce(new Error('timeout'));
+    await expect(service.verifyHuman('tok', IP)).resolves.toBeUndefined();
   });
 });

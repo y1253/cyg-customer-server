@@ -20,6 +20,7 @@ const bcryptjs_1 = require("bcryptjs");
 const crypto_1 = require("crypto");
 const google_auth_library_1 = require("google-auth-library");
 const mail_service_1 = require("../mail/mail.service");
+const code_mail_limiter_1 = require("./code-mail-limiter");
 const prisma_service_1 = require("../prisma/prisma.service");
 const phone_number_util_1 = require("./phone-number.util");
 const password_reset_email_1 = require("./password-reset-email");
@@ -31,6 +32,9 @@ exports.AUTH_WINDOW_MS = 15 * 60_000;
 exports.SIGNUP_CODE_TTL_MS = 10 * 60_000;
 exports.SIGNUP_CODE_TRIES = 5;
 exports.SIGNUP_RESEND_MS = 60_000;
+const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const TURNSTILE_TIMEOUT_MS = 10_000;
+const NOT_HUMAN = 'Please confirm you are human and try again.';
 const sha256 = (code) => (0, crypto_1.createHash)('sha256').update(code).digest();
 const CODE_EXPIRED = 'This code has expired. Please sign up again.';
 const RESET_EXPIRED = 'This code has expired. Please ask for a new one.';
@@ -57,11 +61,48 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     pending = new Map();
     resets = new Map();
     googleClient = null;
+    codeMails;
     constructor(prisma, jwt, config, mail) {
         this.prisma = prisma;
         this.jwt = jwt;
         this.config = config;
         this.mail = mail;
+        const perHour = Number(this.config.get('CODE_MAIL_MAX_PER_HOUR'));
+        this.codeMails = new code_mail_limiter_1.CodeMailLimiter(Number.isFinite(perHour) && perHour > 0
+            ? perHour
+            : code_mail_limiter_1.CODE_MAIL_PER_HOUR_DEFAULT);
+    }
+    turnstileSiteKey() {
+        return this.config.get('TURNSTILE_SITE_KEY')?.trim() || null;
+    }
+    async verifyHuman(token, ip) {
+        const secret = this.config.get('TURNSTILE_SECRET_KEY')?.trim();
+        if (!secret)
+            return;
+        if (!token)
+            throw new common_1.BadRequestException(NOT_HUMAN);
+        let ok;
+        try {
+            const body = new URLSearchParams({ secret, response: token });
+            if (ip && ip !== 'unknown')
+                body.set('remoteip', ip);
+            const res = await fetch(TURNSTILE_VERIFY_URL, {
+                method: 'POST',
+                body,
+                signal: AbortSignal.timeout(TURNSTILE_TIMEOUT_MS),
+            });
+            const out = (await res.json());
+            ok = out.success === true;
+            if (!ok) {
+                this.logger.warn(`turnstile rejected ip=${ip} codes=${(out['error-codes'] ?? []).join(',')}`);
+            }
+        }
+        catch (err) {
+            this.logger.error(`turnstile check failed, letting it through: ${err.message}`);
+            return;
+        }
+        if (!ok)
+            throw new common_1.BadRequestException(NOT_HUMAN);
     }
     googleClientId() {
         return this.config.get('GOOGLE_CLIENT_ID')?.trim() || null;
@@ -82,7 +123,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             sentAt: 0,
         };
         this.pending.set(email, entry);
-        await this.sendCode(entry, 'signup');
+        await this.sendCode(entry, 'signup', ip);
         return { email };
     }
     async verifySignup(dto, ip) {
@@ -111,12 +152,12 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         });
         return this.sign(customer);
     }
-    async resendSignupCode(dto) {
+    async resendSignupCode(dto, ip) {
         const entry = this.livePending(dto.email.toLowerCase());
         if (Date.now() - entry.sentAt < exports.SIGNUP_RESEND_MS) {
             throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
         }
-        await this.sendCode(entry, 'signup');
+        await this.sendCode(entry, 'signup', ip);
         return { email: entry.email };
     }
     livePending(email) {
@@ -135,8 +176,22 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             throw new common_1.ConflictException('An account with this email already exists — log in instead');
         }
     }
-    async sendCode(entry, kind) {
+    async sendCode(entry, kind, ip, onLimit = 'throw') {
         const store = kind === 'signup' ? this.pending : this.resets;
+        const verdict = this.codeMails.check(entry.email);
+        if (verdict !== 'ok') {
+            if (entry.sentAt === 0)
+                store.delete(entry.email);
+            this.logger.warn(`${kind} code NOT sent (${verdict} limit) to=${(0, code_mail_limiter_1.maskEmail)(entry.email)} ip=${ip}`);
+            if (onLimit === 'silent')
+                return;
+            if (verdict === 'address') {
+                throw new common_1.HttpException('Too many codes were sent to this email. Please try again later.', common_1.HttpStatus.TOO_MANY_REQUESTS);
+            }
+            throw new common_1.ServiceUnavailableException('We cannot send emails right now. Please try again later.');
+        }
+        this.codeMails.record(entry.email);
+        this.logger.log(`${kind} code to=${(0, code_mail_limiter_1.maskEmail)(entry.email)} ip=${ip}`);
         const code = String((0, crypto_1.randomInt)(0, 1_000_000)).padStart(6, '0');
         entry.codeHash = sha256(code);
         entry.expiresAt = Date.now() + exports.SIGNUP_CODE_TTL_MS;
@@ -190,8 +245,9 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         const customer = await this.prisma.customer.findUnique({
             where: { email },
         });
-        if (customer && !customer.deletedAt)
-            await this.issuePasswordCode(email);
+        if (customer && !customer.deletedAt) {
+            await this.issuePasswordCode(email, ip, 'silent');
+        }
         return { email };
     }
     async resetPassword(dto, ip) {
@@ -242,7 +298,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         });
         return this.sign(updated);
     }
-    async sendPasswordCode(customerId) {
+    async sendPasswordCode(customerId, ip) {
         const customer = await this.findActive(customerId);
         if (!customer)
             throw new common_1.UnauthorizedException();
@@ -250,10 +306,10 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             throw new common_1.BadRequestException('Your account already has a password — enter it to change it');
         }
         this.prunePending();
-        await this.issuePasswordCode(customer.email);
+        await this.issuePasswordCode(customer.email, ip, 'throw');
         return { email: customer.email };
     }
-    async issuePasswordCode(email) {
+    async issuePasswordCode(email, ip, onLimit) {
         const existing = this.resets.get(email);
         if (existing && Date.now() - existing.sentAt < exports.SIGNUP_RESEND_MS) {
             throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
@@ -266,7 +322,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             sentAt: 0,
         };
         this.resets.set(email, entry);
-        await this.sendCode(entry, 'password');
+        await this.sendCode(entry, 'password', ip, onLimit);
     }
     checkPasswordCode(email, code, ip) {
         const entry = this.resets.get(email);
