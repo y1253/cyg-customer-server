@@ -66,10 +66,23 @@ let ReportsService = class ReportsService {
         const home = (statementId, date, amount, bankAccount) => {
             const { home: converted } = fx.convert(statementId, date, amount);
             entries.push({ statementId, bankAccount, amount, home: converted });
-            return converted;
+            return fx.isForeign(statementId)
+                ? { amount: converted, foreign: amount }
+                : { amount: converted };
         };
+        const seen = new Map();
+        for (const s of statements) {
+            const bank = s.accountName ?? 'Bank account';
+            seen.set(bank, (seen.get(bank) ?? new Set()).add(fx.currencyOf(s.id)));
+        }
+        const bankCurrencies = new Map([...seen]
+            .filter(([, cs]) => cs.size === 1)
+            .map(([bank, cs]) => {
+            const currency = [...cs][0];
+            return [bank, { currency, foreign: currency !== fx.home }];
+        }));
         const openings = (0, opening_balance_util_1.openingRows)(statements).map((o) => ({
-            amount: home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
+            ...home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
             offsetAccount: o.offsetAccount,
             bankAccount: o.bankAccount,
             date: day(o.postingDate),
@@ -86,7 +99,7 @@ let ReportsService = class ReportsService {
                 const split = (0, tax_util_1.taxSplit)({ ...r, amount }, taxes.get(r.id) ?? []);
                 const rowDate = day(r.postingDate) ?? day(r.pendingDate);
                 return [split.parent, ...split.taxes].map((e) => ({
-                    amount: home(r.statementId, rowDate, e.amount, bankAccount),
+                    ...home(r.statementId, rowDate, e.amount, bankAccount),
                     offsetAccount: e.offsetAccount,
                     bankAccount,
                     date,
@@ -100,12 +113,14 @@ let ReportsService = class ReportsService {
             bankAccount: f.bankAccount,
             date: f.date,
             name: null,
+            ...(fx.isForeign(f.statementId) && { foreign: 0 }),
         }));
         return (0, reports_util_1.buildReports)([...ledgerRows, ...revaluations], from, to, {
             liabilityAccounts: agencies,
             customTypes,
             overrides,
             creditCards,
+            bankCurrencies,
         });
     }
 };

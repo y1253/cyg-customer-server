@@ -53,6 +53,7 @@ import {
   RenameTaxLineDto,
   ResetNameRuleDto,
   ResetAccountTypeDto,
+  SetAccountCurrencyDto,
   ResetProductRuleDto,
   SaveSplitsDto,
   SetAccountTypeDto,
@@ -553,6 +554,30 @@ export class BookkeepingController {
     @Body() dto: ResetAccountTypeDto,
   ): Promise<void> {
     return this.accounts.resetType(req.user.customerId, dto.account);
+  }
+
+  /** Set the currency of a statement account; its statements are converted from it. */
+  @Put('accounts/currency')
+  @HttpCode(204)
+  setAccountCurrency(
+    @Req() req: AuthedRequest,
+    @Body() dto: SetAccountCurrencyDto,
+  ): Promise<void> {
+    return this.accounts.setCurrency(
+      req.user.customerId,
+      dto.account,
+      dto.currency,
+    );
+  }
+
+  /** Back to the currency read off each of the account's statements. */
+  @Delete('accounts/currency')
+  @HttpCode(204)
+  resetAccountCurrency(
+    @Req() req: AuthedRequest,
+    @Body() dto: ResetAccountTypeDto,
+  ): Promise<void> {
+    return this.accounts.resetCurrency(req.user.customerId, dto.account);
   }
 
   /** The currency the books are kept in, and the ones we have daily rates for. */

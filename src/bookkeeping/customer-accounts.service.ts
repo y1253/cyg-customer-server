@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { isFxCurrency } from './fx.util';
 import {
   ACCOUNT_NAMES,
   CHART_OF_ACCOUNTS,
@@ -85,6 +86,44 @@ export class CustomerAccountsService {
   /** Back to where the chart (or their own category) puts it. */
   async resetType(customerId: number, account: string): Promise<void> {
     await this.prisma.customerAccountType.deleteMany({
+      where: { customerId, account: account.trim() },
+    });
+  }
+
+  /**
+   * Set the currency of one of the customer's statement accounts — every statement filed
+   * under it, now and later, is converted from it (`loadOpeningStatements`). Rows never
+   * change; conversion happens on read.
+   */
+  async setCurrency(
+    customerId: number,
+    account: string,
+    currency: string,
+  ): Promise<void> {
+    const name = account.trim();
+    const code = currency.trim().toUpperCase();
+    if (!isFxCurrency(code)) {
+      throw new BadRequestException(
+        `${code} is not a currency we have daily rates for`,
+      );
+    }
+    const statement = await this.prisma.bankStatement.findFirst({
+      where: { customerId, accountName: name, deletedAt: null },
+      select: { id: true },
+    });
+    if (!statement) {
+      throw new BadRequestException(`"${name}" is not one of your accounts`);
+    }
+    await this.prisma.customerAccountCurrency.upsert({
+      where: { customerId_account: { customerId, account: name } },
+      create: { customerId, account: name, currency: code },
+      update: { currency: code },
+    });
+  }
+
+  /** Back to the currency read off each statement. */
+  async resetCurrency(customerId: number, account: string): Promise<void> {
+    await this.prisma.customerAccountCurrency.deleteMany({
       where: { customerId, account: account.trim() },
     });
   }

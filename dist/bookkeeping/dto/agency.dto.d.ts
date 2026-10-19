@@ -51,6 +51,10 @@ export declare class SetAccountTypeDto {
     account: string;
     type: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }
+export declare class SetAccountCurrencyDto {
+    account: string;
+    currency: string;
+}
 export declare class ResetAccountTypeDto {
     account: string;
 }

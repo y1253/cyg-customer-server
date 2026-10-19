@@ -145,7 +145,7 @@ export declare class StatementExtractor {
     private readChunk;
 }
 export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
-export declare function closingOf(pages: PageReading[]): number | null;
+export declare function closingOf(pages: PageReading[], openingBalance?: number | null): number | null;
 export declare function rereadRound(n: number): {
     verifyModel: boolean;
     allPages: boolean;

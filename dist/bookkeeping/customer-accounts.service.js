@@ -12,6 +12,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomerAccountsService = exports.ACCOUNT_TYPES = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const fx_util_1 = require("./fx.util");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.ACCOUNT_TYPES = [
     'INCOME',
@@ -59,6 +60,30 @@ let CustomerAccountsService = class CustomerAccountsService {
     }
     async resetType(customerId, account) {
         await this.prisma.customerAccountType.deleteMany({
+            where: { customerId, account: account.trim() },
+        });
+    }
+    async setCurrency(customerId, account, currency) {
+        const name = account.trim();
+        const code = currency.trim().toUpperCase();
+        if (!(0, fx_util_1.isFxCurrency)(code)) {
+            throw new common_1.BadRequestException(`${code} is not a currency we have daily rates for`);
+        }
+        const statement = await this.prisma.bankStatement.findFirst({
+            where: { customerId, accountName: name, deletedAt: null },
+            select: { id: true },
+        });
+        if (!statement) {
+            throw new common_1.BadRequestException(`"${name}" is not one of your accounts`);
+        }
+        await this.prisma.customerAccountCurrency.upsert({
+            where: { customerId_account: { customerId, account: name } },
+            create: { customerId, account: name, currency: code },
+            update: { currency: code },
+        });
+    }
+    async resetCurrency(customerId, account) {
+        await this.prisma.customerAccountCurrency.deleteMany({
             where: { customerId, account: account.trim() },
         });
     }

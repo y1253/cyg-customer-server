@@ -37,11 +37,11 @@ export const STARTING_BALANCE = 'Starting balance';
  * Statements are chained per bank account (`accountName`, the same "Bank account"
  * fallback `processOne` uses), in `periodStart` order — never upload order: a statement
  * whose opening balance equals, to the cent, the ending balance of the PREVIOUS statement
- * of that account continues it and gets no row. The ending balance is the printed
- * `closingBalance`; when none was printed (TD has no labelled closing line) it is
- * opening ± Σ rows — exact, since a DONE statement passed the self-check; "−" because a
- * credit card prints the balance OWED. Any other statement (the first one, or one after a gap
- * or a mismatch) gets its full printed balance. No opening balance, or zero → no row.
+ * of that account continues it and gets no row. The ending balance is any of `endingsOf`:
+ * the printed `closingBalance` or opening ± Σ rows (TD has no labelled closing line; "−"
+ * because a credit card prints the balance OWED), each with either sign. Any other
+ * statement (the first one, or one after a real gap) gets its full printed balance (user's
+ * decision, kept 2026-10-18). No opening balance, or zero → no row.
  *
  * A CREDIT CARD's printed balance is a DEBT: "Previous balance $500" is −$500 on the card
  * (debit Owner's Loan / credit the card), so with purchases negative and payments positive
@@ -88,13 +88,22 @@ export const CREDIT_CARD = 'CREDIT_CARD';
 export const isCreditCard = (kind: string | null | undefined): boolean =>
   kind === CREDIT_CARD;
 
-/** Where a statement may have ended, in cents (see `openingRows`). */
-function endingsOf(s: OpeningStatement): number[] {
-  if (s.closingBalance !== null) return [cents(s.closingBalance)];
-  if (s.openingBalance === null) return [];
-  const open = cents(s.openingBalance);
-  const net = cents(s.net);
-  return [open + net, open - net];
+/**
+ * Where a statement may have ended, in cents (see `openingRows`): the printed closing AND
+ * opening ± Σ rows, each also negated. A printed closing alone is not trusted — a TD
+ * per-page figure stored as the closing broke a chain that opening + Σ rows proved, and the
+ * next statement's opening was posted on top of the old balance (2026-10-18). Negated: an
+ * overdrawn "1,468.82-" stored without its minus on one statement and with it on the next.
+ */
+export function endingsOf(s: OpeningStatement): number[] {
+  const out: number[] = [];
+  if (s.closingBalance !== null) out.push(cents(s.closingBalance));
+  if (s.openingBalance !== null) {
+    const open = cents(s.openingBalance);
+    const net = cents(s.net);
+    out.push(open + net, open - net);
+  }
+  return [...new Set(out.flatMap((c) => [c, -c]))];
 }
 
 /** A Prisma Decimal (or null) as a number, for `OpeningStatement`. */

@@ -302,4 +302,16 @@ describe('closingOf', () => {
     expect(closingOf([withClosing(100, []), withClosing(90, [])])).toBe(90);
     expect(closingOf([withClosing(null, [])])).toBeNull();
   });
+
+  it('never takes the opening balance copied into the closing slot (TD March, 2026-10-18)', () => {
+    // The rows move −2 in total, so a "closing" equal to the opening is not where it ended.
+    expect(
+      closingOf([withClosing(500, []), withClosing(500, [null, null])], 500),
+    ).toBeNull();
+    expect(
+      closingOf([withClosing(498, []), withClosing(500, [null, null])], 500),
+    ).toBe(498);
+    // No rows, nothing moved: the opening IS the closing.
+    expect(closingOf([withClosing(500, [])], 500)).toBe(500);
+  });
 });

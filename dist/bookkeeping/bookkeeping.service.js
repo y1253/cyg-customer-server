@@ -96,7 +96,7 @@ function withTaxLines(p, lines) {
         })),
     ];
 }
-function toView(s) {
+function toView(s, currencies = new Map()) {
     return {
         id: s.id,
         filename: s.filename,
@@ -106,6 +106,7 @@ function toView(s) {
         accountName: s.accountName,
         accountKind: s.accountKind,
         currency: s.currency,
+        accountCurrency: (0, opening_balance_query_1.effectiveCurrency)(s, currencies),
         bankName: s.bankName,
         label: (0, statement_label_1.statementLabel)(s),
         periodStart: day(s.periodStart),
@@ -182,11 +183,14 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return { queued: count, taxing: false };
     }
     async list(customerId) {
-        const rows = await this.prisma.bankStatement.findMany({
-            where: { customerId, deletedAt: null },
-            orderBy: { createdAt: 'desc' },
-        });
-        return rows.map(toView);
+        const [rows, currencies] = await Promise.all([
+            this.prisma.bankStatement.findMany({
+                where: { customerId, deletedAt: null },
+                orderBy: { createdAt: 'desc' },
+            }),
+            (0, opening_balance_query_1.accountCurrencies)(this.prisma, customerId),
+        ]);
+        return rows.map((r) => toView(r, currencies));
     }
     async transactions(customerId, statementIds) {
         const [rows, statements, taxes, attached] = await Promise.all([
@@ -388,6 +392,20 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                     }
                     else {
                         await tx.customerAccountType.updateMany({
+                            where: { customerId, account: old },
+                            data: { account: name },
+                        });
+                    }
+                    const keptCurrency = await tx.customerAccountCurrency.findUnique({
+                        where: { customerId_account: { customerId, account: name } },
+                    });
+                    if (keptCurrency) {
+                        await tx.customerAccountCurrency.deleteMany({
+                            where: { customerId, account: old },
+                        });
+                    }
+                    else {
+                        await tx.customerAccountCurrency.updateMany({
                             where: { customerId, account: old },
                             data: { account: name },
                         });

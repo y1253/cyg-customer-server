@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -248,6 +248,23 @@ __decorate([
     (0, class_validator_1.IsIn)(['INCOME', 'EXPENSE', 'ASSET', 'LIABILITY', 'EQUITY']),
     __metadata("design:type", String)
 ], SetAccountTypeDto.prototype, "type", void 0);
+class SetAccountCurrencyDto {
+    account;
+    currency;
+}
+exports.SetAccountCurrencyDto = SetAccountCurrencyDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SetAccountCurrencyDto.prototype, "account", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^[A-Za-z]{3}$/),
+    __metadata("design:type", String)
+], SetAccountCurrencyDto.prototype, "currency", void 0);
 class ResetAccountTypeDto {
     account;
 }

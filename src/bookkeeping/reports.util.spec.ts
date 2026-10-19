@@ -250,3 +250,61 @@ it('totals each income-statement line per name, the nameless as Unclarified name
     { name: UNCLARIFIED_NAME, amount: 5 },
   ]);
 });
+
+describe('buildReports — a foreign statement account', () => {
+  const USD = 'TD USD 9999';
+  const rows: ReportRow[] = [
+    // Starting balance US$1,000 = C$1,350, then a US$100 purchase = C$136.
+    {
+      amount: 1350,
+      foreign: 1000,
+      offsetAccount: OWNERS_LOAN,
+      bankAccount: USD,
+      date: '2026-03-01',
+    },
+    {
+      amount: -136,
+      foreign: -100,
+      offsetAccount: 'Office Expense',
+      bankAccount: USD,
+      date: '2026-03-10',
+    },
+    // Revaluation at the end: 0 in USD, +C$5 home difference.
+    {
+      amount: 5,
+      foreign: 0,
+      offsetAccount: 'Exchange Gain or Loss',
+      bankAccount: USD,
+      date: '2026-03-31',
+    },
+    row(200, 'Sales'),
+  ];
+  const r = buildReports(rows, null, null, {
+    bankCurrencies: new Map([
+      [USD, { currency: 'USD', foreign: true }],
+      [BANK, { currency: 'CAD', foreign: false }],
+    ]),
+  });
+
+  it('shows the balance before conversion on the balance sheet', () => {
+    const usd = r.balanceSheet.assets.find((l) => l.name === USD);
+    expect(usd).toMatchObject({
+      amount: 1219,
+      currency: 'USD',
+      foreignAmount: 900,
+    });
+    const cad = r.balanceSheet.assets.find((l) => l.name === BANK);
+    expect(cad?.foreignAmount).toBeUndefined();
+  });
+
+  it('gives every statement account its currency on the chart of accounts', () => {
+    expect(r.accounts.find((a) => a.name === USD)).toMatchObject({
+      balance: 1219,
+      currency: 'USD',
+      foreignBalance: 900,
+    });
+    const cad = r.accounts.find((a) => a.name === BANK);
+    expect(cad).toMatchObject({ currency: 'CAD' });
+    expect(cad?.foreignBalance).toBeUndefined();
+  });
+});

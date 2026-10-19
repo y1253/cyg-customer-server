@@ -294,9 +294,10 @@ function assemble(pages) {
         }
         return null;
     };
+    const openingBalance = first((p) => p.stated.openingBalance);
     const stated = {
-        openingBalance: first((p) => p.stated.openingBalance),
-        closingBalance: closingOf(pages),
+        openingBalance,
+        closingBalance: closingOf(pages, openingBalance),
         totalDeposits: first((p) => p.stated.totalDeposits),
         totalWithdrawals: first((p) => p.stated.totalWithdrawals),
         depositCount: first((p) => p.stated.depositCount),
@@ -338,10 +339,15 @@ function assemble(pages) {
         verification,
     };
 }
-function closingOf(pages) {
+function closingOf(pages, openingBalance = null) {
+    const c = (n) => Math.round(n * 100);
+    const net = pages
+        .flatMap((p) => p.transactions)
+        .reduce((sum, t) => sum + (Number.isFinite(t.amount) ? c(t.amount) : 0), 0);
     const candidates = pages
         .map((p) => p.stated.closingBalance)
-        .filter((v) => v !== null);
+        .filter((v) => v !== null)
+        .filter((v) => openingBalance === null || net === 0 || c(v) !== c(openingBalance));
     if (!candidates.length)
         return null;
     const printed = pages
@@ -349,7 +355,6 @@ function closingOf(pages) {
         .map((t) => t.balanceAfter)
         .filter((v) => v !== null);
     const ends = [printed[printed.length - 1], printed[0]];
-    const c = (n) => Math.round(n * 100);
     return (candidates.find((v) => ends.some((e) => e !== undefined && c(e) === c(v))) ?? candidates[candidates.length - 1]);
 }
 function rereadRound(n) {

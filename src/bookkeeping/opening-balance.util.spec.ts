@@ -105,6 +105,37 @@ describe('openingRows', () => {
     ).toEqual([1, 2]);
   });
 
+  it('chains past a wrong printed closing when opening + Σ rows matches (TD March, 2026-10-18)', () => {
+    // The closing stored on February was its own opening (a per-page figure); the rows prove 1500.
+    const td = 'TD Canada Trust 3246';
+    expect(
+      ids([
+        st(1, '2026-02-01', 1000, 1000, td, 500),
+        st(2, '2026-03-01', 1500, null, td, -200),
+      ]),
+    ).toEqual([1]);
+  });
+
+  it('chains an overdrawn balance stored without its minus on one side', () => {
+    expect(
+      ids([
+        st(1, '2026-01-01', 100, -1468.82, 'BMO 2222', -1568.82),
+        st(2, '2026-02-01', 1468.82, null, 'BMO 2222', 0),
+      ]),
+    ).toEqual([1]);
+  });
+
+  it('still gives the full balance after a real gap', () => {
+    const rows = openingRows([
+      st(1, '2026-01-01', 1000, 1200, 'Chase 4362', 200),
+      st(2, '2026-03-01', 1750, null, 'Chase 4362', 0),
+    ]);
+    expect(rows.map((r) => [r.statementId, r.amount])).toEqual([
+      [1, 1000],
+      [2, 1750],
+    ]);
+  });
+
   it('posts a negative balance as money out of the bank', () => {
     const [r] = openingRows([st(1, '2026-01-01', -50, 0, null)]);
     expect(r).toMatchObject({

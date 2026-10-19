@@ -6,3 +6,8 @@ export declare function loadOpeningStatements(prisma: PrismaService, customerId:
     periodEnd: Date | null;
     currency: string | null;
 }>>;
+export declare function accountCurrencies(prisma: PrismaService, customerId: number): Promise<Map<string, string>>;
+export declare const effectiveCurrency: (s: {
+    accountName: string | null;
+    currency: string | null;
+}, set: ReadonlyMap<string, string>) => string | null;

@@ -14,6 +14,8 @@ export declare class CustomerAccountsService {
     overrides(customerId: number): Promise<Map<string, AccountType>>;
     setType(customerId: number, account: string, type: AccountType): Promise<void>;
     resetType(customerId: number, account: string): Promise<void>;
+    setCurrency(customerId: number, account: string, currency: string): Promise<void>;
+    resetCurrency(customerId: number, account: string): Promise<void>;
     names(customerId: number): Promise<Set<string>>;
     validCategory(customerId: number, name: string): Promise<string>;
     create(customerId: number, input: {

@@ -462,9 +462,10 @@ export function assemble(
     }
     return null;
   };
+  const openingBalance = first((p) => p.stated.openingBalance);
   const stated: StatedFigures = {
-    openingBalance: first((p) => p.stated.openingBalance),
-    closingBalance: closingOf(pages),
+    openingBalance,
+    closingBalance: closingOf(pages, openingBalance),
     totalDeposits: first((p) => p.stated.totalDeposits),
     totalWithdrawals: first((p) => p.stated.totalWithdrawals),
     depositCount: first((p) => p.stated.depositCount),
@@ -532,18 +533,32 @@ export function assemble(
  * ending balance per page, and a model sometimes copies a stray figure. Prefer the one the
  * running balance actually ends on (either end: some banks list newest first), else the
  * LAST page's, else the first.
+ *
+ * A candidate equal to the OPENING balance while the rows move money is never the ending —
+ * it is the opening copied into the closing slot (a TD March statement, 2026-10-18), and it
+ * broke the next statement's starting-balance chain. With no other candidate the closing is
+ * null, and `endingsOf` falls back to opening ± Σ rows.
  */
-export function closingOf(pages: PageReading[]): number | null {
+export function closingOf(
+  pages: PageReading[],
+  openingBalance: number | null = null,
+): number | null {
+  const c = (n: number) => Math.round(n * 100);
+  const net = pages
+    .flatMap((p) => p.transactions)
+    .reduce((sum, t) => sum + (Number.isFinite(t.amount) ? c(t.amount) : 0), 0);
   const candidates = pages
     .map((p) => p.stated.closingBalance)
-    .filter((v): v is number => v !== null);
+    .filter((v): v is number => v !== null)
+    .filter(
+      (v) => openingBalance === null || net === 0 || c(v) !== c(openingBalance),
+    );
   if (!candidates.length) return null;
   const printed = pages
     .flatMap((p) => p.transactions)
     .map((t) => t.balanceAfter)
     .filter((v): v is number => v !== null);
   const ends = [printed[printed.length - 1], printed[0]];
-  const c = (n: number) => Math.round(n * 100);
   return (
     candidates.find((v) =>
       ends.some((e) => e !== undefined && c(e) === c(v)),

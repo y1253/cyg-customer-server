@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OPENING_POSITION = exports.OPENING_STATEMENT_SELECT = exports.num = exports.isCreditCard = exports.CREDIT_CARD = exports.STARTING_BALANCE = void 0;
 exports.openingRows = openingRows;
+exports.endingsOf = endingsOf;
 exports.ledgerOrder = ledgerOrder;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
@@ -42,13 +43,15 @@ exports.CREDIT_CARD = 'CREDIT_CARD';
 const isCreditCard = (kind) => kind === exports.CREDIT_CARD;
 exports.isCreditCard = isCreditCard;
 function endingsOf(s) {
+    const out = [];
     if (s.closingBalance !== null)
-        return [(0, reconcile_util_1.cents)(s.closingBalance)];
-    if (s.openingBalance === null)
-        return [];
-    const open = (0, reconcile_util_1.cents)(s.openingBalance);
-    const net = (0, reconcile_util_1.cents)(s.net);
-    return [open + net, open - net];
+        out.push((0, reconcile_util_1.cents)(s.closingBalance));
+    if (s.openingBalance !== null) {
+        const open = (0, reconcile_util_1.cents)(s.openingBalance);
+        const net = (0, reconcile_util_1.cents)(s.net);
+        out.push(open + net, open - net);
+    }
+    return [...new Set(out.flatMap((c) => [c, -c]))];
 }
 const num = (d) => d === null ? null : Number(d);
 exports.num = num;

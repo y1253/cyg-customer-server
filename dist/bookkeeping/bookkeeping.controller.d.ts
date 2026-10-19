@@ -8,7 +8,7 @@ import { CustomerAccountsService, type AccountView } from './customer-accounts.s
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -72,6 +72,8 @@ export declare class BookkeepingController {
     createAccount(req: AuthedRequest, dto: CreateAccountDto): Promise<AccountView>;
     setAccountType(req: AuthedRequest, dto: SetAccountTypeDto): Promise<void>;
     resetAccountType(req: AuthedRequest, dto: ResetAccountTypeDto): Promise<void>;
+    setAccountCurrency(req: AuthedRequest, dto: SetAccountCurrencyDto): Promise<void>;
+    resetAccountCurrency(req: AuthedRequest, dto: ResetAccountTypeDto): Promise<void>;
     currency(req: AuthedRequest): Promise<{
         home: string;
         currencies: readonly string[];

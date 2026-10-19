@@ -215,7 +215,20 @@ export class SetAccountTypeDto {
   type!: 'INCOME' | 'EXPENSE' | 'ASSET' | 'LIABILITY' | 'EQUITY';
 }
 
-/** Put a moved account back (`DELETE accounts/type`). */
+/** The currency of one statement account (`PUT accounts/currency`), ISO 4217. */
+export class SetAccountCurrencyDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  account!: string;
+
+  @IsString()
+  @Matches(/^[A-Za-z]{3}$/)
+  currency!: string;
+}
+
+/** Put a moved account back (`DELETE accounts/type`), or drop its currency setting. */
 export class ResetAccountTypeDto {
   @Transform(trim)
   @IsString()

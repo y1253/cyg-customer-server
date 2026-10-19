@@ -6,12 +6,17 @@ export interface ReportRow {
     bankAccount: string | null;
     date: string | null;
     name?: string | null;
+    foreign?: number;
 }
 export interface ReportOptions {
     liabilityAccounts?: string[];
     customTypes?: ReadonlyMap<string, AccountType>;
     overrides?: ReadonlyMap<string, AccountType>;
     creditCards?: ReadonlySet<string>;
+    bankCurrencies?: ReadonlyMap<string, {
+        currency: string;
+        foreign: boolean;
+    }>;
 }
 export interface AccountBalance {
     name: string;
@@ -19,12 +24,16 @@ export interface AccountBalance {
     bank: boolean;
     balance: number;
     count: number;
+    currency?: string;
+    foreignBalance?: number;
 }
 export interface ReportLine {
     name: string;
     amount: number;
     bank?: boolean;
     byName?: ReportLine[];
+    currency?: string;
+    foreignAmount?: number;
 }
 export interface ReportsView {
     from: string | null;

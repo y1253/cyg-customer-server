@@ -19,6 +19,11 @@ export interface ReportRow {
   date: string | null;
   /** The payee, for the income statement's per-name totals; null = Unclarified name. */
   name?: string | null;
+  /**
+   * The same amount in the bank account's OWN currency, when that is not the home
+   * currency (`amount` is then converted). A revaluation row has 0 here.
+   */
+  foreign?: number;
 }
 
 /** What else decides the reports, besides the rows (all optional). */
@@ -31,6 +36,11 @@ export interface ReportOptions {
   overrides?: ReadonlyMap<string, AccountType>;
   /** Statement accounts that are credit cards — a LIABILITY, the balance owed shown positive. */
   creditCards?: ReadonlySet<string>;
+  /**
+   * Each statement account's currency (the customer's setting, else what its statements
+   * say, else home). A foreign one also gets its balance in that currency (`foreign`).
+   */
+  bankCurrencies?: ReadonlyMap<string, { currency: string; foreign: boolean }>;
 }
 
 export interface AccountBalance {
@@ -42,6 +52,10 @@ export interface AccountBalance {
   balance: number;
   /** Ledger rows posted to it in the period. */
   count: number;
+  /** A statement account's currency (see `ReportOptions.bankCurrencies`). */
+  currency?: string;
+  /** A foreign statement account's balance in its own currency (`balance` is converted). */
+  foreignBalance?: number;
 }
 
 export interface ReportLine {
@@ -51,6 +65,9 @@ export interface ReportLine {
   bank?: boolean;
   /** Income statement only: the account's total per payee, largest first. */
   byName?: ReportLine[];
+  /** A foreign statement account: its currency and `amount` before conversion. */
+  currency?: string;
+  foreignAmount?: number;
 }
 
 export interface ReportsView {
@@ -102,6 +119,8 @@ interface Tally {
   /** Σ amount in cents, bank's sign. */
   sum: number;
   count: number;
+  /** Σ `foreign` in cents (bank accounts only). */
+  foreign: number;
 }
 
 /**
@@ -113,10 +132,11 @@ function tally(rows: ReportRow[], from: string | null, to: string | null) {
   const banks = new Map<string, Tally>();
   /** offset account → payee → Σ cents. */
   const names = new Map<string, Map<string, number>>();
-  const add = (m: Map<string, Tally>, key: string, c: number) => {
-    const t = m.get(key) ?? { sum: 0, count: 0 };
+  const add = (m: Map<string, Tally>, key: string, c: number, f = 0) => {
+    const t = m.get(key) ?? { sum: 0, count: 0, foreign: 0 };
     t.sum += c;
     t.count += 1;
+    t.foreign += f;
     m.set(key, t);
   };
   for (const r of rows) {
@@ -125,7 +145,14 @@ function tally(rows: ReportRow[], from: string | null, to: string | null) {
     if (to && r.date! > to) continue;
     const c = cents(r.amount);
     add(offsets, r.offsetAccount, c);
-    if (r.bankAccount !== null) add(banks, r.bankAccount, c);
+    if (r.bankAccount !== null) {
+      add(
+        banks,
+        r.bankAccount,
+        c,
+        r.foreign === undefined ? 0 : cents(r.foreign),
+      );
+    }
     const per = names.get(r.offsetAccount) ?? new Map<string, number>();
     const who = r.name?.trim() || UNCLARIFIED_NAME;
     per.set(who, (per.get(who) ?? 0) + c);
@@ -175,6 +202,21 @@ export function buildReports(
     custom: customTypes,
   };
   const typeOf = (name: string): AccountType => typeFor(name, ctx);
+  /** A statement account's currency, plus its own-currency amount when foreign. */
+  const inCurrency = (
+    name: string,
+    type: AccountType,
+    t: Tally | undefined,
+  ) => {
+    const c = options.bankCurrencies?.get(name);
+    if (!c) return {};
+    return c.foreign
+      ? {
+          currency: c.currency,
+          foreign: dollars(bankNormal(type, t?.foreign ?? 0)),
+        }
+      : { currency: c.currency };
+  };
   /** A statement account's section: a card is a liability; a move keeps it on the sheet. */
   const bankType = (name: string): AccountType => {
     const moved = overrides.get(name);
@@ -198,12 +240,15 @@ export function buildReports(
     ...bankNames.map((name) => {
       const t = period.banks.get(name);
       const type = bankType(name);
+      const { currency, foreign } = inCurrency(name, type, t);
       return {
         name,
         type,
         bank: true,
         balance: dollars(bankNormal(type, t?.sum ?? 0)),
         count: t?.count ?? 0,
+        ...(currency && { currency }),
+        ...(foreign !== undefined && { foreignBalance: foreign }),
       };
     }),
     ...[...chartNames, ...extra].map((name) => {
@@ -256,11 +301,16 @@ export function buildReports(
   const banksIn = (type: AccountType): ReportLine[] =>
     bankNames
       .filter((name) => bankType(name) === type)
-      .map((name) => ({
-        name,
-        bank: true,
-        amount: dollars(bankNormal(type, all.banks.get(name)?.sum ?? 0)),
-      }));
+      .map((name) => {
+        const t = all.banks.get(name);
+        const { currency, foreign } = inCurrency(name, type, t);
+        return {
+          name,
+          bank: true,
+          amount: dollars(bankNormal(type, t?.sum ?? 0)),
+          ...(foreign !== undefined && { currency, foreignAmount: foreign }),
+        };
+      });
   const assets: ReportLine[] = [...banksIn('ASSET'), ...sheetLines('ASSET')];
   const liabilities = [...banksIn('LIABILITY'), ...sheetLines('LIABILITY')];
   const equity: ReportLine[] = [

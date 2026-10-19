@@ -17,10 +17,11 @@ function tally(rows, from, to) {
     const offsets = new Map();
     const banks = new Map();
     const names = new Map();
-    const add = (m, key, c) => {
-        const t = m.get(key) ?? { sum: 0, count: 0 };
+    const add = (m, key, c, f = 0) => {
+        const t = m.get(key) ?? { sum: 0, count: 0, foreign: 0 };
         t.sum += c;
         t.count += 1;
+        t.foreign += f;
         m.set(key, t);
     };
     for (const r of rows) {
@@ -32,8 +33,9 @@ function tally(rows, from, to) {
             continue;
         const c = cents(r.amount);
         add(offsets, r.offsetAccount, c);
-        if (r.bankAccount !== null)
-            add(banks, r.bankAccount, c);
+        if (r.bankAccount !== null) {
+            add(banks, r.bankAccount, c, r.foreign === undefined ? 0 : cents(r.foreign));
+        }
         const per = names.get(r.offsetAccount) ?? new Map();
         const who = r.name?.trim() || exports.UNCLARIFIED_NAME;
         per.set(who, (per.get(who) ?? 0) + c);
@@ -60,6 +62,17 @@ function buildReports(rows, from = null, to = null, options = {}) {
         custom: customTypes,
     };
     const typeOf = (name) => (0, chart_of_accounts_1.typeFor)(name, ctx);
+    const inCurrency = (name, type, t) => {
+        const c = options.bankCurrencies?.get(name);
+        if (!c)
+            return {};
+        return c.foreign
+            ? {
+                currency: c.currency,
+                foreign: dollars(bankNormal(type, t?.foreign ?? 0)),
+            }
+            : { currency: c.currency };
+    };
     const bankType = (name) => {
         const moved = overrides.get(name);
         if (moved && BALANCE_SHEET.has(moved))
@@ -77,12 +90,15 @@ function buildReports(rows, from = null, to = null, options = {}) {
         ...bankNames.map((name) => {
             const t = period.banks.get(name);
             const type = bankType(name);
+            const { currency, foreign } = inCurrency(name, type, t);
             return {
                 name,
                 type,
                 bank: true,
                 balance: dollars(bankNormal(type, t?.sum ?? 0)),
                 count: t?.count ?? 0,
+                ...(currency && { currency }),
+                ...(foreign !== undefined && { foreignBalance: foreign }),
             };
         }),
         ...[...chartNames, ...extra].map((name) => {
@@ -123,11 +139,16 @@ function buildReports(rows, from = null, to = null, options = {}) {
         .reduce((s, [, t]) => s + t.sum, 0));
     const banksIn = (type) => bankNames
         .filter((name) => bankType(name) === type)
-        .map((name) => ({
-        name,
-        bank: true,
-        amount: dollars(bankNormal(type, all.banks.get(name)?.sum ?? 0)),
-    }));
+        .map((name) => {
+        const t = all.banks.get(name);
+        const { currency, foreign } = inCurrency(name, type, t);
+        return {
+            name,
+            bank: true,
+            amount: dollars(bankNormal(type, t?.sum ?? 0)),
+            ...(foreign !== undefined && { currency, foreignAmount: foreign }),
+        };
+    });
     const assets = [...banksIn('ASSET'), ...sheetLines('ASSET')];
     const liabilities = [...banksIn('LIABILITY'), ...sheetLines('LIABILITY')];
     const equity = [

@@ -67,20 +67,37 @@ export class ReportsService {
     // rate, and a revaluation at each foreign statement's end (`FxContext`).
     const fx = await this.fx.context(customerId, statements);
     const entries: FxEntry[] = [];
+    /** The row's amount converted, plus the original when its statement is foreign. */
     const home = (
       statementId: number,
       date: string | null,
       amount: number,
       bankAccount: string,
-    ): number => {
+    ): { amount: number; foreign?: number } => {
       const { home: converted } = fx.convert(statementId, date, amount);
       entries.push({ statementId, bankAccount, amount, home: converted });
-      return converted;
+      return fx.isForeign(statementId)
+        ? { amount: converted, foreign: amount }
+        : { amount: converted };
     };
+    // Each statement account's currency — one only when all its statements agree.
+    const seen = new Map<string, Set<string>>();
+    for (const s of statements) {
+      const bank = s.accountName ?? 'Bank account';
+      seen.set(bank, (seen.get(bank) ?? new Set()).add(fx.currencyOf(s.id)));
+    }
+    const bankCurrencies = new Map(
+      [...seen]
+        .filter(([, cs]) => cs.size === 1)
+        .map(([bank, cs]) => {
+          const currency = [...cs][0];
+          return [bank, { currency, foreign: currency !== fx.home }] as const;
+        }),
+    );
 
     // The printed starting balances — the same "Starting balance" rows the ledger shows.
     const openings = openingRows(statements).map((o) => ({
-      amount: home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
+      ...home(o.statementId, day(o.postingDate), o.amount, o.bankAccount),
       offsetAccount: o.offsetAccount,
       bankAccount: o.bankAccount,
       date: day(o.postingDate),
@@ -107,7 +124,7 @@ export class ReportsService {
         const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
         const rowDate = day(r.postingDate) ?? day(r.pendingDate);
         return [split.parent, ...split.taxes].map((e) => ({
-          amount: home(r.statementId, rowDate, e.amount, bankAccount),
+          ...home(r.statementId, rowDate, e.amount, bankAccount),
           offsetAccount: e.offsetAccount,
           bankAccount,
           date,
@@ -122,6 +139,7 @@ export class ReportsService {
         bankAccount: f.bankAccount,
         date: f.date,
         name: null,
+        ...(fx.isForeign(f.statementId) && { foreign: 0 }),
       }),
     );
     return buildReports([...ledgerRows, ...revaluations], from, to, {
@@ -129,6 +147,7 @@ export class ReportsService {
       customTypes,
       overrides,
       creditCards,
+      bankCurrencies,
     });
   }
 }

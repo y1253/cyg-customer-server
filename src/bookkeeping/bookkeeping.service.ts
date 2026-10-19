@@ -19,7 +19,11 @@ import { OpenAiClient } from '../ai/openai.client';
 import { readPricing } from '../billing/pricing';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
-import { loadOpeningStatements } from './opening-balance.query';
+import {
+  accountCurrencies,
+  effectiveCurrency,
+  loadOpeningStatements,
+} from './opening-balance.query';
 import {
   ledgerOrder,
   OPENING_POSITION,
@@ -43,8 +47,10 @@ export interface StatementView {
   accountName: string | null;
   /** BANK | CREDIT_CARD (null = read before it was recorded). */
   accountKind: string | null;
-  /** ISO code of its amounts; null = not printed (the home currency). */
+  /** ISO code of its amounts as READ; null = not printed (the home currency). */
   currency: string | null;
+  /** What it is converted from: the customer's setting for the account, else `currency`. */
+  accountCurrency: string | null;
   bankName: string | null;
   /** "Chase 4362 · Sep 2026" — what every ledger row of this statement shows. */
   label: string;
@@ -202,7 +208,10 @@ function withTaxLines(
  * What the customer sees of a statement. The check against the bank's figures
  * (`verification`, `verificationDetail`) is stored for us but deliberately NOT returned.
  */
-function toView(s: BankStatement): StatementView {
+function toView(
+  s: BankStatement,
+  currencies: ReadonlyMap<string, string> = new Map(),
+): StatementView {
   return {
     id: s.id,
     filename: s.filename,
@@ -212,6 +221,7 @@ function toView(s: BankStatement): StatementView {
     accountName: s.accountName,
     accountKind: s.accountKind,
     currency: s.currency,
+    accountCurrency: effectiveCurrency(s, currencies),
     bankName: s.bankName,
     label: statementLabel(s),
     periodStart: day(s.periodStart),
@@ -321,11 +331,14 @@ export class BookkeepingService {
   }
 
   async list(customerId: number): Promise<StatementView[]> {
-    const rows = await this.prisma.bankStatement.findMany({
-      where: { customerId, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    return rows.map(toView);
+    const [rows, currencies] = await Promise.all([
+      this.prisma.bankStatement.findMany({
+        where: { customerId, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+      }),
+      accountCurrencies(this.prisma, customerId),
+    ]);
+    return rows.map((r) => toView(r, currencies));
   }
 
   async transactions(
@@ -585,6 +598,20 @@ export class BookkeepingService {
             });
           } else {
             await tx.customerAccountType.updateMany({
+              where: { customerId, account: old },
+              data: { account: name },
+            });
+          }
+          // So does its currency setting (the target's own setting wins).
+          const keptCurrency = await tx.customerAccountCurrency.findUnique({
+            where: { customerId_account: { customerId, account: name } },
+          });
+          if (keptCurrency) {
+            await tx.customerAccountCurrency.deleteMany({
+              where: { customerId, account: old },
+            });
+          } else {
+            await tx.customerAccountCurrency.updateMany({
               where: { customerId, account: old },
               data: { account: name },
             });

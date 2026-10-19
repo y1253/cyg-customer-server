@@ -245,6 +245,12 @@ let BookkeepingController = class BookkeepingController {
     resetAccountType(req, dto) {
         return this.accounts.resetType(req.user.customerId, dto.account);
     }
+    setAccountCurrency(req, dto) {
+        return this.accounts.setCurrency(req.user.customerId, dto.account, dto.currency);
+    }
+    resetAccountCurrency(req, dto) {
+        return this.accounts.resetCurrency(req.user.customerId, dto.account);
+    }
     async currency(req) {
         return {
             home: await this.fx.home(req.user.customerId),
@@ -560,6 +566,24 @@ __decorate([
     __metadata("design:paramtypes", [Object, agency_dto_1.ResetAccountTypeDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "resetAccountType", null);
+__decorate([
+    (0, common_1.Put)('accounts/currency'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.SetAccountCurrencyDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setAccountCurrency", null);
+__decorate([
+    (0, common_1.Delete)('accounts/currency'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.ResetAccountTypeDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "resetAccountCurrency", null);
 __decorate([
     (0, common_1.Get)('currency'),
     __param(0, (0, common_1.Req)()),

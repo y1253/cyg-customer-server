@@ -87,6 +87,11 @@ describe('BookkeepingService.moveStatement', () => {
         deleteMany: jest.fn(),
         updateMany: jest.fn(),
       },
+      customerAccountCurrency: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        deleteMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
     };
     const prisma = {
       bankStatement: {
@@ -149,6 +154,10 @@ describe('BookkeepingService.moveStatement', () => {
     const { service, tx } = moveSetup(stmt, { left: 0 });
     await service.moveStatement(7, 5, 'BMO 2304');
     expect(tx.customerAccountType.updateMany).toHaveBeenCalledWith({
+      where: { customerId: 7, account: 'TD 5234' },
+      data: { account: 'BMO 2304' },
+    });
+    expect(tx.customerAccountCurrency.updateMany).toHaveBeenCalledWith({
       where: { customerId: 7, account: 'TD 5234' },
       data: { account: 'BMO 2304' },
     });

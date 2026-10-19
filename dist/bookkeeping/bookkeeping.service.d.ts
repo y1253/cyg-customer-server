@@ -16,6 +16,7 @@ export interface StatementView {
     accountName: string | null;
     accountKind: string | null;
     currency: string | null;
+    accountCurrency: string | null;
     bankName: string | null;
     label: string;
     periodStart: string | null;
