@@ -4,6 +4,7 @@ import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { AttachmentExtractor } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { AttachmentsService } from './attachments.service';
+import { BookScopeGuard } from './book-scope.guard';
 import { BookkeepingController } from './bookkeeping.controller';
 import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
@@ -27,6 +28,7 @@ import { TaxService } from './tax.service';
     AttachmentProcessorService,
     AttachmentsService,
     BookkeepingService,
+    BookScopeGuard,
     CustomerAccountsService,
     FxService,
     LedgerExportService,
@@ -41,6 +43,6 @@ import { TaxService } from './tax.service';
     StatementProcessorService,
     TaxService,
   ],
-  exports: [BookkeepingService],
+  exports: [BookkeepingService, BookScopeGuard],
 })
 export class BookkeepingModule {}

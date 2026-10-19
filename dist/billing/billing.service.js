@@ -18,11 +18,19 @@ const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const stripe_1 = __importDefault(require("stripe"));
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
+const scope_1 = require("../bookkeeping/scope");
 const prisma_service_1 = require("../prisma/prisma.service");
 const pricing_1 = require("./pricing");
 const pricing_util_1 = require("./pricing.util");
 const stripe_client_1 = require("./stripe.client");
 const PURPOSE = 'generate';
+function scopeOfIntent(intent) {
+    const companyId = Number(intent.metadata.companyId);
+    return {
+        customerId: Number(intent.metadata.customerId),
+        companyId: Number.isInteger(companyId) && companyId > 0 ? companyId : null,
+    };
+}
 let BillingService = BillingService_1 = class BillingService {
     prisma;
     stripeClient;
@@ -73,15 +81,16 @@ let BillingService = BillingService_1 = class BillingService {
         await this.ownCard(customerId, paymentMethodId);
         await this.stripeClient.stripe.paymentMethods.detach(paymentMethodId);
     }
-    async checkout(customerId, promoCode, paymentMethodId) {
-        const waiting = await this.bookkeeping.waitingCount(customerId);
+    async checkout(scope, promoCode, paymentMethodId) {
+        const { customerId } = scope;
+        const waiting = await this.bookkeeping.waitingCount(scope);
         if (!waiting)
             throw new common_1.BadRequestException('There are no new statements to read — upload one first.');
         const pricing = await (0, pricing_1.readPricing)(this.prisma);
         const promo = promoCode?.trim() ? await this.usablePromo(promoCode) : null;
         const amountCents = (0, pricing_util_1.priceFor)(pricing.generatePriceCents, promo);
         if (amountCents === 0) {
-            const result = await this.recordFree(customerId, pricing, promo);
+            const result = await this.recordFree(scope, pricing, promo);
             return { done: true, amountCents: 0, result };
         }
         const customer = await this.ensureStripeCustomer(customerId);
@@ -98,6 +107,7 @@ let BillingService = BillingService_1 = class BillingService {
             metadata: {
                 purpose: PURPOSE,
                 customerId: String(customerId),
+                companyId: scope.companyId === null ? '' : String(scope.companyId),
                 listPriceCents: String(pricing.generatePriceCents),
                 promoCodeId: promo ? String(promo.id) : '',
                 promoCode: promo?.code ?? '',
@@ -126,9 +136,10 @@ let BillingService = BillingService_1 = class BillingService {
             status: intent.status,
         };
     }
-    async complete(customerId, paymentIntentId) {
+    async complete(scope, paymentIntentId) {
         const intent = await this.retrieveIntent(paymentIntentId);
-        if (intent.metadata.customerId !== String(customerId))
+        if (intent.metadata.customerId !== String(scope.customerId) ||
+            scopeOfIntent(intent).companyId !== scope.companyId)
             throw new common_1.NotFoundException('Payment not found');
         if (intent.status !== 'succeeded')
             throw new common_1.BadRequestException('The payment has not gone through yet.');
@@ -154,7 +165,7 @@ let BillingService = BillingService_1 = class BillingService {
     }
     async recordAndGenerate(paymentIntentId) {
         const intent = await this.retrieveIntent(paymentIntentId);
-        const customerId = Number(intent.metadata.customerId);
+        const scope = scopeOfIntent(intent);
         const charge = typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
         const card = charge?.payment_method_details?.card ?? null;
         const promoCodeId = Number(intent.metadata.promoCodeId) || null;
@@ -163,7 +174,7 @@ let BillingService = BillingService_1 = class BillingService {
             paymentId = await this.prisma.$transaction(async (tx) => {
                 const row = await tx.customerPayment.create({
                     data: {
-                        customerId,
+                        ...(0, scope_1.scopeWhere)(scope),
                         stripePaymentIntentId: intent.id,
                         stripeCustomerId: typeof intent.customer === 'string'
                             ? intent.customer
@@ -195,10 +206,10 @@ let BillingService = BillingService_1 = class BillingService {
                 return { queued: 0, taxing: false };
             throw err;
         }
-        this.logger.log(`payment ${intent.id} recorded for customer ${customerId} (${intent.amount} ${intent.currency})`);
-        return this.generateFor(customerId, paymentId);
+        this.logger.log(`payment ${intent.id} recorded for ${(0, scope_1.bookLabel)(scope)} (${intent.amount} ${intent.currency})`);
+        return this.generateFor(scope, paymentId);
     }
-    async recordFree(customerId, pricing, promo) {
+    async recordFree(scope, pricing, promo) {
         const paymentId = await this.prisma.$transaction(async (tx) => {
             if (promo) {
                 const { count } = await tx.promoCode.updateMany({
@@ -213,7 +224,7 @@ let BillingService = BillingService_1 = class BillingService {
             }
             const row = await tx.customerPayment.create({
                 data: {
-                    customerId,
+                    ...(0, scope_1.scopeWhere)(scope),
                     amountCents: 0,
                     listPriceCents: pricing.generatePriceCents,
                     currency: pricing.currency,
@@ -224,10 +235,10 @@ let BillingService = BillingService_1 = class BillingService {
             });
             return row.id;
         });
-        return this.generateFor(customerId, paymentId);
+        return this.generateFor(scope, paymentId);
     }
-    async generateFor(customerId, paymentId) {
-        const result = await this.bookkeeping.generate(customerId);
+    async generateFor(scope, paymentId) {
+        const result = await this.bookkeeping.generate(scope);
         await this.prisma.customerPayment.update({
             where: { id: paymentId },
             data: { statementsQueued: result.queued },

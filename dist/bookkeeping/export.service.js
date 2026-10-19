@@ -24,6 +24,7 @@ const opening_balance_util_1 = require("./opening-balance.util");
 const splits_util_1 = require("./splits.util");
 const statement_label_1 = require("./statement-label");
 const fx_service_1 = require("./fx.service");
+const scope_1 = require("./scope");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const BRAND = '#169F96';
@@ -61,10 +62,13 @@ let LedgerExportService = class LedgerExportService {
         this.tax = tax;
         this.fx = fx;
     }
-    async rowsFor(customerId) {
+    async rowsFor(scope) {
         const [rows, statements, taxes] = await Promise.all([
             this.prisma.bankTransaction.findMany({
-                where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    statement: { deletedAt: null, status: 'DONE' },
+                },
                 include: {
                     statement: {
                         select: {
@@ -77,8 +81,8 @@ let LedgerExportService = class LedgerExportService {
                     },
                 },
             }),
-            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
-            this.tax.linesFor(customerId),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
+            this.tax.linesFor(scope),
         ]);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const openings = (0, opening_balance_util_1.openingRows)(statements);
@@ -137,7 +141,7 @@ let LedgerExportService = class LedgerExportService {
                 .sort((a, b) => a.id - b.id)
                 .flatMap((c) => exportRowWithTaxes(exportRow(c), c.offsetAccount, taxes.get(c.id) ?? [])),
         ]);
-        const fx = await this.fx.context(customerId, statements);
+        const fx = await this.fx.context(scope, statements);
         if (!fx.anyForeign)
             return out;
         const entries = [];

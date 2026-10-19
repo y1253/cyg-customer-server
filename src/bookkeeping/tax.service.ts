@@ -23,6 +23,7 @@ import {
   type RuleMatchType,
 } from './name-memory.util';
 import { UNCLARIFIED_NAME } from './reports.util';
+import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import type {
   AgencyRateDto,
@@ -153,9 +154,9 @@ export class TaxService {
 
   // ---- agencies ----
 
-  async settings(customerId: number): Promise<TaxSettingsView> {
+  async settings(scope: BookScope): Promise<TaxSettingsView> {
     const agencies = await this.prisma.taxAgency.findMany({
-      where: { customerId, deletedAt: null },
+      where: { ...scopeWhere(scope), deletedAt: null },
       include: { rates: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -163,13 +164,13 @@ export class TaxService {
   }
 
   async createAgency(
-    customerId: number,
+    scope: BookScope,
     dto: CreateAgencyDto,
   ): Promise<AgencyView> {
-    const name = await this.checkName(customerId, dto.name);
+    const name = await this.checkName(scope, dto.name);
     const row = await this.prisma.taxAgency.create({
       data: {
-        customerId,
+        ...scopeWhere(scope),
         name,
         active: dto.active ?? true,
         rates: { create: rateRows(dto.rates) },
@@ -180,15 +181,15 @@ export class TaxService {
   }
 
   async updateAgency(
-    customerId: number,
+    scope: BookScope,
     id: number,
     dto: UpdateAgencyDto,
   ): Promise<AgencyView> {
-    await this.ownedAgency(customerId, id);
+    await this.ownedAgency(scope, id);
     const name =
       dto.name === undefined
         ? undefined
-        : await this.checkName(customerId, dto.name, id);
+        : await this.checkName(scope, dto.name, id);
     const rates = dto.rates && rateRows(dto.rates);
     const row = await this.prisma.taxAgency.update({
       where: { id },
@@ -204,22 +205,22 @@ export class TaxService {
   }
 
   /** Soft delete; the names it taxed lose it (their `LedgerNameAgency` rows go). */
-  async removeAgency(customerId: number, id: number): Promise<void> {
-    await this.ownedAgency(customerId, id);
+  async removeAgency(scope: BookScope, id: number): Promise<void> {
+    await this.ownedAgency(scope, id);
     await this.prisma.$transaction([
       this.prisma.taxAgency.update({
         where: { id },
         data: { deletedAt: new Date(), active: false },
       }),
       this.prisma.ledgerNameAgency.deleteMany({
-        where: { customerId, agencyId: id },
+        where: { ...scopeWhere(scope), agencyId: id },
       }),
     ]);
   }
 
-  private async ownedAgency(customerId: number, id: number) {
+  private async ownedAgency(scope: BookScope, id: number) {
     const a = await this.prisma.taxAgency.findFirst({
-      where: { id, customerId, deletedAt: null },
+      where: { id, ...scopeWhere(scope), deletedAt: null },
     });
     if (!a) throw new NotFoundException('Agency not found');
     return a;
@@ -227,7 +228,7 @@ export class TaxService {
 
   /** The agency's name is an account name on the ledger — it must not collide. */
   private async checkName(
-    customerId: number,
+    scope: BookScope,
     raw: string,
     exceptId?: number,
   ): Promise<string> {
@@ -240,7 +241,11 @@ export class TaxService {
       );
     }
     const others = await this.prisma.taxAgency.findMany({
-      where: { customerId, deletedAt: null, NOT: { id: exceptId ?? 0 } },
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        NOT: { id: exceptId ?? 0 },
+      },
       select: { name: true },
     });
     if (others.some((o) => o.name.toLowerCase() === lower)) {
@@ -250,20 +255,20 @@ export class TaxService {
   }
 
   /** Every agency name — they are LIABILITY accounts in the reports. */
-  async agencyNames(customerId: number): Promise<string[]> {
+  async agencyNames(scope: BookScope): Promise<string[]> {
     const rows = await this.prisma.taxAgency.findMany({
-      where: { customerId },
+      where: scopeWhere(scope),
       select: { name: true },
     });
     return rows.map((r) => r.name);
   }
 
   /** What decides an account's type for this customer (moves, own categories, agencies). */
-  async typeContext(customerId: number): Promise<TypeContext> {
+  async typeContext(scope: BookScope): Promise<TypeContext> {
     const [overrides, custom, agencies] = await Promise.all([
-      this.accounts.overrides(customerId),
-      this.accounts.types(customerId),
-      this.agencyNames(customerId),
+      this.accounts.overrides(scope),
+      this.accounts.types(scope),
+      this.agencyNames(scope),
     ]);
     return { overrides, custom, liabilities: new Set(agencies) };
   }
@@ -275,32 +280,32 @@ export class TaxService {
    * by each row's payee NAME (`nameTaxLines`), on read. `statementIds` narrows it.
    */
   linesFor(
-    customerId: number,
+    scope: BookScope,
     statementIds?: number[],
   ): Promise<Map<number, StoredTax[]>> {
-    return this.compute(customerId, {
+    return this.compute(scope, {
       ...(statementIds?.length && { statementId: { in: statementIds } }),
     });
   }
 
   private async compute(
-    customerId: number,
+    scope: BookScope,
     where: Prisma.BankTransactionWhereInput,
   ): Promise<Map<number, StoredTax[]>> {
     const out = new Map<number, StoredTax[]>();
     const picks = await this.prisma.ledgerNameAgency.findMany({
-      where: { customerId },
+      where: scopeWhere(scope),
       select: { name: true, agencyId: true },
     });
     if (!picks.length) return out;
     const [agencyRows, rows, named, ctx] = await Promise.all([
       this.prisma.taxAgency.findMany({
-        where: { customerId, deletedAt: null, active: true },
+        where: { ...scopeWhere(scope), deletedAt: null, active: true },
         include: { rates: true },
         orderBy: { createdAt: 'asc' },
       }),
       this.prisma.bankTransaction.findMany({
-        where: { ...where, customerId, statement: DONE },
+        where: { ...where, ...scopeWhere(scope), statement: DONE },
         select: {
           id: true,
           name: true,
@@ -310,10 +315,10 @@ export class TaxService {
         },
       }),
       this.prisma.transactionTax.findMany({
-        where: { customerId, name: { not: null } },
+        where: { ...scopeWhere(scope), name: { not: null } },
         select: { transactionId: true, agencyId: true, name: true },
       }),
-      this.typeContext(customerId),
+      this.typeContext(scope),
     ]);
     const agencies: Agency[] = agencyRows.map((a) => ({
       id: a.id,
@@ -361,31 +366,31 @@ export class TaxService {
    * "Unclarified name" (Uncategorized, never stored), and grouped by description in
    * `unrecognized` so each can be assigned once.
    */
-  async names(customerId: number): Promise<NamesView> {
+  async names(scope: BookScope): Promise<NamesView> {
     const [groups, named, nameless, picks, rules, ctx] = await Promise.all([
       this.prisma.bankTransaction.groupBy({
         by: ['name', 'offsetAccount'],
-        where: { customerId, name: { not: null }, statement: DONE },
+        where: { ...scopeWhere(scope), name: { not: null }, statement: DONE },
         _count: { _all: true },
       }),
       this.prisma.bankTransaction.findMany({
-        where: { customerId, name: { not: null }, statement: DONE },
+        where: { ...scopeWhere(scope), name: { not: null }, statement: DONE },
         select: { name: true, description: true, offsetAccount: true },
       }),
       this.prisma.bankTransaction.findMany({
-        where: { customerId, name: null, statement: DONE },
+        where: { ...scopeWhere(scope), name: null, statement: DONE },
         select: { description: true, offsetAccount: true },
       }),
       this.prisma.ledgerNameAgency.findMany({
-        where: { customerId, agency: { deletedAt: null } },
+        where: { ...scopeWhere(scope), agency: { deletedAt: null } },
         select: { name: true, agencyId: true },
         orderBy: { agencyId: 'asc' },
       }),
       this.prisma.customerNameRule.findMany({
-        where: { customerId },
+        where: scopeWhere(scope),
         select: { matchType: true, matchKey: true, name: true },
       }),
-      this.typeContext(customerId),
+      this.typeContext(scope),
     ]);
     const descriptionsOf = groupDescriptions(named);
     const agenciesOf = new Map<string, number[]>();
@@ -511,7 +516,7 @@ export class TaxService {
    * (`linesFor`), so the ledger, exports and reports show it at once.
    */
   async setNameAgencies(
-    customerId: number,
+    scope: BookScope,
     name: string,
     agencyIds: number[],
   ): Promise<NamesView> {
@@ -520,13 +525,13 @@ export class TaxService {
     const ids = [...new Set(agencyIds)];
     if (ids.length) {
       const owned = await this.prisma.taxAgency.count({
-        where: { customerId, deletedAt: null, id: { in: ids } },
+        where: { ...scopeWhere(scope), deletedAt: null, id: { in: ids } },
       });
       if (owned !== ids.length) throw new NotFoundException('Agency not found');
     }
     const key = nameTaxKey(clean);
     const existing = await this.prisma.ledgerNameAgency.findMany({
-      where: { customerId },
+      where: scopeWhere(scope),
       select: { id: true, name: true },
     });
     await this.prisma.$transaction([
@@ -541,10 +546,14 @@ export class TaxService {
         },
       }),
       this.prisma.ledgerNameAgency.createMany({
-        data: ids.map((agencyId) => ({ customerId, name: clean, agencyId })),
+        data: ids.map((agencyId) => ({
+          ...scopeWhere(scope),
+          name: clean,
+          agencyId,
+        })),
       }),
     ]);
-    return this.names(customerId);
+    return this.names(scope);
   }
 
   /**
@@ -552,14 +561,14 @@ export class TaxService {
    * is taxed by every agency any of the old ones was.
    */
   async carryAgencies(
-    customerId: number,
+    scope: BookScope,
     oldNames: readonly string[],
     newName: string,
   ): Promise<void> {
     const keys = new Set(oldNames.map(nameTaxKey));
     if (!keys.size) return;
     const rows = await this.prisma.ledgerNameAgency.findMany({
-      where: { customerId },
+      where: scopeWhere(scope),
       select: { name: true, agencyId: true },
     });
     const target = nameTaxKey(newName);
@@ -575,7 +584,11 @@ export class TaxService {
     ];
     if (!add.length) return;
     await this.prisma.ledgerNameAgency.createMany({
-      data: add.map((agencyId) => ({ customerId, name: newName, agencyId })),
+      data: add.map((agencyId) => ({
+        ...scopeWhere(scope),
+        name: newName,
+        agencyId,
+      })),
       skipDuplicates: true,
     });
   }
@@ -586,12 +599,12 @@ export class TaxService {
    * `TransactionTax` (with a snapshot of the line), keyed by row and agency.
    */
   async renameLine(
-    customerId: number,
+    scope: BookScope,
     transactionId: number,
     agencyId: number,
     name: string | null,
   ): Promise<boolean> {
-    const lines = await this.compute(customerId, {
+    const lines = await this.compute(scope, {
       OR: [{ id: transactionId }, { splitOfId: transactionId }],
     });
     const line = lines.get(transactionId)?.find((l) => l.agencyId === agencyId);
@@ -599,7 +612,7 @@ export class TaxService {
     await this.prisma.transactionTax.upsert({
       where: { transactionId_agencyId: { transactionId, agencyId } },
       create: {
-        customerId,
+        ...scopeWhere(scope),
         transactionId,
         agencyId,
         kind: line.kind,

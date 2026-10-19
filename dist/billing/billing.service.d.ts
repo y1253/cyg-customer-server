@@ -1,6 +1,7 @@
 import { type PromoCode } from '@prisma/client';
 import Stripe from 'stripe';
 import { BookkeepingService } from '../bookkeeping/bookkeeping.service';
+import { type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { StripeClient } from './stripe.client';
 export interface QuoteView {
@@ -50,8 +51,8 @@ export declare class BillingService {
     quote(promoCode?: string): Promise<QuoteView>;
     cards(customerId: number): Promise<SavedCardView[]>;
     removeCard(customerId: number, paymentMethodId: string): Promise<void>;
-    checkout(customerId: number, promoCode: string | undefined, paymentMethodId: string | undefined): Promise<CheckoutView>;
-    complete(customerId: number, paymentIntentId: string): Promise<GenerateResult>;
+    checkout(scope: BookScope, promoCode: string | undefined, paymentMethodId: string | undefined): Promise<CheckoutView>;
+    complete(scope: BookScope, paymentIntentId: string): Promise<GenerateResult>;
     handleWebhook(rawBody: Buffer, signature: string): Promise<void>;
     private recordAndGenerate;
     private recordFree;

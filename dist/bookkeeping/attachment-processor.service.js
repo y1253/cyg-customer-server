@@ -27,6 +27,7 @@ const receipt_items_util_1 = require("./receipt-items.util");
 const reconcile_util_1 = require("./reconcile.util");
 const splits_service_1 = require("./splits.service");
 const queue_retry_1 = require("./queue-retry");
+const scope_1 = require("./scope");
 const CONCURRENCY = 2;
 const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
@@ -126,6 +127,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         });
         if (claimed.count === 0)
             return;
+        const scope = (0, scope_1.scopeOf)(row);
         try {
             const cls = classOf(row.mimeType);
             const file = await this.storage.getBuffer(row.storageKey);
@@ -141,7 +143,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                 note = 'Added from the transaction.';
             }
             else {
-                const found = await this.match(row.customerId, reading, row.message, (0, attachment_match_util_1.statementOf)(row.sourceRef));
+                const found = await this.match(scope, reading, row.message, (0, attachment_match_util_1.statementOf)(row.sourceRef));
                 transactionId = found.transactionId;
                 note = found.note;
             }
@@ -159,10 +161,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                 },
             });
             if (transactionId && kind === client_1.AttachmentKind.CHECK) {
-                await this.nameFromCheque(row.customerId, transactionId, reading).catch((err) => this.logger.warn(`attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`));
+                await this.nameFromCheque(scope, transactionId, reading).catch((err) => this.logger.warn(`attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`));
             }
             if (transactionId) {
-                const itemsNote = await this.applyItems(row.customerId, row.id, false).catch((err) => `The items could not be split: ${err instanceof Error ? err.message : String(err)}`);
+                const itemsNote = await this.applyItems(scope, row.id, false).catch((err) => `The items could not be split: ${err instanceof Error ? err.message : String(err)}`);
                 if (itemsNote) {
                     await this.prisma.transactionAttachment.update({
                         where: { id: row.id },
@@ -170,24 +172,24 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                     });
                 }
             }
-            this.logger.log(`attachment #${row.id} (${kind}) ${transactionId ? `matched #${transactionId}` : 'unmatched'}`);
+            this.logger.log(`attachment #${row.id}${scope.companyId ? ` (company #${scope.companyId})` : ''} (${kind}) ${transactionId ? `matched #${transactionId}` : 'unmatched'}`);
         }
         catch (err) {
             await this.recordFailure(row, err);
         }
     }
-    async nameFromCheque(customerId, transactionId, reading) {
+    async nameFromCheque(scope, transactionId, reading) {
         const payee = (0, name_memory_util_1.cleanName)(reading.payee);
         if (!payee)
             return;
         const tx = await this.prisma.bankTransaction.findFirst({
-            where: { id: transactionId, customerId },
+            where: { id: transactionId, ...(0, scope_1.scopeWhere)(scope) },
             select: { name: true },
         });
         if (!tx || (tx.name && !GENERIC_CHEQUE_NAME.test(tx.name)))
             return;
-        const known = await this.names.categoryOfName(customerId, payee);
-        await this.names.editTransaction(customerId, transactionId, {
+        const known = await this.names.categoryOfName(scope, payee);
+        await this.names.editTransaction(scope, transactionId, {
             name: payee,
             category: known ? null : (reading.category ?? null),
             scope: 'ONCE',
@@ -213,7 +215,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         })
             .catch(() => undefined);
     }
-    async match(customerId, reading, message, statementId = null) {
+    async match(scope, reading, message, statementId = null) {
         const total = readingTotal(reading);
         if (total == null && !reading.date) {
             return {
@@ -231,10 +233,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             total,
         };
         let list = statementId
-            ? (0, attachment_match_util_1.shortlist)(q, await this.candidates(customerId, q, statementId))
+            ? (0, attachment_match_util_1.shortlist)(q, await this.candidates(scope, q, statementId))
             : [];
         if (!list.length)
-            list = (0, attachment_match_util_1.shortlist)(q, await this.candidates(customerId, q));
+            list = (0, attachment_match_util_1.shortlist)(q, await this.candidates(scope, q));
         const byNumber = (0, attachment_match_util_1.chequeNumberMatch)(reading.checkNumber, total, list);
         if (byNumber) {
             return {
@@ -278,9 +280,9 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             note: `${pick.reason ? `${pick.reason} ` : ''}Choose the transaction yourself.`,
         };
     }
-    async candidates(customerId, q, statementId) {
+    async candidates(scope, q, statementId) {
         const where = {
-            customerId,
+            ...(0, scope_1.scopeWhere)(scope),
             ...(statementId ? { statementId } : {}),
             splitOfId: null,
             statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
@@ -339,9 +341,9 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             }),
         }));
     }
-    async applyItems(customerId, attachmentId, replace) {
+    async applyItems(scope, attachmentId, replace) {
         const a = await this.prisma.transactionAttachment.findFirst({
-            where: { id: attachmentId, customerId, deletedAt: null },
+            where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
             include: {
                 transaction: {
                     include: { splits: { select: { id: true }, take: 1 } },
@@ -359,11 +361,11 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         if (!replace && parent.splits.length) {
             return 'The transaction is already split; use "Use receipt items" to replace its splits.';
         }
-        const categoryFor = await this.products.categoriesFor(customerId, reading.items.map((i) => i.name), { store: reading.vendor, parentCategory: parent.offsetAccount });
+        const categoryFor = await this.products.categoriesFor(scope, reading.items.map((i) => i.name), { store: reading.vendor, parentCategory: parent.offsetAccount });
         const out = (0, receipt_items_util_1.itemSplits)(reading.items, reading.tax, Number(parent.amount), categoryFor);
         if ('problem' in out)
             return `${out.problem}, so it was not split.`;
-        await this.splits.save(customerId, parent.id, out.splits.map((s) => ({
+        await this.splits.save(scope, parent.id, out.splits.map((s) => ({
             name: parent.name,
             itemName: s.itemName,
             category: s.category,

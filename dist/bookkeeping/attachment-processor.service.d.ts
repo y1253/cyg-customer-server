@@ -5,6 +5,7 @@ import type { AttachmentClass } from './attachment-uploads';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import { SplitsService } from './splits.service';
+import { type BookScope } from './scope';
 export declare function readingTotal(r: AttachmentReading): number | null;
 export declare function classOf(mimeType: string): AttachmentClass;
 export declare class AttachmentProcessorService {
@@ -25,5 +26,5 @@ export declare class AttachmentProcessorService {
     private recordFailure;
     private match;
     private candidates;
-    applyItems(customerId: number, attachmentId: number, replace: boolean): Promise<string | null>;
+    applyItems(scope: BookScope, attachmentId: number, replace: boolean): Promise<string | null>;
 }

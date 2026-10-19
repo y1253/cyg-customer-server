@@ -9,6 +9,7 @@ import {
   type FxRow,
   type RateSeries,
 } from './fx.util';
+import type { BookScope } from './scope';
 
 const VALET = 'https://www.bankofcanada.ca/valet/observations';
 /** Rates are looked up from this many days before a period (a holiday-long weekend). */
@@ -137,25 +138,43 @@ export class FxService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async home(customerId: number): Promise<string> {
+  /**
+   * The currency one book is kept in: the customer's own setting for their general book,
+   * the company's (`Company.bookHomeCurrency`) for a company's books.
+   */
+  async home(scope: BookScope): Promise<string> {
+    if (scope.companyId !== null) {
+      const c = await this.prisma.company.findUnique({
+        where: { id: scope.companyId },
+        select: { bookHomeCurrency: true },
+      });
+      return c?.bookHomeCurrency || 'CAD';
+    }
     const c = await this.prisma.customer.findUnique({
-      where: { id: customerId },
+      where: { id: scope.customerId },
       select: { homeCurrency: true },
     });
     return c?.homeCurrency || 'CAD';
   }
 
-  async setHome(customerId: number, currency: string): Promise<string> {
+  async setHome(scope: BookScope, currency: string): Promise<string> {
     const code = currency.trim().toUpperCase();
     if (!isFxCurrency(code)) {
       throw new BadRequestException(
         `${code} is not a currency we have daily rates for`,
       );
     }
-    await this.prisma.customer.update({
-      where: { id: customerId },
-      data: { homeCurrency: code },
-    });
+    if (scope.companyId !== null) {
+      await this.prisma.company.update({
+        where: { id: scope.companyId },
+        data: { bookHomeCurrency: code },
+      });
+    } else {
+      await this.prisma.customer.update({
+        where: { id: scope.customerId },
+        data: { homeCurrency: code },
+      });
+    }
     return code;
   }
 
@@ -164,12 +183,12 @@ export class FxService {
     return FX_CURRENCIES;
   }
 
-  /** The conversion context for these (DONE) statements of the customer. */
+  /** The conversion context for these (DONE) statements of one book. */
   async context(
-    customerId: number,
+    scope: BookScope,
     statements: readonly FxStatementInfo[],
   ): Promise<FxContext> {
-    const home = await this.home(customerId);
+    const home = await this.home(scope);
     const byId = new Map(statements.map((s) => [s.id, s]));
     const foreign = statements.filter((s) => (s.currency || home) !== home);
     const series = new Map<string, RateSeries>();

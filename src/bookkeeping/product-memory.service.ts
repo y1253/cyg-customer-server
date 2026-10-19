@@ -12,6 +12,7 @@ import {
   type ProductView,
 } from './product-memory.util';
 import { itemKey } from './receipt-items.util';
+import { bookLabel, scopeWhere, type BookScope } from './scope';
 import { TaxService } from './tax.service';
 
 /**
@@ -42,7 +43,7 @@ export class ProductMemoryService {
    * transaction's own category. Never throws: an AI or memory outage keeps the parent's.
    */
   async categoriesFor(
-    customerId: number,
+    scope: BookScope,
     names: readonly string[],
     context: { store?: string | null; parentCategory: string },
   ): Promise<(itemName: string) => string> {
@@ -50,7 +51,7 @@ export class ProductMemoryService {
     try {
       const keys = [...new Set(names.map(itemKey).filter(Boolean))];
       const [rules, memory] = await Promise.all([
-        this.itemRules(customerId),
+        this.itemRules(scope),
         this.memoryFor(keys),
       ]);
       const ask = itemsToAsk(names, rules, memory);
@@ -69,7 +70,7 @@ export class ProductMemoryService {
           for (const w of named) memory.set(w.key, w.category);
         } catch (err) {
           this.logger.warn(
-            `item categories for customer #${customerId} failed: ${(err as Error).message}`,
+            `item categories for ${bookLabel(scope)} failed: ${(err as Error).message}`,
           );
         }
       }
@@ -87,27 +88,27 @@ export class ProductMemoryService {
           .category;
     } catch (err) {
       this.logger.error(
-        `item memory for customer #${customerId} failed: ${(err as Error).message}`,
+        `item memory for ${bookLabel(scope)} failed: ${(err as Error).message}`,
       );
       return fallback;
     }
   }
 
   /** The category each of the customer's remembered items goes in, keyed by `itemKey`. */
-  async itemRules(customerId: number): Promise<Map<string, string>> {
+  async itemRules(scope: BookScope): Promise<Map<string, string>> {
     const rules = await this.prisma.customerItemRule.findMany({
-      where: { customerId },
+      where: scopeWhere(scope),
       select: { itemKey: true, category: true },
     });
     return new Map(rules.map((r) => [r.itemKey, r.category]));
   }
 
   /** The Products tab: every item on the customer's receipts, with its category. */
-  async products(customerId: number): Promise<ProductView[]> {
-    const rows = await this.itemRows(customerId);
+  async products(scope: BookScope): Promise<ProductView[]> {
+    const rows = await this.itemRows(scope);
     const keys = [...new Set(rows.map((r) => itemKey(r.itemName)))];
     const [rules, memory] = await Promise.all([
-      this.itemRules(customerId),
+      this.itemRules(scope),
       this.memoryFor(keys),
     ]);
     return groupProducts(rows, rules, memory);
@@ -119,41 +120,51 @@ export class ProductMemoryService {
    * right without a Generate. Every later receipt gets it too.
    */
   async saveRule(
-    customerId: number,
+    scope: BookScope,
     rawKey: string,
     rawCategory: string,
   ): Promise<void> {
     const key = itemKey(rawKey) || rawKey.trim().toLowerCase().slice(0, 191);
     if (!key) throw new NotFoundException('That product has no name');
-    const category = await this.accounts.validCategory(customerId, rawCategory);
-    await this.prisma.customerItemRule.upsert({
-      where: { customerId_itemKey: { customerId, itemKey: key } },
-      create: { customerId, itemKey: key, category },
-      update: { category },
+    const category = await this.accounts.validCategory(scope, rawCategory);
+    // Not an upsert: the unique key holds a nullable companyId (see scope.ts).
+    const existing = await this.prisma.customerItemRule.findFirst({
+      where: { ...scopeWhere(scope), itemKey: key },
+      select: { id: true },
     });
-    const rows = (await this.itemRows(customerId)).filter(
+    if (existing) {
+      await this.prisma.customerItemRule.update({
+        where: { id: existing.id },
+        data: { category },
+      });
+    } else {
+      await this.prisma.customerItemRule.create({
+        data: { ...scopeWhere(scope), itemKey: key, category },
+      });
+    }
+    const rows = (await this.itemRows(scope)).filter(
       (r) => itemKey(r.itemName) === key,
     );
-    await this.writeRows(customerId, rows, () => category);
+    await this.writeRows(scope, rows, () => category);
   }
 
   /**
    * Remove the customer's rule: their rows of that item go back to what the firm memory
    * says, else to the category of the transaction they were split from.
    */
-  async resetRule(customerId: number, rawKey: string): Promise<void> {
+  async resetRule(scope: BookScope, rawKey: string): Promise<void> {
     const key = itemKey(rawKey) || rawKey.trim().toLowerCase();
-    const where = { customerId_itemKey: { customerId, itemKey: key } };
-    const rule = await this.prisma.customerItemRule.findUnique({ where });
+    const where = { ...scopeWhere(scope), itemKey: key };
+    const rule = await this.prisma.customerItemRule.findFirst({ where });
     if (!rule)
       throw new NotFoundException('That product has no saved category');
-    await this.prisma.customerItemRule.delete({ where });
-    const rows = (await this.itemRows(customerId)).filter(
+    await this.prisma.customerItemRule.deleteMany({ where });
+    const rows = (await this.itemRows(scope)).filter(
       (r) => itemKey(r.itemName) === key,
     );
     const memory = await this.memoryFor([key]);
     await this.writeRows(
-      customerId,
+      scope,
       rows,
       (r) => resolveItem(key, new Map(), memory, r.parentCategory).category,
     );
@@ -192,10 +203,10 @@ export class ProductMemoryService {
   }
 
   /** The customer's item rows: splits with a receipt line, on statements in the ledger. */
-  private async itemRows(customerId: number): Promise<ItemRow[]> {
+  private async itemRows(scope: BookScope): Promise<ItemRow[]> {
     const rows = await this.prisma.bankTransaction.findMany({
       where: {
-        customerId,
+        ...scopeWhere(scope),
         splitOfId: { not: null },
         itemName: { not: null },
         statement: { deletedAt: null, status: StatementStatus.DONE },
@@ -223,7 +234,7 @@ export class ProductMemoryService {
 
   /** Move these rows to `next`'s category, then re-decide THEIR taxes at once. */
   private async writeRows(
-    customerId: number,
+    scope: BookScope,
     rows: readonly ItemRow[],
     next: (row: ItemRow) => string,
   ): Promise<void> {

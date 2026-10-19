@@ -8,6 +8,7 @@ import {
 import { PaymentStatus, Prisma, type PromoCode } from '@prisma/client';
 import Stripe from 'stripe';
 import { BookkeepingService } from '../bookkeeping/bookkeeping.service';
+import { bookLabel, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { readPricing } from './pricing';
 import { normalizeCode, priceFor, promoProblem } from './pricing.util';
@@ -49,6 +50,18 @@ export type CheckoutView =
 
 /** Tags every PaymentIntent this server makes, so the webhook ignores anything else. */
 const PURPOSE = 'generate';
+
+/**
+ * The book a PaymentIntent paid for, from its metadata. Intents created before step8
+ * carry no `companyId`, which reads as the general book — what they were for.
+ */
+function scopeOfIntent(intent: Stripe.PaymentIntent): BookScope {
+  const companyId = Number(intent.metadata.companyId);
+  return {
+    customerId: Number(intent.metadata.customerId),
+    companyId: Number.isInteger(companyId) && companyId > 0 ? companyId : null,
+  };
+}
 
 /**
  * Pay per Generate. The price is ALWAYS recomputed here from the admin's price and the
@@ -114,11 +127,12 @@ export class BillingService {
   }
 
   async checkout(
-    customerId: number,
+    scope: BookScope,
     promoCode: string | undefined,
     paymentMethodId: string | undefined,
   ): Promise<CheckoutView> {
-    const waiting = await this.bookkeeping.waitingCount(customerId);
+    const { customerId } = scope;
+    const waiting = await this.bookkeeping.waitingCount(scope);
     if (!waiting)
       throw new BadRequestException(
         'There are no new statements to read — upload one first.',
@@ -129,7 +143,7 @@ export class BillingService {
     const amountCents = priceFor(pricing.generatePriceCents, promo);
 
     if (amountCents === 0) {
-      const result = await this.recordFree(customerId, pricing, promo);
+      const result = await this.recordFree(scope, pricing, promo);
       return { done: true, amountCents: 0, result };
     }
 
@@ -148,6 +162,9 @@ export class BillingService {
       metadata: {
         purpose: PURPOSE,
         customerId: String(customerId),
+        // Which book this Generate reads ('' = the general one). Validated by
+        // BookScopeGuard at checkout; `recordAndGenerate` reads it back from Stripe.
+        companyId: scope.companyId === null ? '' : String(scope.companyId),
         listPriceCents: String(pricing.generatePriceCents),
         promoCodeId: promo ? String(promo.id) : '',
         promoCode: promo?.code ?? '',
@@ -180,11 +197,14 @@ export class BillingService {
 
   /** The client confirmed the card; check with Stripe (never trust the client) and generate. */
   async complete(
-    customerId: number,
+    scope: BookScope,
     paymentIntentId: string,
   ): Promise<GenerateResult> {
     const intent = await this.retrieveIntent(paymentIntentId);
-    if (intent.metadata.customerId !== String(customerId))
+    if (
+      intent.metadata.customerId !== String(scope.customerId) ||
+      scopeOfIntent(intent).companyId !== scope.companyId
+    )
       throw new NotFoundException('Payment not found');
     if (intent.status !== 'succeeded')
       throw new BadRequestException('The payment has not gone through yet.');
@@ -220,7 +240,7 @@ export class BillingService {
     paymentIntentId: string,
   ): Promise<GenerateResult> {
     const intent = await this.retrieveIntent(paymentIntentId);
-    const customerId = Number(intent.metadata.customerId);
+    const scope = scopeOfIntent(intent);
     const charge =
       typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
     const card = charge?.payment_method_details?.card ?? null;
@@ -231,7 +251,7 @@ export class BillingService {
       paymentId = await this.prisma.$transaction(async (tx) => {
         const row = await tx.customerPayment.create({
           data: {
-            customerId,
+            ...scopeWhere(scope),
             stripePaymentIntentId: intent.id,
             stripeCustomerId:
               typeof intent.customer === 'string'
@@ -267,14 +287,14 @@ export class BillingService {
     }
 
     this.logger.log(
-      `payment ${intent.id} recorded for customer ${customerId} (${intent.amount} ${intent.currency})`,
+      `payment ${intent.id} recorded for ${bookLabel(scope)} (${intent.amount} ${intent.currency})`,
     );
-    return this.generateFor(customerId, paymentId);
+    return this.generateFor(scope, paymentId);
   }
 
   /** A $0 Generate (free promo): a FREE row, no Stripe at all. */
   private async recordFree(
-    customerId: number,
+    scope: BookScope,
     pricing: { generatePriceCents: number; currency: string },
     promo: PromoCode | null,
   ): Promise<GenerateResult> {
@@ -293,7 +313,7 @@ export class BillingService {
       }
       const row = await tx.customerPayment.create({
         data: {
-          customerId,
+          ...scopeWhere(scope),
           amountCents: 0,
           listPriceCents: pricing.generatePriceCents,
           currency: pricing.currency,
@@ -304,14 +324,14 @@ export class BillingService {
       });
       return row.id;
     });
-    return this.generateFor(customerId, paymentId);
+    return this.generateFor(scope, paymentId);
   }
 
   private async generateFor(
-    customerId: number,
+    scope: BookScope,
     paymentId: number,
   ): Promise<GenerateResult> {
-    const result = await this.bookkeeping.generate(customerId);
+    const result = await this.bookkeeping.generate(scope);
     await this.prisma.customerPayment.update({
       where: { id: paymentId },
       data: { statementsQueued: result.queued },

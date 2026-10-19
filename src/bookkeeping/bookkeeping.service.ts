@@ -33,6 +33,7 @@ import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
+import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import type { StoredTax } from './tax.service';
 import { FxService, type FxContext, type FxEntry } from './fx.service';
@@ -234,8 +235,8 @@ function toView(
 }
 
 /**
- * A customer's statements and ledger. EVERY query is scoped to the caller's
- * `customerId`, and a statement that is not theirs answers 404 — never 403, which would
+ * One book's statements and ledger. EVERY query is scoped to the caller's book
+ * (`scopeWhere`: their `customerId` AND the `companyId` it belongs to), and a statement that is not theirs answers 404 — never 403, which would
  * confirm somebody else's upload exists.
  */
 @Injectable()
@@ -257,7 +258,7 @@ export class BookkeepingService {
    * customer clicks Generate (`generate`). Staged files are always removed.
    */
   async upload(
-    customerId: number,
+    scope: BookScope,
     files: Express.Multer.File[],
   ): Promise<StatementView[]> {
     try {
@@ -270,11 +271,11 @@ export class BookkeepingService {
       }
       const created: StatementView[] = [];
       for (const file of files) {
-        const key = `bookkeeping/${customerId}/${randomUUID()}.pdf`;
+        const key = `${storagePrefix(scope)}/${randomUUID()}.pdf`;
         await this.storage.putFile(key, file.path, 'application/pdf');
         const row = await this.prisma.bankStatement.create({
           data: {
-            customerId,
+            ...scopeWhere(scope),
             filename: file.originalname.slice(0, 191),
             storageKey: key,
             sizeBytes: file.size,
@@ -297,21 +298,25 @@ export class BookkeepingService {
    * once the payment is recorded.
    */
   async generateIfFree(
-    customerId: number,
+    scope: BookScope,
   ): Promise<{ queued: number; taxing: boolean }> {
-    const waiting = await this.waitingCount(customerId);
+    const waiting = await this.waitingCount(scope);
     if (waiting && (await readPricing(this.prisma)).generatePriceCents > 0)
       throw new HttpException(
         'Payment required — pay to read your new statements.',
         HttpStatus.PAYMENT_REQUIRED,
       );
-    return this.generate(customerId);
+    return this.generate(scope);
   }
 
   /** Statements uploaded but not read yet — what the next Generate would queue. */
-  waitingCount(customerId: number): Promise<number> {
+  waitingCount(scope: BookScope): Promise<number> {
     return this.prisma.bankStatement.count({
-      where: { customerId, deletedAt: null, status: StatementStatus.UPLOADED },
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        status: StatementStatus.UPLOADED,
+      },
     });
   }
 
@@ -320,35 +325,39 @@ export class BookkeepingService {
    * per name on read.) `taxing` is always false, kept for the client.
    */
   async generate(
-    customerId: number,
+    scope: BookScope,
   ): Promise<{ queued: number; taxing: boolean }> {
     const { count } = await this.prisma.bankStatement.updateMany({
-      where: { customerId, deletedAt: null, status: StatementStatus.UPLOADED },
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        status: StatementStatus.UPLOADED,
+      },
       data: { status: StatementStatus.PENDING },
     });
     if (count) this.processor.processSoon();
     return { queued: count, taxing: false };
   }
 
-  async list(customerId: number): Promise<StatementView[]> {
+  async list(scope: BookScope): Promise<StatementView[]> {
     const [rows, currencies] = await Promise.all([
       this.prisma.bankStatement.findMany({
-        where: { customerId, deletedAt: null },
+        where: { ...scopeWhere(scope), deletedAt: null },
         orderBy: { createdAt: 'desc' },
       }),
-      accountCurrencies(this.prisma, customerId),
+      accountCurrencies(this.prisma, scope),
     ]);
     return rows.map((r) => toView(r, currencies));
   }
 
   async transactions(
-    customerId: number,
+    scope: BookScope,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
     const [rows, statements, taxes, attached] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
-          customerId,
+          ...scopeWhere(scope),
           ...(statementIds?.length && { statementId: { in: statementIds } }),
           statement: { deletedAt: null, status: StatementStatus.DONE },
         },
@@ -366,11 +375,11 @@ export class BookkeepingService {
       }),
       // ALL done statements: the chain decides which ones start fresh, even when the
       // ledger is filtered to a few of them.
-      loadOpeningStatements(this.prisma, customerId),
-      this.tax.linesFor(customerId, statementIds),
+      loadOpeningStatements(this.prisma, scope),
+      this.tax.linesFor(scope, statementIds),
       this.prisma.transactionAttachment.findMany({
         where: {
-          customerId,
+          ...scopeWhere(scope),
           deletedAt: null,
           transactionId: { not: null },
         },
@@ -470,15 +479,15 @@ export class BookkeepingService {
             ),
           ],
     );
-    const ctx = await this.fx.context(customerId, statements);
+    const ctx = await this.fx.context(scope, statements);
     return ctx.anyForeign ? withFx(views, ctx, byId) : views;
   }
 
   async file(
-    customerId: number,
+    scope: BookScope,
     id: number,
   ): Promise<{ stream: Readable; filename: string; size: number }> {
-    const s = await this.owned(customerId, id);
+    const s = await this.owned(scope, id);
     const info = await this.storage.head(s.storageKey);
     if (!info)
       throw new NotFoundException('The original file is no longer available');
@@ -489,8 +498,8 @@ export class BookkeepingService {
     };
   }
 
-  async retry(customerId: number, id: number): Promise<StatementView> {
-    const s = await this.owned(customerId, id);
+  async retry(scope: BookScope, id: number): Promise<StatementView> {
+    const s = await this.owned(scope, id);
     if (
       s.status !== StatementStatus.FAILED &&
       s.status !== StatementStatus.NEEDS_REVIEW
@@ -517,13 +526,13 @@ export class BookkeepingService {
    * Soft delete: its rows leave the ledger at once, and the cheque images cut out of it
    * leave the Receipts tab; the PDF stays in R2.
    */
-  async remove(customerId: number, id: number): Promise<void> {
-    const s = await this.owned(customerId, id);
+  async remove(scope: BookScope, id: number): Promise<void> {
+    const s = await this.owned(scope, id);
     await this.prisma.bankStatement.update({
       where: { id: s.id },
       data: { deletedAt: new Date() },
     });
-    await this.images.removeFor(customerId, s.id);
+    await this.images.removeFor(scope, s.id);
   }
 
   /**
@@ -535,11 +544,11 @@ export class BookkeepingService {
    * makes it stick through a Retry.
    */
   async moveStatement(
-    customerId: number,
+    scope: BookScope,
     id: number,
     rawName: string,
   ): Promise<StatementView> {
-    const s = await this.owned(customerId, id);
+    const s = await this.owned(scope, id);
     if (
       s.status !== StatementStatus.DONE &&
       s.status !== StatementStatus.NEEDS_REVIEW
@@ -558,7 +567,7 @@ export class BookkeepingService {
     // Joining an existing account takes its kind: a card folder stays a card.
     const target = await this.prisma.bankStatement.findFirst({
       where: {
-        customerId,
+        ...scopeWhere(scope),
         accountName: name,
         deletedAt: null,
         id: { not: s.id },
@@ -586,33 +595,33 @@ export class BookkeepingService {
       // The old account's section override goes with its LAST statement.
       if (old) {
         const left = await tx.bankStatement.count({
-          where: { customerId, accountName: old, deletedAt: null },
+          where: { ...scopeWhere(scope), accountName: old, deletedAt: null },
         });
         if (left === 0) {
-          const kept = await tx.customerAccountType.findUnique({
-            where: { customerId_account: { customerId, account: name } },
+          const kept = await tx.customerAccountType.findFirst({
+            where: { ...scopeWhere(scope), account: name },
           });
           if (kept) {
             await tx.customerAccountType.deleteMany({
-              where: { customerId, account: old },
+              where: { ...scopeWhere(scope), account: old },
             });
           } else {
             await tx.customerAccountType.updateMany({
-              where: { customerId, account: old },
+              where: { ...scopeWhere(scope), account: old },
               data: { account: name },
             });
           }
           // So does its currency setting (the target's own setting wins).
-          const keptCurrency = await tx.customerAccountCurrency.findUnique({
-            where: { customerId_account: { customerId, account: name } },
+          const keptCurrency = await tx.customerAccountCurrency.findFirst({
+            where: { ...scopeWhere(scope), account: name },
           });
           if (keptCurrency) {
             await tx.customerAccountCurrency.deleteMany({
-              where: { customerId, account: old },
+              where: { ...scopeWhere(scope), account: old },
             });
           } else {
             await tx.customerAccountCurrency.updateMany({
-              where: { customerId, account: old },
+              where: { ...scopeWhere(scope), account: old },
               data: { account: name },
             });
           }
@@ -621,14 +630,14 @@ export class BookkeepingService {
       return updated;
     });
     this.logger.log(
-      `customer ${customerId}: statement #${s.id} moved "${old}" -> "${name}"`,
+      `${bookLabel(scope)}: statement #${s.id} moved "${old}" -> "${name}"`,
     );
     return toView(row);
   }
 
-  private async owned(customerId: number, id: number): Promise<BankStatement> {
+  private async owned(scope: BookScope, id: number): Promise<BankStatement> {
     const s = await this.prisma.bankStatement.findFirst({
-      where: { id, customerId, deletedAt: null },
+      where: { id, ...scopeWhere(scope), deletedAt: null },
     });
     if (!s) throw new NotFoundException('Statement not found');
     return s;

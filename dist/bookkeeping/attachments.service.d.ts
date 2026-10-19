@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import type { AttachmentReading } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
+import { type BookScope } from './scope';
 export interface AttachmentView {
     id: number;
     kind: AttachmentKind;
@@ -20,6 +21,7 @@ export interface AttachmentView {
     source: string;
     sourcePhone: string | null;
     message: string | null;
+    folder: string | null;
     transaction: {
         id: number;
         name: string | null;
@@ -42,21 +44,21 @@ export declare class AttachmentsService {
     private readonly openai;
     private readonly processor;
     constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService);
-    upload(customerId: number, files: Express.Multer.File[], transactionId: number | null): Promise<AttachmentView[]>;
-    intake(customerId: number): Promise<IntakeView>;
-    list(customerId: number): Promise<AttachmentView[]>;
-    get(customerId: number, id: number): Promise<AttachmentView>;
-    setTransaction(customerId: number, id: number, transactionId: number | null): Promise<AttachmentView>;
-    applyItems(customerId: number, id: number): Promise<AttachmentView>;
-    retry(customerId: number, id: number): Promise<AttachmentView>;
-    remove(customerId: number, id: number): Promise<void>;
-    file(customerId: number, id: number): Promise<{
+    upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null): Promise<AttachmentView[]>;
+    intake(scope: BookScope): Promise<IntakeView>;
+    list(scope: BookScope): Promise<AttachmentView[]>;
+    get(scope: BookScope, id: number): Promise<AttachmentView>;
+    setTransaction(scope: BookScope, id: number, transactionId: number | null): Promise<AttachmentView>;
+    applyItems(scope: BookScope, id: number): Promise<AttachmentView>;
+    retry(scope: BookScope, id: number): Promise<AttachmentView>;
+    remove(scope: BookScope, id: number): Promise<void>;
+    file(scope: BookScope, id: number): Promise<{
         stream: Readable;
         filename: string;
         mimeType: string;
         size: number;
     }>;
-    byTransaction(customerId: number, transactionIds: number[]): Promise<Map<number, Array<{
+    byTransaction(scope: BookScope, transactionIds: number[]): Promise<Map<number, Array<{
         id: number;
         kind: AttachmentKind;
         filename: string;

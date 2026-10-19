@@ -13,6 +13,7 @@ exports.CustomerAccountsService = exports.ACCOUNT_TYPES = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const fx_util_1 = require("./fx.util");
+const scope_1 = require("./scope");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.ACCOUNT_TYPES = [
     'INCOME',
@@ -26,81 +27,101 @@ let CustomerAccountsService = class CustomerAccountsService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async list(customerId) {
-        const own = await this.own(customerId);
+    async list(scope) {
+        const own = await this.own(scope);
         return [
             ...chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => ({ ...a, custom: false })),
             ...own.map((a) => ({ ...a, custom: true })),
         ];
     }
-    async types(customerId) {
-        return new Map((await this.own(customerId)).map((a) => [a.name, a.type]));
+    async types(scope) {
+        return new Map((await this.own(scope)).map((a) => [a.name, a.type]));
     }
-    async overrides(customerId) {
+    async overrides(scope) {
         const rows = await this.prisma.customerAccountType.findMany({
-            where: { customerId },
+            where: (0, scope_1.scopeWhere)(scope),
             select: { account: true, type: true },
         });
         return new Map(rows
             .filter((r) => exports.ACCOUNT_TYPES.includes(r.type))
             .map((r) => [r.account, r.type]));
     }
-    async setType(customerId, account, type) {
+    async setType(scope, account, type) {
         const name = account.trim();
         if (!name)
             throw new common_1.BadRequestException('Which account?');
         if (!exports.ACCOUNT_TYPES.includes(type)) {
             throw new common_1.BadRequestException('Choose a section');
         }
-        await this.prisma.customerAccountType.upsert({
-            where: { customerId_account: { customerId, account: name } },
-            create: { customerId, account: name, type },
-            update: { type },
+        const found = await this.prisma.customerAccountType.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), account: name },
+            select: { id: true },
         });
+        if (found) {
+            await this.prisma.customerAccountType.update({
+                where: { id: found.id },
+                data: { type },
+            });
+        }
+        else {
+            await this.prisma.customerAccountType.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), account: name, type },
+            });
+        }
     }
-    async resetType(customerId, account) {
+    async resetType(scope, account) {
         await this.prisma.customerAccountType.deleteMany({
-            where: { customerId, account: account.trim() },
+            where: { ...(0, scope_1.scopeWhere)(scope), account: account.trim() },
         });
     }
-    async setCurrency(customerId, account, currency) {
+    async setCurrency(scope, account, currency) {
         const name = account.trim();
         const code = currency.trim().toUpperCase();
         if (!(0, fx_util_1.isFxCurrency)(code)) {
             throw new common_1.BadRequestException(`${code} is not a currency we have daily rates for`);
         }
         const statement = await this.prisma.bankStatement.findFirst({
-            where: { customerId, accountName: name, deletedAt: null },
+            where: { ...(0, scope_1.scopeWhere)(scope), accountName: name, deletedAt: null },
             select: { id: true },
         });
         if (!statement) {
             throw new common_1.BadRequestException(`"${name}" is not one of your accounts`);
         }
-        await this.prisma.customerAccountCurrency.upsert({
-            where: { customerId_account: { customerId, account: name } },
-            create: { customerId, account: name, currency: code },
-            update: { currency: code },
+        const found = await this.prisma.customerAccountCurrency.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), account: name },
+            select: { id: true },
         });
+        if (found) {
+            await this.prisma.customerAccountCurrency.update({
+                where: { id: found.id },
+                data: { currency: code },
+            });
+        }
+        else {
+            await this.prisma.customerAccountCurrency.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), account: name, currency: code },
+            });
+        }
     }
-    async resetCurrency(customerId, account) {
+    async resetCurrency(scope, account) {
         await this.prisma.customerAccountCurrency.deleteMany({
-            where: { customerId, account: account.trim() },
+            where: { ...(0, scope_1.scopeWhere)(scope), account: account.trim() },
         });
     }
-    async names(customerId) {
-        return new Set((await this.own(customerId)).map((a) => a.name));
+    async names(scope) {
+        return new Set((await this.own(scope)).map((a) => a.name));
     }
-    async validCategory(customerId, name) {
+    async validCategory(scope, name) {
         const wanted = name.trim().toLowerCase();
         const chart = chart_of_accounts_1.ACCOUNT_NAMES.find((n) => n.toLowerCase() === wanted);
         if (chart)
             return chart;
-        const own = (await this.own(customerId)).find((a) => a.name.toLowerCase() === wanted);
+        const own = (await this.own(scope)).find((a) => a.name.toLowerCase() === wanted);
         if (own)
             return own.name;
         throw new common_1.BadRequestException(`"${name}" is not one of your categories. Create it first.`);
     }
-    async create(customerId, input) {
+    async create(scope, input) {
         const name = input.name.trim();
         if (!name)
             throw new common_1.BadRequestException('Enter a name for the category');
@@ -111,14 +132,14 @@ let CustomerAccountsService = class CustomerAccountsService {
             throw new common_1.BadRequestException(`"${name}" is already in the list — pick it there`);
         }
         const agency = await this.prisma.taxAgency.findFirst({
-            where: { customerId, name, deletedAt: null },
+            where: { ...(0, scope_1.scopeWhere)(scope), name, deletedAt: null },
             select: { id: true },
         });
         if (agency) {
             throw new common_1.BadRequestException(`"${name}" is one of your tax agencies`);
         }
-        const existing = await this.prisma.customerAccount.findUnique({
-            where: { customerId_name: { customerId, name } },
+        const existing = await this.prisma.customerAccount.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
         });
         if (existing) {
             if (existing.type !== input.type) {
@@ -127,13 +148,13 @@ let CustomerAccountsService = class CustomerAccountsService {
             return { name: existing.name, type: input.type, custom: true };
         }
         const row = await this.prisma.customerAccount.create({
-            data: { customerId, name, type: input.type },
+            data: { ...(0, scope_1.scopeWhere)(scope), name, type: input.type },
         });
         return { name: row.name, type: input.type, custom: true };
     }
-    async own(customerId) {
+    async own(scope) {
         const rows = await this.prisma.customerAccount.findMany({
-            where: { customerId },
+            where: (0, scope_1.scopeWhere)(scope),
             select: { name: true, type: true },
             orderBy: { name: 'asc' },
         });

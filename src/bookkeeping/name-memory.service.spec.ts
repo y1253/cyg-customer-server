@@ -45,8 +45,8 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
   const updates: Array<{ id: number; data: Record<string, unknown> }> = [];
   const prisma = {
     customerNameRule: {
-      findUnique: jest.fn().mockResolvedValue(existingRule),
-      upsert: jest.fn().mockResolvedValue({}),
+      findFirst: jest.fn().mockResolvedValue(existingRule),
+      update: jest.fn().mockResolvedValue({}),
       delete: jest.fn().mockResolvedValue({}),
       findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockResolvedValue({}),
@@ -104,6 +104,15 @@ const fakeTax = () => ({
   carryAgencies: jest.fn().mockResolvedValue(undefined),
 });
 
+/** The general book of customer 7. */
+const BOOK = { customerId: 7, companyId: null };
+
+/** Every rule the service CREATED, as the data it wrote. */
+const createdRules = (prisma: ReturnType<typeof fakePrisma>['prisma']) =>
+  (prisma.customerNameRule.create.mock.calls as Array<[{ data: object }]>).map(
+    ([a]) => a.data,
+  );
+
 const service = (prisma: object, tax = fakeTax()) =>
   new NameMemoryService(
     prisma as unknown as PrismaService,
@@ -140,7 +149,7 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'Supplies',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'Walmart',
       name: 'Walmart Canada',
@@ -150,20 +159,18 @@ describe('NameMemoryService.saveRule', () => {
       ['Walmart Canada', 'Office Expense', 'Office Expense', 'BMO 1234'],
       ['Walmart Canada', 'Office Expense', 'BMO 1234', 'Office Expense'],
     ]);
-    expect(prisma.customerNameRule.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: {
-          customerId: 7,
-          matchType: 'NAME',
-          matchKey: 'walmart',
-          name: 'Walmart Canada',
-        },
-      }),
-    );
+    expect(createdRules(prisma)).toContainEqual({
+      customerId: 7,
+      companyId: null,
+      matchType: 'NAME',
+      matchKey: 'walmart',
+      name: 'Walmart Canada',
+    });
     // The category is the NEW name's, kept on a rule for that name.
     expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
       data: {
         customerId: 7,
+        companyId: null,
         matchType: 'NAME',
         matchKey: 'walmart canada',
         category: 'Office Expense',
@@ -173,7 +180,7 @@ describe('NameMemoryService.saveRule', () => {
 
   it('a second edit also reaches rows the first edit renamed', async () => {
     const { prisma } = fakePrisma([], { name: 'Walmart Canada' });
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: 'WM',
@@ -218,7 +225,7 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'Interest Income',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'DESCRIPTION',
       matchKey: 'service charge',
       name: 'BMO',
@@ -253,7 +260,7 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'Sales Income',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'DESCRIPTION',
       matchKey: 'deposit',
       name: null,
@@ -277,7 +284,7 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'BMO 1234',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: 'Walmart',
@@ -307,7 +314,7 @@ describe('NameMemoryService.saveRule', () => {
         creditAccount: 'BMO 1234',
       },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: null,
@@ -337,7 +344,7 @@ describe('NameMemoryService.resolveStatement', () => {
         offsetAccount: 'Supplies',
       },
     ];
-    expect((await service(prisma).resolveStatement(7, rows)).lines).toEqual(
+    expect((await service(prisma).resolveStatement(BOOK, rows)).lines).toEqual(
       rows,
     );
   });
@@ -347,7 +354,7 @@ describe('NameMemoryService.resolveStatement', () => {
     prisma.descriptionMemory.findMany.mockResolvedValue([
       { descriptionKey: 'walmart', name: 'Walmart', category: 'Supplies' },
     ]);
-    const out = await service(prisma).resolveStatement(7, [
+    const out = await service(prisma).resolveStatement(BOOK, [
       {
         pendingDate: null,
         postingDate: null,
@@ -404,7 +411,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
   it('a category reaches EVERY row of the name — one-time edits too, splits never', async () => {
     const split = { ...walmart(3), splitOfId: 1 };
     const { prisma, rows } = fakePrisma([walmart(1), walmart(2, true), split]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: null,
@@ -421,7 +428,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
 
   it('a payee rename skips rows a one-time rename flagged', async () => {
     const { prisma, rows } = fakePrisma([walmart(1), walmart(2, true)]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: 'Walmart Canada',
@@ -435,14 +442,15 @@ describe('one category per name; "Always / Only this row" is for the name', () =
       { ...walmart(1), name: null, description: 'POS 0923' },
       { ...walmart(2), name: null, description: 'POS 1023' },
     ]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'DESCRIPTION',
       matchKey: 'pos',
       name: 'Corner Store',
       category: null,
       scope: 'ONCE',
     });
-    expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
+    expect(createdRules(prisma)).toEqual([]);
+    expect(prisma.customerNameRule.update).not.toHaveBeenCalled();
     expect(updates.map((u) => [u.data.name, u.data.manualEdit])).toEqual([
       ['Corner Store', true],
       ['Corner Store', true],
@@ -458,7 +466,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
     };
     const { prisma, rows } = fakePrisma([row5, walmart(6)]);
     prisma.bankTransaction.findFirst.mockResolvedValue({ ...row5 });
-    await service(prisma).editTransaction(7, 5, {
+    await service(prisma).editTransaction(BOOK, 5, {
       name: 'Walmart Refund',
       category: 'Other Income',
       scope: 'ONCE',
@@ -468,10 +476,12 @@ describe('one category per name; "Always / Only this row" is for the name', () =
       ['Walmart', 'Supplies', 'Supplies', 'BMO 1234'],
     ]);
     expect(rows[0].manualEdit).toBe(true);
-    expect(prisma.customerNameRule.upsert).not.toHaveBeenCalled();
+    // No rename rule: only the new name's category rule below.
+    expect(createdRules(prisma).some((d) => 'name' in d)).toBe(false);
     expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
       data: {
         customerId: 7,
+        companyId: null,
         matchType: 'NAME',
         matchKey: 'walmart refund',
         category: 'Other Income',
@@ -482,15 +492,12 @@ describe('one category per name; "Always / Only this row" is for the name', () =
   it('a ledger ALWAYS rename names every row with that description (a DESCRIPTION rule)', async () => {
     const { prisma } = fakePrisma([]);
     prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
-    await service(prisma).editTransaction(7, 5, {
+    await service(prisma).editTransaction(BOOK, 5, {
       name: 'Walmart Canada',
       category: null,
       scope: 'ALWAYS',
     });
-    const [upsert] = prisma.customerNameRule.upsert.mock.calls[0] as [
-      { create: Record<string, unknown> },
-    ];
-    expect(upsert.create).toMatchObject({
+    expect(createdRules(prisma)[0]).toMatchObject({
       matchType: 'DESCRIPTION',
       matchKey: 'walmart',
       name: 'Walmart Canada',
@@ -500,7 +507,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
   it("a ledger category edit is the NAME's category, whatever the scope", async () => {
     const { prisma, rows } = fakePrisma([walmart(5), walmart(6, true)]);
     prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
-    await service(prisma).editTransaction(7, 5, {
+    await service(prisma).editTransaction(BOOK, 5, {
       name: null,
       category: 'Office Expense',
       scope: 'ONCE',
@@ -512,6 +519,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
     expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
       data: {
         customerId: 7,
+        companyId: null,
         matchType: 'NAME',
         matchKey: 'walmart',
         category: 'Office Expense',
@@ -525,7 +533,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
     prisma.nameMemory.findUnique.mockResolvedValue({
       category: 'Meals & Entertainment',
     });
-    await service(prisma).editTransaction(7, 5, {
+    await service(prisma).editTransaction(BOOK, 5, {
       name: 'Tim Hortons',
       category: null,
       scope: 'ONCE',
@@ -541,7 +549,7 @@ describe('one category per name; "Always / Only this row" is for the name', () =
   it("keeps the customer's own category instead of turning it into Uncategorized", async () => {
     const { prisma, updates } = fakePrisma([walmart(1)]);
     prisma.customerAccount.findMany.mockResolvedValue([{ name: 'Groceries' }]);
-    await service(prisma).saveRule(7, {
+    await service(prisma).saveRule(BOOK, {
       matchType: 'NAME',
       matchKey: 'walmart',
       name: null,
@@ -553,11 +561,52 @@ describe('one category per name; "Always / Only this row" is for the name', () =
   it('a ledger edit of a row that is not theirs is a 404', async () => {
     const { prisma } = fakePrisma([]);
     await expect(
-      service(prisma).editTransaction(7, 99, {
+      service(prisma).editTransaction(BOOK, 99, {
         name: 'X',
         category: null,
         scope: 'ONCE',
       }),
     ).rejects.toThrow('Transaction not found');
+  });
+});
+
+describe('NameMemoryService — books are kept apart (step8)', () => {
+  const COMPANY = { customerId: 7, companyId: 5 };
+
+  it("reads only the scope's own rules, and the general book is companyId NULL", async () => {
+    const { prisma } = fakePrisma([]);
+    await service(prisma).rulesOf(COMPANY);
+    await service(prisma).rulesOf(BOOK);
+    expect(prisma.customerNameRule.findMany.mock.calls).toEqual([
+      [expect.objectContaining({ where: { customerId: 7, companyId: 5 } })],
+      [expect.objectContaining({ where: { customerId: 7, companyId: null } })],
+    ]);
+  });
+
+  it("a company's rule is looked up, written and its rows matched inside that company only", async () => {
+    const { prisma } = fakePrisma([]);
+    await service(prisma).saveRule(COMPANY, {
+      matchType: 'NAME',
+      matchKey: 'Walmart',
+      name: 'Walmart Canada',
+      category: null,
+    });
+    expect(prisma.customerNameRule.findFirst).toHaveBeenCalledWith({
+      where: {
+        customerId: 7,
+        companyId: 5,
+        matchType: 'NAME',
+        matchKey: 'walmart',
+      },
+    });
+    expect(createdRules(prisma)[0]).toMatchObject({
+      customerId: 7,
+      companyId: 5,
+    });
+    for (const [args] of prisma.bankTransaction.findMany.mock.calls as Array<
+      [{ where: object }]
+    >) {
+      expect(args.where).toMatchObject({ customerId: 7, companyId: 5 });
+    }
   });
 });

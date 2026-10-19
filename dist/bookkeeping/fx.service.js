@@ -89,29 +89,44 @@ let FxService = FxService_1 = class FxService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async home(customerId) {
+    async home(scope) {
+        if (scope.companyId !== null) {
+            const c = await this.prisma.company.findUnique({
+                where: { id: scope.companyId },
+                select: { bookHomeCurrency: true },
+            });
+            return c?.bookHomeCurrency || 'CAD';
+        }
         const c = await this.prisma.customer.findUnique({
-            where: { id: customerId },
+            where: { id: scope.customerId },
             select: { homeCurrency: true },
         });
         return c?.homeCurrency || 'CAD';
     }
-    async setHome(customerId, currency) {
+    async setHome(scope, currency) {
         const code = currency.trim().toUpperCase();
         if (!(0, fx_util_1.isFxCurrency)(code)) {
             throw new common_1.BadRequestException(`${code} is not a currency we have daily rates for`);
         }
-        await this.prisma.customer.update({
-            where: { id: customerId },
-            data: { homeCurrency: code },
-        });
+        if (scope.companyId !== null) {
+            await this.prisma.company.update({
+                where: { id: scope.companyId },
+                data: { bookHomeCurrency: code },
+            });
+        }
+        else {
+            await this.prisma.customer.update({
+                where: { id: scope.customerId },
+                data: { homeCurrency: code },
+            });
+        }
         return code;
     }
     currencies() {
         return fx_util_1.FX_CURRENCIES;
     }
-    async context(customerId, statements) {
-        const home = await this.home(customerId);
+    async context(scope, statements) {
+        const home = await this.home(scope);
         const byId = new Map(statements.map((s) => [s.id, s]));
         const foreign = statements.filter((s) => (s.currency || home) !== home);
         const series = new Map();

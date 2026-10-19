@@ -15,6 +15,7 @@ import { StatementImagesService } from './statement-images.service';
 import { sweepStaleStaging } from './statement-uploads';
 import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
+import { scopeOf, scopeWhere, type BookScope } from './scope';
 
 export { claimableAt, MAX_ATTEMPTS };
 
@@ -126,6 +127,9 @@ export class StatementProcessorService {
     if (claimed.count === 0) return;
 
     const started = Date.now();
+    // The statement's OWN book: a company's statement is read against that company's
+    // accounts, rules and categories, never the customer's general ones.
+    const scope = scopeOf(row);
     try {
       const pdf = await this.storage.getBuffer(row.storageKey);
       // One run does every re-read (at most MAX_REREADS); each round refreshes updatedAt
@@ -147,7 +151,7 @@ export class StatementProcessorService {
         row.accountNameByCustomer ??
         canonicalAccountName(
           extracted,
-          await this.knownAccounts(row.customerId, row.id),
+          await this.knownAccounts(scope, row.id),
         );
       if (accountName !== extracted.accountName) {
         this.logger.log(
@@ -159,7 +163,7 @@ export class StatementProcessorService {
       // the memory learns this statement's new descriptions (`name-memory.util.ts`). Bank
       // fees and interest with no payee are named after the bank.
       const { lines, customAccounts } = await this.names.resolveStatement(
-        row.customerId,
+        scope,
         extracted.transactions,
         extracted.bankName,
       );
@@ -185,7 +189,7 @@ export class StatementProcessorService {
           data: rows.map((r) => ({
             ...r,
             statementId: row.id,
-            customerId: row.customerId,
+            ...scopeWhere(scope),
           })),
         }),
         this.prisma.bankStatement.update({
@@ -246,11 +250,11 @@ export class StatementProcessorService {
     }
   }
 
-  /** The customer's accounts from their OTHER read statements (name + kind). */
-  private async knownAccounts(customerId: number, exceptId: number) {
+  /** The book's accounts from its OTHER read statements (name + kind). */
+  private async knownAccounts(scope: BookScope, exceptId: number) {
     const rows = await this.prisma.bankStatement.findMany({
       where: {
-        customerId,
+        ...scopeWhere(scope),
         id: { not: exceptId },
         deletedAt: null,
         accountName: { not: null },

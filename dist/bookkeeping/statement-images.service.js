@@ -19,6 +19,7 @@ const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_match_util_1 = require("./attachment-match.util");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const pdf_images_1 = require("./pdf-images");
+const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
 exports.STATEMENT_SOURCE = 'STATEMENT';
 let StatementImagesService = StatementImagesService_1 = class StatementImagesService {
@@ -32,6 +33,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
         this.attachments = attachments;
     }
     async harvest(statement, pdf, pages) {
+        const scope = (0, scope_1.scopeOf)(statement);
         try {
             const images = await (0, pdf_images_1.itemImages)(pdf, pages);
             const label = (0, statement_label_1.statementLabel)(statement);
@@ -44,7 +46,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     select: { storageKey: true },
                 });
                 const storageKey = existing?.storageKey ??
-                    `bookkeeping/${statement.customerId}/attachments/${(0, crypto_1.randomUUID)()}.png`;
+                    `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}.png`;
                 await this.storage.putBuffer(storageKey, image.png, 'image/png');
                 const queued = {
                     status: client_1.AttachmentStatus.PENDING,
@@ -61,7 +63,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     where: { sourceRef },
                     create: {
                         ...queued,
-                        customerId: statement.customerId,
+                        ...(0, scope_1.scopeWhere)(scope),
                         filename: `${label} p${image.page + 1} #${image.index + 1}.png`.slice(0, 255),
                         mimeType: 'image/png',
                         storageKey,
@@ -73,7 +75,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
             }
             await this.prisma.transactionAttachment.updateMany({
                 where: {
-                    customerId: statement.customerId,
+                    ...(0, scope_1.scopeWhere)(scope),
                     sourceRef: { startsWith: `stmt:${statement.id}:`, notIn: refs },
                     deletedAt: null,
                 },
@@ -89,10 +91,10 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
             this.logger.warn(`statement #${statement.id}: item images not attached: ${String(err)}`);
         }
     }
-    async removeFor(customerId, statementId) {
+    async removeFor(scope, statementId) {
         await this.prisma.transactionAttachment.updateMany({
             where: {
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 sourceRef: { startsWith: `stmt:${statementId}:` },
                 deletedAt: null,
             },

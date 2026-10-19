@@ -12,7 +12,6 @@ import {
   Post,
   Put,
   Query,
-  Req,
   Res,
   StreamableFile,
   UploadedFiles,
@@ -20,10 +19,12 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
-import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
+import { PrismaService } from '../prisma/prisma.service';
+import { Book, BookScopeGuard } from './book-scope.guard';
+import type { BookScope } from './scope';
 import {
   AttachmentsService,
   type AttachmentView,
@@ -81,17 +82,19 @@ import {
   STATEMENT_UPLOAD_OPTIONS,
 } from './statement-uploads';
 
-type AuthedRequest = Request & { user: CustomerRequestUser };
-
 /** RFC 5987 filename for Content-Disposition, safe for any characters. */
 function attachment(filename: string, inline = false): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
   return `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
-/** `/api/bookkeeping` — every route needs a signed-in customer and acts only on their data. */
+/**
+ * `/api/bookkeeping` — every route needs a signed-in customer and acts only on ONE of
+ * their books: the general one, or a business of theirs named by `?companyId=`
+ * (`BookScopeGuard`, class-level so no route can forget it).
+ */
 @Controller('bookkeeping')
-@UseGuards(CustomerJwtGuard)
+@UseGuards(CustomerJwtGuard, BookScopeGuard)
 export class BookkeepingController {
   constructor(
     private readonly bookkeeping: BookkeepingService,
@@ -105,7 +108,20 @@ export class BookkeepingController {
     private readonly attachments: AttachmentsService,
     private readonly productMemory: ProductMemoryService,
     private readonly fx: FxService,
+    private readonly prisma: PrismaService,
   ) {}
+
+  /** Whose name heads an export: the business's for its books, else the customer's. */
+  private async ownerName(scope: BookScope): Promise<string> {
+    if (scope.companyId !== null) {
+      const c = await this.prisma.company.findUnique({
+        where: { id: scope.companyId },
+        select: { businessName: true },
+      });
+      if (c) return c.businessName;
+    }
+    return (await this.customers.me(scope.customerId)).name;
+  }
 
   /**
    * Reads every UPLOADED statement and re-applies changed tax settings — only when it is
@@ -113,59 +129,55 @@ export class BookkeepingController {
    */
   @Post('generate')
   generate(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
   ): Promise<{ queued: number; taxing: boolean }> {
-    return this.bookkeeping.generateIfFree(req.user.customerId);
+    return this.bookkeeping.generateIfFree(scope);
   }
 
   @Get('tax')
-  taxSettings(@Req() req: AuthedRequest): Promise<TaxSettingsView> {
-    return this.tax.settings(req.user.customerId);
+  taxSettings(@Book() scope: BookScope): Promise<TaxSettingsView> {
+    return this.tax.settings(scope);
   }
 
   @Post('agencies')
   createAgency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: CreateAgencyDto,
   ): Promise<AgencyView> {
-    return this.tax.createAgency(req.user.customerId, dto);
+    return this.tax.createAgency(scope, dto);
   }
 
   @Patch('agencies/:id')
   updateAgency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateAgencyDto,
   ): Promise<AgencyView> {
-    return this.tax.updateAgency(req.user.customerId, id, dto);
+    return this.tax.updateAgency(scope, id, dto);
   }
 
   @Delete('agencies/:id')
   @HttpCode(204)
   removeAgency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
-    return this.tax.removeAgency(req.user.customerId, id);
+    return this.tax.removeAgency(scope, id);
   }
 
   /** Every payee name the AI read (category, type, tax switch, rule) plus the unnamed rows. */
   @Get('names')
-  names(@Req() req: AuthedRequest): Promise<NamesView> {
-    return this.tax.names(req.user.customerId);
+  names(@Book() scope: BookScope): Promise<NamesView> {
+    return this.tax.names(scope);
   }
 
   /** Which tax agencies tax one name — the whole set; [] = not taxed (the default). */
   @Put('names/agencies')
   setNameAgencies(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SetNameAgenciesDto,
   ): Promise<NamesView> {
-    return this.tax.setNameAgencies(
-      req.user.customerId,
-      dto.name,
-      dto.agencyIds,
-    );
+    return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
   }
 
   /**
@@ -174,18 +186,18 @@ export class BookkeepingController {
    */
   @Put('names/rule')
   async saveNameRule(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SaveNameRuleDto,
   ): Promise<NamesView> {
-    const { name, category } = await this.editValues(req.user.customerId, dto);
-    await this.nameMemory.saveRule(req.user.customerId, {
+    const { name, category } = await this.editValues(scope, dto);
+    await this.nameMemory.saveRule(scope, {
       matchType: dto.matchType,
       matchKey: dto.matchKey,
       name,
       category,
       scope: dto.scope ?? 'ALWAYS',
     });
-    return this.tax.names(req.user.customerId);
+    return this.tax.names(scope);
   }
 
   /**
@@ -196,12 +208,12 @@ export class BookkeepingController {
   @Patch('transactions/:id')
   @HttpCode(204)
   async editTransaction(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: EditTransactionDto,
   ): Promise<void> {
-    const { name, category } = await this.editValues(req.user.customerId, dto);
-    await this.nameMemory.editTransaction(req.user.customerId, id, {
+    const { name, category } = await this.editValues(scope, dto);
+    await this.nameMemory.editTransaction(scope, id, {
       name,
       category,
       scope: dto.scope,
@@ -215,24 +227,24 @@ export class BookkeepingController {
   @Put('transactions/:id/splits')
   @HttpCode(204)
   saveSplits(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: SaveSplitsDto,
   ): Promise<void> {
-    return this.splits.save(req.user.customerId, id, dto.splits);
+    return this.splits.save(scope, id, dto.splits);
   }
 
   /** Name one tax line (an agency's tax on a row) — null puts the row's own name back. */
   @Patch('transactions/:id/taxes/:agencyId')
   @HttpCode(204)
   async renameTaxLine(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Param('agencyId', ParseIntPipe) agencyId: number,
     @Body() dto: RenameTaxLineDto,
   ): Promise<void> {
     const ok = await this.tax.renameLine(
-      req.user.customerId,
+      scope,
       id,
       agencyId,
       dto.name?.trim() || null,
@@ -242,7 +254,7 @@ export class BookkeepingController {
 
   /** A name and/or a category the customer may use — the chart or one of their own. */
   private async editValues(
-    customerId: number,
+    scope: BookScope,
     dto: { name?: string | null; category?: string | null },
   ): Promise<{ name: string | null; category: string | null }> {
     const name = dto.name?.trim() || null;
@@ -256,26 +268,24 @@ export class BookkeepingController {
         `"${UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`,
       );
     }
-    const category = raw
-      ? await this.accounts.validCategory(customerId, raw)
-      : null;
+    const category = raw ? await this.accounts.validCategory(scope, raw) : null;
     return { name, category };
   }
 
   /** Drop the customer's own rule: their rows go back to the default. */
   @Delete('names/rule')
   async resetNameRule(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: ResetNameRuleDto,
   ): Promise<NamesView> {
-    await this.nameMemory.resetRule(req.user.customerId, dto);
-    return this.tax.names(req.user.customerId);
+    await this.nameMemory.resetRule(scope, dto);
+    return this.tax.names(scope);
   }
 
   /** Every item on the customer's receipts, with its category and where that came from. */
   @Get('products')
-  products(@Req() req: AuthedRequest): Promise<ProductView[]> {
-    return this.productMemory.products(req.user.customerId);
+  products(@Book() scope: BookScope): Promise<ProductView[]> {
+    return this.productMemory.products(scope);
   }
 
   /**
@@ -284,25 +294,21 @@ export class BookkeepingController {
    */
   @Put('products/rule')
   async saveProductRule(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SaveProductRuleDto,
   ): Promise<ProductView[]> {
-    await this.productMemory.saveRule(
-      req.user.customerId,
-      dto.itemKey,
-      dto.category,
-    );
-    return this.productMemory.products(req.user.customerId);
+    await this.productMemory.saveRule(scope, dto.itemKey, dto.category);
+    return this.productMemory.products(scope);
   }
 
   /** Drop the customer's rule: their rows go back to the memory's / the transaction's category. */
   @Delete('products/rule')
   async resetProductRule(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: ResetProductRuleDto,
   ): Promise<ProductView[]> {
-    await this.productMemory.resetRule(req.user.customerId, dto.itemKey);
-    return this.productMemory.products(req.user.customerId);
+    await this.productMemory.resetRule(scope, dto.itemKey);
+    return this.productMemory.products(scope);
   }
 
   /**
@@ -318,7 +324,7 @@ export class BookkeepingController {
     ),
   )
   uploadAttachments(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @UploadedFiles() files: Express.Multer.File[],
     @Body('transactionId') rawTransactionId?: string,
   ): Promise<AttachmentView[]> {
@@ -329,27 +335,27 @@ export class BookkeepingController {
     ) {
       throw new BadRequestException('transactionId must be a transaction id');
     }
-    return this.attachments.upload(req.user.customerId, files, transactionId);
+    return this.attachments.upload(scope, files, transactionId);
   }
 
   /** Where to text receipts, and whether this customer's texts will be recognised. */
   @Get('intake')
-  intake(@Req() req: AuthedRequest): Promise<IntakeView> {
-    return this.attachments.intake(req.user.customerId);
+  intake(@Book() scope: BookScope): Promise<IntakeView> {
+    return this.attachments.intake(scope);
   }
 
   @Get('attachments')
-  listAttachments(@Req() req: AuthedRequest): Promise<AttachmentView[]> {
-    return this.attachments.list(req.user.customerId);
+  listAttachments(@Book() scope: BookScope): Promise<AttachmentView[]> {
+    return this.attachments.list(scope);
   }
 
   @Get('attachments/:id/file')
   async attachmentFile(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    const f = await this.attachments.file(req.user.customerId, id);
+    const f = await this.attachments.file(scope, id);
     res.set({
       'Content-Type': f.mimeType,
       'Content-Length': String(f.size),
@@ -361,12 +367,12 @@ export class BookkeepingController {
 
   @Patch('attachments/:id')
   setAttachmentTransaction(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: SetAttachmentTransactionDto,
   ): Promise<AttachmentView> {
     return this.attachments.setTransaction(
-      req.user.customerId,
+      scope,
       id,
       dto.transactionId ?? null,
     );
@@ -375,27 +381,27 @@ export class BookkeepingController {
   /** Replace the transaction's splits with the receipt's items. */
   @Post('attachments/:id/apply-items')
   applyAttachmentItems(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<AttachmentView> {
-    return this.attachments.applyItems(req.user.customerId, id);
+    return this.attachments.applyItems(scope, id);
   }
 
   @Post('attachments/:id/retry')
   retryAttachment(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<AttachmentView> {
-    return this.attachments.retry(req.user.customerId, id);
+    return this.attachments.retry(scope, id);
   }
 
   @Delete('attachments/:id')
   @HttpCode(204)
   removeAttachment(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
-    return this.attachments.remove(req.user.customerId, id);
+    return this.attachments.remove(scope, id);
   }
 
   @Post('statements')
@@ -403,20 +409,20 @@ export class BookkeepingController {
     FilesInterceptor('files', MAX_FILES_PER_REQUEST, STATEMENT_UPLOAD_OPTIONS),
   )
   upload(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @UploadedFiles() files: Express.Multer.File[],
   ): Promise<StatementView[]> {
-    return this.bookkeeping.upload(req.user.customerId, files);
+    return this.bookkeeping.upload(scope, files);
   }
 
   @Get('statements')
-  list(@Req() req: AuthedRequest): Promise<StatementView[]> {
-    return this.bookkeeping.list(req.user.customerId);
+  list(@Book() scope: BookScope): Promise<StatementView[]> {
+    return this.bookkeeping.list(scope);
   }
 
   @Get('transactions')
   transactions(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Query('statementIds') statementIds?: string,
   ): Promise<TransactionView[]> {
     const ids = statementIds
@@ -425,16 +431,16 @@ export class BookkeepingController {
           .map((s) => Number(s))
           .filter((n) => Number.isInteger(n) && n > 0)
       : undefined;
-    return this.bookkeeping.transactions(req.user.customerId, ids);
+    return this.bookkeeping.transactions(scope, ids);
   }
 
   @Get('statements/:id/file')
   async file(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    const f = await this.bookkeeping.file(req.user.customerId, id);
+    const f = await this.bookkeeping.file(scope, id);
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Length': String(f.size),
@@ -446,51 +452,47 @@ export class BookkeepingController {
 
   @Patch('statements/:id/account')
   moveStatement(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: MoveStatementDto,
   ): Promise<StatementView> {
-    return this.bookkeeping.moveStatement(
-      req.user.customerId,
-      id,
-      dto.accountName,
-    );
+    return this.bookkeeping.moveStatement(scope, id, dto.accountName);
   }
 
   @Post('statements/:id/retry')
   retry(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<StatementView> {
-    return this.bookkeeping.retry(req.user.customerId, id);
+    return this.bookkeeping.retry(scope, id);
   }
 
   @Delete('statements/:id')
   @HttpCode(204)
   remove(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
-    return this.bookkeeping.remove(req.user.customerId, id);
+    return this.bookkeeping.remove(scope, id);
   }
 
   /** The whole ledger, ALWAYS every statement combined. */
   @Get('export')
   async export(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Query('format') format: string,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
     if (format !== 'xlsx' && format !== 'pdf') {
       throw new BadRequestException('format must be xlsx or pdf');
     }
-    const me = await this.customers.me(req.user.customerId);
-    const rows = await this.exporter.rowsFor(req.user.customerId);
+    const owner = await this.ownerName(scope);
+    const rows = await this.exporter.rowsFor(scope);
     const stamp = new Date().toISOString().slice(0, 10);
     const buf =
       format === 'xlsx'
-        ? await this.exporter.excel(rows, me.name)
-        : await this.exporter.pdf(rows, me.name);
+        ? await this.exporter.excel(rows, owner)
+        : await this.exporter.pdf(rows, owner);
     res.set({
       'Content-Type':
         format === 'xlsx'
@@ -505,32 +507,28 @@ export class BookkeepingController {
   /** Chart of accounts + income statement for `from…to`; balance sheet as of `to`. */
   @Get('reports')
   reports(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Query() q: ReportsQueryDto,
   ): Promise<ReportsView> {
     if (q.from && q.to && q.from > q.to) {
       throw new BadRequestException('from must be on or before to');
     }
-    return this.reportsService.reports(
-      req.user.customerId,
-      q.from ?? null,
-      q.to ?? null,
-    );
+    return this.reportsService.reports(scope, q.from ?? null, q.to ?? null);
   }
 
   /** The categories this customer may pick: the fixed chart, then their own. */
   @Get('accounts')
-  accountList(@Req() req: AuthedRequest): Promise<AccountView[]> {
-    return this.accounts.list(req.user.customerId);
+  accountList(@Book() scope: BookScope): Promise<AccountView[]> {
+    return this.accounts.list(scope);
   }
 
   /** A category of the customer's own, for when nothing in the chart fits. */
   @Post('accounts')
   createAccount(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: CreateAccountDto,
   ): Promise<AccountView> {
-    return this.accounts.create(req.user.customerId, dto);
+    return this.accounts.create(scope, dto);
   }
 
   /**
@@ -540,53 +538,49 @@ export class BookkeepingController {
   @Put('accounts/type')
   @HttpCode(204)
   setAccountType(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SetAccountTypeDto,
   ): Promise<void> {
-    return this.accounts.setType(req.user.customerId, dto.account, dto.type);
+    return this.accounts.setType(scope, dto.account, dto.type);
   }
 
   /** Put a moved account back where the chart (or their own category) puts it. */
   @Delete('accounts/type')
   @HttpCode(204)
   resetAccountType(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: ResetAccountTypeDto,
   ): Promise<void> {
-    return this.accounts.resetType(req.user.customerId, dto.account);
+    return this.accounts.resetType(scope, dto.account);
   }
 
   /** Set the currency of a statement account; its statements are converted from it. */
   @Put('accounts/currency')
   @HttpCode(204)
   setAccountCurrency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SetAccountCurrencyDto,
   ): Promise<void> {
-    return this.accounts.setCurrency(
-      req.user.customerId,
-      dto.account,
-      dto.currency,
-    );
+    return this.accounts.setCurrency(scope, dto.account, dto.currency);
   }
 
   /** Back to the currency read off each of the account's statements. */
   @Delete('accounts/currency')
   @HttpCode(204)
   resetAccountCurrency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: ResetAccountTypeDto,
   ): Promise<void> {
-    return this.accounts.resetCurrency(req.user.customerId, dto.account);
+    return this.accounts.resetCurrency(scope, dto.account);
   }
 
   /** The currency the books are kept in, and the ones we have daily rates for. */
   @Get('currency')
   async currency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
   ): Promise<{ home: string; currencies: readonly string[] }> {
     return {
-      home: await this.fx.home(req.user.customerId),
+      home: await this.fx.home(scope),
       currencies: this.fx.currencies(),
     };
   }
@@ -597,11 +591,11 @@ export class BookkeepingController {
    */
   @Put('currency')
   async setCurrency(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: SetCurrencyDto,
   ): Promise<{ home: string; currencies: readonly string[] }> {
     return {
-      home: await this.fx.setHome(req.user.customerId, dto.home),
+      home: await this.fx.setHome(scope, dto.home),
       currencies: this.fx.currencies(),
     };
   }

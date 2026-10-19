@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingWebhookController = exports.BillingController = void 0;
 const common_1 = require("@nestjs/common");
+const book_scope_guard_1 = require("../bookkeeping/book-scope.guard");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const billing_service_1 = require("./billing.service");
 const billing_dto_1 = require("./dto/billing.dto");
@@ -36,11 +37,11 @@ let BillingController = class BillingController {
             throw new common_1.BadRequestException('Invalid card');
         await this.billing.removeCard(req.user.customerId, id);
     }
-    checkout(req, dto) {
-        return this.billing.checkout(req.user.customerId, dto.promoCode, dto.paymentMethodId);
+    checkout(scope, dto) {
+        return this.billing.checkout(scope, dto.promoCode, dto.paymentMethodId);
     }
-    complete(req, dto) {
-        return this.billing.complete(req.user.customerId, dto.paymentIntentId);
+    complete(scope, dto) {
+        return this.billing.complete(scope, dto.paymentIntentId);
     }
 };
 exports.BillingController = BillingController;
@@ -77,7 +78,8 @@ __decorate([
 __decorate([
     (0, common_1.Post)('checkout'),
     (0, common_1.HttpCode)(200),
-    __param(0, (0, common_1.Req)()),
+    (0, common_1.UseGuards)(book_scope_guard_1.BookScopeGuard),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, billing_dto_1.CheckoutDto]),
@@ -86,7 +88,8 @@ __decorate([
 __decorate([
     (0, common_1.Post)('complete'),
     (0, common_1.HttpCode)(200),
-    __param(0, (0, common_1.Req)()),
+    (0, common_1.UseGuards)(book_scope_guard_1.BookScopeGuard),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, billing_dto_1.CompleteDto]),

@@ -25,6 +25,7 @@ const statement_label_1 = require("./statement-label");
 const statement_processor_service_1 = require("./statement-processor.service");
 const statement_images_service_1 = require("./statement-images.service");
 const tax_service_1 = require("./tax.service");
+const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const fx_service_1 = require("./fx.service");
 const tax_util_1 = require("./tax.util");
@@ -135,7 +136,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.images = images;
         this.fx = fx;
     }
-    async upload(customerId, files) {
+    async upload(scope, files) {
         try {
             if (!files?.length)
                 throw new common_1.BadRequestException('Choose at least one PDF statement');
@@ -144,11 +145,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             }
             const created = [];
             for (const file of files) {
-                const key = `bookkeeping/${customerId}/${(0, crypto_1.randomUUID)()}.pdf`;
+                const key = `${(0, scope_1.storagePrefix)(scope)}/${(0, crypto_1.randomUUID)()}.pdf`;
                 await this.storage.putFile(key, file.path, 'application/pdf');
                 const row = await this.prisma.bankStatement.create({
                     data: {
-                        customerId,
+                        ...(0, scope_1.scopeWhere)(scope),
                         filename: file.originalname.slice(0, 191),
                         storageKey: key,
                         sizeBytes: file.size,
@@ -162,41 +163,49 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
         }
     }
-    async generateIfFree(customerId) {
-        const waiting = await this.waitingCount(customerId);
+    async generateIfFree(scope) {
+        const waiting = await this.waitingCount(scope);
         if (waiting && (await (0, pricing_1.readPricing)(this.prisma)).generatePriceCents > 0)
             throw new common_1.HttpException('Payment required — pay to read your new statements.', common_1.HttpStatus.PAYMENT_REQUIRED);
-        return this.generate(customerId);
+        return this.generate(scope);
     }
-    waitingCount(customerId) {
+    waitingCount(scope) {
         return this.prisma.bankStatement.count({
-            where: { customerId, deletedAt: null, status: client_1.StatementStatus.UPLOADED },
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                status: client_1.StatementStatus.UPLOADED,
+            },
         });
     }
-    async generate(customerId) {
+    async generate(scope) {
         const { count } = await this.prisma.bankStatement.updateMany({
-            where: { customerId, deletedAt: null, status: client_1.StatementStatus.UPLOADED },
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                status: client_1.StatementStatus.UPLOADED,
+            },
             data: { status: client_1.StatementStatus.PENDING },
         });
         if (count)
             this.processor.processSoon();
         return { queued: count, taxing: false };
     }
-    async list(customerId) {
+    async list(scope) {
         const [rows, currencies] = await Promise.all([
             this.prisma.bankStatement.findMany({
-                where: { customerId, deletedAt: null },
+                where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
                 orderBy: { createdAt: 'desc' },
             }),
-            (0, opening_balance_query_1.accountCurrencies)(this.prisma, customerId),
+            (0, opening_balance_query_1.accountCurrencies)(this.prisma, scope),
         ]);
         return rows.map((r) => toView(r, currencies));
     }
-    async transactions(customerId, statementIds) {
+    async transactions(scope, statementIds) {
         const [rows, statements, taxes, attached] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
-                    customerId,
+                    ...(0, scope_1.scopeWhere)(scope),
                     ...(statementIds?.length && { statementId: { in: statementIds } }),
                     statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
                 },
@@ -212,11 +221,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                     },
                 },
             }),
-            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
-            this.tax.linesFor(customerId, statementIds),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
+            this.tax.linesFor(scope, statementIds),
             this.prisma.transactionAttachment.findMany({
                 where: {
-                    customerId,
+                    ...(0, scope_1.scopeWhere)(scope),
                     deletedAt: null,
                     transactionId: { not: null },
                 },
@@ -298,11 +307,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 ...withTaxLines(p, taxes.get(p.id)),
                 ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id))),
             ]);
-        const ctx = await this.fx.context(customerId, statements);
+        const ctx = await this.fx.context(scope, statements);
         return ctx.anyForeign ? withFx(views, ctx, byId) : views;
     }
-    async file(customerId, id) {
-        const s = await this.owned(customerId, id);
+    async file(scope, id) {
+        const s = await this.owned(scope, id);
         const info = await this.storage.head(s.storageKey);
         if (!info)
             throw new common_1.NotFoundException('The original file is no longer available');
@@ -312,8 +321,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             size: info.size,
         };
     }
-    async retry(customerId, id) {
-        const s = await this.owned(customerId, id);
+    async retry(scope, id) {
+        const s = await this.owned(scope, id);
         if (s.status !== client_1.StatementStatus.FAILED &&
             s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
             throw new common_1.BadRequestException('Only a statement that failed can be retried');
@@ -330,16 +339,16 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.processor.processSoon();
         return toView(row);
     }
-    async remove(customerId, id) {
-        const s = await this.owned(customerId, id);
+    async remove(scope, id) {
+        const s = await this.owned(scope, id);
         await this.prisma.bankStatement.update({
             where: { id: s.id },
             data: { deletedAt: new Date() },
         });
-        await this.images.removeFor(customerId, s.id);
+        await this.images.removeFor(scope, s.id);
     }
-    async moveStatement(customerId, id, rawName) {
-        const s = await this.owned(customerId, id);
+    async moveStatement(scope, id, rawName) {
+        const s = await this.owned(scope, id);
         if (s.status !== client_1.StatementStatus.DONE &&
             s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
             throw new common_1.BadRequestException('Only a statement that has been read can be moved');
@@ -353,7 +362,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             return toView(s);
         const target = await this.prisma.bankStatement.findFirst({
             where: {
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 accountName: name,
                 deletedAt: null,
                 id: { not: s.id },
@@ -379,34 +388,34 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             });
             if (old) {
                 const left = await tx.bankStatement.count({
-                    where: { customerId, accountName: old, deletedAt: null },
+                    where: { ...(0, scope_1.scopeWhere)(scope), accountName: old, deletedAt: null },
                 });
                 if (left === 0) {
-                    const kept = await tx.customerAccountType.findUnique({
-                        where: { customerId_account: { customerId, account: name } },
+                    const kept = await tx.customerAccountType.findFirst({
+                        where: { ...(0, scope_1.scopeWhere)(scope), account: name },
                     });
                     if (kept) {
                         await tx.customerAccountType.deleteMany({
-                            where: { customerId, account: old },
+                            where: { ...(0, scope_1.scopeWhere)(scope), account: old },
                         });
                     }
                     else {
                         await tx.customerAccountType.updateMany({
-                            where: { customerId, account: old },
+                            where: { ...(0, scope_1.scopeWhere)(scope), account: old },
                             data: { account: name },
                         });
                     }
-                    const keptCurrency = await tx.customerAccountCurrency.findUnique({
-                        where: { customerId_account: { customerId, account: name } },
+                    const keptCurrency = await tx.customerAccountCurrency.findFirst({
+                        where: { ...(0, scope_1.scopeWhere)(scope), account: name },
                     });
                     if (keptCurrency) {
                         await tx.customerAccountCurrency.deleteMany({
-                            where: { customerId, account: old },
+                            where: { ...(0, scope_1.scopeWhere)(scope), account: old },
                         });
                     }
                     else {
                         await tx.customerAccountCurrency.updateMany({
-                            where: { customerId, account: old },
+                            where: { ...(0, scope_1.scopeWhere)(scope), account: old },
                             data: { account: name },
                         });
                     }
@@ -414,12 +423,12 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             }
             return updated;
         });
-        this.logger.log(`customer ${customerId}: statement #${s.id} moved "${old}" -> "${name}"`);
+        this.logger.log(`${(0, scope_1.bookLabel)(scope)}: statement #${s.id} moved "${old}" -> "${name}"`);
         return toView(row);
     }
-    async owned(customerId, id) {
+    async owned(scope, id) {
         const s = await this.prisma.bankStatement.findFirst({
-            where: { id, customerId, deletedAt: null },
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
         });
         if (!s)
             throw new common_1.NotFoundException('Statement not found');

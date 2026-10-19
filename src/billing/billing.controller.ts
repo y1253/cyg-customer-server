@@ -13,6 +13,8 @@ import {
   type RawBodyRequest,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { Book, BookScopeGuard } from '../bookkeeping/book-scope.guard';
+import type { BookScope } from '../bookkeeping/scope';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import {
@@ -59,26 +61,25 @@ export class BillingController {
     await this.billing.removeCard(req.user.customerId, id);
   }
 
+  /** Pays for (and runs) a Generate of one book — `?companyId=` as on `/bookkeeping`. */
   @Post('checkout')
   @HttpCode(200)
+  @UseGuards(BookScopeGuard)
   checkout(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: CheckoutDto,
   ): Promise<CheckoutView> {
-    return this.billing.checkout(
-      req.user.customerId,
-      dto.promoCode,
-      dto.paymentMethodId,
-    );
+    return this.billing.checkout(scope, dto.promoCode, dto.paymentMethodId);
   }
 
   @Post('complete')
   @HttpCode(200)
+  @UseGuards(BookScopeGuard)
   complete(
-    @Req() req: AuthedRequest,
+    @Book() scope: BookScope,
     @Body() dto: CompleteDto,
   ): Promise<{ queued: number; taxing: boolean }> {
-    return this.billing.complete(req.user.customerId, dto.paymentIntentId);
+    return this.billing.complete(scope, dto.paymentIntentId);
   }
 }
 

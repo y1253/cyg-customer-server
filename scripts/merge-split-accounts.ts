@@ -14,6 +14,9 @@
  * Starting balances are computed on read, so they re-chain by themselves. No OpenAI.
  * Idempotent: a second run finds nothing to merge.
  *
+ * Only the general books (`companyId` null): it was written before a business had books of
+ * its own (step8), and a company's statements are filed by the same rule from day one.
+ *
  *   npx ts-node -T scripts/merge-split-accounts.ts [--dry-run]
  */
 import 'dotenv/config';
@@ -26,7 +29,7 @@ async function main(): Promise<void> {
   try {
     const counts = await prisma.bankStatement.groupBy({
       by: ['customerId', 'accountName', 'accountKind'],
-      where: { deletedAt: null, accountName: { not: null } },
+      where: { companyId: null, deletedAt: null, accountName: { not: null } },
       _count: { _all: true },
     });
     const byCustomer = new Map<number, typeof counts>();
@@ -65,25 +68,25 @@ async function main(): Promise<void> {
         for (const g of groups) {
           for (const old of g.merge) {
             await tx.bankStatement.updateMany({
-              where: { customerId, accountName: old },
+              where: { customerId, companyId: null, accountName: old },
               data: { accountName: g.keep },
             });
             await tx.bankTransaction.updateMany({
-              where: { customerId, debitAccount: old },
+              where: { customerId, companyId: null, debitAccount: old },
               data: { debitAccount: g.keep },
             });
             await tx.bankTransaction.updateMany({
-              where: { customerId, creditAccount: old },
+              where: { customerId, companyId: null, creditAccount: old },
               data: { creditAccount: g.keep },
             });
-            const kept = await tx.customerAccountType.findUnique({
-              where: { customerId_account: { customerId, account: g.keep } },
+            const kept = await tx.customerAccountType.findFirst({
+              where: { customerId, companyId: null, account: g.keep },
             });
             if (kept) {
-              await tx.customerAccountType.deleteMany({ where: { customerId, account: old } });
+              await tx.customerAccountType.deleteMany({ where: { customerId, companyId: null, account: old } });
             } else {
               await tx.customerAccountType.updateMany({
-                where: { customerId, account: old },
+                where: { customerId, companyId: null, account: old },
                 data: { account: g.keep },
               });
             }

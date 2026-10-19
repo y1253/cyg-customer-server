@@ -5,9 +5,10 @@ import {
   OPENING_STATEMENT_SELECT,
   type OpeningStatement,
 } from './opening-balance.util';
+import { scopeWhere, type BookScope } from './scope';
 
 /**
- * The customer's DONE statements, ready for `openingRows` — plus the label fields
+ * One book's DONE statements, ready for `openingRows` — plus the label fields
  * (`statementLabel`). `net` is Σ amount of each statement's rows, for statements that
  * printed no closing balance. `currency` is the EFFECTIVE one: the customer's own setting
  * for the account (`CustomerAccountCurrency`) wins over what the AI read off the statement,
@@ -15,7 +16,7 @@ import {
  */
 export async function loadOpeningStatements(
   prisma: PrismaService,
-  customerId: number,
+  scope: BookScope,
 ): Promise<
   Array<
     OpeningStatement & {
@@ -26,7 +27,11 @@ export async function loadOpeningStatements(
     }
   >
 > {
-  const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
+  const done = {
+    ...scopeWhere(scope),
+    deletedAt: null,
+    status: StatementStatus.DONE,
+  };
   const [statements, sums, currencies] = await Promise.all([
     prisma.bankStatement.findMany({
       where: done,
@@ -35,10 +40,10 @@ export async function loadOpeningStatements(
     prisma.bankTransaction.groupBy({
       by: ['statementId'],
       // Splits are parts of their parent's amount, already in it.
-      where: { customerId, statement: done, splitOfId: null },
+      where: { ...scopeWhere(scope), statement: done, splitOfId: null },
       _sum: { amount: true },
     }),
-    accountCurrencies(prisma, customerId),
+    accountCurrencies(prisma, scope),
   ]);
   const netOf = new Map(
     sums.map((s) => [s.statementId, Number(s._sum.amount ?? 0)]),
@@ -52,13 +57,13 @@ export async function loadOpeningStatements(
   }));
 }
 
-/** The currencies the customer set for their accounts, by account name. */
+/** The currencies set for one book's accounts, by account name. */
 export async function accountCurrencies(
   prisma: PrismaService,
-  customerId: number,
+  scope: BookScope,
 ): Promise<Map<string, string>> {
   const rows = await prisma.customerAccountCurrency.findMany({
-    where: { customerId },
+    where: scopeWhere(scope),
     select: { account: true, currency: true },
   });
   return new Map(rows.map((r) => [r.account, r.currency]));

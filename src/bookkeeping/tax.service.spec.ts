@@ -52,13 +52,15 @@ function setup(picks: Array<{ name: string; agencyId: number }>) {
 describe('TaxService.linesFor (tax decided per name, on read)', () => {
   it('a name with no agencies is not taxed — and nothing else is loaded', async () => {
     const { tax, prisma } = setup([]);
-    expect((await tax.linesFor(7)).size).toBe(0);
+    expect((await tax.linesFor({ customerId: 7, companyId: null })).size).toBe(
+      0,
+    );
     expect(prisma.bankTransaction.findMany).not.toHaveBeenCalled();
   });
 
   it("taxes the name's rows by kind, keeps a line's own name, and a split parent on what is left", async () => {
     const { tax } = setup([{ name: 'STAPLES', agencyId: 5 }]);
-    const lines = await tax.linesFor(7);
+    const lines = await tax.linesFor({ customerId: 7, companyId: null });
     // QST has no purchase rate: only GST taxes these purchases.
     expect(lines.get(1)).toEqual([
       {

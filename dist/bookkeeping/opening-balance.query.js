@@ -5,8 +5,13 @@ exports.loadOpeningStatements = loadOpeningStatements;
 exports.accountCurrencies = accountCurrencies;
 const client_1 = require("@prisma/client");
 const opening_balance_util_1 = require("./opening-balance.util");
-async function loadOpeningStatements(prisma, customerId) {
-    const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
+const scope_1 = require("./scope");
+async function loadOpeningStatements(prisma, scope) {
+    const done = {
+        ...(0, scope_1.scopeWhere)(scope),
+        deletedAt: null,
+        status: client_1.StatementStatus.DONE,
+    };
     const [statements, sums, currencies] = await Promise.all([
         prisma.bankStatement.findMany({
             where: done,
@@ -14,10 +19,10 @@ async function loadOpeningStatements(prisma, customerId) {
         }),
         prisma.bankTransaction.groupBy({
             by: ['statementId'],
-            where: { customerId, statement: done, splitOfId: null },
+            where: { ...(0, scope_1.scopeWhere)(scope), statement: done, splitOfId: null },
             _sum: { amount: true },
         }),
-        accountCurrencies(prisma, customerId),
+        accountCurrencies(prisma, scope),
     ]);
     const netOf = new Map(sums.map((s) => [s.statementId, Number(s._sum.amount ?? 0)]));
     return statements.map((s) => ({
@@ -28,9 +33,9 @@ async function loadOpeningStatements(prisma, customerId) {
         net: netOf.get(s.id) ?? 0,
     }));
 }
-async function accountCurrencies(prisma, customerId) {
+async function accountCurrencies(prisma, scope) {
     const rows = await prisma.customerAccountCurrency.findMany({
-        where: { customerId },
+        where: (0, scope_1.scopeWhere)(scope),
         select: { account: true, currency: true },
     });
     return new Map(rows.map((r) => [r.account, r.currency]));

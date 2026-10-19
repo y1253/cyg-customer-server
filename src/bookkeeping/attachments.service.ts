@@ -21,7 +21,9 @@ import {
   AttachmentProcessorService,
   readingTotal,
 } from './attachment-processor.service';
+import { attachmentFolder } from './attachment-folders.util';
 import { attachmentType } from './attachment-uploads';
+import { scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
 
 export interface AttachmentView {
@@ -43,6 +45,11 @@ export interface AttachmentView {
   /** SMS only: who sent it, and what they wrote. */
   sourcePhone: string | null;
   message: string | null;
+  /**
+   * The bank-account folder it is filed under on the Attachments tab: its transaction's
+   * statement account. Null = not matched yet (`attachment-folders.util.ts`).
+   */
+  folder: string | null;
   /** The transaction it belongs to; null while unmatched. */
   transaction: {
     id: number;
@@ -71,6 +78,7 @@ const INCLUDE = {
       statement: {
         select: {
           accountName: true,
+          accountNameByCustomer: true,
           bankName: true,
           filename: true,
           periodStart: true,
@@ -112,6 +120,7 @@ function toView(a: Loaded): AttachmentView {
     source: a.source,
     sourcePhone: a.sourcePhone,
     message: a.message,
+    folder: attachmentFolder(live ? t : null),
     transaction: live
       ? {
           id: t.id,
@@ -129,7 +138,8 @@ function toView(a: Loaded): AttachmentView {
 
 /**
  * A customer's attachments: receipts, cheques and voice notes linked to ledger
- * transactions. Every query is scoped to `customerId`; someone else's attachment is a 404.
+ * transactions. Every query is scoped to ONE book (`scopeWhere`): the customer's general
+ * tool or one of their companies. Another book's attachment is a 404.
  * Reading and matching happen in `AttachmentProcessorService`.
  */
 @Injectable()
@@ -146,7 +156,7 @@ export class AttachmentsService {
    * With `transactionId` the files belong to that transaction and skip matching.
    */
   async upload(
-    customerId: number,
+    scope: BookScope,
     files: Express.Multer.File[],
     transactionId: number | null,
   ): Promise<AttachmentView[]> {
@@ -157,16 +167,16 @@ export class AttachmentsService {
           'Attachments are not available right now. Please try again later.',
         );
       }
-      if (transactionId != null) await this.parent(customerId, transactionId);
+      if (transactionId != null) await this.parent(scope, transactionId);
       const ids: number[] = [];
       for (const file of files) {
         const type = attachmentType(file.originalname);
         if (!type) continue; // the upload filter already refused it
-        const key = `bookkeeping/${customerId}/attachments/${randomUUID()}${type.ext}`;
+        const key = `${storagePrefix(scope)}/attachments/${randomUUID()}${type.ext}`;
         await this.storage.putFile(key, file.path, type.mime);
         const row = await this.prisma.transactionAttachment.create({
           data: {
-            customerId,
+            ...scopeWhere(scope),
             transactionId,
             kind:
               type.cls === 'audio'
@@ -200,7 +210,11 @@ export class AttachmentsService {
    * internal app) and whether a text from this customer would find them: it is matched on
    * the phone saved on their account, normalized (`phoneE164`).
    */
-  async intake(customerId: number): Promise<IntakeView> {
+  /**
+   * About the CUSTOMER's phone, not a book: texted receipts always land in the general
+   * book (a text cannot say which company it is for). Takes the scope only to stay uniform.
+   */
+  async intake(scope: BookScope): Promise<IntakeView> {
     const [numbers, me] = await Promise.all([
       this.prisma.intakeNumber.findMany({
         where: { releasedAt: null },
@@ -208,7 +222,7 @@ export class AttachmentsService {
         select: { phoneNumber: true },
       }),
       this.prisma.customer.findUnique({
-        where: { id: customerId },
+        where: { id: scope.customerId },
         select: { phone: true, phoneE164: true },
       }),
     ]);
@@ -219,17 +233,17 @@ export class AttachmentsService {
     };
   }
 
-  async list(customerId: number): Promise<AttachmentView[]> {
+  async list(scope: BookScope): Promise<AttachmentView[]> {
     const rows = await this.prisma.transactionAttachment.findMany({
-      where: { customerId, deletedAt: null },
+      where: { ...scopeWhere(scope), deletedAt: null },
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
     return rows.map(toView);
   }
 
-  async get(customerId: number, id: number): Promise<AttachmentView> {
-    return toView(await this.owned(customerId, id));
+  async get(scope: BookScope, id: number): Promise<AttachmentView> {
+    return toView(await this.owned(scope, id));
   }
 
   /**
@@ -237,11 +251,11 @@ export class AttachmentsService {
    * splits yet), or detach with `null`. Splits already made from it are kept.
    */
   async setTransaction(
-    customerId: number,
+    scope: BookScope,
     id: number,
     transactionId: number | null,
   ): Promise<AttachmentView> {
-    const a = await this.owned(customerId, id);
+    const a = await this.owned(scope, id);
     if (
       a.status === AttachmentStatus.PENDING ||
       a.status === AttachmentStatus.PROCESSING
@@ -259,9 +273,9 @@ export class AttachmentsService {
           matchNote: 'Removed from its transaction by you.',
         },
       });
-      return this.get(customerId, id);
+      return this.get(scope, id);
     }
-    await this.parent(customerId, transactionId);
+    await this.parent(scope, transactionId);
     await this.prisma.transactionAttachment.update({
       where: { id: a.id },
       data: {
@@ -271,7 +285,7 @@ export class AttachmentsService {
       },
     });
     if (a.extracted) {
-      const note = await this.processor.applyItems(customerId, a.id, false);
+      const note = await this.processor.applyItems(scope, a.id, false);
       if (note) {
         await this.prisma.transactionAttachment.update({
           where: { id: a.id },
@@ -279,24 +293,24 @@ export class AttachmentsService {
         });
       }
     }
-    return this.get(customerId, id);
+    return this.get(scope, id);
   }
 
   /** Replace the transaction's splits with the receipt's items. */
-  async applyItems(customerId: number, id: number): Promise<AttachmentView> {
-    const a = await this.owned(customerId, id);
+  async applyItems(scope: BookScope, id: number): Promise<AttachmentView> {
+    const a = await this.owned(scope, id);
     if (!a.transactionId) {
       throw new BadRequestException(
         'Attach the receipt to a transaction first',
       );
     }
-    const note = await this.processor.applyItems(customerId, a.id, true);
+    const note = await this.processor.applyItems(scope, a.id, true);
     if (note) throw new BadRequestException(note);
-    return this.get(customerId, id);
+    return this.get(scope, id);
   }
 
-  async retry(customerId: number, id: number): Promise<AttachmentView> {
-    const a = await this.owned(customerId, id);
+  async retry(scope: BookScope, id: number): Promise<AttachmentView> {
+    const a = await this.owned(scope, id);
     if (
       a.status !== AttachmentStatus.FAILED &&
       a.status !== AttachmentStatus.UNMATCHED
@@ -310,12 +324,12 @@ export class AttachmentsService {
       data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
     });
     this.processor.processSoon();
-    return this.get(customerId, id);
+    return this.get(scope, id);
   }
 
   /** Soft delete; the file stays in R2 and any splits made from it stay too. */
-  async remove(customerId: number, id: number): Promise<void> {
-    const a = await this.owned(customerId, id);
+  async remove(scope: BookScope, id: number): Promise<void> {
+    const a = await this.owned(scope, id);
     await this.prisma.transactionAttachment.update({
       where: { id: a.id },
       data: { deletedAt: new Date() },
@@ -323,7 +337,7 @@ export class AttachmentsService {
   }
 
   async file(
-    customerId: number,
+    scope: BookScope,
     id: number,
   ): Promise<{
     stream: Readable;
@@ -331,7 +345,7 @@ export class AttachmentsService {
     mimeType: string;
     size: number;
   }> {
-    const a = await this.owned(customerId, id);
+    const a = await this.owned(scope, id);
     const info = await this.storage.head(a.storageKey);
     if (!info) throw new NotFoundException('The file is no longer available');
     return {
@@ -344,7 +358,7 @@ export class AttachmentsService {
 
   /** Attachment summaries per parent transaction, for the ledger. */
   async byTransaction(
-    customerId: number,
+    scope: BookScope,
     transactionIds: number[],
   ): Promise<
     Map<number, Array<{ id: number; kind: AttachmentKind; filename: string }>>
@@ -356,7 +370,7 @@ export class AttachmentsService {
     if (!transactionIds.length) return out;
     const rows = await this.prisma.transactionAttachment.findMany({
       where: {
-        customerId,
+        ...scopeWhere(scope),
         deletedAt: null,
         transactionId: { in: transactionIds },
       },
@@ -371,9 +385,9 @@ export class AttachmentsService {
     return out;
   }
 
-  private async owned(customerId: number, id: number): Promise<Loaded> {
+  private async owned(scope: BookScope, id: number): Promise<Loaded> {
     const a = await this.prisma.transactionAttachment.findFirst({
-      where: { id, customerId, deletedAt: null },
+      where: { id, ...scopeWhere(scope), deletedAt: null },
       include: INCLUDE,
     });
     if (!a) throw new NotFoundException('Attachment not found');
@@ -381,11 +395,11 @@ export class AttachmentsService {
   }
 
   /** A transaction an attachment may hang on: theirs, read, and not itself a split. */
-  private async parent(customerId: number, id: number): Promise<void> {
+  private async parent(scope: BookScope, id: number): Promise<void> {
     const t = await this.prisma.bankTransaction.findFirst({
       where: {
         id,
-        customerId,
+        ...scopeWhere(scope),
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },
       select: { splitOfId: true },

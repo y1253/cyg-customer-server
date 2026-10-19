@@ -8,6 +8,7 @@ import { CustomerAccountsService } from './customer-accounts.service';
 import type { FxEntry } from './fx.service';
 import { remainderOf, splitTotals } from './splits.util';
 import { FxService } from './fx.service';
+import { scopeWhere, type BookScope } from './scope';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -28,15 +29,19 @@ export class ReportsService {
   ) {}
 
   async reports(
-    customerId: number,
+    scope: BookScope,
     from: string | null,
     to: string | null,
   ): Promise<ReportsView> {
-    const done = { customerId, deletedAt: null, status: StatementStatus.DONE };
+    const done = {
+      ...scopeWhere(scope),
+      deletedAt: null,
+      status: StatementStatus.DONE,
+    };
     const [rows, statements, taxes, agencies, customTypes, overrides] =
       await Promise.all([
         this.prisma.bankTransaction.findMany({
-          where: { customerId, statement: done },
+          where: { ...scopeWhere(scope), statement: done },
           select: {
             id: true,
             splitOfId: true,
@@ -51,11 +56,11 @@ export class ReportsService {
             statement: { select: { periodEnd: true } },
           },
         }),
-        loadOpeningStatements(this.prisma, customerId),
-        this.tax.linesFor(customerId),
-        this.tax.agencyNames(customerId),
-        this.accounts.types(customerId),
-        this.accounts.overrides(customerId),
+        loadOpeningStatements(this.prisma, scope),
+        this.tax.linesFor(scope),
+        this.tax.agencyNames(scope),
+        this.accounts.types(scope),
+        this.accounts.overrides(scope),
       ]);
     const creditCards = new Set(
       statements
@@ -65,7 +70,7 @@ export class ReportsService {
 
     // Every amount in the home currency: a foreign statement's rows at their own day's
     // rate, and a revaluation at each foreign statement's end (`FxContext`).
-    const fx = await this.fx.context(customerId, statements);
+    const fx = await this.fx.context(scope, statements);
     const entries: FxEntry[] = [];
     /** The row's amount converted, plus the original when its statement is foreign. */
     const home = (

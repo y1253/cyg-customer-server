@@ -19,6 +19,7 @@ const reports_util_1 = require("./reports.util");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const splits_util_1 = require("./splits.util");
 const fx_service_1 = require("./fx.service");
+const scope_1 = require("./scope");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -33,11 +34,15 @@ let ReportsService = class ReportsService {
         this.accounts = accounts;
         this.fx = fx;
     }
-    async reports(customerId, from, to) {
-        const done = { customerId, deletedAt: null, status: client_1.StatementStatus.DONE };
+    async reports(scope, from, to) {
+        const done = {
+            ...(0, scope_1.scopeWhere)(scope),
+            deletedAt: null,
+            status: client_1.StatementStatus.DONE,
+        };
         const [rows, statements, taxes, agencies, customTypes, overrides] = await Promise.all([
             this.prisma.bankTransaction.findMany({
-                where: { customerId, statement: done },
+                where: { ...(0, scope_1.scopeWhere)(scope), statement: done },
                 select: {
                     id: true,
                     splitOfId: true,
@@ -52,16 +57,16 @@ let ReportsService = class ReportsService {
                     statement: { select: { periodEnd: true } },
                 },
             }),
-            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, customerId),
-            this.tax.linesFor(customerId),
-            this.tax.agencyNames(customerId),
-            this.accounts.types(customerId),
-            this.accounts.overrides(customerId),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
+            this.tax.linesFor(scope),
+            this.tax.agencyNames(scope),
+            this.accounts.types(scope),
+            this.accounts.overrides(scope),
         ]);
         const creditCards = new Set(statements
             .filter((s) => (0, opening_balance_util_1.isCreditCard)(s.accountKind))
             .map((s) => s.accountName ?? 'Bank account'));
-        const fx = await this.fx.context(customerId, statements);
+        const fx = await this.fx.context(scope, statements);
         const entries = [];
         const home = (statementId, date, amount, bankAccount) => {
             const { home: converted } = fx.convert(statementId, date, amount);

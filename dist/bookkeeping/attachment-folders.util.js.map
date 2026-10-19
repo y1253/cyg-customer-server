@@ -1,0 +1,1 @@
+{"version":3,"file":"attachment-folders.util.js","sourceRoot":"","sources":["../../src/bookkeeping/attachment-folders.util.ts"],"names":[],"mappings":";;AAUA,4CAWC;AAXD,SAAgB,gBAAgB,CAC9B,WAKQ;IAER,IAAI,CAAC,WAAW;QAAE,OAAO,IAAI,CAAC;IAC9B,MAAM,CAAC,GAAG,WAAW,CAAC,SAAS,CAAC;IAChC,OAAO,CAAC,CAAC,qBAAqB,EAAE,IAAI,EAAE,IAAI,CAAC,CAAC,WAAW,EAAE,IAAI,EAAE,IAAI,IAAI,CAAC;AAC1E,CAAC"}

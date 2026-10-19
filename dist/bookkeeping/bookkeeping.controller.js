@@ -17,6 +17,8 @@ const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const customer_auth_service_1 = require("../customer-auth/customer-auth.service");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
+const prisma_service_1 = require("../prisma/prisma.service");
+const book_scope_guard_1 = require("./book-scope.guard");
 const attachments_service_1 = require("./attachments.service");
 const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
@@ -48,7 +50,8 @@ let BookkeepingController = class BookkeepingController {
     attachments;
     productMemory;
     fx;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory, fx) {
+    prisma;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory, fx, prisma) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -60,56 +63,68 @@ let BookkeepingController = class BookkeepingController {
         this.attachments = attachments;
         this.productMemory = productMemory;
         this.fx = fx;
+        this.prisma = prisma;
     }
-    generate(req) {
-        return this.bookkeeping.generateIfFree(req.user.customerId);
+    async ownerName(scope) {
+        if (scope.companyId !== null) {
+            const c = await this.prisma.company.findUnique({
+                where: { id: scope.companyId },
+                select: { businessName: true },
+            });
+            if (c)
+                return c.businessName;
+        }
+        return (await this.customers.me(scope.customerId)).name;
     }
-    taxSettings(req) {
-        return this.tax.settings(req.user.customerId);
+    generate(scope) {
+        return this.bookkeeping.generateIfFree(scope);
     }
-    createAgency(req, dto) {
-        return this.tax.createAgency(req.user.customerId, dto);
+    taxSettings(scope) {
+        return this.tax.settings(scope);
     }
-    updateAgency(req, id, dto) {
-        return this.tax.updateAgency(req.user.customerId, id, dto);
+    createAgency(scope, dto) {
+        return this.tax.createAgency(scope, dto);
     }
-    removeAgency(req, id) {
-        return this.tax.removeAgency(req.user.customerId, id);
+    updateAgency(scope, id, dto) {
+        return this.tax.updateAgency(scope, id, dto);
     }
-    names(req) {
-        return this.tax.names(req.user.customerId);
+    removeAgency(scope, id) {
+        return this.tax.removeAgency(scope, id);
     }
-    setNameAgencies(req, dto) {
-        return this.tax.setNameAgencies(req.user.customerId, dto.name, dto.agencyIds);
+    names(scope) {
+        return this.tax.names(scope);
     }
-    async saveNameRule(req, dto) {
-        const { name, category } = await this.editValues(req.user.customerId, dto);
-        await this.nameMemory.saveRule(req.user.customerId, {
+    setNameAgencies(scope, dto) {
+        return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
+    }
+    async saveNameRule(scope, dto) {
+        const { name, category } = await this.editValues(scope, dto);
+        await this.nameMemory.saveRule(scope, {
             matchType: dto.matchType,
             matchKey: dto.matchKey,
             name,
             category,
             scope: dto.scope ?? 'ALWAYS',
         });
-        return this.tax.names(req.user.customerId);
+        return this.tax.names(scope);
     }
-    async editTransaction(req, id, dto) {
-        const { name, category } = await this.editValues(req.user.customerId, dto);
-        await this.nameMemory.editTransaction(req.user.customerId, id, {
+    async editTransaction(scope, id, dto) {
+        const { name, category } = await this.editValues(scope, dto);
+        await this.nameMemory.editTransaction(scope, id, {
             name,
             category,
             scope: dto.scope,
         });
     }
-    saveSplits(req, id, dto) {
-        return this.splits.save(req.user.customerId, id, dto.splits);
+    saveSplits(scope, id, dto) {
+        return this.splits.save(scope, id, dto.splits);
     }
-    async renameTaxLine(req, id, agencyId, dto) {
-        const ok = await this.tax.renameLine(req.user.customerId, id, agencyId, dto.name?.trim() || null);
+    async renameTaxLine(scope, id, agencyId, dto) {
+        const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null);
         if (!ok)
             throw new common_1.NotFoundException('Tax line not found');
     }
-    async editValues(customerId, dto) {
+    async editValues(scope, dto) {
         const name = dto.name?.trim() || null;
         const raw = dto.category?.trim() || null;
         if (!name && !raw) {
@@ -118,42 +133,40 @@ let BookkeepingController = class BookkeepingController {
         if (name && name.toLowerCase() === reports_util_1.UNCLARIFIED_NAME.toLowerCase()) {
             throw new common_1.BadRequestException(`"${reports_util_1.UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`);
         }
-        const category = raw
-            ? await this.accounts.validCategory(customerId, raw)
-            : null;
+        const category = raw ? await this.accounts.validCategory(scope, raw) : null;
         return { name, category };
     }
-    async resetNameRule(req, dto) {
-        await this.nameMemory.resetRule(req.user.customerId, dto);
-        return this.tax.names(req.user.customerId);
+    async resetNameRule(scope, dto) {
+        await this.nameMemory.resetRule(scope, dto);
+        return this.tax.names(scope);
     }
-    products(req) {
-        return this.productMemory.products(req.user.customerId);
+    products(scope) {
+        return this.productMemory.products(scope);
     }
-    async saveProductRule(req, dto) {
-        await this.productMemory.saveRule(req.user.customerId, dto.itemKey, dto.category);
-        return this.productMemory.products(req.user.customerId);
+    async saveProductRule(scope, dto) {
+        await this.productMemory.saveRule(scope, dto.itemKey, dto.category);
+        return this.productMemory.products(scope);
     }
-    async resetProductRule(req, dto) {
-        await this.productMemory.resetRule(req.user.customerId, dto.itemKey);
-        return this.productMemory.products(req.user.customerId);
+    async resetProductRule(scope, dto) {
+        await this.productMemory.resetRule(scope, dto.itemKey);
+        return this.productMemory.products(scope);
     }
-    uploadAttachments(req, files, rawTransactionId) {
+    uploadAttachments(scope, files, rawTransactionId) {
         const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
         if (transactionId !== null &&
             (!Number.isInteger(transactionId) || transactionId < 1)) {
             throw new common_1.BadRequestException('transactionId must be a transaction id');
         }
-        return this.attachments.upload(req.user.customerId, files, transactionId);
+        return this.attachments.upload(scope, files, transactionId);
     }
-    intake(req) {
-        return this.attachments.intake(req.user.customerId);
+    intake(scope) {
+        return this.attachments.intake(scope);
     }
-    listAttachments(req) {
-        return this.attachments.list(req.user.customerId);
+    listAttachments(scope) {
+        return this.attachments.list(scope);
     }
-    async attachmentFile(req, id, res) {
-        const f = await this.attachments.file(req.user.customerId, id);
+    async attachmentFile(scope, id, res) {
+        const f = await this.attachments.file(scope, id);
         res.set({
             'Content-Type': f.mimeType,
             'Content-Length': String(f.size),
@@ -162,35 +175,35 @@ let BookkeepingController = class BookkeepingController {
         });
         return new common_1.StreamableFile(f.stream);
     }
-    setAttachmentTransaction(req, id, dto) {
-        return this.attachments.setTransaction(req.user.customerId, id, dto.transactionId ?? null);
+    setAttachmentTransaction(scope, id, dto) {
+        return this.attachments.setTransaction(scope, id, dto.transactionId ?? null);
     }
-    applyAttachmentItems(req, id) {
-        return this.attachments.applyItems(req.user.customerId, id);
+    applyAttachmentItems(scope, id) {
+        return this.attachments.applyItems(scope, id);
     }
-    retryAttachment(req, id) {
-        return this.attachments.retry(req.user.customerId, id);
+    retryAttachment(scope, id) {
+        return this.attachments.retry(scope, id);
     }
-    removeAttachment(req, id) {
-        return this.attachments.remove(req.user.customerId, id);
+    removeAttachment(scope, id) {
+        return this.attachments.remove(scope, id);
     }
-    upload(req, files) {
-        return this.bookkeeping.upload(req.user.customerId, files);
+    upload(scope, files) {
+        return this.bookkeeping.upload(scope, files);
     }
-    list(req) {
-        return this.bookkeeping.list(req.user.customerId);
+    list(scope) {
+        return this.bookkeeping.list(scope);
     }
-    transactions(req, statementIds) {
+    transactions(scope, statementIds) {
         const ids = statementIds
             ? statementIds
                 .split(',')
                 .map((s) => Number(s))
                 .filter((n) => Number.isInteger(n) && n > 0)
             : undefined;
-        return this.bookkeeping.transactions(req.user.customerId, ids);
+        return this.bookkeeping.transactions(scope, ids);
     }
-    async file(req, id, res) {
-        const f = await this.bookkeeping.file(req.user.customerId, id);
+    async file(scope, id, res) {
+        const f = await this.bookkeeping.file(scope, id);
         res.set({
             'Content-Type': 'application/pdf',
             'Content-Length': String(f.size),
@@ -199,25 +212,25 @@ let BookkeepingController = class BookkeepingController {
         });
         return new common_1.StreamableFile(f.stream);
     }
-    moveStatement(req, id, dto) {
-        return this.bookkeeping.moveStatement(req.user.customerId, id, dto.accountName);
+    moveStatement(scope, id, dto) {
+        return this.bookkeeping.moveStatement(scope, id, dto.accountName);
     }
-    retry(req, id) {
-        return this.bookkeeping.retry(req.user.customerId, id);
+    retry(scope, id) {
+        return this.bookkeeping.retry(scope, id);
     }
-    remove(req, id) {
-        return this.bookkeeping.remove(req.user.customerId, id);
+    remove(scope, id) {
+        return this.bookkeeping.remove(scope, id);
     }
-    async export(req, format, res) {
+    async export(scope, format, res) {
         if (format !== 'xlsx' && format !== 'pdf') {
             throw new common_1.BadRequestException('format must be xlsx or pdf');
         }
-        const me = await this.customers.me(req.user.customerId);
-        const rows = await this.exporter.rowsFor(req.user.customerId);
+        const owner = await this.ownerName(scope);
+        const rows = await this.exporter.rowsFor(scope);
         const stamp = new Date().toISOString().slice(0, 10);
         const buf = format === 'xlsx'
-            ? await this.exporter.excel(rows, me.name)
-            : await this.exporter.pdf(rows, me.name);
+            ? await this.exporter.excel(rows, owner)
+            : await this.exporter.pdf(rows, owner);
         res.set({
             'Content-Type': format === 'xlsx'
                 ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -227,39 +240,39 @@ let BookkeepingController = class BookkeepingController {
         });
         return new common_1.StreamableFile(buf);
     }
-    reports(req, q) {
+    reports(scope, q) {
         if (q.from && q.to && q.from > q.to) {
             throw new common_1.BadRequestException('from must be on or before to');
         }
-        return this.reportsService.reports(req.user.customerId, q.from ?? null, q.to ?? null);
+        return this.reportsService.reports(scope, q.from ?? null, q.to ?? null);
     }
-    accountList(req) {
-        return this.accounts.list(req.user.customerId);
+    accountList(scope) {
+        return this.accounts.list(scope);
     }
-    createAccount(req, dto) {
-        return this.accounts.create(req.user.customerId, dto);
+    createAccount(scope, dto) {
+        return this.accounts.create(scope, dto);
     }
-    setAccountType(req, dto) {
-        return this.accounts.setType(req.user.customerId, dto.account, dto.type);
+    setAccountType(scope, dto) {
+        return this.accounts.setType(scope, dto.account, dto.type);
     }
-    resetAccountType(req, dto) {
-        return this.accounts.resetType(req.user.customerId, dto.account);
+    resetAccountType(scope, dto) {
+        return this.accounts.resetType(scope, dto.account);
     }
-    setAccountCurrency(req, dto) {
-        return this.accounts.setCurrency(req.user.customerId, dto.account, dto.currency);
+    setAccountCurrency(scope, dto) {
+        return this.accounts.setCurrency(scope, dto.account, dto.currency);
     }
-    resetAccountCurrency(req, dto) {
-        return this.accounts.resetCurrency(req.user.customerId, dto.account);
+    resetAccountCurrency(scope, dto) {
+        return this.accounts.resetCurrency(scope, dto.account);
     }
-    async currency(req) {
+    async currency(scope) {
         return {
-            home: await this.fx.home(req.user.customerId),
+            home: await this.fx.home(scope),
             currencies: this.fx.currencies(),
         };
     }
-    async setCurrency(req, dto) {
+    async setCurrency(scope, dto) {
         return {
-            home: await this.fx.setHome(req.user.customerId, dto.home),
+            home: await this.fx.setHome(scope, dto.home),
             currencies: this.fx.currencies(),
         };
     }
@@ -267,21 +280,21 @@ let BookkeepingController = class BookkeepingController {
 exports.BookkeepingController = BookkeepingController;
 __decorate([
     (0, common_1.Post)('generate'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "generate", null);
 __decorate([
     (0, common_1.Get)('tax'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "taxSettings", null);
 __decorate([
     (0, common_1.Post)('agencies'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.CreateAgencyDto]),
@@ -289,7 +302,7 @@ __decorate([
 ], BookkeepingController.prototype, "createAgency", null);
 __decorate([
     (0, common_1.Patch)('agencies/:id'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -299,7 +312,7 @@ __decorate([
 __decorate([
     (0, common_1.Delete)('agencies/:id'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -307,14 +320,14 @@ __decorate([
 ], BookkeepingController.prototype, "removeAgency", null);
 __decorate([
     (0, common_1.Get)('names'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "names", null);
 __decorate([
     (0, common_1.Put)('names/agencies'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SetNameAgenciesDto]),
@@ -322,7 +335,7 @@ __decorate([
 ], BookkeepingController.prototype, "setNameAgencies", null);
 __decorate([
     (0, common_1.Put)('names/rule'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SaveNameRuleDto]),
@@ -331,7 +344,7 @@ __decorate([
 __decorate([
     (0, common_1.Patch)('transactions/:id'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -341,7 +354,7 @@ __decorate([
 __decorate([
     (0, common_1.Put)('transactions/:id/splits'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -351,7 +364,7 @@ __decorate([
 __decorate([
     (0, common_1.Patch)('transactions/:id/taxes/:agencyId'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Param)('agencyId', common_1.ParseIntPipe)),
     __param(3, (0, common_1.Body)()),
@@ -361,7 +374,7 @@ __decorate([
 ], BookkeepingController.prototype, "renameTaxLine", null);
 __decorate([
     (0, common_1.Delete)('names/rule'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.ResetNameRuleDto]),
@@ -369,14 +382,14 @@ __decorate([
 ], BookkeepingController.prototype, "resetNameRule", null);
 __decorate([
     (0, common_1.Get)('products'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "products", null);
 __decorate([
     (0, common_1.Put)('products/rule'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SaveProductRuleDto]),
@@ -384,7 +397,7 @@ __decorate([
 ], BookkeepingController.prototype, "saveProductRule", null);
 __decorate([
     (0, common_1.Delete)('products/rule'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.ResetProductRuleDto]),
@@ -393,7 +406,7 @@ __decorate([
 __decorate([
     (0, common_1.Post)('attachments'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', attachment_uploads_1.MAX_FILES_PER_REQUEST, attachment_uploads_1.ATTACHMENT_UPLOAD_OPTIONS)),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.UploadedFiles)()),
     __param(2, (0, common_1.Body)('transactionId')),
     __metadata("design:type", Function),
@@ -402,21 +415,21 @@ __decorate([
 ], BookkeepingController.prototype, "uploadAttachments", null);
 __decorate([
     (0, common_1.Get)('intake'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "intake", null);
 __decorate([
     (0, common_1.Get)('attachments'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "listAttachments", null);
 __decorate([
     (0, common_1.Get)('attachments/:id/file'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Res)({ passthrough: true })),
     __metadata("design:type", Function),
@@ -425,7 +438,7 @@ __decorate([
 ], BookkeepingController.prototype, "attachmentFile", null);
 __decorate([
     (0, common_1.Patch)('attachments/:id'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -434,7 +447,7 @@ __decorate([
 ], BookkeepingController.prototype, "setAttachmentTransaction", null);
 __decorate([
     (0, common_1.Post)('attachments/:id/apply-items'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -442,7 +455,7 @@ __decorate([
 ], BookkeepingController.prototype, "applyAttachmentItems", null);
 __decorate([
     (0, common_1.Post)('attachments/:id/retry'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -451,7 +464,7 @@ __decorate([
 __decorate([
     (0, common_1.Delete)('attachments/:id'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -460,7 +473,7 @@ __decorate([
 __decorate([
     (0, common_1.Post)('statements'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FilesInterceptor)('files', statement_uploads_1.MAX_FILES_PER_REQUEST, statement_uploads_1.STATEMENT_UPLOAD_OPTIONS)),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.UploadedFiles)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Array]),
@@ -468,14 +481,14 @@ __decorate([
 ], BookkeepingController.prototype, "upload", null);
 __decorate([
     (0, common_1.Get)('statements'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "list", null);
 __decorate([
     (0, common_1.Get)('transactions'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Query)('statementIds')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, String]),
@@ -483,7 +496,7 @@ __decorate([
 ], BookkeepingController.prototype, "transactions", null);
 __decorate([
     (0, common_1.Get)('statements/:id/file'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Res)({ passthrough: true })),
     __metadata("design:type", Function),
@@ -492,7 +505,7 @@ __decorate([
 ], BookkeepingController.prototype, "file", null);
 __decorate([
     (0, common_1.Patch)('statements/:id/account'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
@@ -501,7 +514,7 @@ __decorate([
 ], BookkeepingController.prototype, "moveStatement", null);
 __decorate([
     (0, common_1.Post)('statements/:id/retry'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -510,7 +523,7 @@ __decorate([
 __decorate([
     (0, common_1.Delete)('statements/:id'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, Number]),
@@ -518,7 +531,7 @@ __decorate([
 ], BookkeepingController.prototype, "remove", null);
 __decorate([
     (0, common_1.Get)('export'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Query)('format')),
     __param(2, (0, common_1.Res)({ passthrough: true })),
     __metadata("design:type", Function),
@@ -527,7 +540,7 @@ __decorate([
 ], BookkeepingController.prototype, "export", null);
 __decorate([
     (0, common_1.Get)('reports'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Query)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, reports_query_dto_1.ReportsQueryDto]),
@@ -535,14 +548,14 @@ __decorate([
 ], BookkeepingController.prototype, "reports", null);
 __decorate([
     (0, common_1.Get)('accounts'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "accountList", null);
 __decorate([
     (0, common_1.Post)('accounts'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.CreateAccountDto]),
@@ -551,7 +564,7 @@ __decorate([
 __decorate([
     (0, common_1.Put)('accounts/type'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SetAccountTypeDto]),
@@ -560,7 +573,7 @@ __decorate([
 __decorate([
     (0, common_1.Delete)('accounts/type'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.ResetAccountTypeDto]),
@@ -569,7 +582,7 @@ __decorate([
 __decorate([
     (0, common_1.Put)('accounts/currency'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SetAccountCurrencyDto]),
@@ -578,7 +591,7 @@ __decorate([
 __decorate([
     (0, common_1.Delete)('accounts/currency'),
     (0, common_1.HttpCode)(204),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.ResetAccountTypeDto]),
@@ -586,14 +599,14 @@ __decorate([
 ], BookkeepingController.prototype, "resetAccountCurrency", null);
 __decorate([
     (0, common_1.Get)('currency'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "currency", null);
 __decorate([
     (0, common_1.Put)('currency'),
-    __param(0, (0, common_1.Req)()),
+    __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object, agency_dto_1.SetCurrencyDto]),
@@ -601,7 +614,7 @@ __decorate([
 ], BookkeepingController.prototype, "setCurrency", null);
 exports.BookkeepingController = BookkeepingController = __decorate([
     (0, common_1.Controller)('bookkeeping'),
-    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
+    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard, book_scope_guard_1.BookScopeGuard),
     __metadata("design:paramtypes", [bookkeeping_service_1.BookkeepingService,
         export_service_1.LedgerExportService,
         customer_auth_service_1.CustomerAuthService,
@@ -612,6 +625,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         splits_service_1.SplitsService,
         attachments_service_1.AttachmentsService,
         product_memory_service_1.ProductMemoryService,
-        fx_service_1.FxService])
+        fx_service_1.FxService,
+        prisma_service_1.PrismaService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

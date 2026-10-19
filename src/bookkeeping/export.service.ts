@@ -11,6 +11,7 @@ import {
 import { remainderOf, splitTotals } from './splits.util';
 import { statementLabel } from './statement-label';
 import { FxService, type FxEntry } from './fx.service';
+import { scopeWhere, type BookScope } from './scope';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -96,10 +97,13 @@ export class LedgerExportService {
     private readonly fx: FxService,
   ) {}
 
-  async rowsFor(customerId: number): Promise<LedgerExportRow[]> {
+  async rowsFor(scope: BookScope): Promise<LedgerExportRow[]> {
     const [rows, statements, taxes] = await Promise.all([
       this.prisma.bankTransaction.findMany({
-        where: { customerId, statement: { deletedAt: null, status: 'DONE' } },
+        where: {
+          ...scopeWhere(scope),
+          statement: { deletedAt: null, status: 'DONE' },
+        },
         include: {
           statement: {
             select: {
@@ -112,8 +116,8 @@ export class LedgerExportService {
           },
         },
       }),
-      loadOpeningStatements(this.prisma, customerId),
-      this.tax.linesFor(customerId),
+      loadOpeningStatements(this.prisma, scope),
+      this.tax.linesFor(scope),
     ]);
     const byId = new Map(statements.map((s) => [s.id, s]));
     const openings = openingRows(statements);
@@ -189,7 +193,7 @@ export class LedgerExportService {
           ),
         ),
     ]);
-    const fx = await this.fx.context(customerId, statements);
+    const fx = await this.fx.context(scope, statements);
     if (!fx.anyForeign) return out;
     // Foreign rows carry their rate and home amount; each foreign statement ends with its
     // revaluation row (0 in its currency, the home difference to Exchange Gain or Loss).

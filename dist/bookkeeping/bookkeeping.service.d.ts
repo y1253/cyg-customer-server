@@ -6,6 +6,7 @@ import { ObjectStorageService } from '../storage/object-storage.service';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
+import { type BookScope } from './scope';
 import { FxService } from './fx.service';
 export interface StatementView {
     id: number;
@@ -63,25 +64,25 @@ export declare class BookkeepingService {
     private readonly fx;
     private readonly logger;
     constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService);
-    upload(customerId: number, files: Express.Multer.File[]): Promise<StatementView[]>;
-    generateIfFree(customerId: number): Promise<{
+    upload(scope: BookScope, files: Express.Multer.File[]): Promise<StatementView[]>;
+    generateIfFree(scope: BookScope): Promise<{
         queued: number;
         taxing: boolean;
     }>;
-    waitingCount(customerId: number): Promise<number>;
-    generate(customerId: number): Promise<{
+    waitingCount(scope: BookScope): Promise<number>;
+    generate(scope: BookScope): Promise<{
         queued: number;
         taxing: boolean;
     }>;
-    list(customerId: number): Promise<StatementView[]>;
-    transactions(customerId: number, statementIds?: number[]): Promise<TransactionView[]>;
-    file(customerId: number, id: number): Promise<{
+    list(scope: BookScope): Promise<StatementView[]>;
+    transactions(scope: BookScope, statementIds?: number[]): Promise<TransactionView[]>;
+    file(scope: BookScope, id: number): Promise<{
         stream: Readable;
         filename: string;
         size: number;
     }>;
-    retry(customerId: number, id: number): Promise<StatementView>;
-    remove(customerId: number, id: number): Promise<void>;
-    moveStatement(customerId: number, id: number, rawName: string): Promise<StatementView>;
+    retry(scope: BookScope, id: number): Promise<StatementView>;
+    remove(scope: BookScope, id: number): Promise<void>;
+    moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;
     private owned;
 }

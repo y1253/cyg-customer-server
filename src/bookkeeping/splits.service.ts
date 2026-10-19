@@ -10,6 +10,7 @@ import { doubleEntry } from './ledger.util';
 import { cleanName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
 import { itemKey } from './receipt-items.util';
+import { scopeWhere, type BookScope } from './scope';
 import { signedLike, splitProblem } from './splits.util';
 import { TaxService } from './tax.service';
 
@@ -44,15 +45,11 @@ export class SplitsService {
    * the rest removed. Then the parent's and the splits' taxes are decided again, so the
    * ledger and the reports are right as soon as this returns.
    */
-  async save(
-    customerId: number,
-    id: number,
-    input: SplitInput[],
-  ): Promise<void> {
+  async save(scope: BookScope, id: number, input: SplitInput[]): Promise<void> {
     const parent = await this.prisma.bankTransaction.findFirst({
       where: {
         id,
-        customerId,
+        ...scopeWhere(scope),
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },
       include: { splits: { select: { id: true } } },
@@ -82,7 +79,7 @@ export class SplitsService {
         name: cleanName(s.name ?? null),
         itemName: cleanName(s.itemName ?? null),
         always: s.always === true,
-        category: await this.accounts.validCategory(customerId, s.category),
+        category: await this.accounts.validCategory(scope, s.category),
         amount: signedLike(amount, s.amount),
       })),
     );
@@ -111,7 +108,7 @@ export class SplitsService {
             data: {
               ...data,
               statementId: parent.statementId,
-              customerId,
+              ...scopeWhere(scope),
               position: parent.position,
               pendingDate: parent.pendingDate,
               postingDate: parent.postingDate,
@@ -130,7 +127,7 @@ export class SplitsService {
     // customer's other rows of it move too — the same rule as the Products tab.
     for (const r of rows) {
       if (r.always && r.itemName && itemKey(r.itemName)) {
-        await this.products.saveRule(customerId, r.itemName, r.category);
+        await this.products.saveRule(scope, r.itemName, r.category);
       }
     }
   }

@@ -18,7 +18,9 @@ const openai_client_1 = require("../ai/openai.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_processor_service_1 = require("./attachment-processor.service");
+const attachment_folders_util_1 = require("./attachment-folders.util");
 const attachment_uploads_1 = require("./attachment-uploads");
+const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
 const INCLUDE = {
     transaction: {
@@ -26,6 +28,7 @@ const INCLUDE = {
             statement: {
                 select: {
                     accountName: true,
+                    accountNameByCustomer: true,
                     bankName: true,
                     filename: true,
                     periodStart: true,
@@ -58,6 +61,7 @@ function toView(a) {
         source: a.source,
         sourcePhone: a.sourcePhone,
         message: a.message,
+        folder: (0, attachment_folders_util_1.attachmentFolder)(live ? t : null),
         transaction: live
             ? {
                 id: t.id,
@@ -83,7 +87,7 @@ let AttachmentsService = class AttachmentsService {
         this.openai = openai;
         this.processor = processor;
     }
-    async upload(customerId, files, transactionId) {
+    async upload(scope, files, transactionId) {
         try {
             if (!files?.length)
                 throw new common_1.BadRequestException('Choose a file to add');
@@ -91,17 +95,17 @@ let AttachmentsService = class AttachmentsService {
                 throw new common_1.ServiceUnavailableException('Attachments are not available right now. Please try again later.');
             }
             if (transactionId != null)
-                await this.parent(customerId, transactionId);
+                await this.parent(scope, transactionId);
             const ids = [];
             for (const file of files) {
                 const type = (0, attachment_uploads_1.attachmentType)(file.originalname);
                 if (!type)
                     continue;
-                const key = `bookkeeping/${customerId}/attachments/${(0, crypto_1.randomUUID)()}${type.ext}`;
+                const key = `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}${type.ext}`;
                 await this.storage.putFile(key, file.path, type.mime);
                 const row = await this.prisma.transactionAttachment.create({
                     data: {
-                        customerId,
+                        ...(0, scope_1.scopeWhere)(scope),
                         transactionId,
                         kind: type.cls === 'audio'
                             ? client_1.AttachmentKind.AUDIO
@@ -127,7 +131,7 @@ let AttachmentsService = class AttachmentsService {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
         }
     }
-    async intake(customerId) {
+    async intake(scope) {
         const [numbers, me] = await Promise.all([
             this.prisma.intakeNumber.findMany({
                 where: { releasedAt: null },
@@ -135,7 +139,7 @@ let AttachmentsService = class AttachmentsService {
                 select: { phoneNumber: true },
             }),
             this.prisma.customer.findUnique({
-                where: { id: customerId },
+                where: { id: scope.customerId },
                 select: { phone: true, phoneE164: true },
             }),
         ]);
@@ -145,19 +149,19 @@ let AttachmentsService = class AttachmentsService {
             phoneSaved: !!me?.phone,
         };
     }
-    async list(customerId) {
+    async list(scope) {
         const rows = await this.prisma.transactionAttachment.findMany({
-            where: { customerId, deletedAt: null },
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
             include: INCLUDE,
             orderBy: { createdAt: 'desc' },
         });
         return rows.map(toView);
     }
-    async get(customerId, id) {
-        return toView(await this.owned(customerId, id));
+    async get(scope, id) {
+        return toView(await this.owned(scope, id));
     }
-    async setTransaction(customerId, id, transactionId) {
-        const a = await this.owned(customerId, id);
+    async setTransaction(scope, id, transactionId) {
+        const a = await this.owned(scope, id);
         if (a.status === client_1.AttachmentStatus.PENDING ||
             a.status === client_1.AttachmentStatus.PROCESSING) {
             throw new common_1.BadRequestException('This file is still being read. Try again in a moment.');
@@ -171,9 +175,9 @@ let AttachmentsService = class AttachmentsService {
                     matchNote: 'Removed from its transaction by you.',
                 },
             });
-            return this.get(customerId, id);
+            return this.get(scope, id);
         }
-        await this.parent(customerId, transactionId);
+        await this.parent(scope, transactionId);
         await this.prisma.transactionAttachment.update({
             where: { id: a.id },
             data: {
@@ -183,7 +187,7 @@ let AttachmentsService = class AttachmentsService {
             },
         });
         if (a.extracted) {
-            const note = await this.processor.applyItems(customerId, a.id, false);
+            const note = await this.processor.applyItems(scope, a.id, false);
             if (note) {
                 await this.prisma.transactionAttachment.update({
                     where: { id: a.id },
@@ -191,20 +195,20 @@ let AttachmentsService = class AttachmentsService {
                 });
             }
         }
-        return this.get(customerId, id);
+        return this.get(scope, id);
     }
-    async applyItems(customerId, id) {
-        const a = await this.owned(customerId, id);
+    async applyItems(scope, id) {
+        const a = await this.owned(scope, id);
         if (!a.transactionId) {
             throw new common_1.BadRequestException('Attach the receipt to a transaction first');
         }
-        const note = await this.processor.applyItems(customerId, a.id, true);
+        const note = await this.processor.applyItems(scope, a.id, true);
         if (note)
             throw new common_1.BadRequestException(note);
-        return this.get(customerId, id);
+        return this.get(scope, id);
     }
-    async retry(customerId, id) {
-        const a = await this.owned(customerId, id);
+    async retry(scope, id) {
+        const a = await this.owned(scope, id);
         if (a.status !== client_1.AttachmentStatus.FAILED &&
             a.status !== client_1.AttachmentStatus.UNMATCHED) {
             throw new common_1.BadRequestException('Only a file that failed or found no match can be read again');
@@ -214,17 +218,17 @@ let AttachmentsService = class AttachmentsService {
             data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
         });
         this.processor.processSoon();
-        return this.get(customerId, id);
+        return this.get(scope, id);
     }
-    async remove(customerId, id) {
-        const a = await this.owned(customerId, id);
+    async remove(scope, id) {
+        const a = await this.owned(scope, id);
         await this.prisma.transactionAttachment.update({
             where: { id: a.id },
             data: { deletedAt: new Date() },
         });
     }
-    async file(customerId, id) {
-        const a = await this.owned(customerId, id);
+    async file(scope, id) {
+        const a = await this.owned(scope, id);
         const info = await this.storage.head(a.storageKey);
         if (!info)
             throw new common_1.NotFoundException('The file is no longer available');
@@ -235,13 +239,13 @@ let AttachmentsService = class AttachmentsService {
             size: info.size,
         };
     }
-    async byTransaction(customerId, transactionIds) {
+    async byTransaction(scope, transactionIds) {
         const out = new Map();
         if (!transactionIds.length)
             return out;
         const rows = await this.prisma.transactionAttachment.findMany({
             where: {
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 deletedAt: null,
                 transactionId: { in: transactionIds },
             },
@@ -255,20 +259,20 @@ let AttachmentsService = class AttachmentsService {
         }
         return out;
     }
-    async owned(customerId, id) {
+    async owned(scope, id) {
         const a = await this.prisma.transactionAttachment.findFirst({
-            where: { id, customerId, deletedAt: null },
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
             include: INCLUDE,
         });
         if (!a)
             throw new common_1.NotFoundException('Attachment not found');
         return a;
     }
-    async parent(customerId, id) {
+    async parent(scope, id) {
         const t = await this.prisma.bankTransaction.findFirst({
             where: {
                 id,
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },
             select: { splitOfId: true },

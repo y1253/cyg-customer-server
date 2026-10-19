@@ -6,6 +6,7 @@ import { ObjectStorageService } from '../storage/object-storage.service';
 import { statementImageRef } from './attachment-match.util';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { itemImages, type ImagePage } from './pdf-images';
+import { scopeOf, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
 
 export const STATEMENT_SOURCE = 'STATEMENT';
@@ -36,11 +37,18 @@ export class StatementImagesService {
   async harvest(
     statement: Pick<
       BankStatement,
-      'id' | 'customerId' | 'filename' | 'accountName' | 'bankName'
+      | 'id'
+      | 'customerId'
+      | 'companyId'
+      | 'filename'
+      | 'accountName'
+      | 'bankName'
     > & { periodStart: Date | null; periodEnd: Date | null },
     pdf: Buffer,
     pages: readonly ImagePage[],
   ): Promise<void> {
+    // The images belong to the statement's own book (general, or one company's).
+    const scope = scopeOf(statement);
     try {
       const images = await itemImages(pdf, pages);
       const label = statementLabel(statement);
@@ -58,7 +66,7 @@ export class StatementImagesService {
         });
         const storageKey =
           existing?.storageKey ??
-          `bookkeeping/${statement.customerId}/attachments/${randomUUID()}.png`;
+          `${storagePrefix(scope)}/attachments/${randomUUID()}.png`;
         await this.storage.putBuffer(storageKey, image.png, 'image/png');
         const queued = {
           status: AttachmentStatus.PENDING,
@@ -75,7 +83,7 @@ export class StatementImagesService {
           where: { sourceRef },
           create: {
             ...queued,
-            customerId: statement.customerId,
+            ...scopeWhere(scope),
             filename:
               `${label} p${image.page + 1} #${image.index + 1}.png`.slice(
                 0,
@@ -92,7 +100,7 @@ export class StatementImagesService {
       // A re-read that no longer sees an image drops the attachment it made before.
       await this.prisma.transactionAttachment.updateMany({
         where: {
-          customerId: statement.customerId,
+          ...scopeWhere(scope),
           sourceRef: { startsWith: `stmt:${statement.id}:`, notIn: refs },
           deletedAt: null,
         },
@@ -112,10 +120,10 @@ export class StatementImagesService {
   }
 
   /** A deleted statement takes the images cut out of it along. */
-  async removeFor(customerId: number, statementId: number): Promise<void> {
+  async removeFor(scope: BookScope, statementId: number): Promise<void> {
     await this.prisma.transactionAttachment.updateMany({
       where: {
-        customerId,
+        ...scopeWhere(scope),
         sourceRef: { startsWith: `stmt:${statementId}:` },
         deletedAt: null,
       },

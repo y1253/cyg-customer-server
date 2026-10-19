@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { type ExtractedTransaction } from './ledger.util';
+import { type BookScope } from './scope';
 import { TaxService } from './tax.service';
 import { type NameRule, type ResolveContext, type RuleMatchType } from './name-memory.util';
 export type EditScope = 'ALWAYS' | 'ONCE';
@@ -8,37 +9,38 @@ export declare class NameMemoryService {
     private readonly tax;
     private readonly logger;
     constructor(prisma: PrismaService, tax: TaxService);
-    contextFor(customerId: number, descriptions: readonly string[], names?: ReadonlyArray<string | null | undefined>): Promise<ResolveContext & {
+    contextFor(scope: BookScope, descriptions: readonly string[], names?: ReadonlyArray<string | null | undefined>): Promise<ResolveContext & {
         customAccounts: Set<string>;
     }>;
     private nameMemoryFor;
-    rulesOf(customerId: number): Promise<NameRule[]>;
+    rulesOf(scope: BookScope): Promise<NameRule[]>;
     private customAccountsOf;
-    resolveStatement(customerId: number, rows: ExtractedTransaction[], bankName?: string | null): Promise<{
+    resolveStatement(scope: BookScope, rows: ExtractedTransaction[], bankName?: string | null): Promise<{
         lines: ExtractedTransaction[];
         customAccounts: Set<string>;
     }>;
     private learn;
     private learnNames;
-    saveRule(customerId: number, input: {
+    saveRule(scope: BookScope, input: {
         matchType: RuleMatchType;
         matchKey: string;
         name: string | null;
         category: string | null;
         scope?: EditScope;
     }): Promise<void>;
-    editTransaction(customerId: number, id: number, input: {
+    editTransaction(scope: BookScope, id: number, input: {
         name: string | null;
         category: string | null;
         scope: EditScope;
     }): Promise<void>;
     private setNameCategory;
-    categoryOfName(customerId: number, name: string): Promise<string | null>;
+    categoryOfName(scope: BookScope, name: string): Promise<string | null>;
     private ruleKeyForName;
-    resetRule(customerId: number, input: {
+    resetRule(scope: BookScope, input: {
         matchType: RuleMatchType;
         matchKey: string;
     }): Promise<void>;
+    private upsertRule;
     private matchingRows;
     private writeRows;
 }

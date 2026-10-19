@@ -13,6 +13,7 @@ const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const attachment_extractor_1 = require("./attachment-extractor");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const attachments_service_1 = require("./attachments.service");
+const book_scope_guard_1 = require("./book-scope.guard");
 const bookkeeping_controller_1 = require("./bookkeeping.controller");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
@@ -39,6 +40,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             attachment_processor_service_1.AttachmentProcessorService,
             attachments_service_1.AttachmentsService,
             bookkeeping_service_1.BookkeepingService,
+            book_scope_guard_1.BookScopeGuard,
             customer_accounts_service_1.CustomerAccountsService,
             fx_service_1.FxService,
             export_service_1.LedgerExportService,
@@ -53,7 +55,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             statement_processor_service_1.StatementProcessorService,
             tax_service_1.TaxService,
         ],
-        exports: [bookkeeping_service_1.BookkeepingService],
+        exports: [bookkeeping_service_1.BookkeepingService, book_scope_guard_1.BookScopeGuard],
     })
 ], BookkeepingModule);
 //# sourceMappingURL=bookkeeping.module.js.map

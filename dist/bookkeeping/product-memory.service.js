@@ -19,6 +19,7 @@ const ledger_util_1 = require("./ledger.util");
 const product_categorizer_1 = require("./product-categorizer");
 const product_memory_util_1 = require("./product-memory.util");
 const receipt_items_util_1 = require("./receipt-items.util");
+const scope_1 = require("./scope");
 const tax_service_1 = require("./tax.service");
 let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
     prisma;
@@ -32,12 +33,12 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
         this.categorizer = categorizer;
         this.tax = tax;
     }
-    async categoriesFor(customerId, names, context) {
+    async categoriesFor(scope, names, context) {
         const fallback = () => context.parentCategory;
         try {
             const keys = [...new Set(names.map(receipt_items_util_1.itemKey).filter(Boolean))];
             const [rules, memory] = await Promise.all([
-                this.itemRules(customerId),
+                this.itemRules(scope),
                 this.memoryFor(keys),
             ]);
             const ask = (0, product_memory_util_1.itemsToAsk)(names, rules, memory);
@@ -56,7 +57,7 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
                         memory.set(w.key, w.category);
                 }
                 catch (err) {
-                    this.logger.warn(`item categories for customer #${customerId} failed: ${err.message}`);
+                    this.logger.warn(`item categories for ${(0, scope_1.bookLabel)(scope)} failed: ${err.message}`);
                 }
             }
             const reused = keys.filter((k) => !rules.has(k) && !ask.some((a) => a.key === k) && memory.has(k));
@@ -70,49 +71,59 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
                 .category;
         }
         catch (err) {
-            this.logger.error(`item memory for customer #${customerId} failed: ${err.message}`);
+            this.logger.error(`item memory for ${(0, scope_1.bookLabel)(scope)} failed: ${err.message}`);
             return fallback;
         }
     }
-    async itemRules(customerId) {
+    async itemRules(scope) {
         const rules = await this.prisma.customerItemRule.findMany({
-            where: { customerId },
+            where: (0, scope_1.scopeWhere)(scope),
             select: { itemKey: true, category: true },
         });
         return new Map(rules.map((r) => [r.itemKey, r.category]));
     }
-    async products(customerId) {
-        const rows = await this.itemRows(customerId);
+    async products(scope) {
+        const rows = await this.itemRows(scope);
         const keys = [...new Set(rows.map((r) => (0, receipt_items_util_1.itemKey)(r.itemName)))];
         const [rules, memory] = await Promise.all([
-            this.itemRules(customerId),
+            this.itemRules(scope),
             this.memoryFor(keys),
         ]);
         return (0, product_memory_util_1.groupProducts)(rows, rules, memory);
     }
-    async saveRule(customerId, rawKey, rawCategory) {
+    async saveRule(scope, rawKey, rawCategory) {
         const key = (0, receipt_items_util_1.itemKey)(rawKey) || rawKey.trim().toLowerCase().slice(0, 191);
         if (!key)
             throw new common_1.NotFoundException('That product has no name');
-        const category = await this.accounts.validCategory(customerId, rawCategory);
-        await this.prisma.customerItemRule.upsert({
-            where: { customerId_itemKey: { customerId, itemKey: key } },
-            create: { customerId, itemKey: key, category },
-            update: { category },
+        const category = await this.accounts.validCategory(scope, rawCategory);
+        const existing = await this.prisma.customerItemRule.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), itemKey: key },
+            select: { id: true },
         });
-        const rows = (await this.itemRows(customerId)).filter((r) => (0, receipt_items_util_1.itemKey)(r.itemName) === key);
-        await this.writeRows(customerId, rows, () => category);
+        if (existing) {
+            await this.prisma.customerItemRule.update({
+                where: { id: existing.id },
+                data: { category },
+            });
+        }
+        else {
+            await this.prisma.customerItemRule.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), itemKey: key, category },
+            });
+        }
+        const rows = (await this.itemRows(scope)).filter((r) => (0, receipt_items_util_1.itemKey)(r.itemName) === key);
+        await this.writeRows(scope, rows, () => category);
     }
-    async resetRule(customerId, rawKey) {
+    async resetRule(scope, rawKey) {
         const key = (0, receipt_items_util_1.itemKey)(rawKey) || rawKey.trim().toLowerCase();
-        const where = { customerId_itemKey: { customerId, itemKey: key } };
-        const rule = await this.prisma.customerItemRule.findUnique({ where });
+        const where = { ...(0, scope_1.scopeWhere)(scope), itemKey: key };
+        const rule = await this.prisma.customerItemRule.findFirst({ where });
         if (!rule)
             throw new common_1.NotFoundException('That product has no saved category');
-        await this.prisma.customerItemRule.delete({ where });
-        const rows = (await this.itemRows(customerId)).filter((r) => (0, receipt_items_util_1.itemKey)(r.itemName) === key);
+        await this.prisma.customerItemRule.deleteMany({ where });
+        const rows = (await this.itemRows(scope)).filter((r) => (0, receipt_items_util_1.itemKey)(r.itemName) === key);
         const memory = await this.memoryFor([key]);
-        await this.writeRows(customerId, rows, (r) => (0, product_memory_util_1.resolveItem)(key, new Map(), memory, r.parentCategory).category);
+        await this.writeRows(scope, rows, (r) => (0, product_memory_util_1.resolveItem)(key, new Map(), memory, r.parentCategory).category);
     }
     async memoryFor(keys) {
         if (!keys.length)
@@ -138,10 +149,10 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
             });
         }
     }
-    async itemRows(customerId) {
+    async itemRows(scope) {
         const rows = await this.prisma.bankTransaction.findMany({
             where: {
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 splitOfId: { not: null },
                 itemName: { not: null },
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
@@ -166,7 +177,7 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
             parentCategory: r.splitOf?.offsetAccount ?? r.offsetAccount,
         }));
     }
-    async writeRows(customerId, rows, next) {
+    async writeRows(scope, rows, next) {
         const updates = rows.flatMap((row) => {
             const category = next(row);
             if (category === row.offsetAccount)

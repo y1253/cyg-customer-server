@@ -18,6 +18,7 @@ const ledger_util_1 = require("./ledger.util");
 const name_memory_util_1 = require("./name-memory.util");
 const product_memory_service_1 = require("./product-memory.service");
 const receipt_items_util_1 = require("./receipt-items.util");
+const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const tax_service_1 = require("./tax.service");
 let SplitsService = class SplitsService {
@@ -31,11 +32,11 @@ let SplitsService = class SplitsService {
         this.tax = tax;
         this.products = products;
     }
-    async save(customerId, id, input) {
+    async save(scope, id, input) {
         const parent = await this.prisma.bankTransaction.findFirst({
             where: {
                 id,
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },
             include: { splits: { select: { id: true } } },
@@ -60,7 +61,7 @@ let SplitsService = class SplitsService {
             name: (0, name_memory_util_1.cleanName)(s.name ?? null),
             itemName: (0, name_memory_util_1.cleanName)(s.itemName ?? null),
             always: s.always === true,
-            category: await this.accounts.validCategory(customerId, s.category),
+            category: await this.accounts.validCategory(scope, s.category),
             amount: (0, splits_util_1.signedLike)(amount, s.amount),
         })));
         const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
@@ -87,7 +88,7 @@ let SplitsService = class SplitsService {
                         data: {
                             ...data,
                             statementId: parent.statementId,
-                            customerId,
+                            ...(0, scope_1.scopeWhere)(scope),
                             position: parent.position,
                             pendingDate: parent.pendingDate,
                             postingDate: parent.postingDate,
@@ -104,7 +105,7 @@ let SplitsService = class SplitsService {
         });
         for (const r of rows) {
             if (r.always && r.itemName && (0, receipt_items_util_1.itemKey)(r.itemName)) {
-                await this.products.saveRule(customerId, r.itemName, r.category);
+                await this.products.saveRule(scope, r.itemName, r.category);
             }
         }
     }

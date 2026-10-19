@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { FxService } from './fx.service';
+import { type BookScope } from './scope';
 import { TaxService } from './tax.service';
 export interface LedgerExportRow {
     id: number | null;
@@ -31,7 +32,7 @@ export declare class LedgerExportService {
     private readonly tax;
     private readonly fx;
     constructor(prisma: PrismaService, tax: TaxService, fx: FxService);
-    rowsFor(customerId: number): Promise<LedgerExportRow[]>;
+    rowsFor(scope: BookScope): Promise<LedgerExportRow[]>;
     excel(rows: LedgerExportRow[], customerName: string): Promise<Buffer>;
     pdf(rows: LedgerExportRow[], customerName: string): Promise<Buffer>;
 }

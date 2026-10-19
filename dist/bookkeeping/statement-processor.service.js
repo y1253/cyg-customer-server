@@ -28,6 +28,7 @@ const tax_service_1 = require("./tax.service");
 const queue_retry_1 = require("./queue-retry");
 Object.defineProperty(exports, "claimableAt", { enumerable: true, get: function () { return queue_retry_1.claimableAt; } });
 Object.defineProperty(exports, "MAX_ATTEMPTS", { enumerable: true, get: function () { return queue_retry_1.MAX_ATTEMPTS; } });
+const scope_1 = require("./scope");
 const CONCURRENCY = 2;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 15 * 60_000;
@@ -116,6 +117,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         if (claimed.count === 0)
             return;
         const started = Date.now();
+        const scope = (0, scope_1.scopeOf)(row);
         try {
             const pdf = await this.storage.getBuffer(row.storageKey);
             const extracted = await this.extractor.extract(pdf, row.filename, {
@@ -127,12 +129,12 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 },
             });
             const accountName = row.accountNameByCustomer ??
-                (0, account_identity_util_1.canonicalAccountName)(extracted, await this.knownAccounts(row.customerId, row.id));
+                (0, account_identity_util_1.canonicalAccountName)(extracted, await this.knownAccounts(scope, row.id));
             if (accountName !== extracted.accountName) {
                 this.logger.log(`statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`);
             }
             const bank = accountName ?? 'Bank account';
-            const { lines, customAccounts } = await this.names.resolveStatement(row.customerId, extracted.transactions, extracted.bankName);
+            const { lines, customAccounts } = await this.names.resolveStatement(scope, extracted.transactions, extracted.bankName);
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
@@ -150,7 +152,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     data: rows.map((r) => ({
                         ...r,
                         statementId: row.id,
-                        customerId: row.customerId,
+                        ...(0, scope_1.scopeWhere)(scope),
                     })),
                 }),
                 this.prisma.bankStatement.update({
@@ -203,10 +205,10 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             await this.recordFailure(row, err);
         }
     }
-    async knownAccounts(customerId, exceptId) {
+    async knownAccounts(scope, exceptId) {
         const rows = await this.prisma.bankStatement.findMany({
             where: {
-                customerId,
+                ...(0, scope_1.scopeWhere)(scope),
                 id: { not: exceptId },
                 deletedAt: null,
                 accountName: { not: null },

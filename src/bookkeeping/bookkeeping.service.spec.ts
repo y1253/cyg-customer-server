@@ -9,6 +9,9 @@ import type { StatementImagesService } from './statement-images.service';
 import type { StatementProcessorService } from './statement-processor.service';
 import type { TaxService } from './tax.service';
 import { claimableAt } from './statement-processor.service';
+import type { BookScope } from './scope';
+
+const BOOK: BookScope = { customerId: 7, companyId: null };
 
 function setup(found: unknown = null) {
   const prisma = {
@@ -34,13 +37,23 @@ function setup(found: unknown = null) {
 describe('BookkeepingService ownership', () => {
   it("answers 404 for another customer's statement, and only ever asks for the caller's", async () => {
     const { service, prisma } = setup(null);
-    await expect(service.remove(7, 99)).rejects.toBeInstanceOf(
+    await expect(service.remove(BOOK, 99)).rejects.toBeInstanceOf(
       NotFoundException,
     );
     expect(prisma.bankStatement.findFirst).toHaveBeenCalledWith({
-      where: { id: 99, customerId: 7, deletedAt: null },
+      where: { id: 99, customerId: 7, companyId: null, deletedAt: null },
     });
     expect(prisma.bankStatement.update).not.toHaveBeenCalled();
+  });
+
+  it("a company's books ask only for that company's statement", async () => {
+    const { service, prisma } = setup(null);
+    await expect(
+      service.remove({ customerId: 7, companyId: 3 }, 99),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.bankStatement.findFirst).toHaveBeenCalledWith({
+      where: { id: 99, customerId: 7, companyId: 3, deletedAt: null },
+    });
   });
 
   it('retries only a FAILED statement', async () => {
@@ -49,7 +62,7 @@ describe('BookkeepingService ownership', () => {
       customerId: 7,
       status: StatementStatus.DONE,
     });
-    await expect(service.retry(7, 1)).rejects.toThrow(
+    await expect(service.retry(BOOK, 1)).rejects.toThrow(
       'Only a statement that failed',
     );
   });
@@ -83,12 +96,12 @@ describe('BookkeepingService.moveStatement', () => {
         count: jest.fn().mockResolvedValue(opts.left ?? 0),
       },
       customerAccountType: {
-        findUnique: jest.fn().mockResolvedValue(opts.kept ?? null),
+        findFirst: jest.fn().mockResolvedValue(opts.kept ?? null),
         deleteMany: jest.fn(),
         updateMany: jest.fn(),
       },
       customerAccountCurrency: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
         deleteMany: jest.fn(),
         updateMany: jest.fn(),
       },
@@ -130,7 +143,7 @@ describe('BookkeepingService.moveStatement', () => {
     const { service, tx } = moveSetup(stmt, {
       target: { accountKind: 'CREDIT_CARD' },
     });
-    const view = await service.moveStatement(7, 5, '  BMO   2304 ');
+    const view = await service.moveStatement(BOOK, 5, '  BMO   2304 ');
     expect(tx.bankTransaction.updateMany).toHaveBeenCalledWith({
       where: { statementId: 5, amount: { lt: 0 } },
       data: { creditAccount: 'BMO 2304' },
@@ -152,27 +165,27 @@ describe('BookkeepingService.moveStatement', () => {
 
   it('carries the old account section override when its last statement leaves', async () => {
     const { service, tx } = moveSetup(stmt, { left: 0 });
-    await service.moveStatement(7, 5, 'BMO 2304');
+    await service.moveStatement(BOOK, 5, 'BMO 2304');
     expect(tx.customerAccountType.updateMany).toHaveBeenCalledWith({
-      where: { customerId: 7, account: 'TD 5234' },
+      where: { customerId: 7, companyId: null, account: 'TD 5234' },
       data: { account: 'BMO 2304' },
     });
     expect(tx.customerAccountCurrency.updateMany).toHaveBeenCalledWith({
-      where: { customerId: 7, account: 'TD 5234' },
+      where: { customerId: 7, companyId: null, account: 'TD 5234' },
       data: { account: 'BMO 2304' },
     });
   });
 
   it('leaves the override while other statements still use the old name', async () => {
     const { service, tx } = moveSetup(stmt, { left: 2 });
-    await service.moveStatement(7, 5, 'BMO 2304');
+    await service.moveStatement(BOOK, 5, 'BMO 2304');
     expect(tx.customerAccountType.updateMany).not.toHaveBeenCalled();
     expect(tx.customerAccountType.deleteMany).not.toHaveBeenCalled();
   });
 
   it('refuses a statement that has not been read', async () => {
     const { service } = moveSetup({ ...stmt, status: StatementStatus.FAILED });
-    await expect(service.moveStatement(7, 5, 'X')).rejects.toThrow(
+    await expect(service.moveStatement(BOOK, 5, 'X')).rejects.toThrow(
       'Only a statement that has been read can be moved',
     );
   });

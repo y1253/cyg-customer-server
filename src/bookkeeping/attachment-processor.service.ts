@@ -35,6 +35,7 @@ import { itemSplits } from './receipt-items.util';
 import { cents } from './reconcile.util';
 import { SplitsService } from './splits.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
+import { scopeOf, scopeWhere, type BookScope } from './scope';
 
 const CONCURRENCY = 2;
 /** A row name that says nothing about who was paid ("Cheque", "CHQ 123", "Check #55"). */
@@ -68,6 +69,10 @@ export function classOf(mimeType: string): AttachmentClass {
  * The statements' queue pattern: PENDING rows ARE the queue, `processSoon` starts work
  * right after an upload, the cron is the backstop and the retry path, and each row is
  * CLAIMED with a conditional update before any OpenAI call.
+ *
+ * Every lookup for a row runs in the row's OWN book (`scopeOf(row)`): a company's receipt
+ * is matched against that company's transactions and split with its rules, never the
+ * customer's general book or another company's.
  *
  * Matching: code shortlists the customer's transactions by sign, amount and date
  * (`attachment-match.util.ts`); one obvious hit is taken as is, otherwise the AI picks
@@ -156,6 +161,7 @@ export class AttachmentProcessorService {
     });
     if (claimed.count === 0) return;
 
+    const scope = scopeOf(row);
     try {
       const cls = classOf(row.mimeType);
       const file = await this.storage.getBuffer(row.storageKey);
@@ -181,7 +187,7 @@ export class AttachmentProcessorService {
         note = 'Added from the transaction.';
       } else {
         const found = await this.match(
-          row.customerId,
+          scope,
           reading,
           row.message,
           statementOf(row.sourceRef),
@@ -205,7 +211,7 @@ export class AttachmentProcessorService {
       });
       if (transactionId && kind === AttachmentKind.CHECK) {
         // Never fails the match: the cheque is attached either way.
-        await this.nameFromCheque(row.customerId, transactionId, reading).catch(
+        await this.nameFromCheque(scope, transactionId, reading).catch(
           (err: unknown) =>
             this.logger.warn(
               `attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`,
@@ -214,11 +220,7 @@ export class AttachmentProcessorService {
       }
       if (transactionId) {
         // The match stands even if splitting fails (e.g. a category since removed).
-        const itemsNote = await this.applyItems(
-          row.customerId,
-          row.id,
-          false,
-        ).catch(
+        const itemsNote = await this.applyItems(scope, row.id, false).catch(
           (err: unknown) =>
             `The items could not be split: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -230,7 +232,7 @@ export class AttachmentProcessorService {
         }
       }
       this.logger.log(
-        `attachment #${row.id} (${kind}) ${transactionId ? `matched #${transactionId}` : 'unmatched'}`,
+        `attachment #${row.id}${scope.companyId ? ` (company #${scope.companyId})` : ''} (${kind}) ${transactionId ? `matched #${transactionId}` : 'unmatched'}`,
       );
     } catch (err) {
       await this.recordFailure(row, err);
@@ -246,19 +248,19 @@ export class AttachmentProcessorService {
    * Nothing goes into the firm memory.
    */
   private async nameFromCheque(
-    customerId: number,
+    scope: BookScope,
     transactionId: number,
     reading: AttachmentReading,
   ): Promise<void> {
     const payee = cleanName(reading.payee);
     if (!payee) return;
     const tx = await this.prisma.bankTransaction.findFirst({
-      where: { id: transactionId, customerId },
+      where: { id: transactionId, ...scopeWhere(scope) },
       select: { name: true },
     });
     if (!tx || (tx.name && !GENERIC_CHEQUE_NAME.test(tx.name))) return;
-    const known = await this.names.categoryOfName(customerId, payee);
-    await this.names.editTransaction(customerId, transactionId, {
+    const known = await this.names.categoryOfName(scope, payee);
+    await this.names.editTransaction(scope, transactionId, {
       name: payee,
       category: known ? null : (reading.category ?? null),
       scope: 'ONCE',
@@ -294,7 +296,7 @@ export class AttachmentProcessorService {
 
   /** The transaction a reading belongs to, or null with the reason why not. */
   private async match(
-    customerId: number,
+    scope: BookScope,
     reading: AttachmentReading,
     message: string | null,
     /** Cut out of this statement (`StatementImagesService`): its own rows come first. */
@@ -320,9 +322,9 @@ export class AttachmentProcessorService {
     // An image cut out of a statement belongs to one of THAT statement's rows when any
     // qualifies; otherwise (or for any other upload) every statement is searched.
     let list = statementId
-      ? shortlist(q, await this.candidates(customerId, q, statementId))
+      ? shortlist(q, await this.candidates(scope, q, statementId))
       : [];
-    if (!list.length) list = shortlist(q, await this.candidates(customerId, q));
+    if (!list.length) list = shortlist(q, await this.candidates(scope, q));
     const byNumber = chequeNumberMatch(reading.checkNumber, total, list);
     if (byNumber) {
       return {
@@ -375,12 +377,12 @@ export class AttachmentProcessorService {
    * shortlist decides the sign).
    */
   private async candidates(
-    customerId: number,
+    scope: BookScope,
     q: MatchQuery,
     statementId?: number,
   ): Promise<MatchCandidate[]> {
     const where: Prisma.BankTransactionWhereInput = {
-      customerId,
+      ...scopeWhere(scope),
       ...(statementId ? { statementId } : {}),
       splitOfId: null,
       statement: { deletedAt: null, status: StatementStatus.DONE },
@@ -446,12 +448,12 @@ export class AttachmentProcessorService {
    * customer when nothing was done, or null when the splits were made.
    */
   async applyItems(
-    customerId: number,
+    scope: BookScope,
     attachmentId: number,
     replace: boolean,
   ): Promise<string | null> {
     const a = await this.prisma.transactionAttachment.findFirst({
-      where: { id: attachmentId, customerId, deletedAt: null },
+      where: { id: attachmentId, ...scopeWhere(scope), deletedAt: null },
       include: {
         transaction: {
           include: { splits: { select: { id: true }, take: 1 } },
@@ -473,7 +475,7 @@ export class AttachmentProcessorService {
     }
     // The customer's rule, else the firm memory, else the AI (remembered), else the parent's.
     const categoryFor = await this.products.categoriesFor(
-      customerId,
+      scope,
       reading.items.map((i) => i.name),
       { store: reading.vendor, parentCategory: parent.offsetAccount },
     );
@@ -485,7 +487,7 @@ export class AttachmentProcessorService {
     );
     if ('problem' in out) return `${out.problem}, so it was not split.`;
     await this.splits.save(
-      customerId,
+      scope,
       parent.id,
       out.splits.map((s) => ({
         name: parent.name,

@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { type FxRow, type RateSeries } from './fx.util';
+import type { BookScope } from './scope';
 export interface FxStatementInfo {
     id: number;
     currency: string | null;
@@ -32,10 +33,10 @@ export declare class FxService {
     private readonly logger;
     private readonly tried;
     constructor(prisma: PrismaService);
-    home(customerId: number): Promise<string>;
-    setHome(customerId: number, currency: string): Promise<string>;
+    home(scope: BookScope): Promise<string>;
+    setHome(scope: BookScope, currency: string): Promise<string>;
     currencies(): readonly string[];
-    context(customerId: number, statements: readonly FxStatementInfo[]): Promise<FxContext>;
+    context(scope: BookScope, statements: readonly FxStatementInfo[]): Promise<FxContext>;
     private series;
     private fetchValet;
 }
