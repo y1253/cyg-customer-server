@@ -13,6 +13,7 @@ exports.CustomerAccountsService = exports.ACCOUNT_TYPES = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const fx_util_1 = require("./fx.util");
+const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.ACCOUNT_TYPES = [
@@ -120,6 +121,18 @@ let CustomerAccountsService = class CustomerAccountsService {
         if (own)
             return own.name;
         throw new common_1.BadRequestException(`"${name}" is not one of your categories. Create it first.`);
+    }
+    async editValues(scope, dto) {
+        const name = dto.name?.trim() || null;
+        const raw = dto.category?.trim() || null;
+        if (!name && !raw) {
+            throw new common_1.BadRequestException('Enter a name or choose a category');
+        }
+        if (name && name.toLowerCase() === reports_util_1.UNCLARIFIED_NAME.toLowerCase()) {
+            throw new common_1.BadRequestException(`"${reports_util_1.UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`);
+        }
+        const category = raw ? await this.validCategory(scope, raw) : null;
+        return { name, category };
     }
     async create(scope, input) {
         const name = input.name.trim();

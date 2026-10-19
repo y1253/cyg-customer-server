@@ -76,7 +76,7 @@ import {
   type NamesView,
   type TaxSettingsView,
 } from './tax.service';
-import { UNCLARIFIED_NAME, type ReportsView } from './reports.util';
+import type { ReportsView } from './reports.util';
 import {
   MAX_FILES_PER_REQUEST,
   STATEMENT_UPLOAD_OPTIONS,
@@ -189,7 +189,7 @@ export class BookkeepingController {
     @Book() scope: BookScope,
     @Body() dto: SaveNameRuleDto,
   ): Promise<NamesView> {
-    const { name, category } = await this.editValues(scope, dto);
+    const { name, category } = await this.accounts.editValues(scope, dto);
     await this.nameMemory.saveRule(scope, {
       matchType: dto.matchType,
       matchKey: dto.matchKey,
@@ -212,7 +212,7 @@ export class BookkeepingController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: EditTransactionDto,
   ): Promise<void> {
-    const { name, category } = await this.editValues(scope, dto);
+    const { name, category } = await this.accounts.editValues(scope, dto);
     await this.nameMemory.editTransaction(scope, id, {
       name,
       category,
@@ -250,26 +250,6 @@ export class BookkeepingController {
       dto.name?.trim() || null,
     );
     if (!ok) throw new NotFoundException('Tax line not found');
-  }
-
-  /** A name and/or a category the customer may use — the chart or one of their own. */
-  private async editValues(
-    scope: BookScope,
-    dto: { name?: string | null; category?: string | null },
-  ): Promise<{ name: string | null; category: string | null }> {
-    const name = dto.name?.trim() || null;
-    const raw = dto.category?.trim() || null;
-    if (!name && !raw) {
-      throw new BadRequestException('Enter a name or choose a category');
-    }
-    // "Unclarified name" stands for the rows with NO name — it is never stored as one.
-    if (name && name.toLowerCase() === UNCLARIFIED_NAME.toLowerCase()) {
-      throw new BadRequestException(
-        `"${UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`,
-      );
-    }
-    const category = raw ? await this.accounts.validCategory(scope, raw) : null;
-    return { name, category };
   }
 
   /** Drop the customer's own rule: their rows go back to the default. */

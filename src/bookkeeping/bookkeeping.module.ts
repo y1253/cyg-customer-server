@@ -15,6 +15,9 @@ import { ProductCategorizer } from './product-categorizer';
 import { ProductMemoryService } from './product-memory.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
+import { StaffBookGuard } from './staff-book.guard';
+import { StaffRulesController } from './staff-rules.controller';
+import { StaffRulesService } from './staff-rules.service';
 import { StatementExtractor } from './statement-extractor';
 import { StatementImagesService } from './statement-images.service';
 import { StatementProcessorService } from './statement-processor.service';
@@ -22,7 +25,7 @@ import { TaxService } from './tax.service';
 
 @Module({
   imports: [CustomerAuthModule],
-  controllers: [BookkeepingController],
+  controllers: [BookkeepingController, StaffRulesController],
   providers: [
     AttachmentExtractor,
     AttachmentProcessorService,
@@ -38,6 +41,8 @@ import { TaxService } from './tax.service';
     ProductMemoryService,
     ReportsService,
     SplitsService,
+    StaffBookGuard,
+    StaffRulesService,
     StatementExtractor,
     StatementImagesService,
     StatementProcessorService,

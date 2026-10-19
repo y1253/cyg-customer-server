@@ -21,7 +21,7 @@ export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[]): OpeningRow[];
 export declare const CREDIT_CARD = "CREDIT_CARD";
 export declare const isCreditCard: (kind: string | null | undefined) => boolean;
-export declare function endingsOf(s: OpeningStatement): number[];
+export declare function endingsOf(s: OpeningStatement, openings?: number[]): number[];
 export declare const num: (d: {
     toString(): string;
 } | null) => number | null;

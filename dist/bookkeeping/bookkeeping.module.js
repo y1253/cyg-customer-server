@@ -24,6 +24,9 @@ const product_categorizer_1 = require("./product-categorizer");
 const product_memory_service_1 = require("./product-memory.service");
 const reports_service_1 = require("./reports.service");
 const splits_service_1 = require("./splits.service");
+const staff_book_guard_1 = require("./staff-book.guard");
+const staff_rules_controller_1 = require("./staff-rules.controller");
+const staff_rules_service_1 = require("./staff-rules.service");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_processor_service_1 = require("./statement-processor.service");
@@ -34,7 +37,7 @@ exports.BookkeepingModule = BookkeepingModule;
 exports.BookkeepingModule = BookkeepingModule = __decorate([
     (0, common_1.Module)({
         imports: [customer_auth_module_1.CustomerAuthModule],
-        controllers: [bookkeeping_controller_1.BookkeepingController],
+        controllers: [bookkeeping_controller_1.BookkeepingController, staff_rules_controller_1.StaffRulesController],
         providers: [
             attachment_extractor_1.AttachmentExtractor,
             attachment_processor_service_1.AttachmentProcessorService,
@@ -50,6 +53,8 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             product_memory_service_1.ProductMemoryService,
             reports_service_1.ReportsService,
             splits_service_1.SplitsService,
+            staff_book_guard_1.StaffBookGuard,
+            staff_rules_service_1.StaffRulesService,
             statement_extractor_1.StatementExtractor,
             statement_images_service_1.StatementImagesService,
             statement_processor_service_1.StatementProcessorService,

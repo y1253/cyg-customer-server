@@ -19,6 +19,13 @@ export declare class CustomerAccountsService {
     resetCurrency(scope: BookScope, account: string): Promise<void>;
     names(scope: BookScope): Promise<Set<string>>;
     validCategory(scope: BookScope, name: string): Promise<string>;
+    editValues(scope: BookScope, dto: {
+        name?: string | null;
+        category?: string | null;
+    }): Promise<{
+        name: string | null;
+        category: string | null;
+    }>;
     create(scope: BookScope, input: {
         name: string;
         type: AccountType;

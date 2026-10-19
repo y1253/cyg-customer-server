@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { isFxCurrency } from './fx.util';
+import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import {
   ACCOUNT_NAMES,
@@ -168,6 +169,30 @@ export class CustomerAccountsService {
     throw new BadRequestException(
       `"${name}" is not one of your categories. Create it first.`,
     );
+  }
+
+  /**
+   * A rule edit's name and/or category, checked: at least one of them, a name that is not
+   * the "Unclarified name" placeholder, and a category the customer may use. Shared by the
+   * customer's own edits and staff edits (`StaffRulesController`).
+   */
+  async editValues(
+    scope: BookScope,
+    dto: { name?: string | null; category?: string | null },
+  ): Promise<{ name: string | null; category: string | null }> {
+    const name = dto.name?.trim() || null;
+    const raw = dto.category?.trim() || null;
+    if (!name && !raw) {
+      throw new BadRequestException('Enter a name or choose a category');
+    }
+    // "Unclarified name" stands for the rows with NO name — it is never stored as one.
+    if (name && name.toLowerCase() === UNCLARIFIED_NAME.toLowerCase()) {
+      throw new BadRequestException(
+        `"${UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`,
+      );
+    }
+    const category = raw ? await this.validCategory(scope, raw) : null;
+    return { name, category };
   }
 
   /**

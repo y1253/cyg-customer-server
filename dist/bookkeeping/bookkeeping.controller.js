@@ -32,7 +32,6 @@ const fx_service_1 = require("./fx.service");
 const reports_service_1 = require("./reports.service");
 const splits_service_1 = require("./splits.service");
 const tax_service_1 = require("./tax.service");
-const reports_util_1 = require("./reports.util");
 const statement_uploads_1 = require("./statement-uploads");
 function attachment(filename, inline = false) {
     const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
@@ -98,7 +97,7 @@ let BookkeepingController = class BookkeepingController {
         return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
     }
     async saveNameRule(scope, dto) {
-        const { name, category } = await this.editValues(scope, dto);
+        const { name, category } = await this.accounts.editValues(scope, dto);
         await this.nameMemory.saveRule(scope, {
             matchType: dto.matchType,
             matchKey: dto.matchKey,
@@ -109,7 +108,7 @@ let BookkeepingController = class BookkeepingController {
         return this.tax.names(scope);
     }
     async editTransaction(scope, id, dto) {
-        const { name, category } = await this.editValues(scope, dto);
+        const { name, category } = await this.accounts.editValues(scope, dto);
         await this.nameMemory.editTransaction(scope, id, {
             name,
             category,
@@ -123,18 +122,6 @@ let BookkeepingController = class BookkeepingController {
         const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null);
         if (!ok)
             throw new common_1.NotFoundException('Tax line not found');
-    }
-    async editValues(scope, dto) {
-        const name = dto.name?.trim() || null;
-        const raw = dto.category?.trim() || null;
-        if (!name && !raw) {
-            throw new common_1.BadRequestException('Enter a name or choose a category');
-        }
-        if (name && name.toLowerCase() === reports_util_1.UNCLARIFIED_NAME.toLowerCase()) {
-            throw new common_1.BadRequestException(`"${reports_util_1.UNCLARIFIED_NAME}" is kept for rows with no name — enter the real name`);
-        }
-        const category = raw ? await this.accounts.validCategory(scope, raw) : null;
-        return { name, category };
     }
     async resetNameRule(scope, dto) {
         await this.nameMemory.resetRule(scope, dto);

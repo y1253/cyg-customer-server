@@ -18,12 +18,16 @@ function openingRows(statements) {
     const out = [];
     for (const [bankAccount, list] of byAccount) {
         list.sort((a, b) => time(a.periodStart) - time(b.periodStart) || a.id - b.id);
-        list.forEach((s, i) => {
+        let carried = [];
+        for (const s of list) {
+            const continues = s.openingBalance !== null && carried.includes((0, reconcile_util_1.cents)(s.openingBalance));
+            carried = endingsOf(s, carried);
+            if (carried.length > MAX_CARRIED)
+                carried = [];
             if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0)
-                return;
-            const prev = list[i - 1];
-            if (prev && endingsOf(prev).includes((0, reconcile_util_1.cents)(s.openingBalance)))
-                return;
+                continue;
+            if (continues)
+                continue;
             const sign = (0, exports.isCreditCard)(s.accountKind) ? -1 : 1;
             const amount = (sign * (0, reconcile_util_1.cents)(s.openingBalance)) / 100;
             out.push({
@@ -35,24 +39,24 @@ function openingRows(statements) {
                 offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
                 ...(0, ledger_util_1.doubleEntry)(amount, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
             });
-        });
+        }
     }
     return out;
 }
 exports.CREDIT_CARD = 'CREDIT_CARD';
 const isCreditCard = (kind) => kind === exports.CREDIT_CARD;
 exports.isCreditCard = isCreditCard;
-function endingsOf(s) {
+function endingsOf(s, openings = []) {
     const out = [];
     if (s.closingBalance !== null)
         out.push((0, reconcile_util_1.cents)(s.closingBalance));
-    if (s.openingBalance !== null) {
-        const open = (0, reconcile_util_1.cents)(s.openingBalance);
-        const net = (0, reconcile_util_1.cents)(s.net);
+    const net = (0, reconcile_util_1.cents)(s.net);
+    const opens = s.openingBalance !== null ? [(0, reconcile_util_1.cents)(s.openingBalance)] : openings;
+    for (const open of opens)
         out.push(open + net, open - net);
-    }
     return [...new Set(out.flatMap((c) => [c, -c]))];
 }
+const MAX_CARRIED = 64;
 const num = (d) => d === null ? null : Number(d);
 exports.num = num;
 exports.OPENING_STATEMENT_SELECT = {

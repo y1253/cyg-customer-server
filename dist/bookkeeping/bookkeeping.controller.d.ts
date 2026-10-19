@@ -16,7 +16,7 @@ import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
 import { TaxService, type AgencyView, type NamesView, type TaxSettingsView } from './tax.service';
-import { type ReportsView } from './reports.util';
+import type { ReportsView } from './reports.util';
 export declare class BookkeepingController {
     private readonly bookkeeping;
     private readonly exporter;
@@ -46,7 +46,6 @@ export declare class BookkeepingController {
     editTransaction(scope: BookScope, id: number, dto: EditTransactionDto): Promise<void>;
     saveSplits(scope: BookScope, id: number, dto: SaveSplitsDto): Promise<void>;
     renameTaxLine(scope: BookScope, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
-    private editValues;
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;
     products(scope: BookScope): Promise<ProductView[]>;
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;

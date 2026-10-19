@@ -39,7 +39,10 @@ export const STARTING_BALANCE = 'Starting balance';
  * whose opening balance equals, to the cent, the ending balance of the PREVIOUS statement
  * of that account continues it and gets no row. The ending balance is any of `endingsOf`:
  * the printed `closingBalance` or opening ± Σ rows (TD has no labelled closing line; "−"
- * because a credit card prints the balance OWED), each with either sign. Any other
+ * because a credit card prints the balance OWED), each with either sign. A statement whose
+ * opening was not read is BRIDGED: its endings are the previous endings ± its own rows, so
+ * TD 5234's March statement continued February through two statements with no opening
+ * read (2026-10-19; comparing with the direct predecessor alone found no ending). Any other
  * statement (the first one, or one after a real gap) gets its full printed balance (user's
  * decision, kept 2026-10-18). No opening balance, or zero → no row.
  *
@@ -64,10 +67,14 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
     list.sort(
       (a, b) => time(a.periodStart) - time(b.periodStart) || a.id - b.id,
     );
-    list.forEach((s, i) => {
-      if (s.openingBalance === null || cents(s.openingBalance) === 0) return;
-      const prev = list[i - 1];
-      if (prev && endingsOf(prev).includes(cents(s.openingBalance))) return;
+    let carried: number[] = [];
+    for (const s of list) {
+      const continues =
+        s.openingBalance !== null && carried.includes(cents(s.openingBalance));
+      carried = endingsOf(s, carried);
+      if (carried.length > MAX_CARRIED) carried = [];
+      if (s.openingBalance === null || cents(s.openingBalance) === 0) continue;
+      if (continues) continue;
       const sign = isCreditCard(s.accountKind) ? -1 : 1;
       const amount = (sign * cents(s.openingBalance)) / 100;
       out.push({
@@ -79,7 +86,7 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
         offsetAccount: OWNERS_LOAN,
         ...doubleEntry(amount, bankAccount, OWNERS_LOAN),
       });
-    });
+    }
   }
   return out;
 }
@@ -94,17 +101,24 @@ export const isCreditCard = (kind: string | null | undefined): boolean =>
  * per-page figure stored as the closing broke a chain that opening + Σ rows proved, and the
  * next statement's opening was posted on top of the old balance (2026-10-18). Negated: an
  * overdrawn "1,468.82-" stored without its minus on one statement and with it on the next.
+ * `openings` (cents) stand in for an opening that was not read — the previous statement's
+ * endings, so a chain bridges it.
  */
-export function endingsOf(s: OpeningStatement): number[] {
+export function endingsOf(
+  s: OpeningStatement,
+  openings: number[] = [],
+): number[] {
   const out: number[] = [];
   if (s.closingBalance !== null) out.push(cents(s.closingBalance));
-  if (s.openingBalance !== null) {
-    const open = cents(s.openingBalance);
-    const net = cents(s.net);
-    out.push(open + net, open - net);
-  }
+  const net = cents(s.net);
+  const opens =
+    s.openingBalance !== null ? [cents(s.openingBalance)] : openings;
+  for (const open of opens) out.push(open + net, open - net);
   return [...new Set(out.flatMap((c) => [c, -c]))];
 }
+
+/** Bridging doubles the candidates per unread opening; past this, stop chaining. */
+const MAX_CARRIED = 64;
 
 /** A Prisma Decimal (or null) as a number, for `OpeningStatement`. */
 export const num = (d: { toString(): string } | null): number | null =>

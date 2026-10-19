@@ -136,6 +136,50 @@ describe('openingRows', () => {
     ]);
   });
 
+  it('bridges statements whose opening was not read (TD 5234 March, 2026-10-19)', () => {
+    const td = 'TD Canada Trust 5234';
+    expect(
+      ids([
+        st(133, '2023-12-29', 3392.74, null, td, -4001.16),
+        st(134, '2024-01-31', null, null, td, -1652.58),
+        st(177, '2024-02-29', null, null, td, 3868.15),
+        st(176, '2024-03-28', 1607.15, null, td, -1890.54),
+        st(137, '2024-04-30', null, null, td, 2699.33),
+        st(138, '2024-05-31', 2415.94, null, td, -1474),
+        st(139, '2024-06-28', 941.94, null, td, -2745.32),
+        st(140, '2024-07-31', null, null, td, 6196.87),
+        st(141, '2024-08-30', 4393.49, null, td, -2942.32),
+        // October was deleted → a real gap.
+        st(143, '2024-10-31', 3849.57, null, td, -3888.71),
+        st(144, '2024-11-29', null, null, td, 1499.35),
+      ]),
+    ).toEqual([133, 143]);
+  });
+
+  it('still adds a row when a bridge does not add up', () => {
+    const td = 'TD Canada Trust 5234';
+    expect(
+      ids([
+        st(1, '2024-01-01', 3392.74, null, td, -4001.16),
+        st(2, '2024-02-01', null, null, td, -1652.58),
+        st(3, '2024-03-01', 2000, null, td, 0),
+      ]),
+    ).toEqual([1, 3]);
+  });
+
+  it('restarts the chain from a statement whose opening was read', () => {
+    // 2 is a real gap; 3 continues 2 (2000 + 100). 4 opens at 1's old ending, which no
+    // longer counts.
+    expect(
+      ids([
+        st(1, '2026-01-01', 100, null, 'Chase 4362', 50),
+        st(2, '2026-02-01', 2000, null, 'Chase 4362', 100),
+        st(3, '2026-03-01', 2100, null, 'Chase 4362', 0),
+        st(4, '2026-04-01', 150, null, 'Chase 4362', 0),
+      ]),
+    ).toEqual([1, 2, 4]);
+  });
+
   it('posts a negative balance as money out of the bank', () => {
     const [r] = openingRows([st(1, '2026-01-01', -50, 0, null)]);
     expect(r).toMatchObject({
