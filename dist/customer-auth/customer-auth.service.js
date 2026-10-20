@@ -48,6 +48,7 @@ function toPublicCustomer(c) {
         hasPassword: c.passwordHash !== null,
         avatarUrl: c.avatarUrl,
         phone: c.phone,
+        preferredContact: c.preferredContact,
         createdAt: c.createdAt,
     };
 }
@@ -417,6 +418,16 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             data.phone = dto.phone || null;
             data.phoneE164 = (0, phone_number_util_1.toE164)(dto.phone);
         }
+        if (dto.preferredContact !== undefined) {
+            data.preferredContact = dto.preferredContact;
+        }
+        const current = await this.prisma.customer.findUnique({ where: { id } });
+        const method = dto.preferredContact !== undefined
+            ? dto.preferredContact
+            : current?.preferredContact;
+        const phone = dto.phone !== undefined ? data.phone : current?.phone;
+        if ((method === 'SMS' || method === 'WHATSAPP') && !phone)
+            throw new common_1.BadRequestException('Add your phone number to be contacted by text or WhatsApp');
         const customer = await this.prisma.customer.update({
             where: { id },
             data,

@@ -1,4 +1,4 @@
-export type Channel = 'BOT' | 'SMS' | 'WHATSAPP';
+export type Channel = 'BOT' | 'SMS' | 'WHATSAPP' | 'EMAIL';
 export declare const CHANNELS: readonly Channel[];
 export declare const isChannel: (c: unknown) => c is Channel;
 export declare function channelStyle(channel: Channel): string;
@@ -7,6 +7,7 @@ export interface PromptInput {
     today: string;
     bookLabel: string;
     rules: string;
+    preferredContact?: string | null;
     attachment?: unknown;
 }
 export declare function systemPrompt(p: PromptInput): string;

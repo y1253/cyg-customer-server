@@ -23,6 +23,7 @@ import { StatementExtractor } from './statement-extractor';
 import { StatementImagesService } from './statement-images.service';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
+import { CommunicationsService } from './communications.service';
 
 @Module({
   imports: [CustomerAuthModule],
@@ -33,6 +34,7 @@ import { TaxService } from './tax.service';
     AttachmentsService,
     BookkeepingService,
     BookScopeGuard,
+    CommunicationsService,
     CustomerAccountsService,
     FxService,
     LedgerExportService,

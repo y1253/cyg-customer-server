@@ -56,6 +56,8 @@ export interface PublicCustomer {
   hasPassword: boolean;
   avatarUrl: string | null;
   phone: string | null;
+  /** EMAIL | WHATSAPP | SMS, or null when not chosen (step12). */
+  preferredContact: string | null;
   createdAt: Date;
 }
 
@@ -140,6 +142,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     hasPassword: c.passwordHash !== null,
     avatarUrl: c.avatarUrl,
     phone: c.phone,
+    preferredContact: c.preferredContact,
     createdAt: c.createdAt,
   };
 }
@@ -648,6 +651,7 @@ export class CustomerAuthService {
       name?: string;
       phone?: string | null;
       phoneE164?: string | null;
+      preferredContact?: string | null;
     } = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.phone !== undefined) {
@@ -655,6 +659,20 @@ export class CustomerAuthService {
       // What a text to an intake number is matched on (`IntakeSmsService`, internal API).
       data.phoneE164 = toE164(dto.phone);
     }
+    if (dto.preferredContact !== undefined) {
+      data.preferredContact = dto.preferredContact;
+    }
+    // Text / WhatsApp need a phone to reach — the one saved now, or the one on file.
+    const current = await this.prisma.customer.findUnique({ where: { id } });
+    const method =
+      dto.preferredContact !== undefined
+        ? dto.preferredContact
+        : current?.preferredContact;
+    const phone = dto.phone !== undefined ? data.phone : current?.phone;
+    if ((method === 'SMS' || method === 'WHATSAPP') && !phone)
+      throw new BadRequestException(
+        'Add your phone number to be contacted by text or WhatsApp',
+      );
     const customer = await this.prisma.customer.update({
       where: { id },
       data,

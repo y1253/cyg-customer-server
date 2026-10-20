@@ -35,6 +35,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     avatarUrl: null,
     phone: null,
     phoneE164: null,
+    preferredContact: null,
     createdAt: new Date('2026-10-01'),
     updatedAt: new Date('2026-10-01'),
     lastLoginAt: null,

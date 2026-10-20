@@ -193,7 +193,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             where: {
                 customerId: conversation.customerId,
                 companyId: null,
-                source: { in: ['SMS', 'WHATSAPP'] },
+                source: { in: ['SMS', 'WHATSAPP', 'EMAIL'] },
                 sourcePhone: peer,
                 createdAt: { gte: since },
                 deletedAt: null,

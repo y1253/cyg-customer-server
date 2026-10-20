@@ -62,6 +62,7 @@ export declare class AssistantService {
     }): Promise<ChatResult>;
     private run;
     private overLimit;
+    private preferredContact;
     private bookLabel;
     save(conversation: AiConversation, role: 'USER' | 'ASSISTANT', text: string, extra?: {
         actions?: AgentAction[];

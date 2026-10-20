@@ -9,9 +9,10 @@ const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
 const reconcile_util_1 = require("./reconcile.util");
 exports.STARTING_BALANCE = 'Starting balance';
-function openingRows(statements) {
+function openingRows(statements, bridges = statements.bridges ?? []) {
     const byAccount = new Map();
-    for (const s of statements) {
+    const bridgeRows = bridges.map((b) => ({ ...b, bridgeOnly: true }));
+    for (const s of [...statements, ...bridgeRows]) {
         const bank = s.accountName ?? 'Bank account';
         byAccount.set(bank, [...(byAccount.get(bank) ?? []), s]);
     }
@@ -22,9 +23,13 @@ function openingRows(statements) {
         let carried = [];
         for (const s of list) {
             const continues = s.openingBalance !== null && carried.includes((0, reconcile_util_1.cents)(s.openingBalance));
-            carried = endingsOf(s, carried);
-            if (carried.length > MAX_CARRIED)
-                carried = [];
+            if (s.bridgeOnly) {
+                carried =
+                    continues || s.openingBalance === null ? endingsOf(s, carried) : [];
+                carried = carried.slice(0, MAX_CARRIED);
+                continue;
+            }
+            carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
             if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0)
                 continue;
             if (continues)

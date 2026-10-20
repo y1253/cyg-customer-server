@@ -465,6 +465,7 @@ let AssistantTools = class AssistantTools {
                     filename: a.filename.slice(0, 191),
                     storageKey: a.storageKey,
                     sizeBytes: a.size,
+                    source: a.source === 'STATEMENT' ? 'UPLOAD' : a.source,
                     status: client_1.StatementStatus.UPLOADED,
                 },
             }),

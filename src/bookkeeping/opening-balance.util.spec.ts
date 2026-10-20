@@ -209,6 +209,55 @@ describe('openingRows', () => {
       creditAccount: 'Amex 1009',
     });
   });
+
+  it('keeps chaining through a long run of statements with no opening read', () => {
+    // Each unread opening doubles the candidate endings; past the cap the chain used to
+    // be cleared, so the next statement looked like a new start.
+    const list = [st(1, '2026-01-01', 1000, null, 'TD 5234', 100)];
+    for (let i = 2; i <= 8; i++)
+      list.push(
+        st(
+          i,
+          `2026-${String(i).padStart(2, '0')}-01`,
+          null,
+          null,
+          'TD 5234',
+          10,
+        ),
+      );
+    // 1000 + 100 + 7 × 10 = 1170
+    list.push(st(9, '2026-12-01', 1170, null, 'TD 5234', 0));
+    expect(ids(list)).toEqual([1]);
+  });
+
+  it('bridges through a NEEDS_REVIEW statement that continues the chain', () => {
+    const done = [
+      st(1, '2026-01-01', 1000, 1200, 'TD 5234'),
+      st(3, '2026-03-01', 900, 950, 'TD 5234'),
+    ];
+    const bridges = [st(2, '2026-02-01', 1200, 900, 'TD 5234')];
+    expect(openingRows(done, bridges).map((r) => r.statementId)).toEqual([1]);
+    // Without it, March looks like a restart.
+    expect(ids(done)).toEqual([1, 3]);
+  });
+
+  it('reads bridges handed on the side of the list, and never gives them a row', () => {
+    const done = Object.assign([st(3, '2026-03-01', 900, 950, 'TD 5234')], {
+      bridges: [st(2, '2026-02-01', 1200, 900, 'TD 5234')],
+    });
+    expect(openingRows(done).map((r) => r.statementId)).toEqual([3]);
+  });
+
+  it('a NEEDS_REVIEW statement that does not continue is a real break', () => {
+    const done = [
+      st(1, '2026-01-01', 1000, 1200, 'TD 5234'),
+      st(3, '2026-03-01', 900, 950, 'TD 5234'),
+    ];
+    const bridges = [st(2, '2026-02-01', 5000, 900, 'TD 5234')];
+    expect(openingRows(done, bridges).map((r) => r.statementId)).toEqual([
+      1, 3,
+    ]);
+  });
 });
 
 describe('startsByAccount', () => {

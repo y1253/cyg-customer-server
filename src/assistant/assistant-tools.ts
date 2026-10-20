@@ -594,6 +594,8 @@ export class AssistantTools {
           filename: a.filename.slice(0, 191),
           storageKey: a.storageKey,
           sizeBytes: a.size,
+          // The channel it came by, for the Communication tab.
+          source: a.source === 'STATEMENT' ? 'UPLOAD' : a.source,
           status: StatementStatus.UPLOADED,
         },
       }),

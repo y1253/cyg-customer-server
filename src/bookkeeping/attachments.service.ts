@@ -75,6 +75,8 @@ export interface IntakeView {
   phone: string | null;
   /** A phone is saved but could not be read as a number (texts will not match). */
   phoneSaved: boolean;
+  /** The customer inbox (step12): where they can EMAIL receipts and questions; null = none connected. */
+  email: string | null;
 }
 
 const INCLUDE = {
@@ -220,7 +222,7 @@ export class AttachmentsService {
    * book (a text cannot say which company it is for). Takes the scope only to stay uniform.
    */
   async intake(scope: BookScope): Promise<IntakeView> {
-    const [numbers, me] = await Promise.all([
+    const [numbers, me, inbox] = await Promise.all([
       this.prisma.intakeNumber.findMany({
         where: { releasedAt: null },
         orderBy: { createdAt: 'asc' },
@@ -230,6 +232,10 @@ export class AttachmentsService {
         where: { id: scope.customerId },
         select: { phone: true, phoneE164: true },
       }),
+      this.prisma.customerInboxAccount.findFirst({
+        orderBy: { id: 'desc' },
+        select: { emailAddress: true },
+      }),
     ]);
     return {
       numbers: numbers.map((n) => n.phoneNumber),
@@ -238,6 +244,7 @@ export class AttachmentsService {
         .map((n) => n.phoneNumber),
       phone: me?.phoneE164 ?? null,
       phoneSaved: !!me?.phone,
+      email: inbox?.emailAddress ?? null,
     };
   }
 

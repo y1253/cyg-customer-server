@@ -38,6 +38,7 @@ export interface IntakeView {
     whatsapp: string[];
     phone: string | null;
     phoneSaved: boolean;
+    email: string | null;
 }
 export declare class AttachmentsService {
     private readonly prisma;

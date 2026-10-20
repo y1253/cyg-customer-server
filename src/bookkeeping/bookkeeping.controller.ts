@@ -43,6 +43,12 @@ import {
   CustomerAccountsService,
   type AccountView,
 } from './customer-accounts.service';
+import {
+  CommunicationsService,
+  type ChannelSummary,
+  type CommPage,
+} from './communications.service';
+import { isCommChannel } from './communications.util';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
@@ -109,6 +115,7 @@ export class BookkeepingController {
     private readonly productMemory: ProductMemoryService,
     private readonly fx: FxService,
     private readonly prisma: PrismaService,
+    private readonly communications: CommunicationsService,
   ) {}
 
   /** Whose name heads an export: the business's for its books, else the customer's. */
@@ -316,6 +323,26 @@ export class BookkeepingController {
       throw new BadRequestException('transactionId must be a transaction id');
     }
     return this.attachments.upload(scope, files, transactionId);
+  }
+
+  /** The Communication tab (step12): one row per channel, newest message first. */
+  @Get('communications')
+  communicationChannels(@Book() scope: BookScope): Promise<ChannelSummary[]> {
+    return this.communications.channels(scope);
+  }
+
+  /** One channel's chat, newest first; `before` (ISO) pages back. */
+  @Get('communications/:channel')
+  communicationPage(
+    @Book() scope: BookScope,
+    @Param('channel') channel: string,
+    @Query('before') before?: string,
+  ): Promise<CommPage> {
+    if (!isCommChannel(channel)) throw new NotFoundException();
+    const at = before ? new Date(before) : null;
+    if (at && Number.isNaN(at.getTime()))
+      throw new BadRequestException('before must be a date');
+    return this.communications.page(scope, channel, at);
   }
 
   /** Where to text receipts, and whether this customer's texts will be recognised. */

@@ -8,7 +8,8 @@ import {
 import { scopeWhere, type BookScope } from './scope';
 
 /**
- * One book's DONE statements, ready for `openingRows` — plus the label fields
+ * One book's DONE statements (plus its NEEDS_REVIEW ones as `bridges`), ready for
+ * `openingRows` — plus the label fields
  * (`statementLabel`). `net` is Σ amount of each statement's rows, for statements that
  * printed no closing balance. `currency` is the EFFECTIVE one: the customer's own setting
  * for the account (`CustomerAccountCurrency`) wins over what the AI read off the statement,
@@ -25,22 +26,33 @@ export async function loadOpeningStatements(
       periodEnd: Date | null;
       currency: string | null;
     }
-  >
+  > & { bridges: OpeningStatement[] }
 > {
-  const done = {
+  // DONE = in the ledger. NEEDS_REVIEW = not in it, but still links the starting-balance
+  // chain (`openingRows` bridges) — handed back on the side, so no other reader sees it.
+  const where = (status: StatementStatus) => ({
     ...scopeWhere(scope),
     deletedAt: null,
-    status: StatementStatus.DONE,
+    status,
+  });
+  const read = {
+    ...scopeWhere(scope),
+    deletedAt: null,
+    status: { in: [StatementStatus.DONE, StatementStatus.NEEDS_REVIEW] },
   };
-  const [statements, sums, currencies] = await Promise.all([
+  const [statements, review, sums, currencies] = await Promise.all([
     prisma.bankStatement.findMany({
-      where: done,
+      where: where(StatementStatus.DONE),
+      select: OPENING_STATEMENT_SELECT,
+    }),
+    prisma.bankStatement.findMany({
+      where: where(StatementStatus.NEEDS_REVIEW),
       select: OPENING_STATEMENT_SELECT,
     }),
     prisma.bankTransaction.groupBy({
       by: ['statementId'],
       // Splits are parts of their parent's amount, already in it.
-      where: { ...scopeWhere(scope), statement: done, splitOfId: null },
+      where: { ...scopeWhere(scope), statement: read, splitOfId: null },
       _sum: { amount: true },
     }),
     accountCurrencies(prisma, scope),
@@ -48,13 +60,16 @@ export async function loadOpeningStatements(
   const netOf = new Map(
     sums.map((s) => [s.statementId, Number(s._sum.amount ?? 0)]),
   );
-  return statements.map((s) => ({
+  const view = (s: (typeof statements)[number]) => ({
     ...s,
     currency: effectiveCurrency(s, currencies),
     openingBalance: num(s.openingBalance),
     closingBalance: num(s.closingBalance),
     net: netOf.get(s.id) ?? 0,
-  }));
+  });
+  const done = statements.map(view);
+  const bridges = review.map(view);
+  return Object.assign(done, { bridges });
 }
 
 /** The currencies set for one book's accounts, by account name. */

@@ -5,7 +5,7 @@ exports.channelStyle = channelStyle;
 exports.systemPrompt = systemPrompt;
 exports.bookQuestion = bookQuestion;
 exports.parseBookChoice = parseBookChoice;
-exports.CHANNELS = ['BOT', 'SMS', 'WHATSAPP'];
+exports.CHANNELS = ['BOT', 'SMS', 'WHATSAPP', 'EMAIL'];
 const isChannel = (c) => typeof c === 'string' && exports.CHANNELS.includes(c);
 exports.isChannel = isChannel;
 function channelStyle(channel) {
@@ -14,10 +14,17 @@ function channelStyle(channel) {
             return 'You are answering by TEXT MESSAGE: plain text only, no markdown, at most 300 characters. Summarise lists (count, total, the top 3).';
         case 'WHATSAPP':
             return 'You are answering on WhatsApp: short and plain (no tables or headings; *bold* is fine), at most about 600 characters. Summarise long lists.';
+        case 'EMAIL':
+            return 'You are answering an EMAIL the customer sent to our inbox: plain text (no markdown), a short greeting, short paragraphs, at most about 1,200 characters, signed "— CYG Finance". Do not repeat their email back.';
         case 'BOT':
             return 'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.';
     }
 }
+const CONTACT_LABEL = {
+    EMAIL: 'email',
+    WHATSAPP: 'WhatsApp',
+    SMS: 'text message',
+};
 function systemPrompt(p) {
     const lines = [
         "You are CYG Finance's bookkeeping assistant. You help the account owner with " +
@@ -33,6 +40,10 @@ function systemPrompt(p) {
         'You only work on these books. Never discuss billing, passwords or other customers.',
         channelStyle(p.channel),
     ];
+    if (p.preferredContact && CONTACT_LABEL[p.preferredContact]) {
+        lines.push(`The customer prefers to be contacted by ${CONTACT_LABEL[p.preferredContact]}. ` +
+            'If they ask how we will reach them, say so; they can change it on their Account page.');
+    }
     if (p.attachment !== undefined) {
         lines.push('', 'THIS CHAT IS ABOUT ONE FILE we could not match to a transaction (shown below with ' +
             'what was read off it and why it did not match). Help the customer file it:', '1. Use their explanation to search again with find_match_candidates (widen dates, ' +

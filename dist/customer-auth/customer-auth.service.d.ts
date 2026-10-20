@@ -28,6 +28,7 @@ export interface PublicCustomer {
     hasPassword: boolean;
     avatarUrl: string | null;
     phone: string | null;
+    preferredContact: string | null;
     createdAt: Date;
 }
 export interface AuthResult {

@@ -9,13 +9,15 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UpdateMeDto = void 0;
+exports.UpdateMeDto = exports.CONTACT_METHODS = void 0;
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
 const trim = ({ value }) => typeof value === 'string' ? value.trim() : value;
+exports.CONTACT_METHODS = ['EMAIL', 'WHATSAPP', 'SMS'];
 class UpdateMeDto {
     name;
     phone;
+    preferredContact;
 }
 exports.UpdateMeDto = UpdateMeDto;
 __decorate([
@@ -34,4 +36,10 @@ __decorate([
     (0, class_validator_1.Matches)(/^[0-9+()\-.\s]{7,32}$/, { message: 'Enter a valid phone number' }),
     __metadata("design:type", Object)
 ], UpdateMeDto.prototype, "phone", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.ValidateIf)((_, v) => v !== null),
+    (0, class_validator_1.IsIn)(exports.CONTACT_METHODS, { message: 'Pick email, WhatsApp or text message' }),
+    __metadata("design:type", Object)
+], UpdateMeDto.prototype, "preferredContact", void 0);
 //# sourceMappingURL=update-me.dto.js.map

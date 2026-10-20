@@ -44,12 +44,12 @@ class IntakeRouteDto {
 }
 exports.IntakeRouteDto = IntakeRouteDto;
 __decorate([
-    (0, class_validator_1.IsIn)(['SMS', 'WHATSAPP']),
+    (0, class_validator_1.IsIn)(['SMS', 'WHATSAPP', 'EMAIL']),
     __metadata("design:type", String)
 ], IntakeRouteDto.prototype, "channel", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
-    (0, class_validator_1.Length)(3, 32),
+    (0, class_validator_1.Length)(3, 191),
     __metadata("design:type", String)
 ], IntakeRouteDto.prototype, "peer", void 0);
 class IntakeAgentDto extends IntakeRouteDto {

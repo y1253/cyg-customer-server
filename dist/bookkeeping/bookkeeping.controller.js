@@ -23,6 +23,8 @@ const attachments_service_1 = require("./attachments.service");
 const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const communications_service_1 = require("./communications.service");
+const communications_util_1 = require("./communications.util");
 const name_memory_service_1 = require("./name-memory.service");
 const product_memory_service_1 = require("./product-memory.service");
 const agency_dto_1 = require("./dto/agency.dto");
@@ -50,7 +52,8 @@ let BookkeepingController = class BookkeepingController {
     productMemory;
     fx;
     prisma;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory, fx, prisma) {
+    communications;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory, fx, prisma, communications) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -63,6 +66,7 @@ let BookkeepingController = class BookkeepingController {
         this.productMemory = productMemory;
         this.fx = fx;
         this.prisma = prisma;
+        this.communications = communications;
     }
     async ownerName(scope) {
         if (scope.companyId !== null) {
@@ -145,6 +149,17 @@ let BookkeepingController = class BookkeepingController {
             throw new common_1.BadRequestException('transactionId must be a transaction id');
         }
         return this.attachments.upload(scope, files, transactionId);
+    }
+    communicationChannels(scope) {
+        return this.communications.channels(scope);
+    }
+    communicationPage(scope, channel, before) {
+        if (!(0, communications_util_1.isCommChannel)(channel))
+            throw new common_1.NotFoundException();
+        const at = before ? new Date(before) : null;
+        if (at && Number.isNaN(at.getTime()))
+            throw new common_1.BadRequestException('before must be a date');
+        return this.communications.page(scope, channel, at);
     }
     intake(scope) {
         return this.attachments.intake(scope);
@@ -401,6 +416,22 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "uploadAttachments", null);
 __decorate([
+    (0, common_1.Get)('communications'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "communicationChannels", null);
+__decorate([
+    (0, common_1.Get)('communications/:channel'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('channel')),
+    __param(2, (0, common_1.Query)('before')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "communicationPage", null);
+__decorate([
     (0, common_1.Get)('intake'),
     __param(0, (0, book_scope_guard_1.Book)()),
     __metadata("design:type", Function),
@@ -613,6 +644,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         attachments_service_1.AttachmentsService,
         product_memory_service_1.ProductMemoryService,
         fx_service_1.FxService,
-        prisma_service_1.PrismaService])
+        prisma_service_1.PrismaService,
+        communications_service_1.CommunicationsService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map

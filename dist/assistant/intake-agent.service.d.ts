@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantService } from './assistant.service';
-export type IntakeChannel = 'SMS' | 'WHATSAPP';
+export type IntakeChannel = 'SMS' | 'WHATSAPP' | 'EMAIL';
 export interface IntakeRoute {
     companyId: number | null;
     awaitingBook: boolean;

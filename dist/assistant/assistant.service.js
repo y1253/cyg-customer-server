@@ -210,6 +210,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                         today: new Date().toISOString().slice(0, 10),
                         bookLabel: await this.bookLabel(scope),
                         rules: await this.rules.promptBlock(scope),
+                        preferredContact: await this.preferredContact(scope.customerId),
                         attachment,
                     }),
                 },
@@ -269,6 +270,18 @@ let AssistantService = AssistantService_1 = class AssistantService {
             where: { customerId, role: 'USER', createdAt: { gte: since } },
         });
         return count > this.dailyLimit();
+    }
+    async preferredContact(customerId) {
+        try {
+            const c = await this.prisma.customer.findUnique({
+                where: { id: customerId },
+                select: { preferredContact: true },
+            });
+            return c?.preferredContact ?? null;
+        }
+        catch {
+            return null;
+        }
     }
     async bookLabel(scope) {
         if (scope.companyId === null)

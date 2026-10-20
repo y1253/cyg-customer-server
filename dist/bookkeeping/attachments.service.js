@@ -132,7 +132,7 @@ let AttachmentsService = class AttachmentsService {
         }
     }
     async intake(scope) {
-        const [numbers, me] = await Promise.all([
+        const [numbers, me, inbox] = await Promise.all([
             this.prisma.intakeNumber.findMany({
                 where: { releasedAt: null },
                 orderBy: { createdAt: 'asc' },
@@ -142,6 +142,10 @@ let AttachmentsService = class AttachmentsService {
                 where: { id: scope.customerId },
                 select: { phone: true, phoneE164: true },
             }),
+            this.prisma.customerInboxAccount.findFirst({
+                orderBy: { id: 'desc' },
+                select: { emailAddress: true },
+            }),
         ]);
         return {
             numbers: numbers.map((n) => n.phoneNumber),
@@ -150,6 +154,7 @@ let AttachmentsService = class AttachmentsService {
                 .map((n) => n.phoneNumber),
             phone: me?.phoneE164 ?? null,
             phoneSaved: !!me?.phone,
+            email: inbox?.emailAddress ?? null,
         };
     }
     async list(scope) {

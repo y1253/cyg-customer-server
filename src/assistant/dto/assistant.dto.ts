@@ -31,11 +31,12 @@ export class AttachmentChatDto {
 }
 
 export class IntakeRouteDto {
-  @IsIn(['SMS', 'WHATSAPP'])
-  channel!: 'SMS' | 'WHATSAPP';
+  @IsIn(['SMS', 'WHATSAPP', 'EMAIL'])
+  channel!: 'SMS' | 'WHATSAPP' | 'EMAIL';
 
+  /** The sender's phone (E.164), or their email address for EMAIL. */
   @IsString()
-  @Length(3, 32)
+  @Length(3, 191)
   peer!: string;
 }
 

@@ -309,6 +309,7 @@ export class AssistantService {
             today: new Date().toISOString().slice(0, 10),
             bookLabel: await this.bookLabel(scope),
             rules: await this.rules.promptBlock(scope),
+            preferredContact: await this.preferredContact(scope.customerId),
             attachment,
           }),
         },
@@ -372,6 +373,19 @@ export class AssistantService {
       where: { customerId, role: 'USER', createdAt: { gte: since } },
     });
     return count > this.dailyLimit();
+  }
+
+  /** How the customer likes to be reached (step12) — a hint only, so a failed read is no hint. */
+  private async preferredContact(customerId: number): Promise<string | null> {
+    try {
+      const c = await this.prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { preferredContact: true },
+      });
+      return c?.preferredContact ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private async bookLabel(scope: BookScope): Promise<string> {

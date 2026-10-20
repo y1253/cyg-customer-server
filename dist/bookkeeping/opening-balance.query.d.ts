@@ -6,7 +6,9 @@ export declare function loadOpeningStatements(prisma: PrismaService, scope: Book
     filename: string;
     periodEnd: Date | null;
     currency: string | null;
-}>>;
+}> & {
+    bridges: OpeningStatement[];
+}>;
 export declare function accountCurrencies(prisma: PrismaService, scope: BookScope): Promise<Map<string, string>>;
 export declare const effectiveCurrency: (s: {
     accountName: string | null;

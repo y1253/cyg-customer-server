@@ -1,5 +1,6 @@
 export interface OpeningStatement {
     id: number;
+    bridgeOnly?: boolean;
     accountName: string | null;
     accountKind?: string | null;
     openingBalance: number | null;
@@ -18,7 +19,9 @@ export interface OpeningRow {
     creditAccount: string;
 }
 export declare const STARTING_BALANCE = "Starting balance";
-export declare function openingRows(statements: OpeningStatement[]): OpeningRow[];
+export declare function openingRows(statements: OpeningStatement[] & {
+    bridges?: OpeningStatement[];
+}, bridges?: OpeningStatement[]): OpeningRow[];
 export interface StartingBalance {
     statementId: number;
     date: string | null;

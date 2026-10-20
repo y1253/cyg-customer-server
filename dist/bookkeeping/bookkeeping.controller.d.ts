@@ -6,6 +6,7 @@ import type { BookScope } from './scope';
 import { AttachmentsService, type AttachmentView, type IntakeView } from './attachments.service';
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
 import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
+import { CommunicationsService, type ChannelSummary, type CommPage } from './communications.service';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
@@ -30,7 +31,8 @@ export declare class BookkeepingController {
     private readonly productMemory;
     private readonly fx;
     private readonly prisma;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService);
+    private readonly communications;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;
@@ -51,6 +53,8 @@ export declare class BookkeepingController {
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;
     resetProductRule(scope: BookScope, dto: ResetProductRuleDto): Promise<ProductView[]>;
     uploadAttachments(scope: BookScope, files: Express.Multer.File[], rawTransactionId?: string): Promise<AttachmentView[]>;
+    communicationChannels(scope: BookScope): Promise<ChannelSummary[]>;
+    communicationPage(scope: BookScope, channel: string, before?: string): Promise<CommPage>;
     intake(scope: BookScope): Promise<IntakeView>;
     listAttachments(scope: BookScope): Promise<AttachmentView[]>;
     attachmentFile(scope: BookScope, id: number, res: Response): Promise<StreamableFile>;

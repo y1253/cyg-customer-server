@@ -11,7 +11,8 @@ import {
 } from './assistant-prompt';
 import { AssistantService } from './assistant.service';
 
-export type IntakeChannel = 'SMS' | 'WHATSAPP';
+/** EMAIL = the customer inbox (step12): `peer` is the sender's address. */
+export type IntakeChannel = 'SMS' | 'WHATSAPP' | 'EMAIL';
 
 export interface IntakeRoute {
   companyId: number | null;
@@ -303,7 +304,7 @@ export class IntakeAgentService {
       where: {
         customerId: conversation.customerId,
         companyId: null,
-        source: { in: ['SMS', 'WHATSAPP'] },
+        source: { in: ['SMS', 'WHATSAPP', 'EMAIL'] },
         sourcePhone: peer,
         createdAt: { gte: since },
         deletedAt: null,

@@ -1,0 +1,177 @@
+/**
+ * The Communication tab (step12): everything a customer exchanged with us, one chat per
+ * channel — WhatsApp, text, email, the website chat — plus what they uploaded on the site.
+ * Pure, so the merge (messages + files that came in without one) is tested without a DB.
+ */
+
+export type CommChannel = 'WHATSAPP' | 'SMS' | 'EMAIL' | 'BOT' | 'UPLOADS';
+export const COMM_CHANNELS: readonly CommChannel[] = [
+  'WHATSAPP',
+  'SMS',
+  'EMAIL',
+  'BOT',
+  'UPLOADS',
+];
+export const isCommChannel = (c: unknown): c is CommChannel =>
+  typeof c === 'string' && (COMM_CHANNELS as readonly string[]).includes(c);
+
+/** The channels that are conversations with the AI (`AiConversation.channel`). */
+export const MESSAGE_CHANNELS = ['WHATSAPP', 'SMS', 'EMAIL', 'BOT'] as const;
+/** Where a texted / emailed file says it came from (`TransactionAttachment.source`). */
+export const FILE_SOURCE: Partial<Record<CommChannel, string>> = {
+  WHATSAPP: 'WHATSAPP',
+  SMS: 'SMS',
+  EMAIL: 'EMAIL',
+};
+
+export interface CommFile {
+  /** attachment = `TransactionAttachment`, statement = `BankStatement`. */
+  type: 'attachment' | 'statement';
+  id: number;
+  filename: string;
+  mimeType: string | null;
+  status: string;
+}
+
+export interface CommItem {
+  key: string;
+  /** ISO time. */
+  at: string;
+  /** customer = they sent it (right side); cyg = we / the assistant answered (left). */
+  side: 'customer' | 'cyg';
+  /** message = a chat message; upload = a file that arrived with no message logged. */
+  kind: 'message' | 'upload';
+  text: string | null;
+  files: CommFile[];
+  warning?: string | null;
+}
+
+export interface MessageIn {
+  id: number;
+  role: string;
+  text: string;
+  warning: string | null;
+  attachmentIds: unknown;
+  createdAt: Date;
+}
+
+export interface AttachmentIn {
+  id: number;
+  filename: string;
+  mimeType: string;
+  status: string;
+  message: string | null;
+  createdAt: Date;
+}
+
+export interface StatementIn {
+  id: number;
+  filename: string;
+  status: string;
+  createdAt: Date;
+}
+
+/** `AiMessage.attachmentIds` (Json) as numbers; anything else is ignored. */
+export function idsOf(json: unknown): number[] {
+  return Array.isArray(json)
+    ? json.filter((n): n is number => Number.isInteger(n) && n > 0)
+    : [];
+}
+
+/** "[sent a file]" — the placeholder the intake agent logs for a message with no words. */
+const FILE_LABEL = /^\[sent (a file|\d+ files)\]$/;
+
+const fileOf = (a: AttachmentIn): CommFile => ({
+  type: 'attachment',
+  id: a.id,
+  filename: a.filename,
+  mimeType: a.mimeType,
+  status: a.status,
+});
+
+/**
+ * One page of a channel's chat, NEWEST first.
+ * - messages: each with the files it carried (`files` looked up by id; a file deleted
+ *   since is simply left out),
+ * - loose: files of that channel no message refers to (sent while the assistant was off,
+ *   or uploaded on the website) — each its own "upload" bubble, with the words sent with it,
+ * - statements: statements uploaded on the website.
+ */
+export function buildTimeline(input: {
+  messages: MessageIn[];
+  files: ReadonlyMap<number, AttachmentIn>;
+  loose: AttachmentIn[];
+  statements: StatementIn[];
+}): CommItem[] {
+  const items: CommItem[] = [
+    ...input.messages.map((m): CommItem => {
+      const files = idsOf(m.attachmentIds)
+        .map((id) => input.files.get(id))
+        .filter((a): a is AttachmentIn => !!a)
+        .map(fileOf);
+      return {
+        key: `m:${m.id}`,
+        at: m.createdAt.toISOString(),
+        side: m.role === 'USER' ? 'customer' : 'cyg',
+        kind: 'message',
+        text: files.length && FILE_LABEL.test(m.text) ? null : m.text,
+        files,
+        ...(m.warning && { warning: m.warning }),
+      };
+    }),
+    ...input.loose.map(
+      (a): CommItem => ({
+        key: `a:${a.id}`,
+        at: a.createdAt.toISOString(),
+        side: 'customer',
+        kind: 'upload',
+        text: a.message?.trim() || null,
+        files: [fileOf(a)],
+      }),
+    ),
+    ...input.statements.map(
+      (s): CommItem => ({
+        key: `s:${s.id}`,
+        at: s.createdAt.toISOString(),
+        side: 'customer',
+        kind: 'upload',
+        text: null,
+        files: [
+          {
+            type: 'statement',
+            id: s.id,
+            filename: s.filename,
+            mimeType: 'application/pdf',
+            status: s.status,
+          },
+        ],
+      }),
+    ),
+  ];
+  return items.sort(
+    (a, b) => b.at.localeCompare(a.at) || b.key.localeCompare(a.key),
+  );
+}
+
+/** The first `limit` items, and the cursor for the page after them (null = no more). */
+export function pageOf(
+  items: CommItem[],
+  limit: number,
+): { items: CommItem[]; nextBefore: string | null } {
+  const page = items.slice(0, limit);
+  return {
+    items: page,
+    nextBefore: items.length > limit ? page[page.length - 1].at : null,
+  };
+}
+
+/** The preview line on the channel list. */
+export function previewOf(item: CommItem | undefined): string | null {
+  if (!item) return null;
+  const who = item.side === 'cyg' ? 'CYG: ' : '';
+  if (item.text) return `${who}${item.text.replace(/\s+/g, ' ').slice(0, 120)}`;
+  const f = item.files[0];
+  if (!f) return null;
+  const more = item.files.length > 1 ? ` +${item.files.length - 1}` : '';
+  return `${who}📎 ${f.filename}${more}`;
+}

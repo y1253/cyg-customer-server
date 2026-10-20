@@ -32,6 +32,7 @@ const statement_extractor_1 = require("./statement-extractor");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_processor_service_1 = require("./statement-processor.service");
 const tax_service_1 = require("./tax.service");
+const communications_service_1 = require("./communications.service");
 let BookkeepingModule = class BookkeepingModule {
 };
 exports.BookkeepingModule = BookkeepingModule;
@@ -45,6 +46,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             attachments_service_1.AttachmentsService,
             bookkeeping_service_1.BookkeepingService,
             book_scope_guard_1.BookScopeGuard,
+            communications_service_1.CommunicationsService,
             customer_accounts_service_1.CustomerAccountsService,
             fx_service_1.FxService,
             export_service_1.LedgerExportService,
