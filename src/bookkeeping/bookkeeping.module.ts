@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
+import { RulesService } from '../assistant/rules.service';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { AttachmentExtractor } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
@@ -40,6 +41,7 @@ import { TaxService } from './tax.service';
     ProductCategorizer,
     ProductMemoryService,
     ReportsService,
+    RulesService,
     SplitsService,
     StaffBookGuard,
     StaffRulesService,
@@ -48,6 +50,18 @@ import { TaxService } from './tax.service';
     StatementProcessorService,
     TaxService,
   ],
-  exports: [BookkeepingService, BookScopeGuard],
+  // The AI assistant (step11) works through the same services the website uses.
+  exports: [
+    AttachmentProcessorService,
+    AttachmentsService,
+    BookkeepingService,
+    BookScopeGuard,
+    CustomerAccountsService,
+    NameMemoryService,
+    ReportsService,
+    RulesService,
+    SplitsService,
+    TaxService,
+  ],
 })
 export class BookkeepingModule {}

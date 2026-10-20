@@ -1,3 +1,4 @@
+import { RulesService } from '../assistant/rules.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { ProductCategorizer } from './product-categorizer';
@@ -9,8 +10,9 @@ export declare class ProductMemoryService {
     private readonly accounts;
     private readonly categorizer;
     private readonly tax;
+    private readonly rules?;
     private readonly logger;
-    constructor(prisma: PrismaService, accounts: CustomerAccountsService, categorizer: ProductCategorizer, tax: TaxService);
+    constructor(prisma: PrismaService, accounts: CustomerAccountsService, categorizer: ProductCategorizer, tax: TaxService, rules?: RulesService | undefined);
     categoriesFor(scope: BookScope, names: readonly string[], context: {
         store?: string | null;
         parentCategory: string;

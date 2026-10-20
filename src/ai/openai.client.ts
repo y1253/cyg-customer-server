@@ -23,6 +23,82 @@ export interface ChatRequest {
   timeoutMs: number;
 }
 
+/** One tool call the model asked for; `arguments` is its JSON text, unparsed. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** A message of a multi-turn, tool-using conversation (`chatMessages`). */
+export type AgentMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content: string | null; toolCalls?: ToolCall[] }
+  | { role: 'tool'; toolCallId: string; content: string };
+
+/** A function the model may call (OpenAI "tools", type function). */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  /** JSON schema of the arguments object. */
+  parameters: Record<string, unknown>;
+}
+
+export interface AgentRequest {
+  model: string;
+  messages: AgentMessage[];
+  tools?: ToolDefinition[];
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs: number;
+}
+
+/** What one round answered: text, tool calls, or both. */
+export interface AgentReply {
+  content: string | null;
+  toolCalls: ToolCall[];
+}
+
+/** The chat-completions body for an agent round — pure, so its shape is tested. */
+export function agentBody(req: AgentRequest): Record<string, unknown> {
+  return {
+    model: req.model,
+    temperature: req.temperature ?? 0.2,
+    max_tokens: req.maxTokens,
+    messages: req.messages.map((m) => {
+      if (m.role === 'tool') {
+        return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+      }
+      if (m.role === 'assistant') {
+        return {
+          role: 'assistant',
+          content: m.content,
+          ...(m.toolCalls?.length && {
+            tool_calls: m.toolCalls.map((c) => ({
+              id: c.id,
+              type: 'function',
+              function: { name: c.name, arguments: c.arguments },
+            })),
+          }),
+        };
+      }
+      return { role: m.role, content: m.content };
+    }),
+    ...(req.tools?.length && {
+      tools: req.tools.map((t) => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        },
+      })),
+      tool_choice: 'auto',
+    }),
+  };
+}
+
 /**
  * The one way this server talks to OpenAI: plain `fetch`, like the internal app's
  * `AiService.chat` (no SDK). Never logs a key, a prompt or a document — only the model,
@@ -110,6 +186,71 @@ export class OpenAiClient {
     if (!content)
       throw new BadGatewayException('The AI returned an empty reply');
     return content;
+  }
+
+  /**
+   * One round of a tool-using conversation (the AI assistant, step11): the whole history
+   * in, the model's text and/or tool calls out. The caller runs the tools and calls again.
+   */
+  async chatMessages(req: AgentRequest): Promise<AgentReply> {
+    const key = this.config.get<string>('OPENAI_API_KEY')?.trim();
+    if (!key) throw new BadGatewayException('The AI service is not configured');
+    const started = Date.now();
+    let res: Response;
+    try {
+      res = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(agentBody(req)),
+        signal: AbortSignal.timeout(req.timeoutMs),
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.name : 'error';
+      this.logger.warn(
+        `openai ${req.model} agent FAILED ${reason} ${Date.now() - started}ms`,
+      );
+      throw new BadGatewayException('The AI service could not be reached');
+    }
+    const data = (await res.json().catch(() => null)) as {
+      error?: { message?: string };
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          refusal?: string | null;
+          tool_calls?: Array<{
+            id?: string;
+            type?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
+    } | null;
+    this.logger.log(
+      `openai ${req.model} agent ${res.status} ${Date.now() - started}ms`,
+    );
+    if (!res.ok) {
+      throw new BadGatewayException(
+        data?.error?.message ?? `The AI service answered ${res.status}`,
+      );
+    }
+    const message = data?.choices?.[0]?.message;
+    const toolCalls = (message?.tool_calls ?? []).flatMap((c) =>
+      c.id && c.function?.name
+        ? [
+            {
+              id: c.id,
+              name: c.function.name,
+              arguments: c.function.arguments ?? '{}',
+            },
+          ]
+        : [],
+    );
+    const content =
+      message?.content?.trim() || message?.refusal?.trim() || null;
+    return { content, toolCalls };
   }
 
   /**

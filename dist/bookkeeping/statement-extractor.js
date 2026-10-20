@@ -172,7 +172,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         let calls = 0;
         const read = (i, model, context, hint) => {
             calls++;
-            return this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint);
+            return this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''));
         };
         const pages = new Array(chunks.length);
         pages[0] = await read(0, this.model(), null, null);
@@ -249,7 +249,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         };
         await Promise.all(Array.from({ length: Math.min(PAGE_CONCURRENCY, items.length) }, worker));
     }
-    async readChunk(chunk, index, pagesPerChunk, totalPages, filename, model, context, hint) {
+    async readChunk(chunk, index, pagesPerChunk, totalPages, filename, model, context, hint, system = exports.SYSTEM_PROMPT) {
         const from = index * pagesPerChunk + 1;
         const lines = [
             `Statement "${filename}", page${chunk.pages > 1 ? 's' : ''} ${from}${chunk.pages > 1 ? `-${from + chunk.pages - 1}` : ''} of ${totalPages}.`,
@@ -261,7 +261,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             lines.push('', hint);
         const reply = await this.openai.chat({
             model,
-            system: exports.SYSTEM_PROMPT,
+            system,
             user: [
                 { type: 'text', text: lines.join('\n') },
                 {

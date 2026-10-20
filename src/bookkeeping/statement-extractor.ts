@@ -274,6 +274,8 @@ export class StatementExtractor {
       maxRereads?: number;
       /** Called after every re-read round — the processor's heartbeat. */
       onRound?: (rereads: number) => Promise<void> | void;
+      /** The book's learned "house rules" (`RulesService.promptBlock`), appended to the prompt. */
+      rules?: string;
     } = {},
   ): Promise<ExtractedStatement> {
     const pagesPerChunk = opts.pagesPerChunk ?? PAGES_PER_CHUNK;
@@ -296,6 +298,7 @@ export class StatementExtractor {
         model,
         context,
         hint,
+        SYSTEM_PROMPT + (opts.rules ?? ''),
       );
     };
 
@@ -415,6 +418,7 @@ export class StatementExtractor {
     model: string,
     context: PageContext | null,
     hint: string | null,
+    system: string = SYSTEM_PROMPT,
   ): Promise<PageReading> {
     const from = index * pagesPerChunk + 1;
     const lines = [
@@ -428,7 +432,7 @@ export class StatementExtractor {
     if (hint) lines.push('', hint);
     const reply = await this.openai.chat({
       model,
-      system: SYSTEM_PROMPT,
+      system,
       user: [
         { type: 'text', text: lines.join('\n') },
         {

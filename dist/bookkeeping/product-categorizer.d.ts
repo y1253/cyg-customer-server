@@ -12,5 +12,6 @@ export declare class ProductCategorizer {
     }>, context?: {
         store?: string | null;
         category?: string | null;
+        rules?: string;
     }): Promise<Map<string, string>>;
 }

@@ -11,10 +11,48 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var OpenAiClient_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenAiClient = void 0;
+exports.agentBody = agentBody;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
+function agentBody(req) {
+    return {
+        model: req.model,
+        temperature: req.temperature ?? 0.2,
+        max_tokens: req.maxTokens,
+        messages: req.messages.map((m) => {
+            if (m.role === 'tool') {
+                return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+            }
+            if (m.role === 'assistant') {
+                return {
+                    role: 'assistant',
+                    content: m.content,
+                    ...(m.toolCalls?.length && {
+                        tool_calls: m.toolCalls.map((c) => ({
+                            id: c.id,
+                            type: 'function',
+                            function: { name: c.name, arguments: c.arguments },
+                        })),
+                    }),
+                };
+            }
+            return { role: m.role, content: m.content };
+        }),
+        ...(req.tools?.length && {
+            tools: req.tools.map((t) => ({
+                type: 'function',
+                function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                },
+            })),
+            tool_choice: 'auto',
+        }),
+    };
+}
 let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
     config;
     logger = new common_1.Logger(OpenAiClient_1.name);
@@ -80,6 +118,46 @@ let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
         if (!content)
             throw new common_1.BadGatewayException('The AI returned an empty reply');
         return content;
+    }
+    async chatMessages(req) {
+        const key = this.config.get('OPENAI_API_KEY')?.trim();
+        if (!key)
+            throw new common_1.BadGatewayException('The AI service is not configured');
+        const started = Date.now();
+        let res;
+        try {
+            res = await fetch(CHAT_URL, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${key}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(agentBody(req)),
+                signal: AbortSignal.timeout(req.timeoutMs),
+            });
+        }
+        catch (err) {
+            const reason = err instanceof Error ? err.name : 'error';
+            this.logger.warn(`openai ${req.model} agent FAILED ${reason} ${Date.now() - started}ms`);
+            throw new common_1.BadGatewayException('The AI service could not be reached');
+        }
+        const data = (await res.json().catch(() => null));
+        this.logger.log(`openai ${req.model} agent ${res.status} ${Date.now() - started}ms`);
+        if (!res.ok) {
+            throw new common_1.BadGatewayException(data?.error?.message ?? `The AI service answered ${res.status}`);
+        }
+        const message = data?.choices?.[0]?.message;
+        const toolCalls = (message?.tool_calls ?? []).flatMap((c) => c.id && c.function?.name
+            ? [
+                {
+                    id: c.id,
+                    name: c.function.name,
+                    arguments: c.function.arguments ?? '{}',
+                },
+            ]
+            : []);
+        const content = message?.content?.trim() || message?.refusal?.trim() || null;
+        return { content, toolCalls };
     }
     async transcribe(audio, filename, mimeType, timeoutMs = 120_000) {
         const key = this.config.get('OPENAI_API_KEY')?.trim();

@@ -26,11 +26,50 @@ export interface ChatRequest {
     maxTokens?: number;
     timeoutMs: number;
 }
+export interface ToolCall {
+    id: string;
+    name: string;
+    arguments: string;
+}
+export type AgentMessage = {
+    role: 'system';
+    content: string;
+} | {
+    role: 'user';
+    content: string;
+} | {
+    role: 'assistant';
+    content: string | null;
+    toolCalls?: ToolCall[];
+} | {
+    role: 'tool';
+    toolCallId: string;
+    content: string;
+};
+export interface ToolDefinition {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+}
+export interface AgentRequest {
+    model: string;
+    messages: AgentMessage[];
+    tools?: ToolDefinition[];
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs: number;
+}
+export interface AgentReply {
+    content: string | null;
+    toolCalls: ToolCall[];
+}
+export declare function agentBody(req: AgentRequest): Record<string, unknown>;
 export declare class OpenAiClient {
     private readonly config;
     private readonly logger;
     constructor(config: ConfigService);
     get configured(): boolean;
     chat(req: ChatRequest): Promise<string>;
+    chatMessages(req: AgentRequest): Promise<AgentReply>;
     transcribe(audio: Buffer, filename: string, mimeType: string, timeoutMs?: number): Promise<string>;
 }

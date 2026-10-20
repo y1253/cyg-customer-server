@@ -27,8 +27,8 @@ export declare class AttachmentExtractor {
     constructor(openai: OpenAiClient, config: ConfigService);
     private visionModel;
     private textModel;
-    read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null): Promise<AttachmentReading>;
-    pick(reading: AttachmentReading, candidates: readonly MatchCandidate[], message?: string | null): Promise<{
+    read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null, rules?: string): Promise<AttachmentReading>;
+    pick(reading: AttachmentReading, candidates: readonly MatchCandidate[], message?: string | null, rules?: string): Promise<{
         transactionId: number | null;
         confident: boolean;
         reason: string;

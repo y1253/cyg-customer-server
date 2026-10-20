@@ -169,6 +169,8 @@ export class AttachmentExtractor {
     today: string,
     /** SMS only: the words texted with the file (for `text`, the same as the file). */
     message?: string | null,
+    /** The book's learned "house rules" (`RulesService.promptBlock`), '' for none. */
+    rules = '',
   ): Promise<AttachmentReading> {
     if (cls === 'text') {
       const words = file.toString('utf8').trim();
@@ -179,7 +181,7 @@ export class AttachmentExtractor {
       }
       return this.ask(
         this.textModel(),
-        TEXT_PROMPT,
+        TEXT_PROMPT + rules,
         `TODAY: ${today}\n\nText message:\n"""\n${words.slice(0, 4000)}\n"""`,
       );
     }
@@ -194,7 +196,7 @@ export class AttachmentExtractor {
       }
       const reading = await this.ask(
         this.textModel(),
-        AUDIO_PROMPT,
+        AUDIO_PROMPT + rules,
         `TODAY: ${today}\n\nTranscript:\n"""\n${transcript.slice(0, 8000)}\n"""${senderNote(message)}`,
       );
       return { ...reading, transcript };
@@ -206,7 +208,7 @@ export class AttachmentExtractor {
         ? { type: 'file', file: { filename, file_data: dataUrl } }
         : { type: 'image_url', image_url: { url: dataUrl } },
     ];
-    return this.ask(this.visionModel(), DOCUMENT_PROMPT, user);
+    return this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
   }
 
   /** The AI's pick among code's shortlist. An id outside the list is dropped by the caller. */
@@ -215,6 +217,8 @@ export class AttachmentExtractor {
     candidates: readonly MatchCandidate[],
     /** SMS only: what the customer texted with it. */
     message?: string | null,
+    /** The book's learned "house rules" (`RulesService.promptBlock`), '' for none. */
+    rules = '',
   ): Promise<{
     transactionId: number | null;
     confident: boolean;
@@ -238,7 +242,7 @@ export class AttachmentExtractor {
     }));
     const reply = await this.openai.chat({
       model: this.textModel(),
-      system: PICK_PROMPT,
+      system: PICK_PROMPT + rules,
       user: `Attachment:\n${JSON.stringify(about)}\n\nCandidates:\n${JSON.stringify(rows)}`,
       jsonSchema: { name: 'attachment_match', schema: PICK_SCHEMA },
       maxTokens: 300,

@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { RulesService } from '../assistant/rules.service';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
@@ -35,6 +41,8 @@ export class ProductMemoryService {
     private readonly accounts: CustomerAccountsService,
     private readonly categorizer: ProductCategorizer,
     private readonly tax: TaxService,
+    /** step11: the book's learned rules, read before the AI categorises. Optional for specs. */
+    @Optional() private readonly rules?: RulesService,
   ) {}
 
   /**
@@ -60,6 +68,7 @@ export class ProductMemoryService {
           const answers = await this.categorizer.categorize(ask, {
             store: context.store,
             category: context.parentCategory,
+            rules: (await this.rules?.promptBlock(scope, 'CATEGORY')) ?? '',
           });
           const named = ask.flatMap((a) => {
             const category = answers.get(a.key);

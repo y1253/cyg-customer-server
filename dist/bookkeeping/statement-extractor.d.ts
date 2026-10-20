@@ -140,6 +140,7 @@ export declare class StatementExtractor {
         pagesPerChunk?: number;
         maxRereads?: number;
         onRound?: (rereads: number) => Promise<void> | void;
+        rules?: string;
     }): Promise<ExtractedStatement>;
     private pool;
     private readChunk;

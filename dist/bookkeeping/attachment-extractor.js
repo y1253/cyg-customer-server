@@ -126,20 +126,20 @@ let AttachmentExtractor = class AttachmentExtractor {
         return (this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
             'gpt-4.1-mini');
     }
-    async read(file, filename, mime, cls, today, message) {
+    async read(file, filename, mime, cls, today, message, rules = '') {
         if (cls === 'text') {
             const words = file.toString('utf8').trim();
             if (words.replace(/[^\p{L}\p{N}]/gu, '').length < 3) {
                 throw new UnreadableAttachmentError('This text message does not say anything we can file.');
             }
-            return this.ask(this.textModel(), TEXT_PROMPT, `TODAY: ${today}\n\nText message:\n"""\n${words.slice(0, 4000)}\n"""`);
+            return this.ask(this.textModel(), TEXT_PROMPT + rules, `TODAY: ${today}\n\nText message:\n"""\n${words.slice(0, 4000)}\n"""`);
         }
         if (cls === 'audio') {
             const transcript = await this.openai.transcribe(file, filename, mime);
             if (transcript.replace(/[^\p{L}\p{N}]/gu, '').length < 8) {
                 throw new UnreadableAttachmentError('We could not hear anything in this recording. Record it again, closer to the microphone.');
             }
-            const reading = await this.ask(this.textModel(), AUDIO_PROMPT, `TODAY: ${today}\n\nTranscript:\n"""\n${transcript.slice(0, 8000)}\n"""${senderNote(message)}`);
+            const reading = await this.ask(this.textModel(), AUDIO_PROMPT + rules, `TODAY: ${today}\n\nTranscript:\n"""\n${transcript.slice(0, 8000)}\n"""${senderNote(message)}`);
             return { ...reading, transcript };
         }
         const dataUrl = `data:${mime};base64,${file.toString('base64')}`;
@@ -149,9 +149,9 @@ let AttachmentExtractor = class AttachmentExtractor {
                 ? { type: 'file', file: { filename, file_data: dataUrl } }
                 : { type: 'image_url', image_url: { url: dataUrl } },
         ];
-        return this.ask(this.visionModel(), DOCUMENT_PROMPT, user);
+        return this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
     }
-    async pick(reading, candidates, message) {
+    async pick(reading, candidates, message, rules = '') {
         const about = {
             kind: reading.kind,
             vendor: reading.vendor ?? reading.payee,
@@ -170,7 +170,7 @@ let AttachmentExtractor = class AttachmentExtractor {
         }));
         const reply = await this.openai.chat({
             model: this.textModel(),
-            system: PICK_PROMPT,
+            system: PICK_PROMPT + rules,
             user: `Attachment:\n${JSON.stringify(about)}\n\nCandidates:\n${JSON.stringify(rows)}`,
             jsonSchema: { name: 'attachment_match', schema: PICK_SCHEMA },
             maxTokens: 300,

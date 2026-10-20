@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { RulesService } from '../assistant/rules.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   AttachmentKind,
@@ -92,6 +93,8 @@ export class AttachmentProcessorService {
     private readonly splits: SplitsService,
     private readonly products: ProductMemoryService,
     private readonly names: NameMemoryService,
+    /** step11: the book's learned rules, read before every AI step. Optional for specs. */
+    @Optional() private readonly rules?: RulesService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -172,6 +175,7 @@ export class AttachmentProcessorService {
         cls,
         day(row.createdAt)!,
         row.message,
+        (await this.rules?.promptBlock(scope)) ?? '',
       );
       // A voice note or a text message keeps saying what it is; a file is what was read.
       const kind =
@@ -357,7 +361,12 @@ export class AttachmentProcessorService {
       };
     }
     const top = list.slice(0, MAX_FOR_AI);
-    const pick = await this.extractor.pick(reading, top, message);
+    const pick = await this.extractor.pick(
+      reading,
+      top,
+      message,
+      (await this.rules?.promptBlock(scope, 'MATCHING')) ?? '',
+    );
     const chosen = top.find((c) => c.id === pick.transactionId);
     if (chosen && pick.confident) {
       return {
@@ -369,6 +378,112 @@ export class AttachmentProcessorService {
       transactionId: null,
       note: `${pick.reason ? `${pick.reason} ` : ''}Choose the transaction yourself.`,
     };
+  }
+
+  /**
+   * step11 "Ask AI": a WIDER search than the automatic matcher, steered by what the customer
+   * said ("it's the Amazon charge on Mar 3"). Every hint is optional; with none, the
+   * reading's own amount (±25%) and date (±45 days) are used. DONE parent rows of this book
+   * only, closest date first, at most `limit`.
+   */
+  async candidatesFor(
+    scope: BookScope,
+    attachmentId: number,
+    hints: {
+      from?: string | null;
+      to?: string | null;
+      amount?: number | null;
+      text?: string | null;
+    } = {},
+    limit = 30,
+  ): Promise<MatchCandidate[]> {
+    const a = await this.prisma.transactionAttachment.findFirst({
+      where: { id: attachmentId, ...scopeWhere(scope), deletedAt: null },
+      select: { extracted: true },
+    });
+    if (!a) return [];
+    const reading = (a.extracted ??
+      null) as unknown as AttachmentReading | null;
+    const amount = hints.amount ?? (reading ? readingTotal(reading) : null);
+    const anchor = reading?.date ?? null;
+    const dayMs = 86_400_000;
+    const isDay = (d?: string | null) => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d);
+    const from = isDay(hints.from)
+      ? new Date(`${hints.from}T00:00:00Z`)
+      : anchor
+        ? new Date(Date.parse(`${anchor}T00:00:00Z`) - 45 * dayMs)
+        : null;
+    const to = isDay(hints.to)
+      ? new Date(`${hints.to}T23:59:59Z`)
+      : anchor
+        ? new Date(Date.parse(`${anchor}T00:00:00Z`) + 45 * dayMs)
+        : null;
+    const where: Prisma.BankTransactionWhereInput = {
+      ...scopeWhere(scope),
+      splitOfId: null,
+      statement: { deletedAt: null, status: StatementStatus.DONE },
+    };
+    const and: Prisma.BankTransactionWhereInput[] = [];
+    if (amount && amount > 0) {
+      const lo = (amount * 0.75).toFixed(2);
+      const hi = (amount * 1.25).toFixed(2);
+      and.push({
+        OR: [
+          { amount: { gte: lo, lte: hi } },
+          { amount: { gte: `-${hi}`, lte: `-${lo}` } },
+        ],
+      });
+    }
+    if (from || to) {
+      and.push({
+        OR: [
+          {
+            postingDate: { ...(from && { gte: from }), ...(to && { lte: to }) },
+          },
+          {
+            postingDate: null,
+            pendingDate: { ...(from && { gte: from }), ...(to && { lte: to }) },
+          },
+        ],
+      });
+    }
+    const text = hints.text?.trim();
+    if (text) {
+      and.push({
+        OR: [{ name: { contains: text } }, { description: { contains: text } }],
+      });
+    }
+    if (and.length) where.AND = and;
+    const rows = await this.prisma.bankTransaction.findMany({
+      where,
+      take: 500,
+      select: {
+        id: true,
+        postingDate: true,
+        pendingDate: true,
+        amount: true,
+        name: true,
+        description: true,
+      },
+    });
+    const at = anchor ? Date.parse(`${anchor}T00:00:00Z`) : null;
+    const gap = (d: Date | null) =>
+      at === null || !d ? Number.MAX_SAFE_INTEGER : Math.abs(d.getTime() - at);
+    return rows
+      .sort(
+        (x, y) =>
+          gap(x.postingDate ?? x.pendingDate) -
+            gap(y.postingDate ?? y.pendingDate) || x.id - y.id,
+      )
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id,
+        date: day(r.postingDate ?? r.pendingDate),
+        amount: Number(r.amount),
+        name: r.name,
+        description: r.description,
+        attachedTotals: [],
+      }));
   }
 
   /**

@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var StatementProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
@@ -15,6 +18,7 @@ exports.needsReviewMessage = needsReviewMessage;
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
+const rules_service_1 = require("../assistant/rules.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const account_identity_util_1 = require("./account-identity.util");
@@ -39,15 +43,17 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     tax;
     names;
     images;
+    rules;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax, names, images) {
+    constructor(prisma, storage, extractor, tax, names, images, rules) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.tax = tax;
         this.names = names;
         this.images = images;
+        this.rules = rules;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -120,7 +126,9 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         const scope = (0, scope_1.scopeOf)(row);
         try {
             const pdf = await this.storage.getBuffer(row.storageKey);
+            const rules = (await this.rules?.promptBlock(scope)) ?? '';
             const extracted = await this.extractor.extract(pdf, row.filename, {
+                rules,
                 onRound: async () => {
                     await this.prisma.bankStatement.updateMany({
                         where: { id: row.id, status: client_1.StatementStatus.PROCESSING },
@@ -254,12 +262,14 @@ __decorate([
 ], StatementProcessorService.prototype, "sweep", null);
 exports.StatementProcessorService = StatementProcessorService = StatementProcessorService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
         tax_service_1.TaxService,
         name_memory_service_1.NameMemoryService,
-        statement_images_service_1.StatementImagesService])
+        statement_images_service_1.StatementImagesService,
+        rules_service_1.RulesService])
 ], StatementProcessorService);
 function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';

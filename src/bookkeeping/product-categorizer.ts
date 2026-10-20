@@ -59,7 +59,12 @@ export class ProductCategorizer {
   /** `key` → the AI's category. A key it left out or invented is dropped. */
   async categorize(
     items: ReadonlyArray<{ key: string; name: string }>,
-    context: { store?: string | null; category?: string | null } = {},
+    context: {
+      store?: string | null;
+      category?: string | null;
+      /** The book's learned "house rules" (`RulesService.promptBlock`). */
+      rules?: string;
+    } = {},
   ): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     const wanted = new Set(items.map((i) => i.key));
@@ -67,7 +72,7 @@ export class ProductCategorizer {
       const batch = items.slice(i, i + PER_CALL);
       const reply = await this.openai.chat({
         model: this.model(),
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_PROMPT + (context.rules ?? ''),
         user:
           `Store: ${context.store ?? 'unknown'}\n` +
           `Transaction category: ${context.category ?? 'unknown'}\n\n` +

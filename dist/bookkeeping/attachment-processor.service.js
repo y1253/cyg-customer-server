@@ -8,12 +8,16 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var AttachmentProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AttachmentProcessorService = void 0;
 exports.readingTotal = readingTotal;
 exports.classOf = classOf;
 const common_1 = require("@nestjs/common");
+const rules_service_1 = require("../assistant/rules.service");
 const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -57,15 +61,17 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     splits;
     products;
     names;
+    rules;
     logger = new common_1.Logger(AttachmentProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, splits, products, names) {
+    constructor(prisma, storage, extractor, splits, products, names, rules) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
         this.splits = splits;
         this.products = products;
         this.names = names;
+        this.rules = rules;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -131,7 +137,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         try {
             const cls = classOf(row.mimeType);
             const file = await this.storage.getBuffer(row.storageKey);
-            const reading = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message);
+            const reading = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message, (await this.rules?.promptBlock(scope)) ?? '');
             const kind = cls === 'audio'
                 ? client_1.AttachmentKind.AUDIO
                 : cls === 'text'
@@ -267,7 +273,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             };
         }
         const top = list.slice(0, attachment_match_util_1.MAX_FOR_AI);
-        const pick = await this.extractor.pick(reading, top, message);
+        const pick = await this.extractor.pick(reading, top, message, (await this.rules?.promptBlock(scope, 'MATCHING')) ?? '');
         const chosen = top.find((c) => c.id === pick.transactionId);
         if (chosen && pick.confident) {
             return {
@@ -279,6 +285,93 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             transactionId: null,
             note: `${pick.reason ? `${pick.reason} ` : ''}Choose the transaction yourself.`,
         };
+    }
+    async candidatesFor(scope, attachmentId, hints = {}, limit = 30) {
+        const a = await this.prisma.transactionAttachment.findFirst({
+            where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { extracted: true },
+        });
+        if (!a)
+            return [];
+        const reading = (a.extracted ??
+            null);
+        const amount = hints.amount ?? (reading ? readingTotal(reading) : null);
+        const anchor = reading?.date ?? null;
+        const dayMs = 86_400_000;
+        const isDay = (d) => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d);
+        const from = isDay(hints.from)
+            ? new Date(`${hints.from}T00:00:00Z`)
+            : anchor
+                ? new Date(Date.parse(`${anchor}T00:00:00Z`) - 45 * dayMs)
+                : null;
+        const to = isDay(hints.to)
+            ? new Date(`${hints.to}T23:59:59Z`)
+            : anchor
+                ? new Date(Date.parse(`${anchor}T00:00:00Z`) + 45 * dayMs)
+                : null;
+        const where = {
+            ...(0, scope_1.scopeWhere)(scope),
+            splitOfId: null,
+            statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
+        };
+        const and = [];
+        if (amount && amount > 0) {
+            const lo = (amount * 0.75).toFixed(2);
+            const hi = (amount * 1.25).toFixed(2);
+            and.push({
+                OR: [
+                    { amount: { gte: lo, lte: hi } },
+                    { amount: { gte: `-${hi}`, lte: `-${lo}` } },
+                ],
+            });
+        }
+        if (from || to) {
+            and.push({
+                OR: [
+                    {
+                        postingDate: { ...(from && { gte: from }), ...(to && { lte: to }) },
+                    },
+                    {
+                        postingDate: null,
+                        pendingDate: { ...(from && { gte: from }), ...(to && { lte: to }) },
+                    },
+                ],
+            });
+        }
+        const text = hints.text?.trim();
+        if (text) {
+            and.push({
+                OR: [{ name: { contains: text } }, { description: { contains: text } }],
+            });
+        }
+        if (and.length)
+            where.AND = and;
+        const rows = await this.prisma.bankTransaction.findMany({
+            where,
+            take: 500,
+            select: {
+                id: true,
+                postingDate: true,
+                pendingDate: true,
+                amount: true,
+                name: true,
+                description: true,
+            },
+        });
+        const at = anchor ? Date.parse(`${anchor}T00:00:00Z`) : null;
+        const gap = (d) => at === null || !d ? Number.MAX_SAFE_INTEGER : Math.abs(d.getTime() - at);
+        return rows
+            .sort((x, y) => gap(x.postingDate ?? x.pendingDate) -
+            gap(y.postingDate ?? y.pendingDate) || x.id - y.id)
+            .slice(0, limit)
+            .map((r) => ({
+            id: r.id,
+            date: day(r.postingDate ?? r.pendingDate),
+            amount: Number(r.amount),
+            name: r.name,
+            description: r.description,
+            attachedTotals: [],
+        }));
     }
     async candidates(scope, q, statementId) {
         const where = {
@@ -383,11 +476,13 @@ __decorate([
 ], AttachmentProcessorService.prototype, "sweep", null);
 exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProcessorService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         attachment_extractor_1.AttachmentExtractor,
         splits_service_1.SplitsService,
         product_memory_service_1.ProductMemoryService,
-        name_memory_service_1.NameMemoryService])
+        name_memory_service_1.NameMemoryService,
+        rules_service_1.RulesService])
 ], AttachmentProcessorService);
 //# sourceMappingURL=attachment-processor.service.js.map

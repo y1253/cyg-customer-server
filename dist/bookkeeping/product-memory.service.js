@@ -8,10 +8,14 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var ProductMemoryService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProductMemoryService = void 0;
 const common_1 = require("@nestjs/common");
+const rules_service_1 = require("../assistant/rules.service");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
@@ -26,12 +30,14 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
     accounts;
     categorizer;
     tax;
+    rules;
     logger = new common_1.Logger(ProductMemoryService_1.name);
-    constructor(prisma, accounts, categorizer, tax) {
+    constructor(prisma, accounts, categorizer, tax, rules) {
         this.prisma = prisma;
         this.accounts = accounts;
         this.categorizer = categorizer;
         this.tax = tax;
+        this.rules = rules;
     }
     async categoriesFor(scope, names, context) {
         const fallback = () => context.parentCategory;
@@ -47,6 +53,7 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
                     const answers = await this.categorizer.categorize(ask, {
                         store: context.store,
                         category: context.parentCategory,
+                        rules: (await this.rules?.promptBlock(scope, 'CATEGORY')) ?? '',
                     });
                     const named = ask.flatMap((a) => {
                         const category = answers.get(a.key);
@@ -201,9 +208,11 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
 exports.ProductMemoryService = ProductMemoryService;
 exports.ProductMemoryService = ProductMemoryService = ProductMemoryService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         customer_accounts_service_1.CustomerAccountsService,
         product_categorizer_1.ProductCategorizer,
-        tax_service_1.TaxService])
+        tax_service_1.TaxService,
+        rules_service_1.RulesService])
 ], ProductMemoryService);
 //# sourceMappingURL=product-memory.service.js.map

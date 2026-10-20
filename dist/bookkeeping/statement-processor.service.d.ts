@@ -1,3 +1,4 @@
+import { RulesService } from '../assistant/rules.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { NameMemoryService } from './name-memory.service';
@@ -13,9 +14,10 @@ export declare class StatementProcessorService {
     private readonly tax;
     private readonly names;
     private readonly images;
+    private readonly rules?;
     private readonly logger;
     private sweeping;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined);
     processSoon(): void;
     cleanStaging(): Promise<void>;
     sweep(): Promise<void>;

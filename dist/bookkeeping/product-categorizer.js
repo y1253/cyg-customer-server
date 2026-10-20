@@ -62,7 +62,7 @@ let ProductCategorizer = class ProductCategorizer {
             const batch = items.slice(i, i + PER_CALL);
             const reply = await this.openai.chat({
                 model: this.model(),
-                system: SYSTEM_PROMPT,
+                system: SYSTEM_PROMPT + (context.rules ?? ''),
                 user: `Store: ${context.store ?? 'unknown'}\n` +
                     `Transaction category: ${context.category ?? 'unknown'}\n\n` +
                     `Items:\n${JSON.stringify(batch)}`,

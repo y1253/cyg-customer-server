@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { StatementStatus, type BankStatement } from '@prisma/client';
+import { RulesService } from '../assistant/rules.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { canonicalAccountName } from './account-identity.util';
@@ -45,6 +46,8 @@ export class StatementProcessorService {
     private readonly tax: TaxService,
     private readonly names: NameMemoryService,
     private readonly images: StatementImagesService,
+    /** step11: the book's learned rules, read before the statement is. Optional for specs. */
+    @Optional() private readonly rules?: RulesService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -134,7 +137,9 @@ export class StatementProcessorService {
       const pdf = await this.storage.getBuffer(row.storageKey);
       // One run does every re-read (at most MAX_REREADS); each round refreshes updatedAt
       // so a long run is not mistaken for a crashed one and claimed again.
+      const rules = (await this.rules?.promptBlock(scope)) ?? '';
       const extracted = await this.extractor.extract(pdf, row.filename, {
+        rules,
         onRound: async () => {
           await this.prisma.bankStatement.updateMany({
             where: { id: row.id, status: StatementStatus.PROCESSING },
