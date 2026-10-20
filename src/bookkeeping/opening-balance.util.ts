@@ -91,6 +91,37 @@ export function openingRows(statements: OpeningStatement[]): OpeningRow[] {
   return out;
 }
 
+/** Where an account's books start: one Starting balance row, as the customer sees it. */
+export interface StartingBalance {
+  statementId: number;
+  /** YYYY-MM-DD, or null when the statement printed no period. */
+  date: string | null;
+  amount: number;
+}
+
+/**
+ * Each account's Starting balance rows, oldest first. ONE is normal (the account's first
+ * statement); more than one means the chain broke — a missing statement, or balances that
+ * do not carry over — which the Statements tab and the balance sheet flag in red.
+ */
+export function startsByAccount(
+  rows: OpeningRow[],
+): Map<string, StartingBalance[]> {
+  const out = new Map<string, StartingBalance[]>();
+  for (const r of rows) {
+    const list = out.get(r.bankAccount) ?? [];
+    list.push({
+      statementId: r.statementId,
+      date: r.postingDate?.toISOString().slice(0, 10) ?? null,
+      amount: r.amount,
+    });
+    out.set(r.bankAccount, list);
+  }
+  for (const list of out.values())
+    list.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+  return out;
+}
+
 export const CREDIT_CARD = 'CREDIT_CARD';
 export const isCreditCard = (kind: string | null | undefined): boolean =>
   kind === CREDIT_CARD;

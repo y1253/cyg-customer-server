@@ -1,5 +1,9 @@
 import { OWNERS_LOAN } from './chart-of-accounts';
-import { openingRows, type OpeningStatement } from './opening-balance.util';
+import {
+  openingRows,
+  startsByAccount,
+  type OpeningStatement,
+} from './opening-balance.util';
 
 const st = (
   id: number,
@@ -204,5 +208,29 @@ describe('openingRows', () => {
       debitAccount: OWNERS_LOAN,
       creditAccount: 'Amex 1009',
     });
+  });
+});
+
+describe('startsByAccount', () => {
+  it('lists each account’s starting balances oldest first', () => {
+    const rows = openingRows([
+      st(3, '2026-03-01', 1750, null, 'Chase 4362', 0),
+      st(1, '2026-01-01', 1000, 1200, 'Chase 4362', 200),
+      st(9, '2026-02-01', 50, null, 'TD 1111', 0),
+    ]);
+    const starts = startsByAccount(rows);
+    expect(starts.get('Chase 4362')).toEqual([
+      { statementId: 1, date: '2026-01-01', amount: 1000 },
+      { statementId: 3, date: '2026-03-01', amount: 1750 },
+    ]);
+    expect(starts.get('TD 1111')).toHaveLength(1);
+  });
+
+  it('keeps an account whose chain is unbroken to one start', () => {
+    const rows = openingRows([
+      st(1, '2026-01-01', 1000, 1200, 'Chase 4362'),
+      st(2, '2026-02-01', 1200, 900, 'Chase 4362'),
+    ]);
+    expect(startsByAccount(rows).get('Chase 4362')).toHaveLength(1);
   });
 });

@@ -68,6 +68,11 @@ export interface ReportLine {
   /** A foreign statement account: its currency and `amount` before conversion. */
   currency?: string;
   foreignAmount?: number;
+  /**
+   * Balance sheet, statement accounts only: the dates its books start (each "Starting
+   * balance" row up to the sheet's date). More than one = a break in the chain.
+   */
+  starts?: Array<{ date: string | null }>;
 }
 
 export interface ReportsView {

@@ -28,6 +28,7 @@ import {
   ledgerOrder,
   OPENING_POSITION,
   openingRows,
+  startsByAccount,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { StatementProcessorService } from './statement-processor.service';
@@ -62,6 +63,11 @@ export interface StatementView {
   processedAt: Date | null;
   /** The customer filed it under this account themselves (it survives a Retry). */
   movedByCustomer: boolean;
+  /**
+   * Set when this statement STARTS its account's books (a "Starting balance" row in the
+   * ledger): the first one, or one after a break in the chain. Only `list()` fills it.
+   */
+  startingBalance?: { date: string | null; amount: number } | null;
 }
 
 export interface TransactionView {
@@ -340,14 +346,24 @@ export class BookkeepingService {
   }
 
   async list(scope: BookScope): Promise<StatementView[]> {
-    const [rows, currencies] = await Promise.all([
+    const [rows, currencies, opening] = await Promise.all([
       this.prisma.bankStatement.findMany({
         where: { ...scopeWhere(scope), deletedAt: null },
         orderBy: { createdAt: 'desc' },
       }),
       accountCurrencies(this.prisma, scope),
+      loadOpeningStatements(this.prisma, scope),
     ]);
-    return rows.map((r) => toView(r, currencies));
+    // The same rows the ledger shows as "Starting balance", so the folders agree with it.
+    const starts = new Map(
+      [...startsByAccount(openingRows(opening)).values()]
+        .flat()
+        .map((s) => [s.statementId, { date: s.date, amount: s.amount }]),
+    );
+    return rows.map((r) => ({
+      ...toView(r, currencies),
+      startingBalance: starts.get(r.id) ?? null,
+    }));
   }
 
   async transactions(

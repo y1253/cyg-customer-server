@@ -120,13 +120,23 @@ let ReportsService = class ReportsService {
             name: null,
             ...(fx.isForeign(f.statementId) && { foreign: 0 }),
         }));
-        return (0, reports_util_1.buildReports)([...ledgerRows, ...revaluations], from, to, {
+        const view = (0, reports_util_1.buildReports)([...ledgerRows, ...revaluations], from, to, {
             liabilityAccounts: agencies,
             customTypes,
             overrides,
             creditCards,
             bankCurrencies,
         });
+        const starts = (0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(statements));
+        const sheet = view.balanceSheet;
+        for (const line of [...sheet.assets, ...sheet.liabilities, ...sheet.equity]) {
+            if (!line.bank)
+                continue;
+            const list = (starts.get(line.name) ?? []).filter((s) => !to || !s.date || s.date <= to);
+            if (list.length)
+                line.starts = list.map((s) => ({ date: s.date }));
+        }
+        return view;
     }
 };
 exports.ReportsService = ReportsService;

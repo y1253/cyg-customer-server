@@ -66,6 +66,11 @@ export interface AttachmentView {
 export interface IntakeView {
   /** E.164, oldest first. Empty when the firm has connected none. */
   numbers: string[];
+  /**
+   * The subset that ALSO takes WhatsApp (an admin turned it on, and Meta verified it). A
+   * number still takes texts either way — WhatsApp is an extra channel, never a swap.
+   */
+  whatsapp: string[];
   /** The customer's phone as texts are matched (E.164); null = no usable phone saved. */
   phone: string | null;
   /** A phone is saved but could not be read as a number (texts will not match). */
@@ -219,7 +224,7 @@ export class AttachmentsService {
       this.prisma.intakeNumber.findMany({
         where: { releasedAt: null },
         orderBy: { createdAt: 'asc' },
-        select: { phoneNumber: true },
+        select: { phoneNumber: true, whatsappStatus: true },
       }),
       this.prisma.customer.findUnique({
         where: { id: scope.customerId },
@@ -228,6 +233,9 @@ export class AttachmentsService {
     ]);
     return {
       numbers: numbers.map((n) => n.phoneNumber),
+      whatsapp: numbers
+        .filter((n) => n.whatsappStatus === 'CONNECTED')
+        .map((n) => n.phoneNumber),
       phone: me?.phoneE164 ?? null,
       phoneSaved: !!me?.phone,
     };

@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
-import { isCreditCard, openingRows } from './opening-balance.util';
+import {
+  isCreditCard,
+  openingRows,
+  startsByAccount,
+} from './opening-balance.util';
 import { buildReports, type ReportRow, type ReportsView } from './reports.util';
 import { CustomerAccountsService } from './customer-accounts.service';
 import type { FxEntry } from './fx.service';
@@ -147,12 +151,23 @@ export class ReportsService {
         ...(fx.isForeign(f.statementId) && { foreign: 0 }),
       }),
     );
-    return buildReports([...ledgerRows, ...revaluations], from, to, {
+    const view = buildReports([...ledgerRows, ...revaluations], from, to, {
       liabilityAccounts: agencies,
       customTypes,
       overrides,
       creditCards,
       bankCurrencies,
     });
+    // Where each statement account's books start, as of the sheet's own date.
+    const starts = startsByAccount(openingRows(statements));
+    const sheet = view.balanceSheet;
+    for (const line of [...sheet.assets, ...sheet.liabilities, ...sheet.equity]) {
+      if (!line.bank) continue;
+      const list = (starts.get(line.name) ?? []).filter(
+        (s) => !to || !s.date || s.date <= to,
+      );
+      if (list.length) line.starts = list.map((s) => ({ date: s.date }));
+    }
+    return view;
   }
 }

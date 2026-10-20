@@ -34,6 +34,9 @@ export interface ReportLine {
     byName?: ReportLine[];
     currency?: string;
     foreignAmount?: number;
+    starts?: Array<{
+        date: string | null;
+    }>;
 }
 export interface ReportsView {
     from: string | null;

@@ -136,7 +136,7 @@ let AttachmentsService = class AttachmentsService {
             this.prisma.intakeNumber.findMany({
                 where: { releasedAt: null },
                 orderBy: { createdAt: 'asc' },
-                select: { phoneNumber: true },
+                select: { phoneNumber: true, whatsappStatus: true },
             }),
             this.prisma.customer.findUnique({
                 where: { id: scope.customerId },
@@ -145,6 +145,9 @@ let AttachmentsService = class AttachmentsService {
         ]);
         return {
             numbers: numbers.map((n) => n.phoneNumber),
+            whatsapp: numbers
+                .filter((n) => n.whatsappStatus === 'CONNECTED')
+                .map((n) => n.phoneNumber),
             phone: me?.phoneE164 ?? null,
             phoneSaved: !!me?.phone,
         };

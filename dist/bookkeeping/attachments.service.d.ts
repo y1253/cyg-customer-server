@@ -35,6 +35,7 @@ export interface AttachmentView {
 }
 export interface IntakeView {
     numbers: string[];
+    whatsapp: string[];
     phone: string | null;
     phoneSaved: boolean;
 }

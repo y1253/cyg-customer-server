@@ -192,14 +192,21 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return { queued: count, taxing: false };
     }
     async list(scope) {
-        const [rows, currencies] = await Promise.all([
+        const [rows, currencies, opening] = await Promise.all([
             this.prisma.bankStatement.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
                 orderBy: { createdAt: 'desc' },
             }),
             (0, opening_balance_query_1.accountCurrencies)(this.prisma, scope),
+            (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
         ]);
-        return rows.map((r) => toView(r, currencies));
+        const starts = new Map([...(0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(opening)).values()]
+            .flat()
+            .map((s) => [s.statementId, { date: s.date, amount: s.amount }]));
+        return rows.map((r) => ({
+            ...toView(r, currencies),
+            startingBalance: starts.get(r.id) ?? null,
+        }));
     }
     async transactions(scope, statementIds) {
         const [rows, statements, taxes, attached] = await Promise.all([

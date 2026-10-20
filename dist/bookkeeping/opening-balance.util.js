@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OPENING_POSITION = exports.OPENING_STATEMENT_SELECT = exports.num = exports.isCreditCard = exports.CREDIT_CARD = exports.STARTING_BALANCE = void 0;
 exports.openingRows = openingRows;
+exports.startsByAccount = startsByAccount;
 exports.endingsOf = endingsOf;
 exports.ledgerOrder = ledgerOrder;
 const chart_of_accounts_1 = require("./chart-of-accounts");
@@ -41,6 +42,21 @@ function openingRows(statements) {
             });
         }
     }
+    return out;
+}
+function startsByAccount(rows) {
+    const out = new Map();
+    for (const r of rows) {
+        const list = out.get(r.bankAccount) ?? [];
+        list.push({
+            statementId: r.statementId,
+            date: r.postingDate?.toISOString().slice(0, 10) ?? null,
+            amount: r.amount,
+        });
+        out.set(r.bankAccount, list);
+    }
+    for (const list of out.values())
+        list.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
     return out;
 }
 exports.CREDIT_CARD = 'CREDIT_CARD';

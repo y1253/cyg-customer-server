@@ -19,6 +19,12 @@ export interface OpeningRow {
 }
 export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[]): OpeningRow[];
+export interface StartingBalance {
+    statementId: number;
+    date: string | null;
+    amount: number;
+}
+export declare function startsByAccount(rows: OpeningRow[]): Map<string, StartingBalance[]>;
 export declare const CREDIT_CARD = "CREDIT_CARD";
 export declare const isCreditCard: (kind: string | null | undefined) => boolean;
 export declare function endingsOf(s: OpeningStatement, openings?: number[]): number[];

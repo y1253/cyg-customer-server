@@ -26,6 +26,10 @@ export interface StatementView {
     createdAt: Date;
     processedAt: Date | null;
     movedByCustomer: boolean;
+    startingBalance?: {
+        date: string | null;
+        amount: number;
+    } | null;
 }
 export interface TransactionView {
     key: string;
