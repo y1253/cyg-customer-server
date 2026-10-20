@@ -161,6 +161,7 @@ let IntakeController = class IntakeController {
             peer: dto.peer,
             text: dto.text ?? null,
             attachmentIds: dto.attachmentIds,
+            deliverable: dto.deliverable,
         });
     }
 };

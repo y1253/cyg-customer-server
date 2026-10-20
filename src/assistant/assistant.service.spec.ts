@@ -12,7 +12,7 @@ import {
 } from './assistant.service';
 import { AssistantTools, NOT_UNDERSTOOD_WARNING } from './assistant-tools';
 import { IntakeAgentGuard } from './intake-agent.guard';
-import { IntakeAgentService } from './intake-agent.service';
+import { IntakeAgentService, NOT_DELIVERED } from './intake-agent.service';
 import { RulesService } from './rules.service';
 
 const config = (env: Record<string, string>) =>
@@ -45,6 +45,8 @@ function fakePrisma() {
         return row;
       }),
       count: jest.fn(() => messages.filter((m) => m.role === 'USER').length),
+      findFirst: jest.fn(),
+      update: jest.fn(),
     },
     aiConversation: {
       update: jest.fn(
@@ -379,6 +381,23 @@ describe('IntakeAgentService', () => {
       companyId: 3,
       awaitingBook: false,
     });
+  });
+
+  it('marks the reply NOT delivered when the phone opted out (STOP)', async () => {
+    const { agent, prisma } = intake([]);
+    prisma.aiMessage.findFirst.mockResolvedValue({ id: 55, warning: null });
+    const res = await agent.agent(7, { ...msg('hi'), deliverable: false });
+    expect(res.reply).toBe('You spent $120 in March.');
+    expect(prisma.aiMessage.update).toHaveBeenCalledWith({
+      where: { id: 55 },
+      data: { warning: NOT_DELIVERED },
+    });
+  });
+
+  it('leaves a deliverable reply alone', async () => {
+    const { agent, prisma } = intake([]);
+    await agent.agent(7, msg('hi'));
+    expect(prisma.aiMessage.update).not.toHaveBeenCalled();
   });
 });
 

@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -48,4 +49,9 @@ export class IntakeAgentDto extends IntakeRouteDto {
   @ArrayMaxSize(20)
   @IsInt({ each: true })
   attachmentIds!: number[];
+
+  /** False = the reply cannot be sent (the phone opted out of texts). Default true. */
+  @IsOptional()
+  @IsBoolean()
+  deliverable?: boolean;
 }

@@ -55,6 +55,7 @@ __decorate([
 class IntakeAgentDto extends IntakeRouteDto {
     text;
     attachmentIds;
+    deliverable;
 }
 exports.IntakeAgentDto = IntakeAgentDto;
 __decorate([
@@ -69,4 +70,9 @@ __decorate([
     (0, class_validator_1.IsInt)({ each: true }),
     __metadata("design:type", Array)
 ], IntakeAgentDto.prototype, "attachmentIds", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], IntakeAgentDto.prototype, "deliverable", void 0);
 //# sourceMappingURL=assistant.dto.js.map

@@ -12,6 +12,7 @@ export interface IntakeReply {
     fileText: boolean;
     companyId: number | null;
 }
+export declare const NOT_DELIVERED = "Not delivered: this phone opted out of texts (STOP). Texting START re-enables replies.";
 export declare class IntakeAgentService {
     private readonly prisma;
     private readonly config;
@@ -25,7 +26,10 @@ export declare class IntakeAgentService {
         peer: string;
         text: string | null;
         attachmentIds: number[];
+        deliverable?: boolean;
     }): Promise<IntakeReply>;
+    private markUndelivered;
+    private turn;
     private find;
     private books;
     private choose;

@@ -55,6 +55,10 @@ const CLASSIFY_PROMPT =
  *
  * With the assistant off it answers exactly what makes the caller behave as before.
  */
+/** Shown on a reply that could not be sent because the phone texted STOP. */
+export const NOT_DELIVERED =
+  'Not delivered: this phone opted out of texts (STOP). Texting START re-enables replies.';
+
 @Injectable()
 export class IntakeAgentService {
   private readonly logger = new Logger(IntakeAgentService.name);
@@ -83,6 +87,46 @@ export class IntakeAgentService {
   }
 
   async agent(
+    customerId: number,
+    input: {
+      channel: IntakeChannel;
+      peer: string;
+      text: string | null;
+      attachmentIds: number[];
+      /** False = the caller cannot send the reply (the phone texted STOP). Default true. */
+      deliverable?: boolean;
+    },
+  ): Promise<IntakeReply> {
+    const answer = await this.turn(customerId, input);
+    if (input.deliverable === false && answer.reply) {
+      await this.markUndelivered(customerId, input.channel, input.peer);
+    }
+    return answer;
+  }
+
+  /**
+   * The reply was written but cannot be sent — the phone opted out of texts (STOP). Said on
+   * that reply, so staff reading the chat log see why the customer never got an answer.
+   */
+  private async markUndelivered(
+    customerId: number,
+    channel: IntakeChannel,
+    peer: string,
+  ): Promise<void> {
+    const last = await this.prisma.aiMessage.findFirst({
+      where: { customerId, channel, role: 'ASSISTANT', conversation: { peer } },
+      orderBy: { id: 'desc' },
+      select: { id: true, warning: true },
+    });
+    if (!last) return;
+    const note = NOT_DELIVERED;
+    await this.prisma.aiMessage.update({
+      where: { id: last.id },
+      data: { warning: last.warning ? `${last.warning} ${note}` : note },
+    });
+  }
+
+  private async turn(
     customerId: number,
     input: {
       channel: IntakeChannel;

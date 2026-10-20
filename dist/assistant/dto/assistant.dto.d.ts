@@ -12,4 +12,5 @@ export declare class IntakeRouteDto {
 export declare class IntakeAgentDto extends IntakeRouteDto {
     text?: string | null;
     attachmentIds: number[];
+    deliverable?: boolean;
 }
