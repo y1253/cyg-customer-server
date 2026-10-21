@@ -26,6 +26,7 @@ const tax_service_1 = require("../bookkeeping/tax.service");
 const file_links_1 = require("../bookkeeping/file-links");
 const assistant_prompt_1 = require("./assistant-prompt");
 const book_switch_1 = require("./book-switch");
+const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const rules_service_1 = require("./rules.service");
 const rules_util_1 = require("./rules.util");
 const transaction_filter_util_1 = require("./transaction-filter.util");
@@ -216,6 +217,11 @@ const WRITE_TOOLS = [
         }, ['text', 'scope', 'topic']),
     },
 ];
+const SEND_TEXT_TOOL = {
+    name: 'send_text',
+    description: 'Text the customer (the phone they are calling from) — a link from get_link, a list, or details too long to say. Tell them you sent it.',
+    parameters: obj({ text: str }, ['text']),
+};
 exports.ASSISTANT_TOOLS = [
     ...READ_TOOLS,
     ...WRITE_TOOLS,
@@ -223,13 +229,16 @@ exports.ASSISTANT_TOOLS = [
 exports.WRITE_TOOL_NAMES = new Set([
     ...WRITE_TOOLS.map((t) => t.name),
     SWITCH_BOOK_TOOL.name,
+    SEND_TEXT_TOOL.name,
 ]);
 function toolsFor(channel) {
-    return channel === 'BOT'
-        ? exports.ASSISTANT_TOOLS
-        : [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+    if (channel === 'BOT')
+        return exports.ASSISTANT_TOOLS;
+    if (channel === 'VOICE')
+        return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
+    return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
 }
-const ALL_TOOL_NAMES = new Set([...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL].map((t) => t.name));
+const ALL_TOOL_NAMES = new Set([...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name));
 const s = (v) => typeof v === 'string' && v.trim() ? v.trim() : null;
 const n = (v) => typeof v === 'number' && Number.isFinite(v) ? v : null;
 const id = (v) => {
@@ -256,7 +265,8 @@ let AssistantTools = class AssistantTools {
     splits;
     rules;
     links;
-    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links) {
+    messenger;
+    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links, messenger) {
         this.prisma = prisma;
         this.bookkeeping = bookkeeping;
         this.reports = reports;
@@ -268,6 +278,7 @@ let AssistantTools = class AssistantTools {
         this.splits = splits;
         this.rules = rules;
         this.links = links;
+        this.messenger = messenger;
     }
     async run(name, rawArgs, ctx) {
         let args;
@@ -422,6 +433,22 @@ let AssistantTools = class AssistantTools {
             }
             case 'switch_book':
                 return this.switchBook(ctx, s(a.book));
+            case 'send_text': {
+                const body = s(a.text);
+                const peer = ctx.conversation?.peer;
+                if (!body)
+                    throw new Error('nothing to text');
+                if (!peer || !this.messenger)
+                    throw new Error('texting is not available');
+                const outcome = await this.messenger.send({
+                    channel: 'SMS',
+                    to: peer,
+                    body,
+                });
+                if (outcome !== 'sent')
+                    throw new Error(`the text was not sent (${outcome})`);
+                return done('Texted the customer', { ok: true });
+            }
             case 'attach_receipt': {
                 const view = await this.attachments.setTransaction(scope, id(a.attachmentId), id(a.transactionId));
                 const understood = a.understood !== false;
@@ -593,6 +620,7 @@ exports.AssistantTools = AssistantTools = __decorate([
         name_memory_service_1.NameMemoryService,
         splits_service_1.SplitsService,
         rules_service_1.RulesService,
-        file_links_1.FileLinkService])
+        file_links_1.FileLinkService,
+        customer_messenger_service_1.CustomerMessenger])
 ], AssistantTools);
 //# sourceMappingURL=assistant-tools.js.map

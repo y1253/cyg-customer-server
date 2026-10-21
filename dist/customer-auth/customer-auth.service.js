@@ -426,8 +426,9 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             ? dto.preferredContact
             : current?.preferredContact;
         const phone = dto.phone !== undefined ? data.phone : current?.phone;
-        if ((method === 'SMS' || method === 'WHATSAPP') && !phone)
-            throw new common_1.BadRequestException('Add your phone number to be contacted by text or WhatsApp');
+        if ((method === 'SMS' || method === 'WHATSAPP' || method === 'CALL') &&
+            !phone)
+            throw new common_1.BadRequestException('Add your phone number to be contacted by text, WhatsApp or phone call');
         const customer = await this.prisma.customer.update({
             where: { id },
             data,

@@ -12,6 +12,7 @@ import {
   type CommItem,
 } from './communications.util';
 import { scopeWhere, type BookScope } from './scope';
+import { toCallView } from '../voice/voice-calls.service';
 
 export interface ChannelSummary {
   channel: CommChannel;
@@ -137,6 +138,20 @@ export class CommunicationsService {
         ]),
       ],
     }));
+    // step12: the phone calls themselves, between their transcript messages.
+    const calls =
+      channel === 'VOICE'
+        ? (
+            await this.prisma.aiCall.findMany({
+              where: {
+                ...book,
+                ...(before ? { startedAt: { lt: before } } : {}),
+              },
+              orderBy: { startedAt: 'desc' },
+              take,
+            })
+          ).map((c) => ({ ...toCallView(c), startedAt: c.startedAt }))
+        : [];
     const [carried, loose] = await Promise.all([
       // A message keeps showing its files, deleted or not (it was sent / it was about them).
       this.prisma.transactionAttachment.findMany({
@@ -167,6 +182,7 @@ export class CommunicationsService {
         files: new Map(carried.map((a) => [a.id, shown(a)])),
         loose,
         statements: [],
+        calls,
       }),
       limit,
     );
@@ -186,15 +202,18 @@ export class CommunicationsService {
       return a + s;
     }
     const source = FILE_SOURCE[channel];
-    const [messages, files] = await Promise.all([
+    const [messages, files, calls] = await Promise.all([
       this.prisma.aiMessage.count({ where: { ...book, channel } }),
       source
         ? this.prisma.transactionAttachment.count({
             where: { ...book, deletedAt: null, source },
           })
         : Promise.resolve(0),
+      channel === 'VOICE'
+        ? this.prisma.aiCall.count({ where: book })
+        : Promise.resolve(0),
     ]);
-    return messages + files;
+    return messages + files + calls;
   }
 
   /** Every file a message of this channel already shows — so it is not listed twice. */

@@ -25,6 +25,8 @@ const tax_service_1 = require("../bookkeeping/tax.service");
 const mail_service_1 = require("../mail/mail.service");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const prisma_service_1 = require("../prisma/prisma.service");
+const voice_calls_service_1 = require("../voice/voice-calls.service");
+const voice_util_1 = require("../voice/voice.util");
 const next_run_util_1 = require("./next-run.util");
 const schedule_messages_util_1 = require("./schedule-messages.util");
 const DEFAULTS = {
@@ -59,9 +61,10 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
     reports;
     tax;
     assistant;
+    voice;
     logger = new common_1.Logger(SchedulesService_1.name);
     ticking = false;
-    constructor(prisma, config, mail, messenger, links, reports, tax, assistant) {
+    constructor(prisma, config, mail, messenger, links, reports, tax, assistant, voice) {
         this.prisma = prisma;
         this.config = config;
         this.mail = mail;
@@ -70,6 +73,28 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
         this.reports = reports;
         this.tax = tax;
         this.assistant = assistant;
+        this.voice = voice;
+    }
+    onModuleInit() {
+        this.voice.outboundMissed$.subscribe(({ runId, status }) => {
+            void this.callMissed(runId, status).catch((err) => this.logger.error(`schedule run #${runId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`));
+        });
+    }
+    async callMissed(runId, status) {
+        const run = await this.prisma.bookScheduleRun.findUnique({
+            where: { id: runId },
+            include: { schedule: true },
+        });
+        if (!run || run.channel !== 'CALL')
+            return;
+        await this.prisma.bookScheduleRun.update({
+            where: { id: run.id },
+            data: {
+                ok: false,
+                error: `The call was not answered (${status}), so it was sent again another way.`,
+            },
+        });
+        await this.run(run.schedule, run.manual, 'NO_CALL');
     }
     async list(scope) {
         const rows = await Promise.all(TYPES.map((t) => this.ensure(scope, t)));
@@ -147,7 +172,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
             this.ticking = false;
         }
     }
-    async run(s, manual) {
+    async run(s, manual, mode = 'NORMAL') {
         const scope = {
             customerId: s.customerId,
             companyId: s.companyId,
@@ -180,7 +205,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
                 error: 'This book no longer exists.',
             });
         }
-        const delivery = await this.delivery(scope.customerId);
+        const delivery = await this.delivery(scope.customerId, mode === 'NO_CALL');
         if (!delivery.channel || !delivery.to) {
             return record({
                 channel: 'NONE',
@@ -190,6 +215,32 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
         }
         const firstName = live.customerName.trim().split(/\s+/)[0] ?? '';
         const compose = (sms) => this.compose(s, scope, { firstName, book: live.book }, sms);
+        if (delivery.channel === 'CALL') {
+            const spoken = await compose(true);
+            if ('skip' in spoken) {
+                return record({ channel: 'NONE', ok: true, text: spoken.skip });
+            }
+            const script = (0, voice_util_1.spokenScript)(spoken.text);
+            const row = await record({ channel: 'CALL', ok: true, text: script });
+            const placed = await this.voice.callCustomer({
+                scope,
+                peer: delivery.to,
+                purpose: s.type,
+                runId: row.id,
+                script,
+            });
+            if ('error' in placed) {
+                await this.prisma.bookScheduleRun.update({
+                    where: { id: row.id },
+                    data: {
+                        ok: false,
+                        error: `The call could not be placed: ${placed.error}`,
+                    },
+                });
+                return this.run(s, manual, 'NO_CALL');
+            }
+            return row;
+        }
         const first = await compose(delivery.channel === 'SMS');
         if ('skip' in first) {
             return record({ channel: 'NONE', ok: true, text: first.skip });
@@ -394,14 +445,26 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
             })),
         };
     }
-    async delivery(customerId) {
+    async delivery(customerId, noCall = false) {
         const c = await this.prisma.customer.findUnique({
             where: { id: customerId },
             select: { email: true, phoneE164: true, preferredContact: true },
         });
         if (!c)
             return { channel: null, to: null, preferred: null };
-        const wantsText = c.preferredContact === 'SMS' || c.preferredContact === 'WHATSAPP';
+        if (!noCall &&
+            c.preferredContact === 'CALL' &&
+            c.phoneE164 &&
+            (await this.voice.canCall())) {
+            return {
+                channel: 'CALL',
+                to: c.phoneE164,
+                preferred: c.preferredContact,
+            };
+        }
+        const wantsText = c.preferredContact === 'SMS' ||
+            c.preferredContact === 'WHATSAPP' ||
+            c.preferredContact === 'CALL';
         if (wantsText && c.phoneE164 && this.messenger.smsConfigured) {
             return { channel: 'SMS', to: c.phoneE164, preferred: c.preferredContact };
         }
@@ -499,6 +562,7 @@ exports.SchedulesService = SchedulesService = SchedulesService_1 = __decorate([
         file_links_1.FileLinkService,
         reports_service_1.ReportsService,
         tax_service_1.TaxService,
-        assistant_service_1.AssistantService])
+        assistant_service_1.AssistantService,
+        voice_calls_service_1.VoiceCallsService])
 ], SchedulesService);
 //# sourceMappingURL=schedules.service.js.map

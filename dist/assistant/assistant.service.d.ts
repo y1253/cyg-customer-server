@@ -94,6 +94,12 @@ export declare class AssistantService {
         files?: unknown[];
     }): Promise<ChatResult>;
     private run;
+    promptFor(conversation: AiConversation, extra?: {
+        attachment?: unknown;
+        files?: unknown[];
+        note?: string;
+    }): Promise<string>;
+    isOverLimit(customerId: number): Promise<boolean>;
     private overLimit;
     private preferredContact;
     private bookLabel;

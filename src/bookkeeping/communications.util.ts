@@ -4,10 +4,17 @@
  * Pure, so the merge (messages + files that came in without one) is tested without a DB.
  */
 
-export type CommChannel = 'WHATSAPP' | 'SMS' | 'EMAIL' | 'BOT' | 'UPLOADS';
+export type CommChannel =
+  | 'WHATSAPP'
+  | 'SMS'
+  | 'VOICE'
+  | 'EMAIL'
+  | 'BOT'
+  | 'UPLOADS';
 export const COMM_CHANNELS: readonly CommChannel[] = [
   'WHATSAPP',
   'SMS',
+  'VOICE',
   'EMAIL',
   'BOT',
   'UPLOADS',
@@ -16,7 +23,13 @@ export const isCommChannel = (c: unknown): c is CommChannel =>
   typeof c === 'string' && (COMM_CHANNELS as readonly string[]).includes(c);
 
 /** The channels that are conversations with the AI (`AiConversation.channel`). */
-export const MESSAGE_CHANNELS = ['WHATSAPP', 'SMS', 'EMAIL', 'BOT'] as const;
+export const MESSAGE_CHANNELS = [
+  'WHATSAPP',
+  'SMS',
+  'VOICE',
+  'EMAIL',
+  'BOT',
+] as const;
 /** Where a texted / emailed file says it came from (`TransactionAttachment.source`). */
 export const FILE_SOURCE: Partial<Record<CommChannel, string>> = {
   WHATSAPP: 'WHATSAPP',
@@ -35,17 +48,34 @@ export interface CommFile {
   status: string;
 }
 
+/** step12: one AI phone call on the VOICE channel (its words are the messages around it). */
+export interface CommCall {
+  id: number;
+  /** INBOUND = they called us; OUTBOUND = the AI called them (a scheduled message). */
+  direction: string;
+  /** INBOUND | ACCOUNT_STATUS | FINANCIAL_REPORT */
+  purpose: string;
+  status: string;
+  durationSec: number | null;
+  hasRecording: boolean;
+}
+
 export interface CommItem {
   key: string;
   /** ISO time. */
   at: string;
   /** customer = they sent it (right side); cyg = we / the assistant answered (left). */
   side: 'customer' | 'cyg';
-  /** message = a chat message; upload = a file that arrived with no message logged. */
-  kind: 'message' | 'upload';
+  /** message = a chat message; upload = a file that arrived with no message logged; call = a phone call. */
+  kind: 'message' | 'upload' | 'call';
   text: string | null;
   files: CommFile[];
   warning?: string | null;
+  call?: CommCall;
+}
+
+export interface CallIn extends CommCall {
+  startedAt: Date;
 }
 
 export interface MessageIn {
@@ -105,8 +135,28 @@ export function buildTimeline(input: {
   files: ReadonlyMap<number, AttachmentIn>;
   loose: AttachmentIn[];
   statements: StatementIn[];
+  /** step12: the VOICE channel's calls. */
+  calls?: CallIn[];
 }): CommItem[] {
   const items: CommItem[] = [
+    ...(input.calls ?? []).map(
+      (c): CommItem => ({
+        key: `c:${c.id}`,
+        at: c.startedAt.toISOString(),
+        side: c.direction === 'OUTBOUND' ? 'cyg' : 'customer',
+        kind: 'call',
+        text: null,
+        files: [],
+        call: {
+          id: c.id,
+          direction: c.direction,
+          purpose: c.purpose,
+          status: c.status,
+          durationSec: c.durationSec,
+          hasRecording: c.hasRecording,
+        },
+      }),
+    ),
     ...input.messages.map((m): CommItem => {
       const files = idsOf(m.attachmentIds)
         .map((id) => input.files.get(id))
@@ -172,6 +222,11 @@ export function pageOf(
 export function previewOf(item: CommItem | undefined): string | null {
   if (!item) return null;
   const who = item.side === 'cyg' ? 'CYG: ' : '';
+  if (item.call) {
+    return item.call.direction === 'OUTBOUND'
+      ? '📞 We called you'
+      : '📞 You called us';
+  }
   if (item.text) return `${who}${item.text.replace(/\s+/g, ' ').slice(0, 120)}`;
   const f = item.files[0];
   if (!f) return null;

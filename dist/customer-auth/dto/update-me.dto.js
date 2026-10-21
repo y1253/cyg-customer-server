@@ -13,7 +13,7 @@ exports.UpdateMeDto = exports.CONTACT_METHODS = void 0;
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
 const trim = ({ value }) => typeof value === 'string' ? value.trim() : value;
-exports.CONTACT_METHODS = ['EMAIL', 'WHATSAPP', 'SMS'];
+exports.CONTACT_METHODS = ['EMAIL', 'WHATSAPP', 'SMS', 'CALL'];
 class UpdateMeDto {
     name;
     phone;
@@ -39,7 +39,9 @@ __decorate([
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.ValidateIf)((_, v) => v !== null),
-    (0, class_validator_1.IsIn)(exports.CONTACT_METHODS, { message: 'Pick email, WhatsApp or text message' }),
+    (0, class_validator_1.IsIn)(exports.CONTACT_METHODS, {
+        message: 'Pick email, WhatsApp, text message or phone call',
+    }),
     __metadata("design:type", Object)
 ], UpdateMeDto.prototype, "preferredContact", void 0);
 //# sourceMappingURL=update-me.dto.js.map

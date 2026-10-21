@@ -13,7 +13,7 @@ const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
 
 /** How a customer prefers to be contacted (step12). */
-export const CONTACT_METHODS = ['EMAIL', 'WHATSAPP', 'SMS'] as const;
+export const CONTACT_METHODS = ['EMAIL', 'WHATSAPP', 'SMS', 'CALL'] as const;
 export type ContactMethod = (typeof CONTACT_METHODS)[number];
 
 /**
@@ -37,9 +37,11 @@ export class UpdateMeDto {
   @Matches(/^[0-9+()\-.\s]{7,32}$/, { message: 'Enter a valid phone number' })
   phone?: string | null;
 
-  /** `null` clears it. WHATSAPP / SMS need a phone (checked in the service). */
+  /** `null` clears it. WHATSAPP / SMS / CALL need a phone (checked in the service). */
   @IsOptional()
   @ValidateIf((_, v) => v !== null)
-  @IsIn(CONTACT_METHODS, { message: 'Pick email, WhatsApp or text message' })
+  @IsIn(CONTACT_METHODS, {
+    message: 'Pick email, WhatsApp, text message or phone call',
+  })
   preferredContact?: ContactMethod | null;
 }

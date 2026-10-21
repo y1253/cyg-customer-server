@@ -8,13 +8,20 @@ exports.previewOf = previewOf;
 exports.COMM_CHANNELS = [
     'WHATSAPP',
     'SMS',
+    'VOICE',
     'EMAIL',
     'BOT',
     'UPLOADS',
 ];
 const isCommChannel = (c) => typeof c === 'string' && exports.COMM_CHANNELS.includes(c);
 exports.isCommChannel = isCommChannel;
-exports.MESSAGE_CHANNELS = ['WHATSAPP', 'SMS', 'EMAIL', 'BOT'];
+exports.MESSAGE_CHANNELS = [
+    'WHATSAPP',
+    'SMS',
+    'VOICE',
+    'EMAIL',
+    'BOT',
+];
 exports.FILE_SOURCE = {
     WHATSAPP: 'WHATSAPP',
     SMS: 'SMS',
@@ -36,6 +43,22 @@ const fileOf = (a) => ({
 });
 function buildTimeline(input) {
     const items = [
+        ...(input.calls ?? []).map((c) => ({
+            key: `c:${c.id}`,
+            at: c.startedAt.toISOString(),
+            side: c.direction === 'OUTBOUND' ? 'cyg' : 'customer',
+            kind: 'call',
+            text: null,
+            files: [],
+            call: {
+                id: c.id,
+                direction: c.direction,
+                purpose: c.purpose,
+                status: c.status,
+                durationSec: c.durationSec,
+                hasRecording: c.hasRecording,
+            },
+        })),
         ...input.messages.map((m) => {
             const files = idsOf(m.attachmentIds)
                 .map((id) => input.files.get(id))
@@ -89,6 +112,11 @@ function previewOf(item) {
     if (!item)
         return null;
     const who = item.side === 'cyg' ? 'CYG: ' : '';
+    if (item.call) {
+        return item.call.direction === 'OUTBOUND'
+            ? '📞 We called you'
+            : '📞 You called us';
+    }
     if (item.text)
         return `${who}${item.text.replace(/\s+/g, ' ').slice(0, 120)}`;
     const f = item.files[0];

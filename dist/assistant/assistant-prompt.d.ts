@@ -1,4 +1,4 @@
-export type Channel = 'BOT' | 'SMS' | 'WHATSAPP' | 'EMAIL';
+export type Channel = 'BOT' | 'SMS' | 'WHATSAPP' | 'EMAIL' | 'VOICE';
 export declare const CHANNELS: readonly Channel[];
 export declare const isChannel: (c: unknown) => c is Channel;
 export declare function channelStyle(channel: Channel): string;

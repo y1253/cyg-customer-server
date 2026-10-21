@@ -1,0 +1,220 @@
+import { EventEmitter } from 'node:events';
+import WebSocket from 'ws';
+import type { VoiceDeps } from './voice-session';
+import { VoiceSession } from './voice-session';
+
+/** A socket that records what is sent to it and lets the test push messages in. */
+class FakeSocket extends EventEmitter {
+  readyState: number = WebSocket.OPEN;
+  sent: Array<Record<string, unknown>> = [];
+  send(data: string) {
+    this.sent.push(JSON.parse(data) as Record<string, unknown>);
+  }
+  close() {
+    if (this.readyState === WebSocket.CLOSED) return;
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close');
+  }
+  push(event: unknown) {
+    this.emit('message', Buffer.from(JSON.stringify(event)));
+  }
+  types() {
+    return this.sent.map((e) => e.type ?? e.event);
+  }
+}
+
+const flush = async () => {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+};
+
+function setup() {
+  const phone = new FakeSocket();
+  const openai = new FakeSocket();
+  const conversation = {
+    id: 3,
+    customerId: 7,
+    companyId: null,
+    channel: 'VOICE',
+    peer: '+15145550001',
+    bookChosen: true,
+  };
+  const saved: Array<[string, string]> = [];
+  const deps = {
+    prisma: {
+      customer: { findFirst: jest.fn(() => ({ name: 'Dana Smith' })) },
+      aiConversation: { findUnique: jest.fn(() => conversation) },
+      company: { findMany: jest.fn(() => []) },
+    },
+    calls: {
+      verify: jest.fn((t: string) =>
+        t === 'good'
+          ? {
+              typ: 'voice-call',
+              sub: 7,
+              peer: '+15145550001',
+              to: '+14385550000',
+              dir: 'INBOUND',
+            }
+          : null,
+      ),
+      settings: jest.fn(() => ({
+        enabled: true,
+        voice: 'cedar',
+        greeting: null,
+        maxMinutes: 15,
+      })),
+      conversationFor: jest.fn(() => conversation),
+      started: jest.fn(),
+      ended: jest.fn(() => Promise.resolve()),
+    },
+    assistant: {
+      isOverLimit: jest.fn(() => false),
+      promptFor: jest.fn(() => 'THE SAME PROMPT AS THE CHAT'),
+      save: jest.fn((_c: unknown, role: string, text: string) => {
+        saved.push([role, text]);
+        return { id: saved.length };
+      }),
+    },
+    tools: {
+      run: jest.fn(() => ({
+        content: '{"url":"https://x"}',
+        action: { tool: 'get_link', ok: true, summary: 'Link' },
+      })),
+    },
+    signalwire: {
+      startRecording: jest.fn(() => 'RE1'),
+      hangup: jest.fn(),
+    },
+    openaiKey: 'sk-test',
+    model: null,
+    connect: jest.fn(() => openai),
+  };
+  new VoiceSession(phone as unknown as WebSocket, deps as unknown as VoiceDeps);
+  return { phone, openai, deps, saved };
+}
+
+describe('VoiceSession (step12)', () => {
+  it('refuses a stream without a valid token', async () => {
+    const { phone, deps } = setup();
+    phone.push({
+      event: 'start',
+      start: {
+        streamSid: 'MZ',
+        callSid: 'CA',
+        customParameters: { token: 'bad' },
+      },
+    });
+    await flush();
+    expect(phone.readyState).toBe(WebSocket.CLOSED);
+    expect(deps.connect).not.toHaveBeenCalled();
+  });
+
+  it('bridges the call to Realtime as the same agent: prompt, voice, tools, greeting', async () => {
+    const { phone, openai, deps } = setup();
+    phone.push({
+      event: 'start',
+      start: {
+        streamSid: 'MZ',
+        callSid: 'CA',
+        customParameters: { token: 'good' },
+      },
+    });
+    await flush();
+    expect(deps.signalwire.startRecording).toHaveBeenCalledWith('CA');
+    openai.emit('open');
+    await flush();
+    const update = openai.sent[0] as {
+      session: {
+        instructions: string;
+        audio: { output: { voice: string } };
+        tools: unknown[];
+      };
+    };
+    expect(update.session.instructions).toBe('THE SAME PROMPT AS THE CHAT');
+    expect(update.session.audio.output.voice).toBe('cedar');
+    expect(update.session.tools.length).toBeGreaterThan(5);
+    expect(openai.types()).toContain('response.create');
+
+    // Caller audio goes to OpenAI; the AI's audio goes back to the phone.
+    phone.push({
+      event: 'media',
+      media: { payload: 'AAAA', track: 'inbound' },
+    });
+    openai.push({ type: 'response.output_audio.delta', delta: 'BBBB' });
+    await flush();
+    expect(openai.sent).toContainEqual({
+      type: 'input_audio_buffer.append',
+      audio: 'AAAA',
+    });
+    expect(phone.sent).toContainEqual({
+      event: 'media',
+      streamSid: 'MZ',
+      media: { payload: 'BBBB' },
+    });
+  });
+
+  it('runs tools like the chat, saves both sides, and lets the caller interrupt', async () => {
+    const { phone, openai, deps, saved } = setup();
+    phone.push({
+      event: 'start',
+      start: {
+        streamSid: 'MZ',
+        callSid: 'CA',
+        customParameters: { token: 'good' },
+      },
+    });
+    await flush();
+    openai.emit('open');
+    openai.push({
+      type: 'conversation.item.input_audio_transcription.completed',
+      transcript: 'Send me my report',
+    });
+    openai.push({ type: 'response.created' });
+    openai.push({
+      type: 'response.function_call_arguments.done',
+      call_id: 'c1',
+      name: 'get_link',
+      arguments: '{"type":"report"}',
+    });
+    await flush();
+    expect(deps.tools.run).toHaveBeenCalledWith(
+      'get_link',
+      '{"type":"report"}',
+      expect.objectContaining({
+        scope: { customerId: 7, companyId: null },
+        messageId: 1,
+      }),
+    );
+    expect(openai.sent).toContainEqual({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: 'c1',
+        output: '{"url":"https://x"}',
+      },
+    });
+    openai.push({ type: 'response.done' });
+    openai.push({
+      type: 'response.output_audio_transcript.done',
+      transcript: 'I texted you the link.',
+    });
+    await flush();
+    expect(saved).toEqual([
+      ['USER', 'Send me my report'],
+      ['ASSISTANT', 'I texted you the link.'],
+    ]);
+
+    openai.push({ type: 'response.created' });
+    openai.push({ type: 'input_audio_buffer.speech_started' });
+    await flush();
+    expect(phone.sent).toContainEqual({ event: 'clear', streamSid: 'MZ' });
+    expect(openai.types()).toContain('response.cancel');
+
+    phone.push({ event: 'stop' });
+    await flush();
+    expect(deps.calls.ended).toHaveBeenCalledWith(
+      'CA',
+      expect.objectContaining({ recordingSid: 'RE1', wav: null }),
+    );
+  });
+});

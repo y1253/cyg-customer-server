@@ -1,0 +1,55 @@
+import WebSocket from 'ws';
+import type { AssistantTools } from '../assistant/assistant-tools';
+import type { AssistantService } from '../assistant/assistant.service';
+import type { SignalWireClient } from '../messaging/signalwire.client';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { VoiceCallsService } from './voice-calls.service';
+export interface VoiceDeps {
+    prisma: PrismaService;
+    calls: VoiceCallsService;
+    assistant: AssistantService;
+    tools: AssistantTools;
+    signalwire: SignalWireClient;
+    openaiKey: string | null;
+    model: string | null;
+    connect?: (url: string, headers: Record<string, string>) => WebSocket;
+}
+export declare class VoiceSession {
+    private readonly ws;
+    private readonly deps;
+    private readonly logger;
+    private openai;
+    private streamSid;
+    private callSid;
+    private claims;
+    private conversation;
+    private settings;
+    private recordingSid;
+    private lastUserMessageId;
+    private turnActions;
+    private turnTouched;
+    private turnWarning;
+    private responding;
+    private toolOutputsPending;
+    private closed;
+    private timer;
+    private readonly caller;
+    private readonly ai;
+    private early;
+    constructor(ws: WebSocket, deps: VoiceDeps);
+    private onSignalWire;
+    private start;
+    private openRealtime;
+    private callNote;
+    private opening;
+    private onOpenAi;
+    private runTool;
+    private saveAssistant;
+    private freshConversation;
+    private sendOpenAi;
+    private sendSignalWire;
+    private hangUp;
+    private fail;
+    private close;
+    private finish;
+}

@@ -26,6 +26,7 @@ import {
   type Channel,
 } from './assistant-prompt';
 import { bookOptions, chooseBook, moveRecentFiles } from './book-switch';
+import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
@@ -295,6 +296,17 @@ const WRITE_TOOLS: ToolDefinition[] = [
   },
 ];
 
+/**
+ * step12: on a phone call the AI cannot show a link or a list — it texts them instead, to
+ * the number on the call.
+ */
+const SEND_TEXT_TOOL: ToolDefinition = {
+  name: 'send_text',
+  description:
+    'Text the customer (the phone they are calling from) — a link from get_link, a list, or details too long to say. Tell them you sent it.',
+  parameters: obj({ text: str }, ['text']),
+};
+
 export const ASSISTANT_TOOLS: ToolDefinition[] = [
   ...READ_TOOLS,
   ...WRITE_TOOLS,
@@ -302,16 +314,21 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
 export const WRITE_TOOL_NAMES = new Set([
   ...WRITE_TOOLS.map((t) => t.name),
   SWITCH_BOOK_TOOL.name,
+  SEND_TEXT_TOOL.name,
 ]);
 
-/** The tools offered on a channel: the phone / email threads may also switch book. */
+/**
+ * The tools offered on a channel: the phone / email threads may also switch book; a phone
+ * call (VOICE) may also text the customer.
+ */
 export function toolsFor(channel: Channel): ToolDefinition[] {
-  return channel === 'BOT'
-    ? ASSISTANT_TOOLS
-    : [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+  if (channel === 'BOT') return ASSISTANT_TOOLS;
+  if (channel === 'VOICE')
+    return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
+  return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
 }
 const ALL_TOOL_NAMES = new Set(
-  [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL].map((t) => t.name),
+  [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name),
 );
 
 type Args = Record<string, unknown>;
@@ -352,6 +369,7 @@ export class AssistantTools {
     private readonly splits: SplitsService,
     private readonly rules: RulesService,
     private readonly links: FileLinkService,
+    private readonly messenger?: CustomerMessenger,
   ) {}
 
   /** Runs one tool. Never throws: a failure is reported to the model (and as a failed action). */
@@ -538,6 +556,21 @@ export class AssistantTools {
       }
       case 'switch_book':
         return this.switchBook(ctx, s(a.book));
+      case 'send_text': {
+        const body = s(a.text);
+        const peer = ctx.conversation?.peer;
+        if (!body) throw new Error('nothing to text');
+        if (!peer || !this.messenger)
+          throw new Error('texting is not available');
+        const outcome = await this.messenger.send({
+          channel: 'SMS',
+          to: peer,
+          body,
+        });
+        if (outcome !== 'sent')
+          throw new Error(`the text was not sent (${outcome})`);
+        return done('Texted the customer', { ok: true });
+      }
 
       case 'attach_receipt': {
         const view = await this.attachments.setTransaction(

@@ -8,7 +8,13 @@ exports.bookKey = bookKey;
 exports.bookCandidates = bookCandidates;
 exports.parseBookChoice = parseBookChoice;
 exports.whichBookQuestion = whichBookQuestion;
-exports.CHANNELS = ['BOT', 'SMS', 'WHATSAPP', 'EMAIL'];
+exports.CHANNELS = [
+    'BOT',
+    'SMS',
+    'WHATSAPP',
+    'EMAIL',
+    'VOICE',
+];
 const isChannel = (c) => typeof c === 'string' && exports.CHANNELS.includes(c);
 exports.isChannel = isChannel;
 function channelStyle(channel) {
@@ -19,6 +25,12 @@ function channelStyle(channel) {
             return 'You are answering on WhatsApp, like a person chatting: short and plain (no tables or headings; *bold* is fine), at most about 800 characters. Summarise long lists.';
         case 'EMAIL':
             return 'You are answering an EMAIL the customer sent to our inbox: plain text (no markdown), a short greeting, short paragraphs, at most about 1,200 characters, signed "— CYG Finance". Do not repeat their email back.';
+        case 'VOICE':
+            return ('You are SPEAKING on a PHONE CALL (step12): talk like a friendly person on the phone — ' +
+                'short sentences, one or two at a time, then let them answer. Never read out links, ids, ' +
+                'tables or long lists: summarise (count, total, the top 2 or 3) and offer to text the ' +
+                'details or a link with send_text. Say amounts naturally ("about four hundred and twelve ' +
+                'dollars"). If they say goodbye, say goodbye briefly.');
         case 'BOT':
             return 'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.';
     }
@@ -27,6 +39,7 @@ const CONTACT_LABEL = {
     EMAIL: 'email',
     WHATSAPP: 'WhatsApp',
     SMS: 'text message',
+    CALL: 'phone call',
 };
 function systemPrompt(p) {
     const lines = [

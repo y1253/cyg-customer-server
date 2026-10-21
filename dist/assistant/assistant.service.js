@@ -326,15 +326,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             const messages = [
                 {
                     role: 'system',
-                    content: (0, assistant_prompt_1.systemPrompt)({
-                        channel,
-                        today: new Date().toISOString().slice(0, 10),
-                        bookLabel: await this.bookLabel(scope),
-                        rules: await this.rules.promptBlock(scope),
-                        preferredContact: await this.preferredContact(scope.customerId),
-                        attachment,
-                        files,
-                    }),
+                    content: await this.promptFor(conversation, { attachment, files }),
                 },
                 ...history.map((m) => m.role === 'USER'
                     ? { role: 'user', content: m.text }
@@ -388,6 +380,25 @@ let AssistantService = AssistantService_1 = class AssistantService {
             this.logger.warn(`assistant customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`);
         }
         return { text: exports.FAILED_REPLY, actions, warning, touched };
+    }
+    async promptFor(conversation, extra = {}) {
+        const scope = {
+            customerId: conversation.customerId,
+            companyId: conversation.companyId,
+        };
+        const prompt = (0, assistant_prompt_1.systemPrompt)({
+            channel: conversation.channel,
+            today: new Date().toISOString().slice(0, 10),
+            bookLabel: await this.bookLabel(scope),
+            rules: await this.rules.promptBlock(scope),
+            preferredContact: await this.preferredContact(scope.customerId),
+            attachment: extra.attachment,
+            files: extra.files,
+        });
+        return extra.note ? `${prompt}\n\n${extra.note}` : prompt;
+    }
+    isOverLimit(customerId) {
+        return this.overLimit(customerId);
     }
     async overLimit(customerId) {
         const since = new Date();

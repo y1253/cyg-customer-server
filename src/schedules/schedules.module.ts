@@ -3,6 +3,7 @@ import { AssistantModule } from '../assistant/assistant.module';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { VoiceModule } from '../voice/voice.module';
 import { SchedulesController } from './schedules.controller';
 import { SchedulesService } from './schedules.service';
 
@@ -13,6 +14,7 @@ import { SchedulesService } from './schedules.service';
     CustomerAuthModule,
     MessagingModule,
     AssistantModule,
+    VoiceModule,
   ],
   controllers: [SchedulesController],
   providers: [SchedulesService],

@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -23,6 +24,8 @@ import { TaxService } from '../bookkeeping/tax.service';
 import { MailService } from '../mail/mail.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { VoiceCallsService } from '../voice/voice-calls.service';
+import { spokenScript } from '../voice/voice.util';
 import {
   DEFAULT_TIMEZONE,
   describeRule,
@@ -40,7 +43,8 @@ import {
   type AccountStatus,
 } from './schedule-messages.util';
 
-export type DeliveryChannel = 'EMAIL' | 'SMS';
+/** CALL (step12) = the AI phones the customer, says the message, answers questions. */
+export type DeliveryChannel = 'EMAIL' | 'SMS' | 'CALL';
 
 export interface ScheduleRunView {
   at: string;
@@ -123,7 +127,7 @@ const ruleOf = (s: BookSchedule): ScheduleRule => ({
  * `nextRunAt` forward) before anything is sent, so one tick never sends twice.
  */
 @Injectable()
-export class SchedulesService {
+export class SchedulesService implements OnModuleInit {
   private readonly logger = new Logger(SchedulesService.name);
   private ticking = false;
 
@@ -136,7 +140,38 @@ export class SchedulesService {
     private readonly reports: ReportsService,
     private readonly tax: TaxService,
     private readonly assistant: AssistantService,
+    private readonly voice: VoiceCallsService,
   ) {}
+
+  /**
+   * step12: a schedule CALL nobody answered (no answer, busy, failed) is sent again by
+   * text, else by email — the run row says so.
+   */
+  onModuleInit(): void {
+    this.voice.outboundMissed$.subscribe(({ runId, status }) => {
+      void this.callMissed(runId, status).catch((err: unknown) =>
+        this.logger.error(
+          `schedule run #${runId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    });
+  }
+
+  private async callMissed(runId: number, status: string): Promise<void> {
+    const run = await this.prisma.bookScheduleRun.findUnique({
+      where: { id: runId },
+      include: { schedule: true },
+    });
+    if (!run || run.channel !== 'CALL') return;
+    await this.prisma.bookScheduleRun.update({
+      where: { id: run.id },
+      data: {
+        ok: false,
+        error: `The call was not answered (${status}), so it was sent again another way.`,
+      },
+    });
+    await this.run(run.schedule, run.manual, 'NO_CALL');
+  }
 
   // ---- the Schedules tab -------------------------------------------------------------
 
@@ -240,6 +275,8 @@ export class SchedulesService {
   private async run(
     s: BookSchedule,
     manual: boolean,
+    /** NO_CALL = a call was just missed: text or email instead (step12). */
+    mode: 'NORMAL' | 'NO_CALL' = 'NORMAL',
   ): Promise<BookScheduleRun> {
     const scope: BookScope = {
       customerId: s.customerId,
@@ -280,7 +317,7 @@ export class SchedulesService {
         error: 'This book no longer exists.',
       });
     }
-    const delivery = await this.delivery(scope.customerId);
+    const delivery = await this.delivery(scope.customerId, mode === 'NO_CALL');
     if (!delivery.channel || !delivery.to) {
       return record({
         channel: 'NONE',
@@ -291,6 +328,35 @@ export class SchedulesService {
     const firstName = live.customerName.trim().split(/\s+/)[0] ?? '';
     const compose = (sms: boolean) =>
       this.compose(s, scope, { firstName, book: live.book }, sms);
+
+    if (delivery.channel === 'CALL') {
+      const spoken = await compose(true);
+      if ('skip' in spoken) {
+        return record({ channel: 'NONE', ok: true, text: spoken.skip });
+      }
+      const script = spokenScript(spoken.text);
+      // The run is written first: the call carries its id, and SignalWire's report of a
+      // missed call finds it (`callMissed`).
+      const row = await record({ channel: 'CALL', ok: true, text: script });
+      const placed = await this.voice.callCustomer({
+        scope,
+        peer: delivery.to,
+        purpose: s.type,
+        runId: row.id,
+        script,
+      });
+      if ('error' in placed) {
+        await this.prisma.bookScheduleRun.update({
+          where: { id: row.id },
+          data: {
+            ok: false,
+            error: `The call could not be placed: ${placed.error}`,
+          },
+        });
+        return this.run(s, manual, 'NO_CALL');
+      }
+      return row;
+    }
 
     const first = await compose(delivery.channel === 'SMS');
     if ('skip' in first) {
@@ -556,14 +622,31 @@ export class SchedulesService {
    */
   private async delivery(
     customerId: number,
+    /** A call was just missed: the text / email fallback. */
+    noCall = false,
   ): Promise<ScheduleView['delivery']> {
     const c = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: { email: true, phoneE164: true, preferredContact: true },
     });
     if (!c) return { channel: null, to: null, preferred: null };
+    // step12: "Phone call" — the AI calls them (when calls are set up), else a text.
+    if (
+      !noCall &&
+      c.preferredContact === 'CALL' &&
+      c.phoneE164 &&
+      (await this.voice.canCall())
+    ) {
+      return {
+        channel: 'CALL',
+        to: c.phoneE164,
+        preferred: c.preferredContact,
+      };
+    }
     const wantsText =
-      c.preferredContact === 'SMS' || c.preferredContact === 'WHATSAPP';
+      c.preferredContact === 'SMS' ||
+      c.preferredContact === 'WHATSAPP' ||
+      c.preferredContact === 'CALL';
     if (wantsText && c.phoneE164 && this.messenger.smsConfigured) {
       return { channel: 'SMS', to: c.phoneE164, preferred: c.preferredContact };
     }

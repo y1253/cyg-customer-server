@@ -1,0 +1,435 @@
+import { Logger } from '@nestjs/common';
+import type { AiConversation } from '@prisma/client';
+import WebSocket from 'ws';
+import type { AgentAction, AssistantTools } from '../assistant/assistant-tools';
+import { toolsFor } from '../assistant/assistant-tools';
+import type { AssistantService } from '../assistant/assistant.service';
+import { bookOptions } from '../assistant/book-switch';
+import type { SignalWireClient } from '../messaging/signalwire.client';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
+import {
+  DEFAULT_REALTIME_MODEL,
+  MuLawTrack,
+  RT,
+  muLawStereoWav,
+  realtimeSession,
+  type VoiceTokenClaims,
+} from './voice.util';
+
+/** What a session needs from the app (passed in by `VoiceGateway`). */
+export interface VoiceDeps {
+  prisma: PrismaService;
+  calls: VoiceCallsService;
+  assistant: AssistantService;
+  tools: AssistantTools;
+  signalwire: SignalWireClient;
+  openaiKey: string | null;
+  model: string | null;
+  /** Opens the Realtime socket — injectable so the spec can hand in a fake. */
+  connect?: (url: string, headers: Record<string, string>) => WebSocket;
+}
+
+const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
+
+/** A WebSocket frame as text (it may arrive as a Buffer, an ArrayBuffer or fragments). */
+function rawText(raw: WebSocket.RawData): string {
+  if (Array.isArray(raw)) return Buffer.concat(raw).toString('utf8');
+  if (Buffer.isBuffer(raw)) return raw.toString('utf8');
+  return Buffer.from(raw).toString('utf8');
+}
+const has = (list: readonly string[], type: string) => list.includes(type);
+
+/**
+ * step12: ONE phone call between a customer and the AI — the bridge between SignalWire's
+ * media stream (μ-law 8 kHz over this server's WebSocket) and OpenAI Realtime, with the
+ * agent being the SAME agent as the chat:
+ *
+ * - `instructions` = `AssistantService.promptFor(conversation)` (rules, book, style VOICE),
+ *   `tools` = `toolsFor('VOICE')` run through `AssistantTools.run` on the conversation's
+ *   book (so it can search, file, rename… and `send_text` a link),
+ * - every sentence is saved as an `AiMessage` (channel VOICE) — the call is in the same
+ *   history as texts and the Assistant tab,
+ * - the caller can interrupt (barge-in: SignalWire `clear` + `response.cancel`).
+ *
+ * Never throws out of a socket handler: a failure ends the call politely and is logged.
+ */
+export class VoiceSession {
+  private readonly logger = new Logger(VoiceSession.name);
+  private openai: WebSocket | null = null;
+  private streamSid: string | null = null;
+  private callSid: string | null = null;
+  private claims: VoiceTokenClaims | null = null;
+  private conversation: AiConversation | null = null;
+  private settings: VoiceSettings | null = null;
+  private recordingSid: string | null = null;
+  /** The customer's last saved sentence — the "message" a tool's action belongs to. */
+  private lastUserMessageId: number | null = null;
+  private turnActions: AgentAction[] = [];
+  private turnTouched: number[] = [];
+  private turnWarning: string | null = null;
+  private responding = false;
+  private toolOutputsPending = false;
+  private closed = false;
+  private timer: NodeJS.Timeout | null = null;
+  /** Fallback recording when SignalWire would not record: left = caller, right = AI. */
+  private readonly caller = new MuLawTrack();
+  private readonly ai = new MuLawTrack();
+  /** Queue of SignalWire audio that arrived before OpenAI was ready. */
+  private early: string[] = [];
+
+  constructor(
+    private readonly ws: WebSocket,
+    private readonly deps: VoiceDeps,
+  ) {
+    ws.on('message', (raw) => {
+      void this.onSignalWire(rawText(raw)).catch((err: unknown) =>
+        this.fail(err),
+      );
+    });
+    ws.on('close', () => void this.finish());
+    ws.on('error', () => void this.finish());
+  }
+
+  // ---- SignalWire side ------------------------------------------------------------------
+
+  private async onSignalWire(text: string): Promise<void> {
+    let msg: {
+      event?: string;
+      start?: {
+        streamSid?: string;
+        callSid?: string;
+        customParameters?: Record<string, string>;
+      };
+      streamSid?: string;
+      media?: { payload?: string; track?: string };
+    };
+    try {
+      msg = JSON.parse(text) as typeof msg;
+    } catch {
+      return;
+    }
+    switch (msg.event) {
+      case 'start':
+        await this.start(msg.start ?? {}, msg.streamSid);
+        return;
+      case 'media': {
+        const payload = msg.media?.payload;
+        if (!payload) return;
+        if (msg.media?.track && msg.media.track !== 'inbound') return;
+        this.caller.writeAt(
+          this.caller.samples,
+          Buffer.from(payload, 'base64'),
+        );
+        if (this.openai?.readyState === WebSocket.OPEN) {
+          this.sendOpenAi({
+            type: 'input_audio_buffer.append',
+            audio: payload,
+          });
+        } else if (this.early.length < 500) {
+          this.early.push(payload);
+        }
+        return;
+      }
+      case 'stop':
+        this.close();
+        return;
+    }
+  }
+
+  private async start(
+    start: {
+      streamSid?: string;
+      callSid?: string;
+      customParameters?: Record<string, string>;
+    },
+    fallbackStreamSid?: string,
+  ): Promise<void> {
+    this.streamSid = start.streamSid ?? fallbackStreamSid ?? null;
+    this.callSid = start.callSid ?? null;
+    const claims = this.deps.calls.verify(start.customParameters?.token);
+    if (!claims || !this.callSid) {
+      this.logger.warn(
+        `stream refused: ${claims ? 'no call sid' : 'bad token'}`,
+      );
+      this.close();
+      return;
+    }
+    this.claims = claims;
+    const customer = await this.deps.prisma.customer.findFirst({
+      where: { id: claims.sub, deletedAt: null },
+      select: { name: true },
+    });
+    if (!customer) return this.close();
+    this.settings = await this.deps.calls.settings();
+    this.conversation = await this.deps.calls.conversationFor(claims);
+    await this.deps.calls.started(claims, this.conversation, this.callSid);
+    this.logger.log(
+      `call ${this.callSid} ${claims.dir} customer ${claims.sub} (${claims.purpose ?? 'INBOUND'}) connected`,
+    );
+    // SignalWire records a call we placed (Record=true); an incoming one is recorded now.
+    if (claims.dir === 'INBOUND') {
+      this.recordingSid = await this.deps.signalwire.startRecording(
+        this.callSid,
+      );
+    }
+    this.timer = setTimeout(
+      () => void this.hangUp('max length'),
+      this.settings.maxMinutes * 60_000,
+    );
+
+    const over = await this.deps.assistant.isOverLimit(claims.sub);
+    if (!this.deps.openaiKey || over) {
+      this.logger.warn(
+        `call ${this.callSid}: AI not available (${over ? 'daily limit' : 'no key'})`,
+      );
+      // Without the AI there is nothing to say: end the call (the customer can text instead).
+      return this.hangUp(over ? 'daily limit' : 'no OpenAI key');
+    }
+    await this.openRealtime(customer.name);
+  }
+
+  // ---- OpenAI side --------------------------------------------------------------------
+
+  private async openRealtime(customerName: string): Promise<void> {
+    const conversation = this.conversation!;
+    const claims = this.claims!;
+    const model = this.deps.model || DEFAULT_REALTIME_MODEL;
+    const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
+    const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
+    this.openai = this.deps.connect
+      ? this.deps.connect(url, headers)
+      : new WebSocket(url, { headers });
+    const note = await this.callNote(customerName);
+    const instructions = await this.deps.assistant.promptFor(conversation, {
+      note,
+    });
+
+    this.openai.on('open', () => {
+      this.sendOpenAi(
+        realtimeSession({
+          model,
+          instructions,
+          voice: this.settings!.voice,
+          tools: toolsFor('VOICE'),
+        }),
+      );
+      for (const p of this.early.splice(0)) {
+        this.sendOpenAi({ type: 'input_audio_buffer.append', audio: p });
+      }
+      // The AI speaks first: the greeting, or the scheduled message.
+      this.sendOpenAi({
+        type: 'response.create',
+        response: { instructions: this.opening(customerName, claims) },
+      });
+    });
+    this.openai.on('message', (raw) => {
+      void this.onOpenAi(rawText(raw)).catch((err: unknown) => this.fail(err));
+    });
+    this.openai.on('close', () => this.close());
+    this.openai.on('error', (err) => this.fail(err));
+  }
+
+  /** What the agent is told about THIS call, on top of its usual prompt. */
+  private async callNote(customerName: string): Promise<string> {
+    const claims = this.claims!;
+    const lines = [
+      `THIS IS A PHONE CALL with ${customerName} (${claims.peer}).`,
+      claims.dir === 'INBOUND'
+        ? 'They called our number.'
+        : 'We called them to deliver a scheduled message; after it, answer their questions.',
+      `The call ends after ${this.settings!.maxMinutes} minutes.`,
+    ];
+    const conversation = this.conversation!;
+    if (!conversation.bookChosen) {
+      const options = await bookOptions(
+        this.deps.prisma,
+        conversation.customerId,
+      );
+      if (options.length > 1) {
+        lines.push(
+          `They have several books: ${options.map((o, i) => `${i + 1} ${o.name}`).join(', ')}. ` +
+            'Before working on their books, ask which one and call switch_book.',
+        );
+      }
+    }
+    return lines.join(' ');
+  }
+
+  /** The instruction for the first thing the AI says. */
+  private opening(customerName: string, claims: VoiceTokenClaims): string {
+    const first = customerName.trim().split(/\s+/)[0] || 'there';
+    if (claims.dir === 'OUTBOUND' && claims.script) {
+      return (
+        `Greet ${first} briefly as CYG Finance's assistant, then say this message naturally, ` +
+        `in your own words: """${claims.script}""" Then ask if they have any questions.`
+      );
+    }
+    const greeting = this.settings!.greeting;
+    return greeting
+      ? `Say this greeting (use their first name, ${first}, if it fits): """${greeting}"""`
+      : `Greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
+  }
+
+  private async onOpenAi(text: string): Promise<void> {
+    let ev: Record<string, unknown> & { type?: string };
+    try {
+      ev = JSON.parse(text) as typeof ev;
+    } catch {
+      return;
+    }
+    const type = ev.type ?? '';
+    if (has(RT.audioDelta, type)) {
+      const delta = typeof ev.delta === 'string' ? ev.delta : null;
+      if (!delta) return;
+      this.ai.writeAt(
+        Math.max(this.caller.samples, this.ai.samples),
+        Buffer.from(delta, 'base64'),
+      );
+      this.sendSignalWire({
+        event: 'media',
+        streamSid: this.streamSid,
+        media: { payload: delta },
+      });
+    } else if (has(RT.speechStarted, type)) {
+      // Barge-in: stop what is playing on the phone, and the answer being made.
+      this.sendSignalWire({ event: 'clear', streamSid: this.streamSid });
+      if (this.responding) this.sendOpenAi({ type: 'response.cancel' });
+    } else if (has(RT.responseCreated, type)) {
+      this.responding = true;
+    } else if (has(RT.responseDone, type)) {
+      this.responding = false;
+      if (this.toolOutputsPending) {
+        this.toolOutputsPending = false;
+        this.sendOpenAi({ type: 'response.create' });
+      }
+    } else if (has(RT.userText, type)) {
+      const said =
+        typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
+      if (said && this.conversation) {
+        const m = await this.deps.assistant.save(
+          this.conversation,
+          'USER',
+          said,
+        );
+        this.lastUserMessageId = m.id;
+      }
+    } else if (has(RT.assistantText, type)) {
+      const said =
+        typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
+      if (said && this.conversation) await this.saveAssistant(said);
+    } else if (has(RT.toolCall, type)) {
+      await this.runTool(ev);
+    } else if (has(RT.error, type)) {
+      const err = ev.error as { message?: string } | undefined;
+      this.logger.warn(
+        `call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`,
+      );
+    }
+  }
+
+  /** One tool call from the model, run exactly as the chat would, its result handed back. */
+  private async runTool(ev: Record<string, unknown>): Promise<void> {
+    const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
+    const name = typeof ev.name === 'string' ? ev.name : '';
+    const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
+    const conversation = await this.freshConversation();
+    const outcome = await this.deps.tools.run(name, args, {
+      scope: {
+        customerId: conversation.customerId,
+        companyId: conversation.companyId,
+      },
+      messageId: this.lastUserMessageId,
+      conversation,
+    });
+    if (outcome.action) this.turnActions.push(outcome.action);
+    if (outcome.warning) this.turnWarning = outcome.warning;
+    if (outcome.attachmentId) this.turnTouched.push(outcome.attachmentId);
+    this.sendOpenAi({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: outcome.content,
+      },
+    });
+    this.toolOutputsPending = true;
+  }
+
+  /** The AI's sentence, with what it changed while answering. */
+  private async saveAssistant(said: string): Promise<void> {
+    const conversation = await this.freshConversation();
+    await this.deps.assistant.save(conversation, 'ASSISTANT', said, {
+      actions: this.turnActions,
+      warning: this.turnWarning,
+      actedOn: this.turnTouched,
+    });
+    this.turnActions = [];
+    this.turnTouched = [];
+    this.turnWarning = null;
+  }
+
+  /** `switch_book` may have moved the conversation to another book mid-call. */
+  private async freshConversation(): Promise<AiConversation> {
+    const id = this.conversation!.id;
+    const fresh = await this.deps.prisma.aiConversation.findUnique({
+      where: { id },
+    });
+    if (fresh) this.conversation = fresh;
+    return this.conversation!;
+  }
+
+  // ---- plumbing ---------------------------------------------------------------------
+
+  private sendOpenAi(event: unknown): void {
+    if (this.openai?.readyState === WebSocket.OPEN) {
+      this.openai.send(JSON.stringify(event));
+    }
+  }
+
+  private sendSignalWire(event: unknown): void {
+    if (this.ws.readyState === WebSocket.OPEN)
+      this.ws.send(JSON.stringify(event));
+  }
+
+  private async hangUp(reason: string): Promise<void> {
+    this.logger.log(`call ${this.callSid}: hanging up (${reason})`);
+    if (this.callSid) await this.deps.signalwire.hangup(this.callSid);
+    this.close();
+  }
+
+  private fail(err: unknown): void {
+    this.logger.error(
+      `call ${this.callSid ?? '?'} FAILED: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  private close(): void {
+    if (this.openai && this.openai.readyState <= WebSocket.OPEN)
+      this.openai.close();
+    if (this.ws.readyState <= WebSocket.OPEN) this.ws.close();
+  }
+
+  /** Once, when either side goes away: the call's row is finished. */
+  private async finish(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.close();
+    if (!this.callSid || !this.claims) return;
+    // A call we placed is recorded by SignalWire anyway; an incoming one whose recording
+    // could not be started keeps the bridge's own copy.
+    const needWav = this.claims.dir === 'INBOUND' && !this.recordingSid;
+    const len = Math.max(this.caller.samples, this.ai.samples);
+    await this.deps.calls
+      .ended(this.callSid, {
+        recordingSid: this.recordingSid,
+        wav:
+          needWav && len > 0
+            ? muLawStereoWav(this.caller.toBuffer(len), this.ai.toBuffer(len))
+            : null,
+      })
+      .catch((err: unknown) => this.fail(err));
+    this.logger.log(`call ${this.callSid} ended`);
+  }
+}

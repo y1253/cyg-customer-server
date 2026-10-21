@@ -12,6 +12,7 @@ import { CustomerAuthModule } from './customer-auth/customer-auth.module';
 import { MailModule } from './mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SchedulesModule } from './schedules/schedules.module';
+import { VoiceModule } from './voice/voice.module';
 import { StorageModule } from './storage/storage.module';
 
 @Module({
@@ -28,6 +29,7 @@ import { StorageModule } from './storage/storage.module';
     AssistantModule,
     BankFeedsModule,
     SchedulesModule,
+    VoiceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

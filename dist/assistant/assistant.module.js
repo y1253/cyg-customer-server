@@ -36,7 +36,7 @@ exports.AssistantModule = AssistantModule = __decorate([
             intake_agent_service_1.IntakeAgentService,
             openai_client_1.OpenAiClient,
         ],
-        exports: [assistant_service_1.AssistantService],
+        exports: [assistant_service_1.AssistantService, assistant_tools_1.AssistantTools],
     })
 ], AssistantModule);
 //# sourceMappingURL=assistant.module.js.map

@@ -12,6 +12,7 @@ const assistant_module_1 = require("../assistant/assistant.module");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const messaging_module_1 = require("../messaging/messaging.module");
+const voice_module_1 = require("../voice/voice.module");
 const schedules_controller_1 = require("./schedules.controller");
 const schedules_service_1 = require("./schedules.service");
 let SchedulesModule = class SchedulesModule {
@@ -24,6 +25,7 @@ exports.SchedulesModule = SchedulesModule = __decorate([
             customer_auth_module_1.CustomerAuthModule,
             messaging_module_1.MessagingModule,
             assistant_module_1.AssistantModule,
+            voice_module_1.VoiceModule,
         ],
         controllers: [schedules_controller_1.SchedulesController],
         providers: [schedules_service_1.SchedulesService],

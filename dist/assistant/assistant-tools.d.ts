@@ -12,6 +12,7 @@ import { SplitsService } from '../bookkeeping/splits.service';
 import { TaxService } from '../bookkeeping/tax.service';
 import { FileLinkService } from '../bookkeeping/file-links';
 import { type Channel } from './assistant-prompt';
+import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
 export interface AgentAction {
     tool: string;
@@ -45,7 +46,8 @@ export declare class AssistantTools {
     private readonly splits;
     private readonly rules;
     private readonly links;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService);
+    private readonly messenger?;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined);
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;
     private exec;
     private switchBook;

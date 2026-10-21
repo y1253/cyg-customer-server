@@ -1,7 +1,7 @@
-export type CommChannel = 'WHATSAPP' | 'SMS' | 'EMAIL' | 'BOT' | 'UPLOADS';
+export type CommChannel = 'WHATSAPP' | 'SMS' | 'VOICE' | 'EMAIL' | 'BOT' | 'UPLOADS';
 export declare const COMM_CHANNELS: readonly CommChannel[];
 export declare const isCommChannel: (c: unknown) => c is CommChannel;
-export declare const MESSAGE_CHANNELS: readonly ["WHATSAPP", "SMS", "EMAIL", "BOT"];
+export declare const MESSAGE_CHANNELS: readonly ["WHATSAPP", "SMS", "VOICE", "EMAIL", "BOT"];
 export declare const FILE_SOURCE: Partial<Record<CommChannel, string>>;
 export interface CommFile {
     type: 'attachment' | 'statement';
@@ -10,14 +10,26 @@ export interface CommFile {
     mimeType: string | null;
     status: string;
 }
+export interface CommCall {
+    id: number;
+    direction: string;
+    purpose: string;
+    status: string;
+    durationSec: number | null;
+    hasRecording: boolean;
+}
 export interface CommItem {
     key: string;
     at: string;
     side: 'customer' | 'cyg';
-    kind: 'message' | 'upload';
+    kind: 'message' | 'upload' | 'call';
     text: string | null;
     files: CommFile[];
     warning?: string | null;
+    call?: CommCall;
+}
+export interface CallIn extends CommCall {
+    startedAt: Date;
 }
 export interface MessageIn {
     id: number;
@@ -47,6 +59,7 @@ export declare function buildTimeline(input: {
     files: ReadonlyMap<number, AttachmentIn>;
     loose: AttachmentIn[];
     statements: StatementIn[];
+    calls?: CallIn[];
 }): CommItem[];
 export declare function pageOf(items: CommItem[], limit: number): {
     items: CommItem[];

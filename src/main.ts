@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { VoiceGateway } from './voice/voice.gateway';
 
 async function bootstrap() {
   // rawBody: the Stripe webhook verifies its signature over the exact bytes sent.
@@ -17,6 +18,9 @@ async function bootstrap() {
   // untouched — the same convention as the internal app.
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
+
+  // step12: SignalWire streams AI phone calls to /api/voice/stream (WebSocket upgrade).
+  app.get(VoiceGateway).attach(app.getHttpServer());
 
   // 3001, not 3000: the internal API owns 3000 on dev machines and on the host.
   const port = process.env.PORT ?? 3001;

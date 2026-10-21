@@ -14,6 +14,7 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const communications_util_1 = require("./communications.util");
 const scope_1 = require("./scope");
+const voice_calls_service_1 = require("../voice/voice-calls.service");
 const ATTACHMENT_FIELDS = {
     id: true,
     filename: true,
@@ -99,6 +100,16 @@ let CommunicationsService = class CommunicationsService {
                 ]),
             ],
         }));
+        const calls = channel === 'VOICE'
+            ? (await this.prisma.aiCall.findMany({
+                where: {
+                    ...book,
+                    ...(before ? { startedAt: { lt: before } } : {}),
+                },
+                orderBy: { startedAt: 'desc' },
+                take,
+            })).map((c) => ({ ...(0, voice_calls_service_1.toCallView)(c), startedAt: c.startedAt }))
+            : [];
         const [carried, loose] = await Promise.all([
             this.prisma.transactionAttachment.findMany({
                 where: {
@@ -127,6 +138,7 @@ let CommunicationsService = class CommunicationsService {
             files: new Map(carried.map((a) => [a.id, shown(a)])),
             loose,
             statements: [],
+            calls,
         }), limit);
     }
     async count(scope, channel) {
@@ -143,15 +155,18 @@ let CommunicationsService = class CommunicationsService {
             return a + s;
         }
         const source = communications_util_1.FILE_SOURCE[channel];
-        const [messages, files] = await Promise.all([
+        const [messages, files, calls] = await Promise.all([
             this.prisma.aiMessage.count({ where: { ...book, channel } }),
             source
                 ? this.prisma.transactionAttachment.count({
                     where: { ...book, deletedAt: null, source },
                 })
                 : Promise.resolve(0),
+            channel === 'VOICE'
+                ? this.prisma.aiCall.count({ where: book })
+                : Promise.resolve(0),
         ]);
-        return messages + files;
+        return messages + files + calls;
     }
     async referencedIds(scope, channel) {
         const [rows, links] = await Promise.all([

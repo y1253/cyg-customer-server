@@ -472,15 +472,7 @@ export class AssistantService {
       const messages: AgentMessage[] = [
         {
           role: 'system',
-          content: systemPrompt({
-            channel,
-            today: new Date().toISOString().slice(0, 10),
-            bookLabel: await this.bookLabel(scope),
-            rules: await this.rules.promptBlock(scope),
-            preferredContact: await this.preferredContact(scope.customerId),
-            attachment,
-            files,
-          }),
+          content: await this.promptFor(conversation, { attachment, files }),
         },
         ...history.map(
           (m): AgentMessage =>
@@ -536,6 +528,36 @@ export class AssistantService {
       );
     }
     return { text: FAILED_REPLY, actions, warning, touched };
+  }
+
+  /**
+   * The agent's whole system prompt for this conversation — the SAME text the chat uses
+   * (rules, book, preferred contact, channel style). step12: the phone bridge hands it to
+   * OpenAI Realtime as `instructions`, so a call is the same agent as a text.
+   */
+  async promptFor(
+    conversation: AiConversation,
+    extra: { attachment?: unknown; files?: unknown[]; note?: string } = {},
+  ): Promise<string> {
+    const scope: BookScope = {
+      customerId: conversation.customerId,
+      companyId: conversation.companyId,
+    };
+    const prompt = systemPrompt({
+      channel: conversation.channel as Channel,
+      today: new Date().toISOString().slice(0, 10),
+      bookLabel: await this.bookLabel(scope),
+      rules: await this.rules.promptBlock(scope),
+      preferredContact: await this.preferredContact(scope.customerId),
+      attachment: extra.attachment,
+      files: extra.files,
+    });
+    return extra.note ? `${prompt}\n\n${extra.note}` : prompt;
+  }
+
+  /** Today's customer messages are over the daily limit (step12: checked before a call). */
+  isOverLimit(customerId: number): Promise<boolean> {
+    return this.overLimit(customerId);
   }
 
   private async overLimit(customerId: number): Promise<boolean> {

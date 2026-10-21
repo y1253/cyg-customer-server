@@ -34,6 +34,6 @@ import { IntakeAgentService } from './intake-agent.service';
     IntakeAgentService,
     OpenAiClient,
   ],
-  exports: [AssistantService],
+  exports: [AssistantService, AssistantTools],
 })
 export class AssistantModule {}

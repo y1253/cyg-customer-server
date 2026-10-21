@@ -9,13 +9,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessagingModule = void 0;
 const common_1 = require("@nestjs/common");
 const customer_messenger_service_1 = require("./customer-messenger.service");
+const signalwire_client_1 = require("./signalwire.client");
 let MessagingModule = class MessagingModule {
 };
 exports.MessagingModule = MessagingModule;
 exports.MessagingModule = MessagingModule = __decorate([
     (0, common_1.Module)({
-        providers: [customer_messenger_service_1.CustomerMessenger],
-        exports: [customer_messenger_service_1.CustomerMessenger],
+        providers: [customer_messenger_service_1.CustomerMessenger, signalwire_client_1.SignalWireClient],
+        exports: [customer_messenger_service_1.CustomerMessenger, signalwire_client_1.SignalWireClient],
     })
 ], MessagingModule);
 //# sourceMappingURL=messaging.module.js.map
