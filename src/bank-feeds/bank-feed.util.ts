@@ -192,3 +192,33 @@ export function defaultAccountName(
 export function isoDay(d: Date = new Date()): string {
   return d.toISOString().slice(0, 10);
 }
+
+/** `/item/get` → `status.transactions`: Plaid's own tries at the bank. */
+export interface PlaidUpdateStatus {
+  last_successful_update?: string | null;
+  last_failed_update?: string | null;
+}
+
+/**
+ * Why a connection's history is not in yet, in the customer's words — or null when it is
+ * simply still coming. step12: TD's transaction updates were DOWN at Plaid for a day, so
+ * `/transactions/sync` stayed NOT_READY and the card said "Bringing in…" with no end.
+ * `bankStatus` = `/institutions/get_by_id` → `status.transactions_updates.status`.
+ */
+export function bankDelayNote(
+  institutionName: string | null,
+  updates: PlaidUpdateStatus | null | undefined,
+  bankStatus: string | null | undefined,
+): string | null {
+  if (!updates?.last_failed_update || updates.last_successful_update) {
+    return null;
+  }
+  const bank = institutionName?.trim() || 'your bank';
+  if (bankStatus === 'DOWN' || bankStatus === 'DEGRADED') {
+    return (
+      `${bank} isn't sending transactions to Plaid right now — a problem on the bank's ` +
+      'side. We keep checking every few minutes and bring them in automatically once it is back.'
+    );
+  }
+  return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
+}

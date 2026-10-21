@@ -31,3 +31,8 @@ export declare function defaultAccountName(institution: string | null, account: 
     mask: string | null;
 }): string;
 export declare function isoDay(d?: Date): string;
+export interface PlaidUpdateStatus {
+    last_successful_update?: string | null;
+    last_failed_update?: string | null;
+}
+export declare function bankDelayNote(institutionName: string | null, updates: PlaidUpdateStatus | null | undefined, bankStatus: string | null | undefined): string | null;

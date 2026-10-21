@@ -141,16 +141,22 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             const byPlaidId = await this.saveAccounts(item, accounts);
             const { added, modified, removed, cursor, updateStatus } = await this.fetchChanges(accessToken, item.cursor);
             await this.saveTransactions(byPlaidId, added, modified, removed);
+            const note = !item.historyDone && updateStatus === 'NOT_READY'
+                ? await this.delayNote(item, accessToken)
+                : null;
+            if (note && note !== item.error) {
+                this.logger.log(`item #${item.id} waiting on the bank: ${note}`);
+            }
             const historyDone = item.historyDone ||
                 updateStatus === 'HISTORICAL_UPDATE_COMPLETE' ||
-                Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS;
+                (!note && Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS);
             await this.prisma.plaidItem.update({
                 where: { id: item.id },
                 data: {
                     cursor,
                     lastSyncAt: new Date(),
                     status: 'ACTIVE',
-                    error: null,
+                    error: note,
                     historyDone,
                 },
             });
@@ -164,6 +170,30 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         }
         catch (err) {
             this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
+        }
+    }
+    async delayNote(item, accessToken) {
+        try {
+            const { item: info, status } = await this.plaid.call('/item/get', { access_token: accessToken });
+            const updates = status?.transactions;
+            if (!updates?.last_failed_update || updates.last_successful_update) {
+                return null;
+            }
+            const institutionId = info.institution_id ?? item.institutionId;
+            const bank = institutionId
+                ? await this.plaid
+                    .call('/institutions/get_by_id', {
+                    institution_id: institutionId,
+                    country_codes: this.plaid.countryCodes,
+                    options: { include_status: true },
+                })
+                    .then((r) => r.institution?.status?.transactions_updates?.status)
+                    .catch(() => null)
+                : null;
+            return (0, bank_feed_util_1.bankDelayNote)(item.institutionName, updates, bank);
+        }
+        catch {
+            return null;
         }
     }
     async recordError(item, err) {

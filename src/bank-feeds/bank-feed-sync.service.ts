@@ -21,6 +21,7 @@ import { resolveRow } from '../bookkeeping/name-memory.util';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  bankDelayNote,
   defaultAccountName,
   feedCents,
   isoDay,
@@ -29,6 +30,7 @@ import {
   monthOf,
   planMonths,
   type MonthPlan,
+  type PlaidUpdateStatus,
 } from './bank-feed.util';
 import { BankRowCategorizer } from './bank-row-categorizer';
 import { decrypt } from './crypto.util';
@@ -192,19 +194,29 @@ export class BankFeedSyncService {
       const { added, modified, removed, cursor, updateStatus } =
         await this.fetchChanges(accessToken, item.cursor);
       await this.saveTransactions(byPlaidId, added, modified, removed);
+      // Plaid has nothing yet: ask it why, so the card can say so instead of spinning.
+      const note =
+        !item.historyDone && updateStatus === 'NOT_READY'
+          ? await this.delayNote(item, accessToken)
+          : null;
+      if (note && note !== item.error) {
+        this.logger.log(`item #${item.id} waiting on the bank: ${note}`);
+      }
       // `/transactions/sync` says itself when the history is in — the webhook is not the
-      // only way to learn it (a missed one left the card loading forever).
+      // only way to learn it (a missed one left the card loading forever). While the bank
+      // is failing the give-up waits, so the history is still pulled once it is back.
       const historyDone =
         item.historyDone ||
         updateStatus === 'HISTORICAL_UPDATE_COMPLETE' ||
-        Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS;
+        (!note && Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS);
       await this.prisma.plaidItem.update({
         where: { id: item.id },
         data: {
           cursor,
           lastSyncAt: new Date(),
           status: 'ACTIVE',
-          error: null,
+          // On an ACTIVE item `error` is the "waiting on the bank" note (null = none).
+          error: note,
           historyDone,
         },
       });
@@ -218,6 +230,44 @@ export class BankFeedSyncService {
       await this.rebuildItem(item.id);
     } catch (err) {
       this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Why Plaid has no transactions yet (`bankDelayNote`): its own failed tries at the bank
+   * (`/item/get`) and, when there are some, the bank's status at Plaid. Null on any error.
+   */
+  private async delayNote(
+    item: PlaidItem,
+    accessToken: string,
+  ): Promise<string | null> {
+    try {
+      const { item: info, status } = await this.plaid.call<{
+        item: { institution_id: string | null };
+        status?: { transactions?: PlaidUpdateStatus | null };
+      }>('/item/get', { access_token: accessToken });
+      const updates = status?.transactions;
+      if (!updates?.last_failed_update || updates.last_successful_update) {
+        return null;
+      }
+      const institutionId = info.institution_id ?? item.institutionId;
+      const bank = institutionId
+        ? await this.plaid
+            .call<{
+              institution?: {
+                status?: { transactions_updates?: { status?: string } } | null;
+              };
+            }>('/institutions/get_by_id', {
+              institution_id: institutionId,
+              country_codes: this.plaid.countryCodes,
+              options: { include_status: true },
+            })
+            .then((r) => r.institution?.status?.transactions_updates?.status)
+            .catch(() => null)
+        : null;
+      return bankDelayNote(item.institutionName, updates, bank);
+    } catch {
+      return null;
     }
   }
 

@@ -25,6 +25,7 @@ export declare class BankFeedSyncService {
     syncAll(): Promise<void>;
     rebuildAll(): Promise<void>;
     private runSync;
+    private delayNote;
     private recordError;
     private fetchChanges;
     saveAccounts(item: PlaidItem, accounts: readonly PlaidAccountData[]): Promise<Map<string, PlaidAccount>>;

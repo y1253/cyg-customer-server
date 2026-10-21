@@ -7,6 +7,7 @@ exports.monthLabel = monthLabel;
 exports.kindOfPlaidType = kindOfPlaidType;
 exports.defaultAccountName = defaultAccountName;
 exports.isoDay = isoDay;
+exports.bankDelayNote = bankDelayNote;
 function feedCents(plaidAmount) {
     return -Math.round(Number(plaidAmount) * 100);
 }
@@ -103,5 +104,16 @@ function defaultAccountName(institution, account) {
 }
 function isoDay(d = new Date()) {
     return d.toISOString().slice(0, 10);
+}
+function bankDelayNote(institutionName, updates, bankStatus) {
+    if (!updates?.last_failed_update || updates.last_successful_update) {
+        return null;
+    }
+    const bank = institutionName?.trim() || 'your bank';
+    if (bankStatus === 'DOWN' || bankStatus === 'DEGRADED') {
+        return (`${bank} isn't sending transactions to Plaid right now — a problem on the bank's ` +
+            'side. We keep checking every few minutes and bring them in automatically once it is back.');
+    }
+    return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
 }
 //# sourceMappingURL=bank-feed.util.js.map
