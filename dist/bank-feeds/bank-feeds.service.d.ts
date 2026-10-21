@@ -11,6 +11,10 @@ export interface BankConnectionView {
     historyDone: boolean;
     lastSyncAt: Date | null;
     createdAt: Date;
+    setupAt: Date | null;
+    syncing: boolean;
+    newAccounts: boolean;
+    earliestDate: string;
     accounts: Array<{
         id: number;
         name: string;
@@ -19,6 +23,7 @@ export interface BankConnectionView {
         accountName: string;
         currency: string | null;
         currentBalance: number | null;
+        startDate: string | null;
     }>;
 }
 export declare class BankFeedsService {
@@ -34,12 +39,16 @@ export declare class BankFeedsService {
     list(scope: BookScope): Promise<BankConnectionView[]>;
     private owned;
     private view;
-    linkToken(scope: BookScope, itemId?: number): Promise<{
+    linkToken(scope: BookScope, itemId?: number, chooseAccounts?: boolean): Promise<{
         linkToken: string;
     }>;
     exchange(scope: BookScope, publicToken: string): Promise<BankConnectionView>;
     reconnected(scope: BookScope, id: number): Promise<BankConnectionView>;
     refresh(scope: BookScope, id: number): Promise<BankConnectionView>;
+    setStartDates(scope: BookScope, id: number, accounts: ReadonlyArray<{
+        id: number;
+        startDate?: string | null;
+    }>): Promise<BankConnectionView>;
     remove(scope: BookScope, id: number): Promise<void>;
     private call;
     verify(token: string | undefined, rawBody: Buffer | undefined): Promise<string | null>;

@@ -11,6 +11,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -24,7 +25,7 @@ import {
   BankFeedsService,
   type BankConnectionView,
 } from './bank-feeds.service';
-import { ExchangeDto } from './dto/bank-feeds.dto';
+import { ExchangeDto, StartDatesDto } from './dto/bank-feeds.dto';
 
 /**
  * `/api/bank-feeds/*` — a customer's bank connections (step11), per BOOK like every
@@ -46,16 +47,24 @@ export class BankFeedsController {
     return this.feeds.list(scope);
   }
 
-  /** `?itemId=` = update mode: sign in to that bank again. */
+  /**
+   * `?itemId=` = update mode: sign in to that bank again; `&accounts=1` also lets the
+   * customer pick again which of its accounts are shared.
+   */
   @Post('link-token')
   linkToken(
     @Book() scope: BookScope,
     @Query('itemId') itemId?: string,
+    @Query('accounts') accounts?: string,
   ): Promise<{ linkToken: string }> {
     if (itemId !== undefined && !/^[1-9]\d{0,9}$/.test(itemId)) {
       throw new BadRequestException('Invalid connection');
     }
-    return this.feeds.linkToken(scope, itemId ? Number(itemId) : undefined);
+    return this.feeds.linkToken(
+      scope,
+      itemId ? Number(itemId) : undefined,
+      accounts === '1',
+    );
   }
 
   @Post('exchange')
@@ -72,6 +81,16 @@ export class BankFeedsController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<BankConnectionView> {
     return this.feeds.reconnected(scope, id);
+  }
+
+  /** Each account's start date; confirms a new connection's setup. */
+  @Put(':id/accounts')
+  setStartDates(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: StartDatesDto,
+  ): Promise<BankConnectionView> {
+    return this.feeds.setStartDates(scope, id, dto.accounts);
   }
 
   @Post(':id/sync')

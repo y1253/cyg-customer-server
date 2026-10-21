@@ -59,8 +59,32 @@ function planMonths(input) {
         closing = opening;
     }
     plans.reverse();
+    const kept = input.startDate
+        ? fromStartDate(plans, txns, input.kind, input.startDate)
+        : plans;
     const covered = input.covered ?? [];
-    return plans.filter((p) => !covered.some((c) => overlaps({ start: p.periodStart, end: p.periodEnd }, c)));
+    return kept.filter((p) => !covered.some((c) => overlaps({ start: p.periodStart, end: p.periodEnd }, c)));
+}
+function fromStartDate(plans, txns, kind, start) {
+    const dateOf = new Map(txns.map((t) => [t.id, t]));
+    const out = [];
+    for (const p of plans) {
+        if (p.periodEnd < start)
+            continue;
+        if (p.periodStart >= start) {
+            out.push(p);
+            continue;
+        }
+        const txnIds = p.txnIds.filter((id) => dateOf.get(id).date >= start);
+        const net = txnIds.reduce((s, id) => s + dateOf.get(id).cents, 0);
+        const opening = p.closingCents === null
+            ? null
+            : kind === 'CREDIT_CARD'
+                ? p.closingCents + net
+                : p.closingCents - net;
+        out.push({ ...p, periodStart: start, openingCents: opening, txnIds });
+    }
+    return out;
 }
 function monthLabel(periodStart) {
     const [y, m] = periodStart.split('-').map(Number);

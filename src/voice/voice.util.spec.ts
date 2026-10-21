@@ -1,5 +1,6 @@
 import {
   MuLawTrack,
+  languageName,
   callStatusOf,
   connectStreamLaml,
   muLawStereoWav,
@@ -57,6 +58,14 @@ describe('voice util (step12)', () => {
     expect(said).not.toContain('http');
     expect(said).not.toContain('•');
     expect(said).toContain('20 attachments not matched. 3 transactions');
+  });
+
+  it('names the default language, English for anything unknown', () => {
+    expect(languageName('fr')).toBe('French');
+    expect(languageName('en')).toBe('English');
+    expect(languageName('xx')).toBe('English');
+    expect(languageName(null)).toBe('English');
+    expect(languageName('toString')).toBe('English');
   });
 
   it('maps SignalWire call statuses', () => {

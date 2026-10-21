@@ -42,6 +42,7 @@ const LOGIN_CODES = new Set([
     'NO_ACCOUNTS',
 ]);
 const SYNC_PAGE = 500;
+const HISTORY_GIVE_UP_MS = 24 * 60 * 60 * 1000;
 const MAX_SYNC_RESTARTS = 3;
 const day = (d) => d.toISOString().slice(0, 10);
 const money = (cents) => cents === null ? null : (cents / 100).toFixed(2);
@@ -90,6 +91,22 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         this.running.set(itemId, run);
         return run;
     }
+    isRunning(itemId) {
+        return this.running.has(itemId);
+    }
+    async syncLoading() {
+        if (!this.plaid.configured)
+            return;
+        const items = await this.prisma.plaidItem.findMany({
+            where: { deletedAt: null, status: 'ACTIVE', historyDone: false },
+            select: { id: true },
+        });
+        for (const { id } of items) {
+            if (this.running.has(id))
+                continue;
+            await this.sync(id).catch(() => undefined);
+        }
+    }
     async syncAll() {
         if (!this.plaid.configured)
             return;
@@ -122,11 +139,20 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             const accessToken = (0, crypto_util_1.decrypt)(item.accessToken, this.key);
             const { accounts } = await this.plaid.call('/accounts/get', { access_token: accessToken });
             const byPlaidId = await this.saveAccounts(item, accounts);
-            const { added, modified, removed, cursor } = await this.fetchChanges(accessToken, item.cursor);
+            const { added, modified, removed, cursor, updateStatus } = await this.fetchChanges(accessToken, item.cursor);
             await this.saveTransactions(byPlaidId, added, modified, removed);
+            const historyDone = item.historyDone ||
+                updateStatus === 'HISTORICAL_UPDATE_COMPLETE' ||
+                Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS;
             await this.prisma.plaidItem.update({
                 where: { id: item.id },
-                data: { cursor, lastSyncAt: new Date(), status: 'ACTIVE', error: null },
+                data: {
+                    cursor,
+                    lastSyncAt: new Date(),
+                    status: 'ACTIVE',
+                    error: null,
+                    historyDone,
+                },
             });
             this.logger.log(`item #${item.id} synced: +${added.length} ~${modified.length} -${removed.length} in ${Date.now() - started}ms`);
         }
@@ -162,6 +188,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             const modified = [];
             const removed = [];
             let cursor = start;
+            let updateStatus = null;
             try {
                 for (;;) {
                     const page = await this.plaid.call('/transactions/sync', {
@@ -173,10 +200,11 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                     modified.push(...page.modified);
                     removed.push(...page.removed.map((r) => r.transaction_id));
                     cursor = page.next_cursor;
+                    updateStatus = page.transactions_update_status ?? updateStatus;
                     if (!page.has_more)
                         break;
                 }
-                return { added, modified, removed, cursor };
+                return { added, modified, removed, cursor, updateStatus };
             }
             catch (err) {
                 const restart = err instanceof plaid_client_1.PlaidApiError &&
@@ -210,6 +238,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                 currency,
                 currentBalance: balance,
                 balanceAt: now,
+                shared: true,
             };
             const found = byId.get(a.account_id);
             if (found) {
@@ -233,8 +262,19 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                     accountId: a.account_id,
                     accountName: accountName.slice(0, 191),
                     kind,
+                    startDate: item.setupAt ? new Date(`${day(now)}T00:00:00Z`) : null,
                 },
             }));
+        }
+        if (accounts.length) {
+            await this.prisma.plaidAccount.updateMany({
+                where: {
+                    plaidItemId: item.id,
+                    shared: true,
+                    accountId: { notIn: accounts.map((a) => a.account_id) },
+                },
+                data: { shared: false },
+            });
         }
         return byId;
     }
@@ -312,10 +352,22 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             where: { id: itemId },
             include: { accounts: true },
         });
-        if (!item)
+        if (!item || !item.setupAt)
             return;
-        for (const account of item.accounts)
-            await this.rebuildAccount(item, account);
+        for (const account of item.accounts) {
+            if (account.shared)
+                await this.rebuildAccount(item, account);
+            else
+                await this.dropAccount(account);
+        }
+    }
+    async dropAccount(account) {
+        const { count } = await this.prisma.bankStatement.deleteMany({
+            where: { plaidAccountId: account.id, deletedAt: null },
+        });
+        if (count) {
+            this.logger.log(`account #${account.id}: removed ${count} feed month(s), no longer shared`);
+        }
     }
     async rebuildAccount(item, account) {
         const scope = (0, scope_1.scopeOf)(item);
@@ -351,6 +403,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                 start: day(u.periodStart),
                 end: day(u.periodEnd),
             })),
+            startDate: account.startDate ? day(account.startDate) : null,
         });
         const existing = await this.prisma.bankStatement.findMany({
             where: { plaidAccountId: account.id },
@@ -561,6 +614,12 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     }
 };
 exports.BankFeedSyncService = BankFeedSyncService;
+__decorate([
+    (0, schedule_1.Cron)('*/5 * * * *'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", Promise)
+], BankFeedSyncService.prototype, "syncLoading", null);
 __decorate([
     (0, schedule_1.Cron)('17 */6 * * *'),
     __metadata("design:type", Function),

@@ -24,6 +24,30 @@ export const DEFAULT_VOICE = 'marin';
 export const isVoice = (v: unknown): v is string =>
   typeof v === 'string' && VOICES.some((x) => x.id === v);
 
+/**
+ * The languages a call may START in (the admin's choice); the caller can switch. Kept in
+ * step with the internal API's `customer-voice.util.ts#AI_LANGUAGES`.
+ */
+export const LANGUAGES: Record<string, string> = {
+  en: 'English',
+  fr: 'French',
+  es: 'Spanish',
+  he: 'Hebrew',
+  yi: 'Yiddish',
+  ru: 'Russian',
+  ar: 'Arabic',
+  pt: 'Portuguese',
+  zh: 'Mandarin Chinese',
+  it: 'Italian',
+  de: 'German',
+};
+export const DEFAULT_LANGUAGE = 'en';
+export const isLanguage = (v: unknown): v is string =>
+  typeof v === 'string' && Object.hasOwn(LANGUAGES, v);
+/** The language's name for the prompt; English for anything unknown (a drift never fails a call). */
+export const languageName = (id: string | null | undefined): string =>
+  (isLanguage(id) ? LANGUAGES[id] : undefined) ?? LANGUAGES[DEFAULT_LANGUAGE];
+
 /** The claim on a call's stream token (minted by the internal API or our own dialer). */
 export const VOICE_TOKEN_TYPE = 'voice-call';
 

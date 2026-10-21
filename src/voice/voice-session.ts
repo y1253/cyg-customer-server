@@ -13,6 +13,7 @@ import {
   MuLawTrack,
   RT,
   muLawStereoWav,
+  languageName,
   realtimeSession,
   type VoiceTokenClaims,
 } from './voice.util';
@@ -239,6 +240,9 @@ export class VoiceSession {
         ? 'They called our number.'
         : 'We called them to deliver a scheduled message; after it, answer their questions.',
       `The call ends after ${this.settings!.maxMinutes} minutes.`,
+      `Speak ${languageName(this.settings!.language)} by default. If the caller speaks another ` +
+        'language or asks you to speak one, switch to it at once and keep using it for the rest ' +
+        'of the call, texts you send with send_text included.',
     ];
     const conversation = this.conversation!;
     if (!conversation.bookChosen) {
@@ -259,16 +263,18 @@ export class VoiceSession {
   /** The instruction for the first thing the AI says. */
   private opening(customerName: string, claims: VoiceTokenClaims): string {
     const first = customerName.trim().split(/\s+/)[0] || 'there';
+    const lang = languageName(this.settings!.language);
     if (claims.dir === 'OUTBOUND' && claims.script) {
       return (
-        `Greet ${first} briefly as CYG Finance's assistant, then say this message naturally, ` +
-        `in your own words: """${claims.script}""" Then ask if they have any questions.`
+        `In ${lang}: greet ${first} briefly as CYG Finance's assistant, then say this message ` +
+        `naturally, in your own words: """${claims.script}""" Then ask if they have any questions.`
       );
     }
     const greeting = this.settings!.greeting;
     return greeting
-      ? `Say this greeting (use their first name, ${first}, if it fits): """${greeting}"""`
-      : `Greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
+      ? `In ${lang} (translate it if it is written in another language), say this greeting ` +
+          `(use their first name, ${first}, if it fits): """${greeting}"""`
+      : `In ${lang}: greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
   }
 
   private async onOpenAi(text: string): Promise<void> {

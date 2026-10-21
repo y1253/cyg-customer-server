@@ -44,6 +44,7 @@ export declare class PlaidClient {
     get env(): string;
     get webhookUrl(): string | null;
     get redirectUri(): string | null;
+    get linkCustomization(): string | null;
     get countryCodes(): string[];
     call<T>(path: string, body: Record<string, unknown>): Promise<T>;
 }

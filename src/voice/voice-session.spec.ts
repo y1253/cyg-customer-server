@@ -27,7 +27,7 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
 };
 
-function setup() {
+function setup(language = 'en') {
   const phone = new FakeSocket();
   const openai = new FakeSocket();
   const conversation = {
@@ -62,6 +62,7 @@ function setup() {
         voice: 'cedar',
         greeting: null,
         maxMinutes: 15,
+        language,
       })),
       conversationFor: jest.fn(() => conversation),
       started: jest.fn(),
@@ -151,6 +152,31 @@ describe('VoiceSession (step12)', () => {
       streamSid: 'MZ',
       media: { payload: 'BBBB' },
     });
+  });
+
+  it("starts in the admin's language and lets the caller switch", async () => {
+    const { phone, openai, deps } = setup('fr');
+    phone.push({
+      event: 'start',
+      start: {
+        streamSid: 'MZ',
+        callSid: 'CA',
+        customParameters: { token: 'good' },
+      },
+    });
+    await flush();
+    openai.emit('open');
+    await flush();
+    const [, extra] = deps.assistant.promptFor.mock.calls[0] as unknown as [
+      unknown,
+      { note: string },
+    ];
+    expect(extra.note).toContain('Speak French by default');
+    expect(extra.note).toContain('If the caller speaks another language');
+    const opening = openai.sent.find((e) => e.type === 'response.create') as {
+      response: { instructions: string };
+    };
+    expect(opening.response.instructions).toMatch(/^In French:/);
   });
 
   it('runs tools like the chat, saves both sides, and lets the caller interrupt', async () => {

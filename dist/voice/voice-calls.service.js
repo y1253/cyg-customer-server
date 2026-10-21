@@ -49,6 +49,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             voice: (0, voice_util_1.isVoice)(row?.voice) ? row.voice : voice_util_1.DEFAULT_VOICE,
             greeting: row?.greeting?.trim() || null,
             maxMinutes: Math.min(Math.max(row?.maxMinutes ?? 15, 1), 60),
+            language: (0, voice_util_1.isLanguage)(row?.language) ? row.language : voice_util_1.DEFAULT_LANGUAGE,
         };
     }
     async canCall() {

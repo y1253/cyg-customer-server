@@ -11,6 +11,7 @@ export interface VoiceSettings {
     voice: string;
     greeting: string | null;
     maxMinutes: number;
+    language: string;
 }
 export interface OutboundMissed {
     runId: number;

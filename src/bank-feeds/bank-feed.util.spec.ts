@@ -144,6 +144,50 @@ describe('planMonths', () => {
     });
     expect(plans[0].txnIds).toEqual(['m', 'a', 'z']);
   });
+  describe('with a start date', () => {
+    const plan = (startDate: string | null) =>
+      planMonths({
+        kind: 'BANK',
+        currentCents: 100000,
+        today: '2026-10-20',
+        txns,
+        startDate,
+      });
+
+    it('cuts the month it falls in, opening at that day’s balance', () => {
+      const plans = plan('2026-09-10');
+      expect(plans.map((p) => [p.periodStart, p.periodEnd])).toEqual([
+        ['2026-09-10', '2026-09-30'],
+        ['2026-10-01', '2026-10-20'],
+      ]);
+      expect(plans[0].txnIds).toEqual(['c']);
+      expect(plans.map((p) => [p.openingCents, p.closingCents])).toEqual([
+        [102500, 100500],
+        [100500, 100000],
+      ]);
+    });
+
+    it('starts at a month boundary without cutting anything', () => {
+      expect(plan('2026-09-01')).toEqual(plan(null).slice(1));
+    });
+
+    it('changes nothing when it is before the first transaction', () => {
+      expect(plan('2025-01-01')).toEqual(plan(null));
+    });
+
+    it('walks a card the other way', () => {
+      const plans = planMonths({
+        kind: 'CREDIT_CARD',
+        currentCents: 30000,
+        today: '2026-10-20',
+        txns: [t('p', '2026-09-10', -10000), t('q', '2026-10-05', -5000)],
+        startDate: '2026-10-03',
+      });
+      expect(
+        plans.map((p) => [p.periodStart, p.openingCents, p.closingCents]),
+      ).toEqual([['2026-10-03', 25000, 30000]]);
+    });
+  });
 });
 
 describe('helpers', () => {

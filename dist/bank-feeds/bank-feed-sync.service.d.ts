@@ -1,9 +1,10 @@
 import { ConfigService } from '@nestjs/config';
+import { type PlaidAccount, type PlaidItem } from '@prisma/client';
 import { RulesService } from '../assistant/rules.service';
 import { NameMemoryService } from '../bookkeeping/name-memory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BankRowCategorizer } from './bank-row-categorizer';
-import { PlaidClient } from './plaid.client';
+import { PlaidClient, type PlaidAccountData } from './plaid.client';
 export type ItemStatus = 'ACTIVE' | 'LOGIN_REQUIRED' | 'ERROR' | 'REMOVED';
 export declare class BankFeedSyncService {
     private readonly prisma;
@@ -19,15 +20,18 @@ export declare class BankFeedSyncService {
     private get key();
     syncSoon(itemId: number): void;
     sync(itemId: number): Promise<void>;
+    isRunning(itemId: number): boolean;
+    syncLoading(): Promise<void>;
     syncAll(): Promise<void>;
     rebuildAll(): Promise<void>;
     private runSync;
     private recordError;
     private fetchChanges;
-    private saveAccounts;
+    saveAccounts(item: PlaidItem, accounts: readonly PlaidAccountData[]): Promise<Map<string, PlaidAccount>>;
     private knownAccounts;
     private saveTransactions;
     rebuildItem(itemId: number): Promise<void>;
+    private dropAccount;
     private rebuildAccount;
     private syncRows;
     private insertRows;

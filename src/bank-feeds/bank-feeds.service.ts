@@ -24,6 +24,8 @@ import {
 
 /** Plaid keeps up to 2 years of history for Transactions; ask for all of it. */
 const DAYS_REQUESTED = 730;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
 
 export interface BankConnectionView {
   id: number;
@@ -35,6 +37,15 @@ export interface BankConnectionView {
   historyDone: boolean;
   lastSyncAt: Date | null;
   createdAt: Date;
+  /** When the start dates were confirmed; null = nothing is filed until they are. */
+  setupAt: Date | null;
+  /** A sync is running right now. */
+  syncing: boolean;
+  /** The bank has an account the customer has not shared yet ("Change accounts"). */
+  newAccounts: boolean;
+  /** YYYY-MM-DD — the oldest day Plaid can give (2 years before connecting). */
+  earliestDate: string;
+  /** The accounts the customer shared in Plaid Link. */
   accounts: Array<{
     id: number;
     name: string;
@@ -44,11 +55,14 @@ export interface BankConnectionView {
     accountName: string;
     currency: string | null;
     currentBalance: number | null;
+    /** YYYY-MM-DD — the first day filed; null = all the history there is. */
+    startDate: string | null;
   }>;
 }
 
 function viewOf(
   item: PlaidItem & { accounts: PlaidAccount[] },
+  syncing: boolean,
 ): BankConnectionView {
   return {
     id: item.id,
@@ -58,7 +72,14 @@ function viewOf(
     historyDone: item.historyDone,
     lastSyncAt: item.lastSyncAt,
     createdAt: item.createdAt,
+    setupAt: item.setupAt,
+    syncing,
+    newAccounts: item.newAccounts,
+    earliestDate: isoDay(
+      new Date(item.createdAt.getTime() - DAYS_REQUESTED * DAY_MS),
+    ),
     accounts: item.accounts
+      .filter((a) => a.shared)
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((a) => ({
         id: a.id,
@@ -69,6 +90,7 @@ function viewOf(
         currency: a.currency,
         currentBalance:
           a.currentBalance === null ? null : Number(a.currentBalance),
+        startDate: a.startDate ? isoDay(a.startDate) : null,
       })),
   };
 }
@@ -108,7 +130,7 @@ export class BankFeedsService {
       include: { accounts: true },
       orderBy: { createdAt: 'asc' },
     });
-    return items.map(viewOf);
+    return items.map((i) => viewOf(i, this.sync.isRunning(i.id)));
   }
 
   private async owned(scope: BookScope, id: number): Promise<PlaidItem> {
@@ -124,16 +146,20 @@ export class BankFeedsService {
       where: { id },
       include: { accounts: true },
     });
-    return viewOf(item);
+    return viewOf(item, this.sync.isRunning(item.id));
   }
 
   /**
    * A Plaid Link token. With `itemId` it opens Link in UPDATE mode, so the customer signs
-   * in to that bank again (status LOGIN_REQUIRED) without making a new connection.
+   * in to that bank again (status LOGIN_REQUIRED) without making a new connection — and,
+   * with `chooseAccounts`, picks again which of its accounts are shared with us.
+   * Which accounts a NEW connection shares is Link's Account Select screen (set to "Multi
+   * select" in the Plaid dashboard's Link customization).
    */
   async linkToken(
     scope: BookScope,
     itemId?: number,
+    chooseAccounts = false,
   ): Promise<{ linkToken: string }> {
     const base: Record<string, unknown> = {
       client_name: 'CYG Finance',
@@ -144,6 +170,9 @@ export class BankFeedsService {
       ...(this.plaid.redirectUri
         ? { redirect_uri: this.plaid.redirectUri }
         : {}),
+      ...(this.plaid.linkCustomization
+        ? { link_customization_name: this.plaid.linkCustomization }
+        : {}),
     };
     const body = itemId
       ? {
@@ -152,6 +181,9 @@ export class BankFeedsService {
             (await this.owned(scope, itemId)).accessToken,
             this.key,
           ),
+          ...(chooseAccounts
+            ? { update: { account_selection_enabled: true } }
+            : {}),
         }
       : {
           ...base,
@@ -199,7 +231,9 @@ export class BankFeedsService {
             ...scopeWhere(scope),
             deletedAt: null,
             institutionId: item.institution_id,
-            accounts: { some: { mask: { in: [...masks] as string[] } } },
+            accounts: {
+              some: { shared: true, mask: { in: [...masks] as string[] } },
+            },
           },
         })
       : null;
@@ -224,28 +258,88 @@ export class BankFeedsService {
     this.logger.log(
       `item #${saved.id} connected (${institutionName ?? 'unknown bank'})`,
     );
+    // Saved now, so the start-date dialog can list them; `setupAt` stays null until the
+    // customer confirms it, and no month is filed before that.
+    await this.sync.saveAccounts(saved, accounts);
     this.sync.syncSoon(saved.id);
     return this.view(saved.id);
   }
 
-  /** The customer signed in again (Link update mode): back to ACTIVE and sync. */
+  /**
+   * Link update mode finished (signed in again, or picked the accounts again): back to
+   * ACTIVE. The accounts are read before answering, so the answer lists what is shared now.
+   */
   async reconnected(scope: BookScope, id: number): Promise<BankConnectionView> {
     const item = await this.owned(scope, id);
     await this.prisma.plaidItem.update({
       where: { id: item.id },
-      data: { status: 'ACTIVE', error: null },
+      data: { status: 'ACTIVE', error: null, newAccounts: false },
     });
+    try {
+      const { accounts } = await this.plaid.call<{
+        accounts: PlaidAccountData[];
+      }>('/accounts/get', {
+        access_token: decrypt(item.accessToken, this.key),
+      });
+      await this.sync.saveAccounts(item, accounts);
+    } catch (err) {
+      this.logger.warn(`item #${item.id} /accounts/get: ${String(err)}`);
+    }
     this.sync.syncSoon(item.id);
     return this.view(item.id);
   }
 
-  /** "Refresh now": sync and answer when done. */
+  /** "Refresh now": starts a sync and answers at once (the list shows `syncing`). */
   async refresh(scope: BookScope, id: number): Promise<BankConnectionView> {
     const item = await this.owned(scope, id);
     if (item.status === 'LOGIN_REQUIRED') {
       throw new BadRequestException('Sign in to your bank again first');
     }
-    await this.sync.sync(item.id);
+    this.sync.syncSoon(item.id);
+    return this.view(item.id);
+  }
+
+  /**
+   * The customer's first day per account (null = all the history). Confirms the setup
+   * (`setupAt`), so the months are filed from now on; a later date removes earlier ones.
+   */
+  async setStartDates(
+    scope: BookScope,
+    id: number,
+    accounts: ReadonlyArray<{ id: number; startDate?: string | null }>,
+  ): Promise<BankConnectionView> {
+    const item = await this.owned(scope, id);
+    const own = new Set(
+      (
+        await this.prisma.plaidAccount.findMany({
+          where: { plaidItemId: item.id, shared: true },
+          select: { id: true },
+        })
+      ).map((a) => a.id),
+    );
+    const today = isoDay(new Date());
+    for (const a of accounts) {
+      if (!own.has(a.id)) throw new NotFoundException('Account not found');
+      if (a.startDate && a.startDate > today) {
+        throw new BadRequestException('A start date cannot be in the future');
+      }
+    }
+    for (const a of accounts) {
+      await this.prisma.plaidAccount.update({
+        where: { id: a.id },
+        data: {
+          startDate: a.startDate ? new Date(`${a.startDate}T00:00:00Z`) : null,
+        },
+      });
+    }
+    if (!item.setupAt) {
+      await this.prisma.plaidItem.update({
+        where: { id: item.id },
+        data: { setupAt: new Date() },
+      });
+    }
+    // The sync rebuilds the months afterwards, one run at a time with any in progress.
+    this.sync.syncSoon(item.id);
     return this.view(item.id);
   }
 
@@ -349,6 +443,13 @@ export class BankFeedsService {
       return;
     }
     if (type !== 'ITEM') return;
+    if (code === 'NEW_ACCOUNTS_AVAILABLE') {
+      await this.prisma.plaidItem.update({
+        where: { id: item.id },
+        data: { newAccounts: true },
+      });
+      return;
+    }
     if (code === 'LOGIN_REPAIRED') {
       await this.prisma.plaidItem.update({
         where: { id: item.id },

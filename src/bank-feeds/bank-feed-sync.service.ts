@@ -53,6 +53,8 @@ const LOGIN_CODES = new Set([
 ]);
 
 const SYNC_PAGE = 500;
+/** History normally arrives within hours; past this the "loading" state is given up. */
+const HISTORY_GIVE_UP_MS = 24 * 60 * 60 * 1000;
 /** Plaid asks to restart the whole sync loop when data changed mid-pagination. */
 const MAX_SYNC_RESTARTS = 3;
 
@@ -127,6 +129,27 @@ export class BankFeedSyncService {
     return run;
   }
 
+  isRunning(itemId: number): boolean {
+    return this.running.has(itemId);
+  }
+
+  /**
+   * While an item's history is still arriving, sync it every 5 minutes, so it shows up
+   * even when no webhook ever reaches us (the endless "Bringing in…" of step12).
+   */
+  @Cron('*/5 * * * *')
+  async syncLoading(): Promise<void> {
+    if (!this.plaid.configured) return;
+    const items = await this.prisma.plaidItem.findMany({
+      where: { deletedAt: null, status: 'ACTIVE', historyDone: false },
+      select: { id: true },
+    });
+    for (const { id } of items) {
+      if (this.running.has(id)) continue;
+      await this.sync(id).catch(() => undefined);
+    }
+  }
+
   /** Backstop for missed webhooks. Every sync also keeps Plaid sending them. */
   @Cron('17 */6 * * *')
   async syncAll(): Promise<void> {
@@ -166,14 +189,24 @@ export class BankFeedSyncService {
       }>('/accounts/get', { access_token: accessToken });
       const byPlaidId = await this.saveAccounts(item, accounts);
 
-      const { added, modified, removed, cursor } = await this.fetchChanges(
-        accessToken,
-        item.cursor,
-      );
+      const { added, modified, removed, cursor, updateStatus } =
+        await this.fetchChanges(accessToken, item.cursor);
       await this.saveTransactions(byPlaidId, added, modified, removed);
+      // `/transactions/sync` says itself when the history is in — the webhook is not the
+      // only way to learn it (a missed one left the card loading forever).
+      const historyDone =
+        item.historyDone ||
+        updateStatus === 'HISTORICAL_UPDATE_COMPLETE' ||
+        Date.now() - item.createdAt.getTime() > HISTORY_GIVE_UP_MS;
       await this.prisma.plaidItem.update({
         where: { id: item.id },
-        data: { cursor, lastSyncAt: new Date(), status: 'ACTIVE', error: null },
+        data: {
+          cursor,
+          lastSyncAt: new Date(),
+          status: 'ACTIVE',
+          error: null,
+          historyDone,
+        },
       });
       this.logger.log(
         `item #${item.id} synced: +${added.length} ~${modified.length} -${removed.length} in ${Date.now() - started}ms`,
@@ -213,6 +246,7 @@ export class BankFeedSyncService {
       const modified: PlaidTransactionData[] = [];
       const removed: string[] = [];
       let cursor = start;
+      let updateStatus: string | null = null;
       try {
         for (;;) {
           const page = await this.plaid.call<{
@@ -221,6 +255,8 @@ export class BankFeedSyncService {
             removed: Array<{ transaction_id: string }>;
             next_cursor: string;
             has_more: boolean;
+            /** NOT_READY | INITIAL_UPDATE_COMPLETE | HISTORICAL_UPDATE_COMPLETE */
+            transactions_update_status?: string;
           }>('/transactions/sync', {
             access_token: accessToken,
             ...(cursor ? { cursor } : {}),
@@ -230,9 +266,10 @@ export class BankFeedSyncService {
           modified.push(...page.modified);
           removed.push(...page.removed.map((r) => r.transaction_id));
           cursor = page.next_cursor;
+          updateStatus = page.transactions_update_status ?? updateStatus;
           if (!page.has_more) break;
         }
-        return { added, modified, removed, cursor };
+        return { added, modified, removed, cursor, updateStatus };
       } catch (err) {
         const restart =
           err instanceof PlaidApiError &&
@@ -246,9 +283,10 @@ export class BankFeedSyncService {
   /**
    * Upserts the item's accounts with today's balance. A NEW account is filed under the
    * book's existing account when it is the same one (bank text + last 4 — the reader's
-   * `canonicalAccountName`), else "<bank> <last 4>".
+   * `canonicalAccountName`), else "<bank> <last 4>". An account of the item that Plaid no
+   * longer returns was unchecked in Link's Account Select: it is marked not `shared`.
    */
-  private async saveAccounts(
+  async saveAccounts(
     item: PlaidItem,
     accounts: readonly PlaidAccountData[],
   ): Promise<Map<string, PlaidAccount>> {
@@ -276,6 +314,7 @@ export class BankFeedSyncService {
         currency,
         currentBalance: balance,
         balanceAt: now,
+        shared: true,
       };
       const found = byId.get(a.account_id);
       if (found) {
@@ -308,9 +347,22 @@ export class BankFeedSyncService {
             accountId: a.account_id,
             accountName: accountName.slice(0, 191),
             kind,
+            // Added to a bank already set up ("Change accounts"): today until the customer
+            // picks its start date, so two years are not filed (and categorized) unasked.
+            startDate: item.setupAt ? new Date(`${day(now)}T00:00:00Z`) : null,
           },
         }),
       );
+    }
+    if (accounts.length) {
+      await this.prisma.plaidAccount.updateMany({
+        where: {
+          plaidItemId: item.id,
+          shared: true,
+          accountId: { notIn: accounts.map((a) => a.account_id) },
+        },
+        data: { shared: false },
+      });
     }
     return byId;
   }
@@ -404,9 +456,27 @@ export class BankFeedSyncService {
       where: { id: itemId },
       include: { accounts: true },
     });
-    if (!item) return;
-    for (const account of item.accounts)
-      await this.rebuildAccount(item, account);
+    // No month is filed before the customer has chosen each account's start date.
+    if (!item || !item.setupAt) return;
+    for (const account of item.accounts) {
+      if (account.shared) await this.rebuildAccount(item, account);
+      else await this.dropAccount(account);
+    }
+  }
+
+  /**
+   * An account the customer stopped sharing: its live feed months leave the books. A
+   * customer-deleted month stays as the marker, should it be shared again.
+   */
+  private async dropAccount(account: PlaidAccount): Promise<void> {
+    const { count } = await this.prisma.bankStatement.deleteMany({
+      where: { plaidAccountId: account.id, deletedAt: null },
+    });
+    if (count) {
+      this.logger.log(
+        `account #${account.id}: removed ${count} feed month(s), no longer shared`,
+      );
+    }
   }
 
   private async rebuildAccount(
@@ -447,6 +517,7 @@ export class BankFeedSyncService {
         start: day(u.periodStart!),
         end: day(u.periodEnd!),
       })),
+      startDate: account.startDate ? day(account.startDate) : null,
     });
 
     const existing = await this.prisma.bankStatement.findMany({
@@ -460,7 +531,7 @@ export class BankFeedSyncService {
       if (!byMonth.has(m) || s.deletedAt) byMonth.set(m, s);
     }
 
-    // Months no longer planned (an upload now covers them): the feed's copy goes away, so
+    // Months no longer planned (an upload now covers them, or before the start date): the feed's copy goes away, so
     // the same transactions are never in the ledger twice. A customer-deleted one stays as
     // the marker that keeps the month out.
     const planned = new Set(plans.map((p) => monthOf(p.periodStart)));

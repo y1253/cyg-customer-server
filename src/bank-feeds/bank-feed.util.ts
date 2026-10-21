@@ -44,6 +44,12 @@ export interface PlanInput {
    * walk, so the other months stay right).
    */
   covered?: ReadonlyArray<{ start: string; end: string }>;
+  /**
+   * YYYY-MM-DD — the first day the customer wants in the books (step12). Earlier months are
+   * left out and the month it falls in starts that day, opening at that day's balance (the
+   * walk still counts every transaction, so the balances stay right).
+   */
+  startDate?: string | null;
 }
 
 /** Plaid's amount (+ = money out, a decimal) → our cents (+ = money in). */
@@ -115,14 +121,45 @@ export function planMonths(input: PlanInput): MonthPlan[] {
     closing = opening;
   }
   plans.reverse();
+  const kept = input.startDate
+    ? fromStartDate(plans, txns, input.kind, input.startDate)
+    : plans;
 
   const covered = input.covered ?? [];
-  return plans.filter(
+  return kept.filter(
     (p) =>
       !covered.some((c) =>
         overlaps({ start: p.periodStart, end: p.periodEnd }, c),
       ),
   );
+}
+
+/** The plans from `start` on; the month it falls in is cut at that day. */
+function fromStartDate(
+  plans: MonthPlan[],
+  txns: readonly FeedTxn[],
+  kind: PlanInput['kind'],
+  start: string,
+): MonthPlan[] {
+  const dateOf = new Map(txns.map((t) => [t.id, t]));
+  const out: MonthPlan[] = [];
+  for (const p of plans) {
+    if (p.periodEnd < start) continue;
+    if (p.periodStart >= start) {
+      out.push(p);
+      continue;
+    }
+    const txnIds = p.txnIds.filter((id) => dateOf.get(id)!.date >= start);
+    const net = txnIds.reduce((s, id) => s + dateOf.get(id)!.cents, 0);
+    const opening =
+      p.closingCents === null
+        ? null
+        : kind === 'CREDIT_CARD'
+          ? p.closingCents + net
+          : p.closingCents - net;
+    out.push({ ...p, periodStart: start, openingCents: opening, txnIds });
+  }
+  return out;
 }
 
 /** "Mar 2026" for a month statement's file name. */

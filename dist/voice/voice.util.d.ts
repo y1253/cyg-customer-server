@@ -42,6 +42,10 @@ export declare const VOICES: readonly [{
 }];
 export declare const DEFAULT_VOICE = "marin";
 export declare const isVoice: (v: unknown) => v is string;
+export declare const LANGUAGES: Record<string, string>;
+export declare const DEFAULT_LANGUAGE = "en";
+export declare const isLanguage: (v: unknown) => v is string;
+export declare const languageName: (id: string | null | undefined) => string;
 export declare const VOICE_TOKEN_TYPE = "voice-call";
 export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT';
 export interface VoiceTokenClaims {

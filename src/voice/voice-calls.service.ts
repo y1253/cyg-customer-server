@@ -9,10 +9,12 @@ import { asE164 } from '../messaging/messaging.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import {
+  DEFAULT_LANGUAGE,
   DEFAULT_VOICE,
   VOICE_TOKEN_TYPE,
   callStatusOf,
   connectStreamLaml,
+  isLanguage,
   isVoice,
   type CallPurpose,
   type VoiceTokenClaims,
@@ -23,6 +25,8 @@ export interface VoiceSettings {
   voice: string;
   greeting: string | null;
   maxMinutes: number;
+  /** The language every call starts in (the caller can switch). */
+  language: string;
 }
 
 /** An outbound schedule call that never reached the customer (they get a text / email instead). */
@@ -80,6 +84,7 @@ export class VoiceCallsService {
       voice: isVoice(row?.voice) ? row.voice : DEFAULT_VOICE,
       greeting: row?.greeting?.trim() || null,
       maxMinutes: Math.min(Math.max(row?.maxMinutes ?? 15, 1), 60),
+      language: isLanguage(row?.language) ? row.language : DEFAULT_LANGUAGE,
     };
   }
 

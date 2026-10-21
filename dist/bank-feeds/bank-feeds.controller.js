@@ -30,17 +30,20 @@ let BankFeedsController = class BankFeedsController {
     list(scope) {
         return this.feeds.list(scope);
     }
-    linkToken(scope, itemId) {
+    linkToken(scope, itemId, accounts) {
         if (itemId !== undefined && !/^[1-9]\d{0,9}$/.test(itemId)) {
             throw new common_1.BadRequestException('Invalid connection');
         }
-        return this.feeds.linkToken(scope, itemId ? Number(itemId) : undefined);
+        return this.feeds.linkToken(scope, itemId ? Number(itemId) : undefined, accounts === '1');
     }
     exchange(scope, dto) {
         return this.feeds.exchange(scope, dto.publicToken);
     }
     reconnected(scope, id) {
         return this.feeds.reconnected(scope, id);
+    }
+    setStartDates(scope, id, dto) {
+        return this.feeds.setStartDates(scope, id, dto.accounts);
     }
     refresh(scope, id) {
         return this.feeds.refresh(scope, id);
@@ -67,8 +70,9 @@ __decorate([
     (0, common_1.Post)('link-token'),
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Query)('itemId')),
+    __param(2, (0, common_1.Query)('accounts')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", Promise)
 ], BankFeedsController.prototype, "linkToken", null);
 __decorate([
@@ -87,6 +91,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number]),
     __metadata("design:returntype", Promise)
 ], BankFeedsController.prototype, "reconnected", null);
+__decorate([
+    (0, common_1.Put)(':id/accounts'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, bank_feeds_dto_1.StartDatesDto]),
+    __metadata("design:returntype", Promise)
+], BankFeedsController.prototype, "setStartDates", null);
 __decorate([
     (0, common_1.Post)(':id/sync'),
     __param(0, (0, book_scope_guard_1.Book)()),

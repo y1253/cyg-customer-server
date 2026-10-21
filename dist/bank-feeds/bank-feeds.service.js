@@ -20,7 +20,9 @@ const crypto_util_1 = require("./crypto.util");
 const plaid_client_1 = require("./plaid.client");
 const plaid_webhook_util_1 = require("./plaid-webhook.util");
 const DAYS_REQUESTED = 730;
-function viewOf(item) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isoDay = (d) => d.toISOString().slice(0, 10);
+function viewOf(item, syncing) {
     return {
         id: item.id,
         institutionName: item.institutionName,
@@ -29,7 +31,12 @@ function viewOf(item) {
         historyDone: item.historyDone,
         lastSyncAt: item.lastSyncAt,
         createdAt: item.createdAt,
+        setupAt: item.setupAt,
+        syncing,
+        newAccounts: item.newAccounts,
+        earliestDate: isoDay(new Date(item.createdAt.getTime() - DAYS_REQUESTED * DAY_MS)),
         accounts: item.accounts
+            .filter((a) => a.shared)
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((a) => ({
             id: a.id,
@@ -39,6 +46,7 @@ function viewOf(item) {
             accountName: a.accountName,
             currency: a.currency,
             currentBalance: a.currentBalance === null ? null : Number(a.currentBalance),
+            startDate: a.startDate ? isoDay(a.startDate) : null,
         })),
     };
 }
@@ -68,7 +76,7 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
             include: { accounts: true },
             orderBy: { createdAt: 'asc' },
         });
-        return items.map(viewOf);
+        return items.map((i) => viewOf(i, this.sync.isRunning(i.id)));
     }
     async owned(scope, id) {
         const item = await this.prisma.plaidItem.findFirst({
@@ -83,9 +91,9 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
             where: { id },
             include: { accounts: true },
         });
-        return viewOf(item);
+        return viewOf(item, this.sync.isRunning(item.id));
     }
-    async linkToken(scope, itemId) {
+    async linkToken(scope, itemId, chooseAccounts = false) {
         const base = {
             client_name: 'CYG Finance',
             language: 'en',
@@ -95,11 +103,17 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
             ...(this.plaid.redirectUri
                 ? { redirect_uri: this.plaid.redirectUri }
                 : {}),
+            ...(this.plaid.linkCustomization
+                ? { link_customization_name: this.plaid.linkCustomization }
+                : {}),
         };
         const body = itemId
             ? {
                 ...base,
                 access_token: (0, crypto_util_1.decrypt)((await this.owned(scope, itemId)).accessToken, this.key),
+                ...(chooseAccounts
+                    ? { update: { account_selection_enabled: true } }
+                    : {}),
             }
             : {
                 ...base,
@@ -127,7 +141,9 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
                     ...(0, scope_1.scopeWhere)(scope),
                     deletedAt: null,
                     institutionId: item.institution_id,
-                    accounts: { some: { mask: { in: [...masks] } } },
+                    accounts: {
+                        some: { shared: true, mask: { in: [...masks] } },
+                    },
                 },
             })
             : null;
@@ -147,6 +163,7 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
             },
         });
         this.logger.log(`item #${saved.id} connected (${institutionName ?? 'unknown bank'})`);
+        await this.sync.saveAccounts(saved, accounts);
         this.sync.syncSoon(saved.id);
         return this.view(saved.id);
     }
@@ -154,8 +171,17 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         const item = await this.owned(scope, id);
         await this.prisma.plaidItem.update({
             where: { id: item.id },
-            data: { status: 'ACTIVE', error: null },
+            data: { status: 'ACTIVE', error: null, newAccounts: false },
         });
+        try {
+            const { accounts } = await this.plaid.call('/accounts/get', {
+                access_token: (0, crypto_util_1.decrypt)(item.accessToken, this.key),
+            });
+            await this.sync.saveAccounts(item, accounts);
+        }
+        catch (err) {
+            this.logger.warn(`item #${item.id} /accounts/get: ${String(err)}`);
+        }
         this.sync.syncSoon(item.id);
         return this.view(item.id);
     }
@@ -164,7 +190,38 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         if (item.status === 'LOGIN_REQUIRED') {
             throw new common_1.BadRequestException('Sign in to your bank again first');
         }
-        await this.sync.sync(item.id);
+        this.sync.syncSoon(item.id);
+        return this.view(item.id);
+    }
+    async setStartDates(scope, id, accounts) {
+        const item = await this.owned(scope, id);
+        const own = new Set((await this.prisma.plaidAccount.findMany({
+            where: { plaidItemId: item.id, shared: true },
+            select: { id: true },
+        })).map((a) => a.id));
+        const today = isoDay(new Date());
+        for (const a of accounts) {
+            if (!own.has(a.id))
+                throw new common_1.NotFoundException('Account not found');
+            if (a.startDate && a.startDate > today) {
+                throw new common_1.BadRequestException('A start date cannot be in the future');
+            }
+        }
+        for (const a of accounts) {
+            await this.prisma.plaidAccount.update({
+                where: { id: a.id },
+                data: {
+                    startDate: a.startDate ? new Date(`${a.startDate}T00:00:00Z`) : null,
+                },
+            });
+        }
+        if (!item.setupAt) {
+            await this.prisma.plaidItem.update({
+                where: { id: item.id },
+                data: { setupAt: new Date() },
+            });
+        }
+        this.sync.syncSoon(item.id);
         return this.view(item.id);
     }
     async remove(scope, id) {
@@ -241,6 +298,13 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         }
         if (type !== 'ITEM')
             return;
+        if (code === 'NEW_ACCOUNTS_AVAILABLE') {
+            await this.prisma.plaidItem.update({
+                where: { id: item.id },
+                data: { newAccounts: true },
+            });
+            return;
+        }
         if (code === 'LOGIN_REPAIRED') {
             await this.prisma.plaidItem.update({
                 where: { id: item.id },

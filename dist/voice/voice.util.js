@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RT = exports.REALTIME_TRANSCRIBE_MODEL = exports.DEFAULT_REALTIME_MODEL = exports.MuLawTrack = exports.VOICE_TOKEN_TYPE = exports.isVoice = exports.DEFAULT_VOICE = exports.VOICES = void 0;
+exports.RT = exports.REALTIME_TRANSCRIBE_MODEL = exports.DEFAULT_REALTIME_MODEL = exports.MuLawTrack = exports.VOICE_TOKEN_TYPE = exports.languageName = exports.isLanguage = exports.DEFAULT_LANGUAGE = exports.LANGUAGES = exports.isVoice = exports.DEFAULT_VOICE = exports.VOICES = void 0;
 exports.realtimeTools = realtimeTools;
 exports.connectStreamLaml = connectStreamLaml;
 exports.spokenScript = spokenScript;
@@ -24,6 +24,24 @@ exports.VOICES = [
 exports.DEFAULT_VOICE = 'marin';
 const isVoice = (v) => typeof v === 'string' && exports.VOICES.some((x) => x.id === v);
 exports.isVoice = isVoice;
+exports.LANGUAGES = {
+    en: 'English',
+    fr: 'French',
+    es: 'Spanish',
+    he: 'Hebrew',
+    yi: 'Yiddish',
+    ru: 'Russian',
+    ar: 'Arabic',
+    pt: 'Portuguese',
+    zh: 'Mandarin Chinese',
+    it: 'Italian',
+    de: 'German',
+};
+exports.DEFAULT_LANGUAGE = 'en';
+const isLanguage = (v) => typeof v === 'string' && Object.hasOwn(exports.LANGUAGES, v);
+exports.isLanguage = isLanguage;
+const languageName = (id) => ((0, exports.isLanguage)(id) ? exports.LANGUAGES[id] : undefined) ?? exports.LANGUAGES[exports.DEFAULT_LANGUAGE];
+exports.languageName = languageName;
 exports.VOICE_TOKEN_TYPE = 'voice-call';
 function realtimeTools(defs) {
     return defs.map((t) => ({

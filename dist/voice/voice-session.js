@@ -157,6 +157,9 @@ class VoiceSession {
                 ? 'They called our number.'
                 : 'We called them to deliver a scheduled message; after it, answer their questions.',
             `The call ends after ${this.settings.maxMinutes} minutes.`,
+            `Speak ${(0, voice_util_1.languageName)(this.settings.language)} by default. If the caller speaks another ` +
+                'language or asks you to speak one, switch to it at once and keep using it for the rest ' +
+                'of the call, texts you send with send_text included.',
         ];
         const conversation = this.conversation;
         if (!conversation.bookChosen) {
@@ -170,14 +173,16 @@ class VoiceSession {
     }
     opening(customerName, claims) {
         const first = customerName.trim().split(/\s+/)[0] || 'there';
+        const lang = (0, voice_util_1.languageName)(this.settings.language);
         if (claims.dir === 'OUTBOUND' && claims.script) {
-            return (`Greet ${first} briefly as CYG Finance's assistant, then say this message naturally, ` +
-                `in your own words: """${claims.script}""" Then ask if they have any questions.`);
+            return (`In ${lang}: greet ${first} briefly as CYG Finance's assistant, then say this message ` +
+                `naturally, in your own words: """${claims.script}""" Then ask if they have any questions.`);
         }
         const greeting = this.settings.greeting;
         return greeting
-            ? `Say this greeting (use their first name, ${first}, if it fits): """${greeting}"""`
-            : `Greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
+            ? `In ${lang} (translate it if it is written in another language), say this greeting ` +
+                `(use their first name, ${first}, if it fits): """${greeting}"""`
+            : `In ${lang}: greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
     }
     async onOpenAi(text) {
         let ev;

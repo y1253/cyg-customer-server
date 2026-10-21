@@ -51,6 +51,9 @@ let PlaidClient = class PlaidClient {
     get redirectUri() {
         return this.get('PLAID_REDIRECT_URI') || null;
     }
+    get linkCustomization() {
+        return this.get('PLAID_LINK_CUSTOMIZATION') || null;
+    }
     get countryCodes() {
         const raw = this.get('PLAID_COUNTRY_CODES') || 'CA,US';
         return raw

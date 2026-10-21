@@ -85,6 +85,15 @@ export class PlaidClient {
     return this.get('PLAID_REDIRECT_URI') || null;
   }
 
+  /**
+   * Optional: a Link customization (Plaid dashboard → Link → Link customization) to use
+   * instead of the default one — its Account Select setting is what lets the customer pick
+   * accounts.
+   */
+  get linkCustomization(): string | null {
+    return this.get('PLAID_LINK_CUSTOMIZATION') || null;
+  }
+
   get countryCodes(): string[] {
     const raw = this.get('PLAID_COUNTRY_CODES') || 'CA,US';
     return raw

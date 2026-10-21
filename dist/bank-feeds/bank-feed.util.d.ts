@@ -19,6 +19,7 @@ export interface PlanInput {
         start: string;
         end: string;
     }>;
+    startDate?: string | null;
 }
 export declare function feedCents(plaidAmount: number | string): number;
 export declare function monthOf(date: string): string;
