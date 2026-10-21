@@ -13,6 +13,7 @@ const schedule_1 = require("@nestjs/schedule");
 const app_controller_1 = require("./app.controller");
 const app_service_1 = require("./app.service");
 const assistant_module_1 = require("./assistant/assistant.module");
+const bank_feeds_module_1 = require("./bank-feeds/bank-feeds.module");
 const billing_module_1 = require("./billing/billing.module");
 const bookkeeping_module_1 = require("./bookkeeping/bookkeeping.module");
 const contact_module_1 = require("./contact/contact.module");
@@ -36,6 +37,7 @@ exports.AppModule = AppModule = __decorate([
             bookkeeping_module_1.BookkeepingModule,
             billing_module_1.BillingModule,
             assistant_module_1.AssistantModule,
+            bank_feeds_module_1.BankFeedsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],

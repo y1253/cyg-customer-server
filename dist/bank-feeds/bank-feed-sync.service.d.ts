@@ -1,0 +1,35 @@
+import { ConfigService } from '@nestjs/config';
+import { RulesService } from '../assistant/rules.service';
+import { NameMemoryService } from '../bookkeeping/name-memory.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { BankRowCategorizer } from './bank-row-categorizer';
+import { PlaidClient } from './plaid.client';
+export type ItemStatus = 'ACTIVE' | 'LOGIN_REQUIRED' | 'ERROR' | 'REMOVED';
+export declare class BankFeedSyncService {
+    private readonly prisma;
+    private readonly plaid;
+    private readonly config;
+    private readonly names;
+    private readonly categorizer;
+    private readonly rules?;
+    private readonly logger;
+    private readonly running;
+    private readonly again;
+    constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, rules?: RulesService | undefined);
+    private get key();
+    syncSoon(itemId: number): void;
+    sync(itemId: number): Promise<void>;
+    syncAll(): Promise<void>;
+    rebuildAll(): Promise<void>;
+    private runSync;
+    private recordError;
+    private fetchChanges;
+    private saveAccounts;
+    private knownAccounts;
+    private saveTransactions;
+    rebuildItem(itemId: number): Promise<void>;
+    private rebuildAccount;
+    private syncRows;
+    private insertRows;
+    private guess;
+}

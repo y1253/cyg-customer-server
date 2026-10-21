@@ -63,6 +63,8 @@ export interface StatementView {
   processedAt: Date | null;
   /** The customer filed it under this account themselves (it survives a Retry). */
   movedByCustomer: boolean;
+  /** UPLOAD | SMS | WHATSAPP | EMAIL | PLAID (a month built from a connected bank — no file). */
+  source: string;
   /**
    * Set when this statement STARTS its account's books (a "Starting balance" row in the
    * ledger): the first one, or one after a break in the chain. Only `list()` fills it.
@@ -237,6 +239,7 @@ function toView(
     createdAt: s.createdAt,
     processedAt: s.processedAt,
     movedByCustomer: s.accountNameByCustomer !== null,
+    source: s.source,
   };
 }
 
@@ -504,6 +507,9 @@ export class BookkeepingService {
     id: number,
   ): Promise<{ stream: Readable; filename: string; size: number }> {
     const s = await this.owned(scope, id);
+    // A bank-feed month (step11) was built from transactions; there is no file.
+    if (!s.storageKey)
+      throw new NotFoundException('This statement came from your bank feed');
     const info = await this.storage.head(s.storageKey);
     if (!info)
       throw new NotFoundException('The original file is no longer available');

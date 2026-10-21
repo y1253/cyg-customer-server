@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AssistantModule } from './assistant/assistant.module';
+import { BankFeedsModule } from './bank-feeds/bank-feeds.module';
 import { BillingModule } from './billing/billing.module';
 import { BookkeepingModule } from './bookkeeping/bookkeeping.module';
 import { ContactModule } from './contact/contact.module';
@@ -24,6 +25,7 @@ import { StorageModule } from './storage/storage.module';
     BookkeepingModule,
     BillingModule,
     AssistantModule,
+    BankFeedsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

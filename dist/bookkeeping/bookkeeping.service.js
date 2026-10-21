@@ -116,6 +116,7 @@ function toView(s, currencies = new Map()) {
         createdAt: s.createdAt,
         processedAt: s.processedAt,
         movedByCustomer: s.accountNameByCustomer !== null,
+        source: s.source,
     };
 }
 let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
@@ -319,6 +320,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     }
     async file(scope, id) {
         const s = await this.owned(scope, id);
+        if (!s.storageKey)
+            throw new common_1.NotFoundException('This statement came from your bank feed');
         const info = await this.storage.head(s.storageKey);
         if (!info)
             throw new common_1.NotFoundException('The original file is no longer available');
