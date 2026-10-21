@@ -199,25 +199,39 @@ export interface PlaidUpdateStatus {
   last_failed_update?: string | null;
 }
 
+/** What Plaid says about the bank (`/institutions/get_by_id` with `include_status`). */
+export interface BankHealth {
+  /** `status.transactions_updates.status`: HEALTHY | DEGRADED | DOWN (often absent). */
+  updates?: string | null;
+  /** Open `status.health_incidents` (no `end_date`), e.g. TD's overnight-only updates. */
+  openIncidents?: number;
+}
+
 /**
  * Why a connection's history is not in yet, in the customer's words — or null when it is
- * simply still coming. step12: TD's transaction updates were DOWN at Plaid for a day, so
- * `/transactions/sync` stayed NOT_READY and the card said "Bringing in…" with no end.
- * `bankStatus` = `/institutions/get_by_id` → `status.transactions_updates.status`.
+ * simply still coming. step12: a TD connection made in the afternoon stayed NOT_READY with
+ * "Bringing in…" for hours — TD lets Plaid collect transactions only 4am–11am UTC (an open
+ * Plaid incident since 2021), so the first ones come the next morning.
  */
 export function bankDelayNote(
   institutionName: string | null,
   updates: PlaidUpdateStatus | null | undefined,
-  bankStatus: string | null | undefined,
+  health: BankHealth | null | undefined,
 ): string | null {
   if (!updates?.last_failed_update || updates.last_successful_update) {
     return null;
   }
   const bank = institutionName?.trim() || 'your bank';
-  if (bankStatus === 'DOWN' || bankStatus === 'DEGRADED') {
+  if (health?.updates === 'DOWN' || health?.updates === 'DEGRADED') {
     return (
       `${bank} isn't sending transactions to Plaid right now — a problem on the bank's ` +
       'side. We keep checking every few minutes and bring them in automatically once it is back.'
+    );
+  }
+  if (health?.openIncidents) {
+    return (
+      `${bank} only lets Plaid collect transactions at certain hours (usually overnight), so ` +
+      'your history can take until tomorrow morning. We keep checking and bring it in automatically.'
     );
   }
   return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;

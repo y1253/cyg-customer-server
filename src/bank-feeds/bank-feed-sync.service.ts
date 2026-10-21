@@ -29,6 +29,7 @@ import {
   monthLabel,
   monthOf,
   planMonths,
+  type BankHealth,
   type MonthPlan,
   type PlaidUpdateStatus,
 } from './bank-feed.util';
@@ -251,21 +252,29 @@ export class BankFeedSyncService {
         return null;
       }
       const institutionId = info.institution_id ?? item.institutionId;
-      const bank = institutionId
+      const health: BankHealth | null = institutionId
         ? await this.plaid
             .call<{
               institution?: {
-                status?: { transactions_updates?: { status?: string } } | null;
+                status?: {
+                  transactions_updates?: { status?: string } | null;
+                  health_incidents?: Array<{ end_date: string | null }> | null;
+                } | null;
               };
             }>('/institutions/get_by_id', {
               institution_id: institutionId,
               country_codes: this.plaid.countryCodes,
               options: { include_status: true },
             })
-            .then((r) => r.institution?.status?.transactions_updates?.status)
+            .then(({ institution }) => ({
+              updates: institution?.status?.transactions_updates?.status,
+              openIncidents: (
+                institution?.status?.health_incidents ?? []
+              ).filter((h) => !h.end_date).length,
+            }))
             .catch(() => null)
         : null;
-      return bankDelayNote(item.institutionName, updates, bank);
+      return bankDelayNote(item.institutionName, updates, health);
     } catch {
       return null;
     }

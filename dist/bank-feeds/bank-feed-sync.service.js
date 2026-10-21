@@ -180,17 +180,20 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                 return null;
             }
             const institutionId = info.institution_id ?? item.institutionId;
-            const bank = institutionId
+            const health = institutionId
                 ? await this.plaid
                     .call('/institutions/get_by_id', {
                     institution_id: institutionId,
                     country_codes: this.plaid.countryCodes,
                     options: { include_status: true },
                 })
-                    .then((r) => r.institution?.status?.transactions_updates?.status)
+                    .then(({ institution }) => ({
+                    updates: institution?.status?.transactions_updates?.status,
+                    openIncidents: (institution?.status?.health_incidents ?? []).filter((h) => !h.end_date).length,
+                }))
                     .catch(() => null)
                 : null;
-            return (0, bank_feed_util_1.bankDelayNote)(item.institutionName, updates, bank);
+            return (0, bank_feed_util_1.bankDelayNote)(item.institutionName, updates, health);
         }
         catch {
             return null;

@@ -105,14 +105,18 @@ function defaultAccountName(institution, account) {
 function isoDay(d = new Date()) {
     return d.toISOString().slice(0, 10);
 }
-function bankDelayNote(institutionName, updates, bankStatus) {
+function bankDelayNote(institutionName, updates, health) {
     if (!updates?.last_failed_update || updates.last_successful_update) {
         return null;
     }
     const bank = institutionName?.trim() || 'your bank';
-    if (bankStatus === 'DOWN' || bankStatus === 'DEGRADED') {
+    if (health?.updates === 'DOWN' || health?.updates === 'DEGRADED') {
         return (`${bank} isn't sending transactions to Plaid right now — a problem on the bank's ` +
             'side. We keep checking every few minutes and bring them in automatically once it is back.');
+    }
+    if (health?.openIncidents) {
+        return (`${bank} only lets Plaid collect transactions at certain hours (usually overnight), so ` +
+            'your history can take until tomorrow morning. We keep checking and bring it in automatically.');
     }
     return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
 }

@@ -212,24 +212,31 @@ describe('helpers', () => {
 describe('bankDelayNote', () => {
   const failed = { last_failed_update: '2026-10-21T22:34:34Z' };
   it('blames the bank when Plaid marks it down', () => {
-    expect(bankDelayNote('TD Canada Trust', failed, 'DOWN')).toMatch(
-      /^TD Canada Trust isn't sending transactions to Plaid/,
+    expect(
+      bankDelayNote('TD Canada Trust', failed, { updates: 'DOWN' }),
+    ).toMatch(/^TD Canada Trust isn't sending transactions to Plaid/);
+    expect(bankDelayNote(null, failed, { updates: 'DEGRADED' })).toMatch(
+      /^your bank/,
     );
-    expect(bankDelayNote(null, failed, 'DEGRADED')).toMatch(/^your bank/);
+  });
+  it('explains a bank that only allows updates at set hours (TD)', () => {
+    expect(bankDelayNote('TD', failed, { openIncidents: 1 })).toMatch(
+      /^TD only lets Plaid collect transactions at certain hours/,
+    );
   });
   it('says Plaid is still trying when the bank looks fine', () => {
-    expect(bankDelayNote('TD', failed, 'HEALTHY')).toMatch(
+    expect(bankDelayNote('TD', failed, { updates: 'HEALTHY' })).toMatch(
       /^Plaid couldn't get your transactions from TD yet/,
     );
   });
   it('is null while nothing failed, or once an update worked', () => {
-    expect(bankDelayNote('TD', {}, 'DOWN')).toBeNull();
-    expect(bankDelayNote('TD', null, 'DOWN')).toBeNull();
+    expect(bankDelayNote('TD', {}, { updates: 'DOWN' })).toBeNull();
+    expect(bankDelayNote('TD', null, null)).toBeNull();
     expect(
       bankDelayNote(
         'TD',
         { ...failed, last_successful_update: '2026-10-21T23:00:00Z' },
-        'DOWN',
+        { updates: 'DOWN' },
       ),
     ).toBeNull();
   });

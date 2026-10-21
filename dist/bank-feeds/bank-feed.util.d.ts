@@ -35,4 +35,8 @@ export interface PlaidUpdateStatus {
     last_successful_update?: string | null;
     last_failed_update?: string | null;
 }
-export declare function bankDelayNote(institutionName: string | null, updates: PlaidUpdateStatus | null | undefined, bankStatus: string | null | undefined): string | null;
+export interface BankHealth {
+    updates?: string | null;
+    openIncidents?: number;
+}
+export declare function bankDelayNote(institutionName: string | null, updates: PlaidUpdateStatus | null | undefined, health: BankHealth | null | undefined): string | null;
