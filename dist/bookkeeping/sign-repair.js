@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.repairBalanceSigns = repairBalanceSigns;
 exports.repairSigns = repairSigns;
 exports.segmentSigns = segmentSigns;
+exports.repairSignsFromTotals = repairSignsFromTotals;
 function repairBalanceSigns(rows, openingBalance) {
     const unchanged = {
         balances: rows.map((r) => r.balanceAfter),
@@ -171,5 +172,73 @@ function segmentSigns(segment, target) {
         out[i] = (bestMask & (1 << k)) !== 0 ? -abs[k] : abs[k];
     });
     return out;
+}
+const MAX_TOTALS_FLIPS = 3;
+function repairSignsFromTotals(rows, totals) {
+    const unchanged = {
+        amounts: rows.map((r) => r.amount),
+        flips: 0,
+    };
+    if (totals.deposits === null || totals.withdrawals === null)
+        return unchanged;
+    const amounts = rows.map((r) => cents(r.amount));
+    const inSum = amounts.filter((a) => a > 0).reduce((s, a) => s + a, 0);
+    const outSum = -amounts.filter((a) => a < 0).reduce((s, a) => s + a, 0);
+    const move = inSum - cents(Math.abs(totals.deposits));
+    if (move === 0 || cents(Math.abs(totals.withdrawals)) - outSum !== move) {
+        return unchanged;
+    }
+    const inCount = amounts.filter((a) => a > 0).length;
+    const outCount = amounts.filter((a) => a < 0).length;
+    const idx = amounts.map((a, i) => (a !== 0 ? i : -1)).filter((i) => i >= 0);
+    const fits = (set) => {
+        let moved = 0;
+        let fromIn = 0;
+        for (const i of set) {
+            moved += amounts[i];
+            if (amounts[i] > 0)
+                fromIn++;
+        }
+        if (moved !== move)
+            return false;
+        const fromOut = set.length - fromIn;
+        if (totals.depositCount !== null &&
+            inCount - fromIn + fromOut !== totals.depositCount) {
+            return false;
+        }
+        return (totals.withdrawalCount === null ||
+            outCount - fromOut + fromIn === totals.withdrawalCount);
+    };
+    for (let k = 1; k <= MAX_TOTALS_FLIPS && k <= idx.length; k++) {
+        let found = null;
+        let ties = 0;
+        const pick = (from, set) => {
+            if (ties > 1)
+                return;
+            if (set.length === k) {
+                if (fits(set)) {
+                    ties++;
+                    found = [...set];
+                }
+                return;
+            }
+            for (let j = from; j < idx.length; j++) {
+                set.push(idx[j]);
+                pick(j + 1, set);
+                set.pop();
+            }
+        };
+        pick(0, []);
+        if (ties > 1)
+            return unchanged;
+        if (found) {
+            const flipped = new Set(found);
+            return {
+                amounts: amounts.map((a, i) => (flipped.has(i) ? -a : a) / 100),
+                flips: flipped.size,
+            };
+        }
+    }
+    return unchanged;
 }
 //# sourceMappingURL=sign-repair.js.map

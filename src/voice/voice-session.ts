@@ -41,6 +41,11 @@ function rawText(raw: WebSocket.RawData): string {
 }
 const has = (list: readonly string[], type: string) => list.includes(type);
 
+/** What the AI says while a tool runs, when it went to the tool without a word. */
+const FILLER =
+  'Say only a few natural words to show you are on it, like "Okay, let me check that for you" ' +
+  'or "One sec, let me pull that up" — nothing else, no answer yet.';
+
 /**
  * step12: ONE phone call between a customer and the AI — the bridge between SignalWire's
  * media stream (μ-law 8 kHz over this server's WebSocket) and OpenAI Realtime, with the
@@ -71,6 +76,13 @@ export class VoiceSession {
   private turnWarning: string | null = null;
   private responding = false;
   private toolOutputsPending = false;
+  /** The current response has put audio on the line (a tool call after it is not silent). */
+  private spoke = false;
+  /** A tool call came with nothing said: speak a short "let me check" while it runs. */
+  private fillerWanted = false;
+  /** Tool calls run one after another, without holding up the audio events. */
+  private tools: Promise<void> = Promise.resolve();
+  private toolsRunning = 0;
   private closed = false;
   private timer: NodeJS.Timeout | null = null;
   /** Fallback recording when SignalWire would not record: left = caller, right = AI. */
@@ -266,14 +278,15 @@ export class VoiceSession {
     const lang = languageName(this.settings!.language);
     if (claims.dir === 'OUTBOUND' && claims.script) {
       return (
-        `In ${lang}: greet ${first} briefly as CYG Finance's assistant, then say this message ` +
-        `naturally, in your own words: """${claims.script}""" Then ask if they have any questions.`
+        `In ${lang}: greet ${first} briefly as CYG Finance's assistant, then pass on this message ` +
+        `in your own words, as you would say it on the phone (never read it out like a quote): ` +
+        `${claims.script} — then ask if they have any questions.`
       );
     }
     const greeting = this.settings!.greeting;
     return greeting
-      ? `In ${lang} (translate it if it is written in another language), say this greeting ` +
-          `(use their first name, ${first}, if it fits): """${greeting}"""`
+      ? `In ${lang} (translate it if it is written in another language), greet them along these ` +
+          `lines, naturally (use their first name, ${first}, if it fits): ${greeting}`
       : `In ${lang}: greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
   }
 
@@ -288,6 +301,7 @@ export class VoiceSession {
     if (has(RT.audioDelta, type)) {
       const delta = typeof ev.delta === 'string' ? ev.delta : null;
       if (!delta) return;
+      this.spoke = true;
       this.ai.writeAt(
         Math.max(this.caller.samples, this.ai.samples),
         Buffer.from(delta, 'base64'),
@@ -303,12 +317,20 @@ export class VoiceSession {
       if (this.responding) this.sendOpenAi({ type: 'response.cancel' });
     } else if (has(RT.responseCreated, type)) {
       this.responding = true;
+      this.spoke = false;
     } else if (has(RT.responseDone, type)) {
       this.responding = false;
-      if (this.toolOutputsPending) {
-        this.toolOutputsPending = false;
-        this.sendOpenAi({ type: 'response.create' });
+      if (this.fillerWanted && this.toolsRunning > 0) {
+        // The model went straight to a tool without a word: never leave the caller in silence.
+        this.fillerWanted = false;
+        this.sendOpenAi({
+          type: 'response.create',
+          response: { instructions: FILLER, tool_choice: 'none' },
+        });
+        return;
       }
+      this.fillerWanted = false;
+      this.answerToolsIfReady();
     } else if (has(RT.userText, type)) {
       const said =
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
@@ -325,13 +347,32 @@ export class VoiceSession {
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
       if (said && this.conversation) await this.saveAssistant(said);
     } else if (has(RT.toolCall, type)) {
-      await this.runTool(ev);
+      if (!this.spoke) this.fillerWanted = true;
+      this.toolsRunning++;
+      this.tools = this.tools
+        .then(() => this.runTool(ev))
+        .catch((err: unknown) =>
+          this.logger.warn(`call ${this.callSid}: tool failed: ${String(err)}`),
+        )
+        .finally(() => {
+          this.toolsRunning--;
+          this.answerToolsIfReady();
+        });
     } else if (has(RT.error, type)) {
       const err = ev.error as { message?: string } | undefined;
       this.logger.warn(
         `call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`,
       );
     }
+  }
+
+  /** Every tool result is in and nothing is speaking: the model answers from them. */
+  private answerToolsIfReady(): void {
+    if (this.responding || this.toolsRunning > 0 || !this.toolOutputsPending) {
+      return;
+    }
+    this.toolOutputsPending = false;
+    this.sendOpenAi({ type: 'response.create' });
   }
 
   /** One tool call from the model, run exactly as the chat would, its result handed back. */

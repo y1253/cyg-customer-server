@@ -234,7 +234,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
             `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
             (result.signFixes
-                ? `, ${result.signFixes} sign(s) fixed from the running balance`
+                ? `, ${result.signFixes} sign(s) fixed from the printed totals / running balance`
                 : '') +
             (result.balanceFixes
                 ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
@@ -306,6 +306,25 @@ function assemble(pages) {
     };
     const read = pages.flatMap((p, page) => p.transactions.map((t) => ({ ...t, page })));
     const finite = read.filter((t) => Number.isFinite(t.amount));
+    let totalsFlips = 0;
+    const fixFromTotals = (rows, f) => {
+        if (f.totalsScope === 'partial')
+            return;
+        const fix = (0, sign_repair_1.repairSignsFromTotals)(rows, {
+            deposits: f.totalDeposits,
+            withdrawals: f.totalWithdrawals,
+            depositCount: f.depositCount,
+            withdrawalCount: f.withdrawalCount,
+        });
+        rows.forEach((t, i) => (t.amount = fix.amounts[i]));
+        totalsFlips += fix.flips;
+    };
+    if ((0, reconcile_util_1.perPageBoxes)(pages.map((p) => p.stated))) {
+        pages.forEach((p, page) => fixFromTotals(finite.filter((t) => t.page === page), p.stated));
+    }
+    else {
+        fixFromTotals(finite, stated);
+    }
     const balances = (0, sign_repair_1.repairBalanceSigns)(finite, stated.openingBalance);
     finite.forEach((t, i) => (t.balanceAfter = balances.balances[i]));
     const repair = (0, sign_repair_1.repairSigns)(finite, stated.openingBalance);
@@ -333,7 +352,7 @@ function assemble(pages) {
         periodEnd: first((p) => p.periodEnd),
         stated,
         transactions,
-        signFixes: repair.flips,
+        signFixes: totalsFlips + repair.flips,
         balanceFixes: balances.fixes,
         imagePages: pages.flatMap((p, page) => p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : []),
         verification,

@@ -315,3 +315,35 @@ describe('closingOf', () => {
     expect(closingOf([withClosing(500, [])], 500)).toBe(500);
   });
 });
+
+describe('assemble: signs from the printed totals (TD 4051, 2026-10-21)', () => {
+  const box = (dep: number, depCount: number, wd: number, wdCount: number) => ({
+    ...page({}).stated,
+    totalDeposits: dep,
+    depositCount: depCount,
+    totalWithdrawals: wd,
+    withdrawalCount: wdCount,
+    totalsScope: 'all' as const,
+  });
+
+  it('fixes two flipped rows AND the lost overdraft minus they hid', () => {
+    const pages = [
+      page({
+        stated: { ...box(50, 1, 30, 1), openingBalance: 100 },
+        transactions: [tx(50, 150), tx(-30, 120)],
+      }),
+      // Truly +20, −100, −200, ending OVERDRAWN at −160: both withdrawals were read as
+      // deposits and the "160-" balance lost its minus.
+      page({
+        stated: box(20, 1, 300, 2),
+        transactions: [tx(20, 140), tx(100, null), tx(200, 160)],
+      }),
+    ];
+    const out = assemble(pages);
+    expect(out.transactions.map((t) => t.amount)).toEqual([
+      50, -30, 20, -100, -200,
+    ]);
+    expect(out.transactions.at(-1)!.balanceAfter).toBe(-160);
+    expect(out.verification.verification).toBe('VERIFIED');
+  });
+});

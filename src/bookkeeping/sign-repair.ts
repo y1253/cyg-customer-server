@@ -263,3 +263,104 @@ export function segmentSigns(
   });
   return out;
 }
+
+/** The deposits / withdrawals box a bank prints (per page on TD, else for the statement). */
+export interface PrintedTotals {
+  deposits: number | null;
+  withdrawals: number | null;
+  depositCount: number | null;
+  withdrawalCount: number | null;
+}
+
+/** Past this many wrong signs in one box the search stops (C(n, 3) stays small). */
+const MAX_TOTALS_FLIPS = 3;
+
+/**
+ * Fixes row signs from the printed deposits / withdrawals TOTALS, before any balance work.
+ *
+ * Why: on 2026-10-21 a TD page had two withdrawals (together $1,025.00) read as deposits AND
+ * its last balance read without its overdraft minus (−$172.35 → $172.35). Each balance-based
+ * repair needs the other to have run first — `repairBalanceSigns` only negates a balance
+ * the rows already land on, `repairSigns` only flips rows to hit the balance as read — so
+ * neither fired and every re-read repeated the mistake. The page's own box ($491.53 in,
+ * $1,547.07 out, 3 and 6 rows) settles the rows with no balance at all; after that the
+ * lost minus is found as before.
+ *
+ * PURE, integer cents, exact only. Needs BOTH totals printed and off by the SAME amount in
+ * opposite directions (anything else is a misread amount, not a sign); the printed counts,
+ * when there are any, must match after the flips too. Applied only when exactly ONE set of
+ * the fewest flips (at most 3) fits — never a guess.
+ */
+export function repairSignsFromTotals(
+  rows: ReadonlyArray<{ amount: number }>,
+  totals: PrintedTotals,
+): SignRepair {
+  const unchanged: SignRepair = {
+    amounts: rows.map((r) => r.amount),
+    flips: 0,
+  };
+  if (totals.deposits === null || totals.withdrawals === null) return unchanged;
+  const amounts = rows.map((r) => cents(r.amount));
+  const inSum = amounts.filter((a) => a > 0).reduce((s, a) => s + a, 0);
+  const outSum = -amounts.filter((a) => a < 0).reduce((s, a) => s + a, 0);
+  // What has to move from deposits to withdrawals (negative = the other way).
+  const move = inSum - cents(Math.abs(totals.deposits));
+  if (move === 0 || cents(Math.abs(totals.withdrawals)) - outSum !== move) {
+    return unchanged;
+  }
+  const inCount = amounts.filter((a) => a > 0).length;
+  const outCount = amounts.filter((a) => a < 0).length;
+
+  // Flipping a deposit moves +a; flipping a withdrawal moves −|a|.
+  const idx = amounts.map((a, i) => (a !== 0 ? i : -1)).filter((i) => i >= 0);
+  const fits = (set: number[]): boolean => {
+    let moved = 0;
+    let fromIn = 0;
+    for (const i of set) {
+      moved += amounts[i];
+      if (amounts[i] > 0) fromIn++;
+    }
+    if (moved !== move) return false;
+    const fromOut = set.length - fromIn;
+    if (
+      totals.depositCount !== null &&
+      inCount - fromIn + fromOut !== totals.depositCount
+    ) {
+      return false;
+    }
+    return (
+      totals.withdrawalCount === null ||
+      outCount - fromOut + fromIn === totals.withdrawalCount
+    );
+  };
+
+  for (let k = 1; k <= MAX_TOTALS_FLIPS && k <= idx.length; k++) {
+    let found: number[] | null = null;
+    let ties = 0;
+    const pick = (from: number, set: number[]): void => {
+      if (ties > 1) return;
+      if (set.length === k) {
+        if (fits(set)) {
+          ties++;
+          found = [...set];
+        }
+        return;
+      }
+      for (let j = from; j < idx.length; j++) {
+        set.push(idx[j]);
+        pick(j + 1, set);
+        set.pop();
+      }
+    };
+    pick(0, []);
+    if (ties > 1) return unchanged;
+    if (found) {
+      const flipped = new Set<number>(found);
+      return {
+        amounts: amounts.map((a, i) => (flipped.has(i) ? -a : a) / 100),
+        flips: flipped.size,
+      };
+    }
+  }
+  return unchanged;
+}

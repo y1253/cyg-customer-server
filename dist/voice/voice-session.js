@@ -18,6 +18,8 @@ function rawText(raw) {
     return Buffer.from(raw).toString('utf8');
 }
 const has = (list, type) => list.includes(type);
+const FILLER = 'Say only a few natural words to show you are on it, like "Okay, let me check that for you" ' +
+    'or "One sec, let me pull that up" — nothing else, no answer yet.';
 class VoiceSession {
     ws;
     deps;
@@ -35,6 +37,10 @@ class VoiceSession {
     turnWarning = null;
     responding = false;
     toolOutputsPending = false;
+    spoke = false;
+    fillerWanted = false;
+    tools = Promise.resolve();
+    toolsRunning = 0;
     closed = false;
     timer = null;
     caller = new voice_util_1.MuLawTrack();
@@ -175,13 +181,14 @@ class VoiceSession {
         const first = customerName.trim().split(/\s+/)[0] || 'there';
         const lang = (0, voice_util_1.languageName)(this.settings.language);
         if (claims.dir === 'OUTBOUND' && claims.script) {
-            return (`In ${lang}: greet ${first} briefly as CYG Finance's assistant, then say this message ` +
-                `naturally, in your own words: """${claims.script}""" Then ask if they have any questions.`);
+            return (`In ${lang}: greet ${first} briefly as CYG Finance's assistant, then pass on this message ` +
+                `in your own words, as you would say it on the phone (never read it out like a quote): ` +
+                `${claims.script} — then ask if they have any questions.`);
         }
         const greeting = this.settings.greeting;
         return greeting
-            ? `In ${lang} (translate it if it is written in another language), say this greeting ` +
-                `(use their first name, ${first}, if it fits): """${greeting}"""`
+            ? `In ${lang} (translate it if it is written in another language), greet them along these ` +
+                `lines, naturally (use their first name, ${first}, if it fits): ${greeting}`
             : `In ${lang}: greet ${first} by first name as CYG Finance's assistant and ask how you can help with their books.`;
     }
     async onOpenAi(text) {
@@ -197,6 +204,7 @@ class VoiceSession {
             const delta = typeof ev.delta === 'string' ? ev.delta : null;
             if (!delta)
                 return;
+            this.spoke = true;
             this.ai.writeAt(Math.max(this.caller.samples, this.ai.samples), Buffer.from(delta, 'base64'));
             this.sendSignalWire({
                 event: 'media',
@@ -211,13 +219,20 @@ class VoiceSession {
         }
         else if (has(voice_util_1.RT.responseCreated, type)) {
             this.responding = true;
+            this.spoke = false;
         }
         else if (has(voice_util_1.RT.responseDone, type)) {
             this.responding = false;
-            if (this.toolOutputsPending) {
-                this.toolOutputsPending = false;
-                this.sendOpenAi({ type: 'response.create' });
+            if (this.fillerWanted && this.toolsRunning > 0) {
+                this.fillerWanted = false;
+                this.sendOpenAi({
+                    type: 'response.create',
+                    response: { instructions: FILLER, tool_choice: 'none' },
+                });
+                return;
             }
+            this.fillerWanted = false;
+            this.answerToolsIfReady();
         }
         else if (has(voice_util_1.RT.userText, type)) {
             const said = typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
@@ -232,12 +247,28 @@ class VoiceSession {
                 await this.saveAssistant(said);
         }
         else if (has(voice_util_1.RT.toolCall, type)) {
-            await this.runTool(ev);
+            if (!this.spoke)
+                this.fillerWanted = true;
+            this.toolsRunning++;
+            this.tools = this.tools
+                .then(() => this.runTool(ev))
+                .catch((err) => this.logger.warn(`call ${this.callSid}: tool failed: ${String(err)}`))
+                .finally(() => {
+                this.toolsRunning--;
+                this.answerToolsIfReady();
+            });
         }
         else if (has(voice_util_1.RT.error, type)) {
             const err = ev.error;
             this.logger.warn(`call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`);
         }
+    }
+    answerToolsIfReady() {
+        if (this.responding || this.toolsRunning > 0 || !this.toolOutputsPending) {
+            return;
+        }
+        this.toolOutputsPending = false;
+        this.sendOpenAi({ type: 'response.create' });
     }
     async runTool(ev) {
         const callId = typeof ev.call_id === 'string' ? ev.call_id : '';

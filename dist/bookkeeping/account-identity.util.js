@@ -27,7 +27,7 @@ function sameAccountDigits(a, b) {
     const [short, long] = a.length < b.length ? [a, b] : [b, a];
     return long.startsWith(short) || long.endsWith(short);
 }
-const kindOf = (k) => (k === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK');
+const kindOf = (k) => k === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK';
 function isSameAccount(a, b) {
     return (kindOf(a.kind) === kindOf(b.kind) &&
         bankTextOf(a.name) !== '' &&
@@ -38,11 +38,15 @@ function canonicalAccountName(read, existing) {
     const name = read.accountName?.trim() || null;
     if (!name)
         return null;
-    const number = read.accountNumber && read.accountNumber.length >= MIN_DIGITS ? read.accountNumber : null;
+    const number = read.accountNumber && read.accountNumber.length >= MIN_DIGITS
+        ? read.accountNumber
+        : null;
     const me = { name, kind: read.accountKind, digits: number ?? digitsOf(name) };
     if (existing.some((e) => e.name === name && kindOf(e.kind) === kindOf(me.kind)))
         return name;
-    const matches = [...new Set(existing.filter((e) => isSameAccount(me, e)).map((e) => e.name))];
+    const matches = [
+        ...new Set(existing.filter((e) => isSameAccount(me, e)).map((e) => e.name)),
+    ];
     if (matches.length === 1)
         return matches[0];
     if (matches.length > 1)
@@ -57,7 +61,7 @@ function mergeGroups(accounts) {
     const n = accounts.length;
     const same = (i, j) => isSameAccount(accounts[i], accounts[j]);
     const parent = accounts.map((_, i) => i);
-    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const find = (i) => parent[i] === i ? i : (parent[i] = find(parent[i]));
     for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++)
             if (same(i, j))

@@ -21,8 +21,12 @@ describe('sameAccountDigits', () => {
 describe('isSameAccount', () => {
   it('needs the same bank text and the same kind', () => {
     const td = { name: 'TD Canada Trust 5234', kind: 'BANK' };
-    expect(isSameAccount(td, { name: 'TD Canada Trust 5234496', kind: null })).toBe(true);
-    expect(isSameAccount(td, { name: 'BMO 5234496', kind: 'BANK' })).toBe(false);
+    expect(
+      isSameAccount(td, { name: 'TD Canada Trust 5234496', kind: null }),
+    ).toBe(true);
+    expect(isSameAccount(td, { name: 'BMO 5234496', kind: 'BANK' })).toBe(
+      false,
+    );
     // A card and a bank account with the same digits are two accounts.
     expect(
       isSameAccount(
@@ -42,7 +46,11 @@ describe('canonicalAccountName', () => {
   it('files a statement under the account it already belongs to', () => {
     expect(
       canonicalAccountName(
-        { accountName: 'TD Canada Trust 5234496', accountNumber: '5234496', accountKind: 'BANK' },
+        {
+          accountName: 'TD Canada Trust 5234496',
+          accountNumber: '5234496',
+          accountKind: 'BANK',
+        },
         existing,
       ),
     ).toBe('TD Canada Trust 5234');
@@ -56,14 +64,21 @@ describe('canonicalAccountName', () => {
 
   it('keeps an exact existing name', () => {
     expect(
-      canonicalAccountName({ accountName: 'TD Canada Trust 5234', accountKind: 'BANK' }, existing),
+      canonicalAccountName(
+        { accountName: 'TD Canada Trust 5234', accountKind: 'BANK' },
+        existing,
+      ),
     ).toBe('TD Canada Trust 5234');
   });
 
   it('names a NEW account after the last 4 digits of its number', () => {
     expect(
       canonicalAccountName(
-        { accountName: 'Desjardins 815300', accountNumber: '815300', accountKind: 'BANK' },
+        {
+          accountName: 'Desjardins 815300',
+          accountNumber: '815300',
+          accountKind: 'BANK',
+        },
         existing,
       ),
     ).toBe('Desjardins 5300');
@@ -75,14 +90,25 @@ describe('canonicalAccountName', () => {
       { name: 'TD Canada Trust 5234871', kind: 'BANK' },
     ];
     expect(
-      canonicalAccountName({ accountName: 'TD Canada Trust 5234', accountKind: 'BANK' }, two),
+      canonicalAccountName(
+        { accountName: 'TD Canada Trust 5234', accountKind: 'BANK' },
+        two,
+      ),
     ).toBe('TD Canada Trust 5234');
   });
 
   it('passes a missing or digit-less name through', () => {
-    expect(canonicalAccountName({ accountName: null, accountKind: 'BANK' }, existing)).toBeNull();
     expect(
-      canonicalAccountName({ accountName: 'Owner chequing', accountKind: 'BANK' }, existing),
+      canonicalAccountName(
+        { accountName: null, accountKind: 'BANK' },
+        existing,
+      ),
+    ).toBeNull();
+    expect(
+      canonicalAccountName(
+        { accountName: 'Owner chequing', accountKind: 'BANK' },
+        existing,
+      ),
     ).toBe('Owner chequing');
   });
 });

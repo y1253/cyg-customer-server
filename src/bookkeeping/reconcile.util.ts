@@ -193,6 +193,21 @@ export interface PageFigures {
 }
 
 /**
+ * Whether each page prints a totals box of its OWN (TD): two or more pages print totals,
+ * and they differ. Otherwise the first box printed is the statement's.
+ */
+export function perPageBoxes(pages: readonly StatedFigures[]): boolean {
+  const boxes = pages.filter(
+    (f) => f.totalDeposits !== null || f.totalWithdrawals !== null,
+  );
+  const key = (f: StatedFigures) =>
+    [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
+      .map((v) => (v === null ? '' : String(Math.abs(v))))
+      .join('|');
+  return boxes.length >= 2 && new Set(boxes.map(key)).size > 1;
+}
+
+/**
  * The whole statement, checked. Usually that is `reconcile(stated, allRows)` — but some
  * banks (TD) print a Credits/Debits box on EVERY page that totals only THAT page. Taking
  * page 1's box as the statement's total was a production false alarm ("doesn't match" on a
@@ -211,13 +226,9 @@ export function reconcileStatement(
       (p) =>
         p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null,
     );
-  const key = (f: StatedFigures) =>
-    [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
-      .map((v) => (v === null ? '' : String(Math.abs(v))))
-      .join('|');
-  const perPage =
-    boxes.length >= 2 && new Set(boxes.map((b) => key(b.stated))).size > 1;
-  if (!perPage) return reconcile(stated, allRows);
+  if (!perPageBoxes(pages.map((p) => p.stated))) {
+    return reconcile(stated, allRows);
+  }
 
   const NO_TOTALS = {
     totalDeposits: null,

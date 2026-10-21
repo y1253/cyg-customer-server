@@ -129,7 +129,11 @@ let ReportsService = class ReportsService {
         });
         const starts = (0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(statements));
         const sheet = view.balanceSheet;
-        for (const line of [...sheet.assets, ...sheet.liabilities, ...sheet.equity]) {
+        for (const line of [
+            ...sheet.assets,
+            ...sheet.liabilities,
+            ...sheet.equity,
+        ]) {
             if (!line.bank)
                 continue;
             const list = (starts.get(line.name) ?? []).filter((s) => !to || !s.date || s.date <= to);

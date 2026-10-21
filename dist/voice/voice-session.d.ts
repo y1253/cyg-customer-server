@@ -31,6 +31,10 @@ export declare class VoiceSession {
     private turnWarning;
     private responding;
     private toolOutputsPending;
+    private spoke;
+    private fillerWanted;
+    private tools;
+    private toolsRunning;
     private closed;
     private timer;
     private readonly caller;
@@ -43,6 +47,7 @@ export declare class VoiceSession {
     private callNote;
     private opening;
     private onOpenAi;
+    private answerToolsIfReady;
     private runTool;
     private saveAssistant;
     private freshConversation;

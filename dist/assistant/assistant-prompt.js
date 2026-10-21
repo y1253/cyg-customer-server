@@ -26,11 +26,16 @@ function channelStyle(channel) {
         case 'EMAIL':
             return 'You are answering an EMAIL the customer sent to our inbox: plain text (no markdown), a short greeting, short paragraphs, at most about 1,200 characters, signed "— CYG Finance". Do not repeat their email back.';
         case 'VOICE':
-            return ('You are SPEAKING on a PHONE CALL (step12): talk like a friendly person on the phone — ' +
-                'short sentences, one or two at a time, then let them answer. Never read out links, ids, ' +
-                'tables or long lists: summarise (count, total, the top 2 or 3) and offer to text the ' +
-                'details or a link with send_text. Say amounts naturally ("about four hundred and twelve ' +
-                'dollars"). If they say goodbye, say goodbye briefly.');
+            return ('You are SPEAKING on a PHONE CALL: talk like a friendly person on the phone — ' +
+                'short sentences, one or two at a time, then let them answer. BEFORE you look anything ' +
+                'up or change anything (any tool), first say a few natural words such as: Okay, let me ' +
+                'check that for you… or: One sec, let me pull that up — then call the tool, so the ' +
+                'caller never sits in silence. When the results come back, answer in your own words, ' +
+                'like a person would: never read out tool results, descriptions or data word for word, ' +
+                'and never quote them. Never read out links, ids, tables or long lists: summarise ' +
+                '(count, total, the top 2 or 3) and offer to text the details or a link with send_text ' +
+                '(on a call, text a link instead of saying it). Say amounts naturally, like: about four ' +
+                'hundred and twelve dollars. If they say goodbye, say goodbye briefly.');
         case 'BOT':
             return 'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.';
     }

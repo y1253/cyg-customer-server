@@ -48,7 +48,8 @@ export function sameAccountDigits(a: string, b: string): boolean {
   return long.startsWith(short) || long.endsWith(short);
 }
 
-const kindOf = (k: string | null | undefined) => (k === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK');
+const kindOf = (k: string | null | undefined) =>
+  k === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK';
 
 /** Same bank text, same kind, agreeing digits. */
 export function isSameAccount(
@@ -59,7 +60,10 @@ export function isSameAccount(
     kindOf(a.kind) === kindOf(b.kind) &&
     bankTextOf(a.name) !== '' &&
     bankTextOf(a.name) === bankTextOf(b.name) &&
-    sameAccountDigits(a.digits || digitsOf(a.name), b.digits || digitsOf(b.name))
+    sameAccountDigits(
+      a.digits || digitsOf(a.name),
+      b.digits || digitsOf(b.name),
+    )
   );
 }
 
@@ -72,17 +76,29 @@ export function isSameAccount(
  * - Otherwise (no name, no digits, or ambiguous) → the AI's own name, unchanged.
  */
 export function canonicalAccountName(
-  read: { accountName: string | null; accountNumber?: string | null; accountKind: string | null },
+  read: {
+    accountName: string | null;
+    accountNumber?: string | null;
+    accountKind: string | null;
+  },
   existing: KnownAccount[],
 ): string | null {
   const name = read.accountName?.trim() || null;
   if (!name) return null;
-  const number = read.accountNumber && read.accountNumber.length >= MIN_DIGITS ? read.accountNumber : null;
+  const number =
+    read.accountNumber && read.accountNumber.length >= MIN_DIGITS
+      ? read.accountNumber
+      : null;
   const me = { name, kind: read.accountKind, digits: number ?? digitsOf(name) };
 
-  if (existing.some((e) => e.name === name && kindOf(e.kind) === kindOf(me.kind))) return name;
+  if (
+    existing.some((e) => e.name === name && kindOf(e.kind) === kindOf(me.kind))
+  )
+    return name;
 
-  const matches = [...new Set(existing.filter((e) => isSameAccount(me, e)).map((e) => e.name))];
+  const matches = [
+    ...new Set(existing.filter((e) => isSameAccount(me, e)).map((e) => e.name)),
+  ];
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) return name;
 
@@ -103,20 +119,25 @@ export function mergeGroups(
   accounts: (KnownAccount & { statements: number })[],
 ): { keep: string; merge: string[] }[] {
   const n = accounts.length;
-  const same = (i: number, j: number) => isSameAccount(accounts[i], accounts[j]);
+  const same = (i: number, j: number) =>
+    isSameAccount(accounts[i], accounts[j]);
   const parent = accounts.map((_, i) => i);
-  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const find = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = find(parent[i]));
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) if (same(i, j)) parent[find(i)] = find(j);
   }
   const groups = new Map<number, number[]>();
-  for (let i = 0; i < n; i++) groups.set(find(i), [...(groups.get(find(i)) ?? []), i]);
+  for (let i = 0; i < n; i++)
+    groups.set(find(i), [...(groups.get(find(i)) ?? []), i]);
 
   const out: { keep: string; merge: string[] }[] = [];
   for (const members of groups.values()) {
     if (members.length < 2) continue;
     // Every pair must agree, or "5234" would chain "5234496" and "5234871" (two accounts).
-    const consistent = members.every((i) => members.every((j) => i === j || same(i, j)));
+    const consistent = members.every((i) =>
+      members.every((j) => i === j || same(i, j)),
+    );
     if (!consistent) continue;
     const sorted = [...members].sort(
       (a, b) =>

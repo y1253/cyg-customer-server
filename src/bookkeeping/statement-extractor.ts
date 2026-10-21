@@ -8,12 +8,17 @@ import { decryptForReading } from './pdf-decrypt';
 import type { ImagePage } from './pdf-images';
 import {
   describeCheck,
+  perPageBoxes,
   reconcileStatement,
   score,
   type ReconcileResult,
   type StatedFigures,
 } from './reconcile.util';
-import { repairBalanceSigns, repairSigns } from './sign-repair';
+import {
+  repairBalanceSigns,
+  repairSigns,
+  repairSignsFromTotals,
+} from './sign-repair';
 import { UnreadableStatementError } from './statement-errors';
 
 /**
@@ -386,7 +391,7 @@ export class StatementExtractor {
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
         `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
         (result.signFixes
-          ? `, ${result.signFixes} sign(s) fixed from the running balance`
+          ? `, ${result.signFixes} sign(s) fixed from the printed totals / running balance`
           : '') +
         (result.balanceFixes
           ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
@@ -490,6 +495,31 @@ export function assemble(
     p.transactions.map((t) => ({ ...t, page })),
   );
   const finite = read.filter((t) => Number.isFinite(t.amount));
+  // First the printed deposits / withdrawals boxes (per page on TD): they settle row signs
+  // with no balance at all, so a wrong sign AND a lost overdraft minus in the same stretch
+  // no longer block each other (`repairSignsFromTotals`).
+  let totalsFlips = 0;
+  const fixFromTotals = (rows: typeof finite, f: StatedFigures) => {
+    if (f.totalsScope === 'partial') return;
+    const fix = repairSignsFromTotals(rows, {
+      deposits: f.totalDeposits,
+      withdrawals: f.totalWithdrawals,
+      depositCount: f.depositCount,
+      withdrawalCount: f.withdrawalCount,
+    });
+    rows.forEach((t, i) => (t.amount = fix.amounts[i]));
+    totalsFlips += fix.flips;
+  };
+  if (perPageBoxes(pages.map((p) => p.stated))) {
+    pages.forEach((p, page) =>
+      fixFromTotals(
+        finite.filter((t) => t.page === page),
+        p.stated,
+      ),
+    );
+  } else {
+    fixFromTotals(finite, stated);
+  }
   const balances = repairBalanceSigns(finite, stated.openingBalance);
   finite.forEach((t, i) => (t.balanceAfter = balances.balances[i]));
   const repair = repairSigns(finite, stated.openingBalance);
@@ -522,7 +552,7 @@ export function assemble(
     periodEnd: first((p) => p.periodEnd),
     stated,
     transactions,
-    signFixes: repair.flips,
+    signFixes: totalsFlips + repair.flips,
     balanceFixes: balances.fixes,
     // One page per chunk (`PAGES_PER_CHUNK`), so a reading's index is its PDF page.
     imagePages: pages.flatMap((p, page) =>

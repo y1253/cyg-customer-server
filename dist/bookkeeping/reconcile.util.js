@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.score = exports.cents = void 0;
 exports.reconcile = reconcile;
+exports.perPageBoxes = perPageBoxes;
 exports.reconcileStatement = reconcileStatement;
 exports.describeCheck = describeCheck;
 const cents = (n) => Math.round(n * 100);
@@ -70,17 +71,21 @@ function verdict(checks) {
             ? 'VERIFIED'
             : 'MISMATCH';
 }
+function perPageBoxes(pages) {
+    const boxes = pages.filter((f) => f.totalDeposits !== null || f.totalWithdrawals !== null);
+    const key = (f) => [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
+        .map((v) => (v === null ? '' : String(Math.abs(v))))
+        .join('|');
+    return boxes.length >= 2 && new Set(boxes.map(key)).size > 1;
+}
 function reconcileStatement(stated, pages) {
     const allRows = pages.flatMap((p) => p.rows);
     const boxes = pages
         .map((p, page) => ({ ...p, page }))
         .filter((p) => p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null);
-    const key = (f) => [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
-        .map((v) => (v === null ? '' : String(Math.abs(v))))
-        .join('|');
-    const perPage = boxes.length >= 2 && new Set(boxes.map((b) => key(b.stated))).size > 1;
-    if (!perPage)
+    if (!perPageBoxes(pages.map((p) => p.stated))) {
         return reconcile(stated, allRows);
+    }
     const NO_TOTALS = {
         totalDeposits: null,
         totalWithdrawals: null,

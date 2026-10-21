@@ -1,4 +1,9 @@
-import { repairBalanceSigns, repairSigns, segmentSigns } from './sign-repair';
+import {
+  repairBalanceSigns,
+  repairSigns,
+  repairSignsFromTotals,
+  segmentSigns,
+} from './sign-repair';
 
 /** A TD-style day: balance printed only on the day's last row. Opening 1000. */
 const day = [
@@ -107,5 +112,49 @@ describe('repairBalanceSigns', () => {
       balances: [90, 70],
       fixes: 0,
     });
+  });
+});
+
+describe('repairSignsFromTotals', () => {
+  const rows = (...a: number[]) => a.map((amount) => ({ amount }));
+  const totals = (
+    deposits: number | null,
+    withdrawals: number | null,
+    depositCount: number | null = null,
+    withdrawalCount: number | null = null,
+  ) => ({ deposits, withdrawals, depositCount, withdrawalCount });
+
+  it('flips the one set of rows the box asks for', () => {
+    const fix = repairSignsFromTotals(
+      rows(20, 100, 200, -5),
+      totals(20, 305, 1, 3),
+    );
+    expect(fix).toEqual({ amounts: [20, -100, -200, -5], flips: 2 });
+  });
+
+  it('works the other way (a deposit read as a withdrawal)', () => {
+    const fix = repairSignsFromTotals(rows(-40, -10), totals(40, 10));
+    expect(fix).toEqual({ amounts: [40, -10], flips: 1 });
+  });
+
+  it('leaves an ambiguous choice alone', () => {
+    const fix = repairSignsFromTotals(rows(50, 50, 10), totals(60, 50));
+    expect(fix.flips).toBe(0);
+  });
+
+  it('leaves it alone when the counts disagree after the flip', () => {
+    const fix = repairSignsFromTotals(rows(20, 100), totals(20, 100, 1, 2));
+    expect(fix.flips).toBe(0);
+  });
+
+  it('leaves a misread AMOUNT alone (totals off by different amounts)', () => {
+    const fix = repairSignsFromTotals(rows(20, 100), totals(20, 90));
+    expect(fix.flips).toBe(0);
+  });
+
+  it('needs both totals', () => {
+    expect(repairSignsFromTotals(rows(20, 100), totals(20, null)).flips).toBe(
+      0,
+    );
   });
 });

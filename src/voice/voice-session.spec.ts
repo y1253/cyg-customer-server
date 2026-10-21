@@ -243,4 +243,81 @@ describe('VoiceSession (step12)', () => {
       expect.objectContaining({ recordingSid: 'RE1', wav: null }),
     );
   });
+  describe('while a tool runs', () => {
+    async function started(
+      spokeFirst: boolean,
+    ): Promise<{ openai: FakeSocket; finish: () => void }> {
+      const { phone, openai, deps } = setup();
+      let finish = () => {};
+      deps.tools.run.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = () =>
+              resolve({ content: '{"total":412}', action: undefined });
+          }) as never,
+      );
+      phone.push({
+        event: 'start',
+        start: {
+          streamSid: 'MZ',
+          callSid: 'CA',
+          customParameters: { token: 'good' },
+        },
+      });
+      await flush();
+      openai.emit('open');
+      await flush();
+      openai.sent = [];
+      openai.push({ type: 'response.created' });
+      if (spokeFirst)
+        openai.push({ type: 'response.output_audio.delta', delta: 'BBBB' });
+      openai.push({
+        type: 'response.function_call_arguments.done',
+        call_id: 'c1',
+        name: 'search_transactions',
+        arguments: '{}',
+      });
+      openai.push({ type: 'response.done' });
+      await flush();
+      return { openai, finish: () => finish() };
+    }
+
+    it('says "let me check" when the model went to a tool without a word', async () => {
+      const { openai, finish } = await started(false);
+      const filler = openai.sent.find((e) => e.type === 'response.create') as {
+        response: { instructions: string; tool_choice: string };
+      };
+      expect(filler.response.instructions).toMatch(/let me check/i);
+      expect(filler.response.tool_choice).toBe('none');
+
+      // The answer waits for the filler to finish AND the tool to return.
+      openai.push({ type: 'response.created' });
+      finish();
+      await flush();
+      expect(
+        openai.types().filter((t) => t === 'response.create'),
+      ).toHaveLength(1);
+      openai.push({ type: 'response.done' });
+      await flush();
+      expect(openai.sent.slice(-2)).toEqual([
+        {
+          type: 'conversation.item.create',
+          item: {
+            type: 'function_call_output',
+            call_id: 'c1',
+            output: '{"total":412}',
+          },
+        },
+        { type: 'response.create' },
+      ]);
+    });
+
+    it('adds nothing when the model already said something', async () => {
+      const { openai, finish } = await started(true);
+      expect(openai.types()).not.toContain('response.create');
+      finish();
+      await flush();
+      expect(openai.sent.at(-1)).toEqual({ type: 'response.create' });
+    });
+  });
 });
