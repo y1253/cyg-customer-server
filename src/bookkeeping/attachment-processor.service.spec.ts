@@ -5,7 +5,13 @@ import type {
   AttachmentExtractor,
   AttachmentReading,
 } from './attachment-extractor';
-import { AttachmentProcessorService } from './attachment-processor.service';
+import {
+  AttachmentProcessorService,
+  kindFor,
+  siblingName,
+  siblingOf,
+  siblingRef,
+} from './attachment-processor.service';
 import type { NameMemoryService } from './name-memory.service';
 import type { ProductMemoryService } from './product-memory.service';
 import type { SplitsService } from './splits.service';
@@ -29,7 +35,10 @@ describe('AttachmentProcessorService — book scope', () => {
     memo: null,
   };
 
-  function setup(companyId: number | null) {
+  function setup(
+    companyId: number | null,
+    readings: AttachmentReading[] = [reading],
+  ) {
     const row = {
       id: 11,
       customerId: 7,
@@ -47,11 +56,19 @@ describe('AttachmentProcessorService — book scope', () => {
       deletedAt: null,
     };
     const candidates = jest.fn().mockResolvedValue([]);
+    const update = jest.fn().mockResolvedValue({});
+    const create = jest.fn((args: { data: Record<string, unknown> }) =>
+      Promise.resolve({ ...row, ...args.data, id: 99 }),
+    );
     const prisma = {
       transactionAttachment: {
-        findMany: jest.fn().mockResolvedValue([row]),
+        // The queue sweep gets the row; the sibling lookup (`sourceRef`) finds none yet.
+        findMany: jest.fn((args: { where?: { sourceRef?: unknown } }) =>
+          Promise.resolve(args?.where?.sourceRef ? [] : [row]),
+        ),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        update: jest.fn().mockResolvedValue({}),
+        update,
+        create,
       },
       bankTransaction: { findMany: candidates },
     } as unknown as PrismaService;
@@ -59,7 +76,7 @@ describe('AttachmentProcessorService — book scope', () => {
       getBuffer: jest.fn().mockResolvedValue(Buffer.from('x')),
     } as unknown as ObjectStorageService;
     const extractor = {
-      read: jest.fn().mockResolvedValue(reading),
+      read: jest.fn().mockResolvedValue(readings),
       pick: jest.fn(),
     } as unknown as AttachmentExtractor;
     const service = new AttachmentProcessorService(
@@ -70,7 +87,7 @@ describe('AttachmentProcessorService — book scope', () => {
       {} as ProductMemoryService,
       {} as NameMemoryService,
     );
-    return { service, candidates };
+    return { service, candidates, update, create };
   }
 
   it.each([null, 3])(
@@ -86,4 +103,65 @@ describe('AttachmentProcessorService — book scope', () => {
       }
     },
   );
+
+  it('keeps a letter or a request as a DOCUMENT and never matches it', async () => {
+    const { service, candidates, update } = setup(null, [
+      {
+        ...reading,
+        documentType: 'DOCUMENT',
+        summary: 'A letter from the CRA about your GST return',
+        total: null,
+      },
+    ]);
+    await service.sweep();
+    expect(candidates).not.toHaveBeenCalled();
+    const [[first]] = update.mock.calls as Array<[{ data: unknown }]>;
+    expect(first.data).toMatchObject({
+      status: AttachmentStatus.DOCUMENT,
+      kind: 'DOCUMENT',
+      matchNote: 'A letter from the CRA about your GST return',
+    });
+  });
+
+  it('files the second cheque of one photo as its own row, matched on its own', async () => {
+    const cheque = (total: number): AttachmentReading => ({
+      ...reading,
+      documentType: 'CHECK',
+      kind: 'CHECK',
+      total,
+    });
+    const { service, update, create } = setup(null, [cheque(100), cheque(250)]);
+    await service.sweep();
+    expect(create).toHaveBeenCalledTimes(1);
+    const [[made]] = create.mock.calls;
+    expect(made.data).toMatchObject({
+      sourceRef: 'doc:11:1',
+      storageKey: 'k',
+      filename: 'r.jpg (2 of 2)',
+    });
+    const totals = (
+      update.mock.calls as Array<[{ data: { extracted?: { total?: number } } }]>
+    ).map((c) => c[0].data.extracted?.total);
+    // Each row keeps its OWN amount — the two are never added together.
+    expect(totals).toEqual([100, 250]);
+  });
+});
+
+describe('attachment siblings', () => {
+  it('round-trips a sibling reference', () => {
+    expect(siblingOf(siblingRef(12, 2))).toEqual({ rowId: 12, index: 2 });
+    expect(siblingOf('stmt:4:p1:0')).toBeNull();
+    expect(siblingOf(null)).toBeNull();
+    expect(siblingName('a.jpg', 1, 3)).toBe('a.jpg (2 of 3)');
+  });
+
+  it('stores what a file IS as its kind', () => {
+    const r = (documentType: AttachmentReading['documentType']) =>
+      ({ kind: 'OTHER', documentType }) as AttachmentReading;
+    expect(kindFor('image', r('INVOICE'))).toBe('INVOICE');
+    expect(kindFor('image', r('DOCUMENT'))).toBe('DOCUMENT');
+    expect(kindFor('image', r('PAYMENT_NOTE'))).toBe('RECEIPT');
+    expect(kindFor('audio', r('DOCUMENT'))).toBe('AUDIO');
+    expect(kindFor('text', r('RECEIPT'))).toBe('TEXT');
+  });
 });

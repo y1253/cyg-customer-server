@@ -39,6 +39,12 @@ export class MailService {
     replyTo?: string;
     /** Display name on From; defaults to `SMTP_FROM_NAME`. */
     fromName?: string;
+    /** step11b: files to attach (the monthly financial report PDF). */
+    attachments?: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }>;
   }): Promise<void> {
     if (!this.configured) {
       throw new Error('SMTP_USER / SMTP_PASS are not set');
@@ -51,6 +57,7 @@ export class MailService {
       text: opts.text,
       ...(opts.html ? { html: opts.html } : {}),
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
     });
     // Never log the subject or body: they carry a visitor's personal details, and this
     // line lands in the pm2 log on the server.

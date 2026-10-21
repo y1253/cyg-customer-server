@@ -11,6 +11,7 @@ import { ContactModule } from './contact/contact.module';
 import { CustomerAuthModule } from './customer-auth/customer-auth.module';
 import { MailModule } from './mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SchedulesModule } from './schedules/schedules.module';
 import { StorageModule } from './storage/storage.module';
 
 @Module({
@@ -26,6 +27,7 @@ import { StorageModule } from './storage/storage.module';
     BillingModule,
     AssistantModule,
     BankFeedsModule,
+    SchedulesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

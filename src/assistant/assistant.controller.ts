@@ -59,7 +59,12 @@ export class AssistantController {
 
   @Post('chat')
   chat(@Book() scope: BookScope, @Body() dto: ChatDto): Promise<ChatResult> {
-    return this.assistant.chat(scope, dto.text, dto.conversationId);
+    return this.assistant.chat(
+      scope,
+      dto.text,
+      dto.conversationId,
+      dto.attachmentIds ?? [],
+    );
   }
 
   @Get('conversations')
@@ -102,6 +107,15 @@ export class AttachmentChatController {
     return this.assistant.attachmentThread(scope, id);
   }
 
+  /** step11b: every AI message linked to this file, on any channel (kept after a delete). */
+  @Get(':id/messages')
+  messages(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<AssistantMessageView[]> {
+    return this.assistant.attachmentMessages(scope, id);
+  }
+
   @Post(':id/chat')
   chat(
     @Book() scope: BookScope,
@@ -127,7 +141,7 @@ export class IntakeController {
     @IntakeCustomer() customerId: number,
     @Body() dto: IntakeRouteDto,
   ): Promise<IntakeRoute> {
-    return this.intake.route(customerId, dto.channel, dto.peer);
+    return this.intake.route(customerId, dto.channel, dto.peer, dto.text);
   }
 
   @Post('agent')
@@ -142,6 +156,7 @@ export class IntakeController {
       text: dto.text ?? null,
       attachmentIds: dto.attachmentIds,
       deliverable: dto.deliverable,
+      replyFrom: dto.replyFrom ?? null,
     });
   }
 }

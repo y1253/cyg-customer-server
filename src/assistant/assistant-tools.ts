@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { AttachmentStatus, StatementStatus } from '@prisma/client';
+import {
+  AttachmentStatus,
+  StatementStatus,
+  type AiConversation,
+} from '@prisma/client';
 import type { ToolDefinition } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
@@ -15,6 +19,13 @@ import { ReportsService } from '../bookkeeping/reports.service';
 import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { SplitsService } from '../bookkeeping/splits.service';
 import { TaxService } from '../bookkeeping/tax.service';
+import { FileLinkService } from '../bookkeeping/file-links';
+import {
+  bookCandidates,
+  whichBookQuestion,
+  type Channel,
+} from './assistant-prompt';
+import { bookOptions, chooseBook, moveRecentFiles } from './book-switch';
 import { RulesService } from './rules.service';
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
@@ -32,12 +43,16 @@ export interface ToolOutcome {
   action?: AgentAction;
   /** The agent did what the customer asked without understanding why (step11). */
   warning?: string;
+  /** step11b: the attachment this tool changed — linked to the answer (ACTION). */
+  attachmentId?: number;
 }
 
 export interface ToolContext {
   scope: BookScope;
   /** The customer's message this answer is for — the source of any rule it saves. */
   messageId: number | null;
+  /** step11b: the conversation being answered (switch_book changes its book). */
+  conversation?: AiConversation;
 }
 
 /** The longest tool result handed back to the model. */
@@ -105,11 +120,18 @@ const READ_TOOLS: ToolDefinition[] = [
   {
     name: 'list_attachments',
     description:
-      'Receipts, cheques and voice notes in this book, newest first.',
+      'Receipts, cheques, voice notes and other files (letters, screenshots — status DOCUMENT) in this book, newest first.',
     parameters: obj({
       status: {
         type: 'string',
-        enum: ['PENDING', 'PROCESSING', 'MATCHED', 'UNMATCHED', 'FAILED'],
+        enum: [
+          'PENDING',
+          'PROCESSING',
+          'MATCHED',
+          'UNMATCHED',
+          'FAILED',
+          'DOCUMENT',
+        ],
       },
     }),
   },
@@ -133,7 +155,37 @@ const READ_TOOLS: ToolDefinition[] = [
     description: 'The rules learned for this book.',
     parameters: obj({}),
   },
+  {
+    name: 'get_link',
+    description:
+      'A link the customer can open (no sign-in, works 7 days) to a file of this book: a statement PDF (statementId), an attachment (attachmentId), the financial report for a period (from/to), or the whole ledger (format pdf or xlsx). Use when they want to see, download or forward something.',
+    parameters: obj(
+      {
+        type: {
+          type: 'string',
+          enum: ['statement', 'attachment', 'report', 'ledger'],
+        },
+        statementId: int,
+        attachmentId: int,
+        from: day,
+        to: day,
+        format: { type: 'string', enum: ['pdf', 'xlsx'] },
+      },
+      ['type'],
+    ),
+  },
 ];
+
+/**
+ * step11b: on a text / WhatsApp / email thread the customer may say "switch to ABC" in any
+ * words; this tool is how the assistant honours a phrasing the code did not recognise.
+ */
+const SWITCH_BOOK_TOOL: ToolDefinition = {
+  name: 'switch_book',
+  description:
+    "Change which books this chat works on (the customer's personal books or one of their businesses), when the customer asks to switch. book = the number from the list or the business's name.",
+  parameters: obj({ book: str }, ['book']),
+};
 
 /** WRITE tools: applied at once and listed under the answer. */
 const WRITE_TOOLS: ToolDefinition[] = [
@@ -247,7 +299,20 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
   ...READ_TOOLS,
   ...WRITE_TOOLS,
 ];
-export const WRITE_TOOL_NAMES = new Set(WRITE_TOOLS.map((t) => t.name));
+export const WRITE_TOOL_NAMES = new Set([
+  ...WRITE_TOOLS.map((t) => t.name),
+  SWITCH_BOOK_TOOL.name,
+]);
+
+/** The tools offered on a channel: the phone / email threads may also switch book. */
+export function toolsFor(channel: Channel): ToolDefinition[] {
+  return channel === 'BOT'
+    ? ASSISTANT_TOOLS
+    : [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+}
+const ALL_TOOL_NAMES = new Set(
+  [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL].map((t) => t.name),
+);
 
 type Args = Record<string, unknown>;
 const s = (v: unknown): string | null =>
@@ -286,6 +351,7 @@ export class AssistantTools {
     private readonly names: NameMemoryService,
     private readonly splits: SplitsService,
     private readonly rules: RulesService,
+    private readonly links: FileLinkService,
   ) {}
 
   /** Runs one tool. Never throws: a failure is reported to the model (and as a failed action). */
@@ -300,7 +366,7 @@ export class AssistantTools {
     } catch {
       return { content: json({ error: 'arguments were not valid JSON' }) };
     }
-    if (!ASSISTANT_TOOLS.some((t) => t.name === name)) {
+    if (!ALL_TOOL_NAMES.has(name)) {
       return { content: json({ error: `unknown tool ${name}` }) };
     }
     try {
@@ -332,6 +398,10 @@ export class AssistantTools {
     ): ToolOutcome => ({
       content: json(data),
       action: { tool: name, ok: true, summary },
+      // The attachment a write tool acted on, linked to the answer (step11b).
+      ...(typeof a.attachmentId === 'number' && a.attachmentId > 0
+        ? { attachmentId: a.attachmentId }
+        : {}),
     });
 
     switch (name) {
@@ -435,6 +505,39 @@ export class AssistantTools {
         };
       case 'list_rules':
         return { content: json(await this.rules.listCustomerRules(scope)) };
+      case 'get_link': {
+        const type = s(a.type);
+        if (
+          type !== 'statement' &&
+          type !== 'attachment' &&
+          type !== 'report' &&
+          type !== 'ledger'
+        ) {
+          throw new Error(
+            'type must be statement, attachment, report or ledger',
+          );
+        }
+        const url = await this.links.link(scope, {
+          kind: type,
+          id:
+            type === 'statement'
+              ? id(a.statementId)
+              : type === 'attachment'
+                ? id(a.attachmentId)
+                : undefined,
+          from: s(a.from),
+          to: s(a.to),
+          format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
+        });
+        return {
+          content: json({ url, expiresInDays: 7 }),
+          ...(type === 'attachment'
+            ? { attachmentId: id(a.attachmentId) }
+            : {}),
+        };
+      }
+      case 'switch_book':
+        return this.switchBook(ctx, s(a.book));
 
       case 'attach_receipt': {
         const view = await this.attachments.setTransaction(
@@ -568,6 +671,49 @@ export class AssistantTools {
       }
     }
     return { content: json({ error: `unknown tool ${name}` }) };
+  }
+
+  /**
+   * step11b: the phone / email thread now works on another book, and the files this phone
+   * sent in the last minutes follow it (`moveRecentFiles`). The rest of THIS answer still
+   * runs on the book it started in; the next message runs on the new one.
+   */
+  private async switchBook(
+    ctx: ToolContext,
+    book: string | null,
+  ): Promise<ToolOutcome> {
+    const conversation = ctx.conversation;
+    if (!conversation || conversation.channel === 'BOT' || !conversation.peer) {
+      throw new Error('books are switched on the website with the book picker');
+    }
+    const options = await bookOptions(this.prisma, conversation.customerId);
+    const found = bookCandidates(book, options);
+    if (found.length !== 1) {
+      return {
+        content: json({
+          error: found.length
+            ? whichBookQuestion(found, options)
+            : `No book called "${book ?? ''}". The books are: ${options.map((o, i) => `${i + 1} ${o.name}`).join(', ')}`,
+        }),
+      };
+    }
+    const choice = found[0];
+    const updated = await chooseBook(this.prisma, conversation, choice);
+    const { moved, reread } = await moveRecentFiles(
+      this.prisma,
+      updated,
+      conversation.peer,
+      choice.companyId,
+    );
+    if (reread) this.processor.processSoon();
+    return {
+      content: json({ ok: true, book: choice.name, filesMoved: moved }),
+      action: {
+        tool: 'switch_book',
+        ok: true,
+        summary: `This chat now works on ${choice.name}${moved ? ` (moved ${moved} file${moved === 1 ? '' : 's'} there)` : ''}`,
+      },
+    };
   }
 
   /**

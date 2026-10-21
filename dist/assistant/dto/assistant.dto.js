@@ -15,6 +15,7 @@ const class_validator_1 = require("class-validator");
 class ChatDto {
     conversationId;
     text;
+    attachmentIds;
 }
 exports.ChatDto = ChatDto;
 __decorate([
@@ -26,9 +27,16 @@ __decorate([
 ], ChatDto.prototype, "conversationId", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
-    (0, class_validator_1.Length)(1, 4000),
+    (0, class_validator_1.MaxLength)(4000),
     __metadata("design:type", String)
 ], ChatDto.prototype, "text", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(10),
+    (0, class_validator_1.IsInt)({ each: true }),
+    __metadata("design:type", Array)
+], ChatDto.prototype, "attachmentIds", void 0);
 class AttachmentChatDto {
     text;
 }
@@ -41,6 +49,7 @@ __decorate([
 class IntakeRouteDto {
     channel;
     peer;
+    text;
 }
 exports.IntakeRouteDto = IntakeRouteDto;
 __decorate([
@@ -52,18 +61,18 @@ __decorate([
     (0, class_validator_1.Length)(3, 191),
     __metadata("design:type", String)
 ], IntakeRouteDto.prototype, "peer", void 0);
-class IntakeAgentDto extends IntakeRouteDto {
-    text;
-    attachmentIds;
-    deliverable;
-}
-exports.IntakeAgentDto = IntakeAgentDto;
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.MaxLength)(4000),
     __metadata("design:type", Object)
-], IntakeAgentDto.prototype, "text", void 0);
+], IntakeRouteDto.prototype, "text", void 0);
+class IntakeAgentDto extends IntakeRouteDto {
+    attachmentIds;
+    deliverable;
+    replyFrom;
+}
+exports.IntakeAgentDto = IntakeAgentDto;
 __decorate([
     (0, class_validator_1.IsArray)(),
     (0, class_validator_1.ArrayMaxSize)(20),
@@ -75,4 +84,10 @@ __decorate([
     (0, class_validator_1.IsBoolean)(),
     __metadata("design:type", Boolean)
 ], IntakeAgentDto.prototype, "deliverable", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(64),
+    __metadata("design:type", Object)
+], IntakeAgentDto.prototype, "replyFrom", void 0);
 //# sourceMappingURL=assistant.dto.js.map

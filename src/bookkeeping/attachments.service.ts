@@ -50,6 +50,11 @@ export interface AttachmentView {
    * statement account. Null = not matched yet (`attachment-folders.util.ts`).
    */
   folder: string | null;
+  /**
+   * step11b: AI messages linked to this file (sent with it, its "Ask AI" chat, the
+   * assistant changing it) — the Attachments tab shows the conversation when > 0.
+   */
+  messageCount: number;
   /** The transaction it belongs to; null while unmatched. */
   transaction: {
     id: number;
@@ -106,7 +111,7 @@ type Loaded = Prisma.TransactionAttachmentGetPayload<{
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
 
-function toView(a: Loaded): AttachmentView {
+function toView(a: Loaded, messageCount = 0): AttachmentView {
   const reading = (a.extracted as unknown as AttachmentReading | null) ?? null;
   const t = a.transaction;
   // A transaction whose statement was deleted is gone from the ledger: show it unmatched.
@@ -128,6 +133,7 @@ function toView(a: Loaded): AttachmentView {
     sourcePhone: a.sourcePhone,
     message: a.message,
     folder: attachmentFolder(live ? t : null),
+    messageCount,
     transaction: live
       ? {
           id: t.id,
@@ -204,7 +210,7 @@ export class AttachmentsService {
         include: INCLUDE,
         orderBy: { id: 'desc' },
       });
-      return rows.map(toView);
+      return rows.map((r) => toView(r));
     } finally {
       await Promise.all(
         (files ?? []).map((f) => unlink(f.path).catch(() => undefined)),
@@ -254,11 +260,37 @@ export class AttachmentsService {
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
-    return rows.map(toView);
+    const counts = await this.messageCounts(
+      scope,
+      rows.map((r) => r.id),
+    );
+    return rows.map((r) => toView(r, counts.get(r.id) ?? 0));
   }
 
   async get(scope: BookScope, id: number): Promise<AttachmentView> {
-    return toView(await this.owned(scope, id));
+    const row = await this.owned(scope, id);
+    const counts = await this.messageCounts(scope, [row.id]);
+    return toView(row, counts.get(row.id) ?? 0);
+  }
+
+  /** step11b: how many AI messages each attachment is linked to. Never fails the list. */
+  private async messageCounts(
+    scope: BookScope,
+    ids: number[],
+  ): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    if (!ids.length) return out;
+    try {
+      const rows = await this.prisma.aiMessageAttachment.groupBy({
+        by: ['attachmentId'],
+        where: { ...scopeWhere(scope), attachmentId: { in: ids } },
+        _count: { _all: true },
+      });
+      for (const r of rows) out.set(r.attachmentId, r._count._all);
+    } catch {
+      // the badge is a convenience; the list still loads
+    }
+    return out;
   }
 
   /**
@@ -328,7 +360,8 @@ export class AttachmentsService {
     const a = await this.owned(scope, id);
     if (
       a.status !== AttachmentStatus.FAILED &&
-      a.status !== AttachmentStatus.UNMATCHED
+      a.status !== AttachmentStatus.UNMATCHED &&
+      a.status !== AttachmentStatus.DOCUMENT
     ) {
       throw new BadRequestException(
         'Only a file that failed or found no match can be read again',

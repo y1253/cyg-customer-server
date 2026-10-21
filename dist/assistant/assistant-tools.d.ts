@@ -1,3 +1,4 @@
+import { type AiConversation } from '@prisma/client';
 import type { ToolDefinition } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
@@ -9,6 +10,8 @@ import { ReportsService } from '../bookkeeping/reports.service';
 import { type BookScope } from '../bookkeeping/scope';
 import { SplitsService } from '../bookkeeping/splits.service';
 import { TaxService } from '../bookkeeping/tax.service';
+import { FileLinkService } from '../bookkeeping/file-links';
+import { type Channel } from './assistant-prompt';
 import { RulesService } from './rules.service';
 export interface AgentAction {
     tool: string;
@@ -19,14 +22,17 @@ export interface ToolOutcome {
     content: string;
     action?: AgentAction;
     warning?: string;
+    attachmentId?: number;
 }
 export interface ToolContext {
     scope: BookScope;
     messageId: number | null;
+    conversation?: AiConversation;
 }
 export declare const NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches \u2014 please double-check.";
 export declare const ASSISTANT_TOOLS: ToolDefinition[];
 export declare const WRITE_TOOL_NAMES: Set<string>;
+export declare function toolsFor(channel: Channel): ToolDefinition[];
 export declare class AssistantTools {
     private readonly prisma;
     private readonly bookkeeping;
@@ -38,8 +44,10 @@ export declare class AssistantTools {
     private readonly names;
     private readonly splits;
     private readonly rules;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService);
+    private readonly links;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService);
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;
     private exec;
+    private switchBook;
     private fileAsStatement;
 }

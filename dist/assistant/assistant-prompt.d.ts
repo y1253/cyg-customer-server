@@ -9,6 +9,7 @@ export interface PromptInput {
     rules: string;
     preferredContact?: string | null;
     attachment?: unknown;
+    files?: unknown[];
 }
 export declare function systemPrompt(p: PromptInput): string;
 export interface BookOption {
@@ -16,5 +17,8 @@ export interface BookOption {
     name: string;
 }
 export declare function bookQuestion(options: readonly BookOption[]): string;
+export declare function bookKey(name: string): string;
+export declare function bookCandidates(text: string | null | undefined, options: readonly BookOption[]): BookOption[];
 export declare function parseBookChoice(text: string | null | undefined, options: readonly BookOption[]): BookOption | null;
+export declare function whichBookQuestion(found: readonly BookOption[], options: readonly BookOption[]): string;
 export declare const isSwitchRequest: (text: string | null | undefined) => boolean;

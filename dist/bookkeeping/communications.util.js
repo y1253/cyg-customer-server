@@ -19,6 +19,7 @@ exports.FILE_SOURCE = {
     WHATSAPP: 'WHATSAPP',
     SMS: 'SMS',
     EMAIL: 'EMAIL',
+    BOT: 'CHAT',
 };
 function idsOf(json) {
     return Array.isArray(json)

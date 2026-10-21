@@ -1,12 +1,19 @@
 import { ConfigService } from '@nestjs/config';
 import type { AiConversation, AiMessage } from '@prisma/client';
 import { OpenAiClient } from '../ai/openai.client';
-import { AttachmentsService } from '../bookkeeping/attachments.service';
+import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
+import { AttachmentsService, type AttachmentView } from '../bookkeeping/attachments.service';
 import { type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantTools, type AgentAction } from './assistant-tools';
 import { type Channel } from './assistant-prompt';
 import { RulesService } from './rules.service';
+export interface MessageFileView {
+    id: number;
+    filename: string;
+    role: string;
+    live: boolean;
+}
 export interface AssistantMessageView {
     id: number;
     role: 'USER' | 'ASSISTANT';
@@ -15,6 +22,7 @@ export interface AssistantMessageView {
     warning: string | null;
     actions: AgentAction[] | null;
     createdAt: string;
+    files?: MessageFileView[];
 }
 export interface ConversationView {
     id: number;
@@ -33,6 +41,25 @@ export interface ChatResult {
 export declare const MAX_TOOL_ROUNDS = 6;
 export declare const HISTORY = 20;
 export declare const FAILED_REPLY = "Sorry \u2014 I couldn't answer that right now. Please try again in a minute.";
+export declare const CHAT_READ_WAIT_MS = 75000;
+export declare function fileContext(a: AttachmentView): {
+    id: number;
+    filename: string;
+    type: "PAYMENT_NOTE" | "BANK_STATEMENT" | import("@prisma/client").$Enums.AttachmentKind;
+    status: import("@prisma/client").$Enums.AttachmentStatus;
+    whatItIs: string | null;
+    total: number | null;
+    date: string | null;
+    payee: string | null;
+    filedTo: {
+        id: number;
+        name: string;
+        amount: number;
+        date: string | null;
+    } | null;
+    note: string | null;
+    transcript: string | null;
+};
 export declare function toMessageView(m: AiMessage): AssistantMessageView;
 export declare class AssistantService {
     private readonly prisma;
@@ -41,13 +68,18 @@ export declare class AssistantService {
     private readonly tools;
     private readonly rules;
     private readonly attachments;
+    private readonly processor;
     private readonly logger;
-    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService);
+    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService, processor: AttachmentProcessorService);
     get enabled(): boolean;
     assertEnabled(): void;
     private model;
     private dailyLimit;
-    chat(scope: BookScope, text: string, conversationId?: number): Promise<ChatResult>;
+    chat(scope: BookScope, text: string, conversationId?: number, attachmentIds?: number[]): Promise<ChatResult>;
+    fileLabel(n: number): string;
+    filesContext(scope: BookScope, ids: number[]): Promise<unknown[]>;
+    attachmentMessages(scope: BookScope, attachmentId: number): Promise<AssistantMessageView[]>;
+    withFiles(rows: AiMessage[]): Promise<AssistantMessageView[]>;
     attachmentThread(scope: BookScope, attachmentId: number): Promise<{
         conversationId: number | null;
         messages: AssistantMessageView[];
@@ -59,6 +91,7 @@ export declare class AssistantService {
     respond(conversation: AiConversation, text: string, opts?: {
         attachment?: unknown;
         attachmentIds?: number[];
+        files?: unknown[];
     }): Promise<ChatResult>;
     private run;
     private overLimit;
@@ -68,5 +101,7 @@ export declare class AssistantService {
         actions?: AgentAction[];
         warning?: string | null;
         attachmentIds?: number[];
+        actedOn?: number[];
     }): Promise<AiMessage>;
+    private link;
 }

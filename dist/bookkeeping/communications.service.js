@@ -65,7 +65,7 @@ let CommunicationsService = class CommunicationsService {
             return (0, communications_util_1.pageOf)((0, communications_util_1.buildTimeline)({ messages: [], files: new Map(), loose, statements }), limit);
         }
         const source = communications_util_1.FILE_SOURCE[channel];
-        const [messages, referenced] = await Promise.all([
+        const [found, referenced] = await Promise.all([
             this.prisma.aiMessage.findMany({
                 where: { ...book, ...older, channel },
                 orderBy: { createdAt: 'desc' },
@@ -81,11 +81,29 @@ let CommunicationsService = class CommunicationsService {
             }),
             source ? this.referencedIds(scope, channel) : Promise.resolve([]),
         ]);
+        const links = found.length
+            ? await this.prisma.aiMessageAttachment.findMany({
+                where: { messageId: { in: found.map((m) => m.id) } },
+                select: { messageId: true, attachmentId: true },
+                orderBy: { id: 'asc' },
+            })
+            : [];
+        const messages = found.map((m) => ({
+            ...m,
+            attachmentIds: [
+                ...new Set([
+                    ...(0, communications_util_1.idsOf)(m.attachmentIds),
+                    ...links
+                        .filter((l) => l.messageId === m.id)
+                        .map((l) => l.attachmentId),
+                ]),
+            ],
+        }));
         const [carried, loose] = await Promise.all([
             this.prisma.transactionAttachment.findMany({
                 where: {
                     customerId: scope.customerId,
-                    id: { in: messages.flatMap((m) => (0, communications_util_1.idsOf)(m.attachmentIds)) },
+                    id: { in: messages.flatMap((m) => m.attachmentIds) },
                 },
                 select: ATTACHMENT_FIELDS,
             }),
@@ -136,11 +154,26 @@ let CommunicationsService = class CommunicationsService {
         return messages + files;
     }
     async referencedIds(scope, channel) {
-        const rows = await this.prisma.aiMessage.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), channel, role: 'USER' },
-            select: { attachmentIds: true },
-        });
-        return rows.flatMap((r) => (0, communications_util_1.idsOf)(r.attachmentIds));
+        const [rows, links] = await Promise.all([
+            this.prisma.aiMessage.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), channel, role: 'USER' },
+                select: { attachmentIds: true },
+            }),
+            this.prisma.aiMessageAttachment.findMany({
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    role: 'SENT',
+                    message: { channel, role: 'USER' },
+                },
+                select: { attachmentId: true },
+            }),
+        ]);
+        return [
+            ...new Set([
+                ...rows.flatMap((r) => (0, communications_util_1.idsOf)(r.attachmentIds)),
+                ...links.map((l) => l.attachmentId),
+            ]),
+        ];
     }
 };
 exports.CommunicationsService = CommunicationsService;

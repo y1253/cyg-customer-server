@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
+import { MessagingModule } from '../messaging/messaging.module';
 import {
   AssistantConfigController,
   AssistantController,
@@ -19,7 +20,7 @@ import { IntakeAgentService } from './intake-agent.service';
  * every AI step there reads the learned rules too.
  */
 @Module({
-  imports: [BookkeepingModule, CustomerAuthModule],
+  imports: [BookkeepingModule, CustomerAuthModule, MessagingModule],
   controllers: [
     AssistantConfigController,
     AssistantController,
@@ -33,5 +34,6 @@ import { IntakeAgentService } from './intake-agent.service';
     IntakeAgentService,
     OpenAiClient,
   ],
+  exports: [AssistantService],
 })
 export class AssistantModule {}

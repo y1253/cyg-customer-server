@@ -29,6 +29,7 @@ export declare class AttachmentChatController {
         conversationId: number | null;
         messages: AssistantMessageView[];
     }>;
+    messages(scope: BookScope, id: number): Promise<AssistantMessageView[]>;
     chat(scope: BookScope, id: number, dto: AttachmentChatDto): Promise<ChatResult>;
 }
 export declare class IntakeController {

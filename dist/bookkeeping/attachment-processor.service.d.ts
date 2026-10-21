@@ -1,4 +1,5 @@
 import { RulesService } from '../assistant/rules.service';
+import { AttachmentKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { AttachmentExtractor, type AttachmentReading } from './attachment-extractor';
@@ -8,7 +9,14 @@ import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import { SplitsService } from './splits.service';
 import { type BookScope } from './scope';
+export declare function siblingName(filename: string, n: number, total: number): string;
 export declare function readingTotal(r: AttachmentReading): number | null;
+export declare const siblingRef: (rowId: number, n: number) => string;
+export declare function siblingOf(sourceRef: string | null | undefined): {
+    rowId: number;
+    index: number;
+} | null;
+export declare function kindFor(cls: AttachmentClass, reading: AttachmentReading): AttachmentKind;
 export declare function classOf(mimeType: string): AttachmentClass;
 export declare class AttachmentProcessorService {
     private readonly prisma;
@@ -25,6 +33,10 @@ export declare class AttachmentProcessorService {
     sweep(): Promise<void>;
     private runSweep;
     private processOne;
+    private finish;
+    private fileSiblings;
+    family(ids: number[]): Promise<number[]>;
+    waitUntilRead(ids: number[], timeoutMs?: number): Promise<boolean>;
     private nameFromCheque;
     private recordFailure;
     private match;

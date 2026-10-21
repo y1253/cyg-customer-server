@@ -50,7 +50,7 @@ let AssistantController = class AssistantController {
         this.rules = rules;
     }
     chat(scope, dto) {
-        return this.assistant.chat(scope, dto.text, dto.conversationId);
+        return this.assistant.chat(scope, dto.text, dto.conversationId, dto.attachmentIds ?? []);
     }
     conversations(scope) {
         return this.assistant.conversations(scope);
@@ -120,6 +120,9 @@ let AttachmentChatController = class AttachmentChatController {
     thread(scope, id) {
         return this.assistant.attachmentThread(scope, id);
     }
+    messages(scope, id) {
+        return this.assistant.attachmentMessages(scope, id);
+    }
     chat(scope, id, dto) {
         return this.assistant.attachmentChat(scope, id, dto.text);
     }
@@ -133,6 +136,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number]),
     __metadata("design:returntype", void 0)
 ], AttachmentChatController.prototype, "thread", null);
+__decorate([
+    (0, common_1.Get)(':id/messages'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], AttachmentChatController.prototype, "messages", null);
 __decorate([
     (0, common_1.Post)(':id/chat'),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -153,7 +164,7 @@ let IntakeController = class IntakeController {
         this.intake = intake;
     }
     route(customerId, dto) {
-        return this.intake.route(customerId, dto.channel, dto.peer);
+        return this.intake.route(customerId, dto.channel, dto.peer, dto.text);
     }
     agent(customerId, dto) {
         return this.intake.agent(customerId, {
@@ -162,6 +173,7 @@ let IntakeController = class IntakeController {
             text: dto.text ?? null,
             attachmentIds: dto.attachmentIds,
             deliverable: dto.deliverable,
+            replyFrom: dto.replyFrom ?? null,
         });
     }
 };

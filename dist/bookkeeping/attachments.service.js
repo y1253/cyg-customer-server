@@ -42,7 +42,7 @@ const INCLUDE = {
     },
 };
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
-function toView(a) {
+function toView(a, messageCount = 0) {
     const reading = a.extracted ?? null;
     const t = a.transaction;
     const live = t && !t.statement.deletedAt && t.statement.status === client_1.StatementStatus.DONE;
@@ -62,6 +62,7 @@ function toView(a) {
         sourcePhone: a.sourcePhone,
         message: a.message,
         folder: (0, attachment_folders_util_1.attachmentFolder)(live ? t : null),
+        messageCount,
         transaction: live
             ? {
                 id: t.id,
@@ -125,7 +126,7 @@ let AttachmentsService = class AttachmentsService {
                 include: INCLUDE,
                 orderBy: { id: 'desc' },
             });
-            return rows.map(toView);
+            return rows.map((r) => toView(r));
         }
         finally {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
@@ -163,10 +164,30 @@ let AttachmentsService = class AttachmentsService {
             include: INCLUDE,
             orderBy: { createdAt: 'desc' },
         });
-        return rows.map(toView);
+        const counts = await this.messageCounts(scope, rows.map((r) => r.id));
+        return rows.map((r) => toView(r, counts.get(r.id) ?? 0));
     }
     async get(scope, id) {
-        return toView(await this.owned(scope, id));
+        const row = await this.owned(scope, id);
+        const counts = await this.messageCounts(scope, [row.id]);
+        return toView(row, counts.get(row.id) ?? 0);
+    }
+    async messageCounts(scope, ids) {
+        const out = new Map();
+        if (!ids.length)
+            return out;
+        try {
+            const rows = await this.prisma.aiMessageAttachment.groupBy({
+                by: ['attachmentId'],
+                where: { ...(0, scope_1.scopeWhere)(scope), attachmentId: { in: ids } },
+                _count: { _all: true },
+            });
+            for (const r of rows)
+                out.set(r.attachmentId, r._count._all);
+        }
+        catch {
+        }
+        return out;
     }
     async setTransaction(scope, id, transactionId) {
         const a = await this.owned(scope, id);
@@ -218,7 +239,8 @@ let AttachmentsService = class AttachmentsService {
     async retry(scope, id) {
         const a = await this.owned(scope, id);
         if (a.status !== client_1.AttachmentStatus.FAILED &&
-            a.status !== client_1.AttachmentStatus.UNMATCHED) {
+            a.status !== client_1.AttachmentStatus.UNMATCHED &&
+            a.status !== client_1.AttachmentStatus.DOCUMENT) {
             throw new common_1.BadRequestException('Only a file that failed or found no match can be read again');
         }
         await this.prisma.transactionAttachment.update({

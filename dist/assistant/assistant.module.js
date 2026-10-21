@@ -11,6 +11,7 @@ const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
+const messaging_module_1 = require("../messaging/messaging.module");
 const assistant_controller_1 = require("./assistant.controller");
 const assistant_service_1 = require("./assistant.service");
 const assistant_tools_1 = require("./assistant-tools");
@@ -21,7 +22,7 @@ let AssistantModule = class AssistantModule {
 exports.AssistantModule = AssistantModule;
 exports.AssistantModule = AssistantModule = __decorate([
     (0, common_1.Module)({
-        imports: [bookkeeping_module_1.BookkeepingModule, customer_auth_module_1.CustomerAuthModule],
+        imports: [bookkeeping_module_1.BookkeepingModule, customer_auth_module_1.CustomerAuthModule, messaging_module_1.MessagingModule],
         controllers: [
             assistant_controller_1.AssistantConfigController,
             assistant_controller_1.AssistantController,
@@ -35,6 +36,7 @@ exports.AssistantModule = AssistantModule = __decorate([
             intake_agent_service_1.IntakeAgentService,
             openai_client_1.OpenAiClient,
         ],
+        exports: [assistant_service_1.AssistantService],
     })
 ], AssistantModule);
 //# sourceMappingURL=assistant.module.js.map

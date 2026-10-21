@@ -10,6 +10,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AssistantTools = exports.WRITE_TOOL_NAMES = exports.ASSISTANT_TOOLS = exports.NOT_UNDERSTOOD_WARNING = void 0;
+exports.toolsFor = toolsFor;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -22,6 +23,9 @@ const reports_service_1 = require("../bookkeeping/reports.service");
 const scope_1 = require("../bookkeeping/scope");
 const splits_service_1 = require("../bookkeeping/splits.service");
 const tax_service_1 = require("../bookkeeping/tax.service");
+const file_links_1 = require("../bookkeeping/file-links");
+const assistant_prompt_1 = require("./assistant-prompt");
+const book_switch_1 = require("./book-switch");
 const rules_service_1 = require("./rules.service");
 const rules_util_1 = require("./rules.util");
 const transaction_filter_util_1 = require("./transaction-filter.util");
@@ -78,11 +82,18 @@ const READ_TOOLS = [
     },
     {
         name: 'list_attachments',
-        description: 'Receipts, cheques and voice notes in this book, newest first.',
+        description: 'Receipts, cheques, voice notes and other files (letters, screenshots — status DOCUMENT) in this book, newest first.',
         parameters: obj({
             status: {
                 type: 'string',
-                enum: ['PENDING', 'PROCESSING', 'MATCHED', 'UNMATCHED', 'FAILED'],
+                enum: [
+                    'PENDING',
+                    'PROCESSING',
+                    'MATCHED',
+                    'UNMATCHED',
+                    'FAILED',
+                    'DOCUMENT',
+                ],
             },
         }),
     },
@@ -101,7 +112,27 @@ const READ_TOOLS = [
         description: 'The rules learned for this book.',
         parameters: obj({}),
     },
+    {
+        name: 'get_link',
+        description: 'A link the customer can open (no sign-in, works 7 days) to a file of this book: a statement PDF (statementId), an attachment (attachmentId), the financial report for a period (from/to), or the whole ledger (format pdf or xlsx). Use when they want to see, download or forward something.',
+        parameters: obj({
+            type: {
+                type: 'string',
+                enum: ['statement', 'attachment', 'report', 'ledger'],
+            },
+            statementId: int,
+            attachmentId: int,
+            from: day,
+            to: day,
+            format: { type: 'string', enum: ['pdf', 'xlsx'] },
+        }, ['type']),
+    },
 ];
+const SWITCH_BOOK_TOOL = {
+    name: 'switch_book',
+    description: "Change which books this chat works on (the customer's personal books or one of their businesses), when the customer asks to switch. book = the number from the list or the business's name.",
+    parameters: obj({ book: str }, ['book']),
+};
 const WRITE_TOOLS = [
     {
         name: 'attach_receipt',
@@ -189,7 +220,16 @@ exports.ASSISTANT_TOOLS = [
     ...READ_TOOLS,
     ...WRITE_TOOLS,
 ];
-exports.WRITE_TOOL_NAMES = new Set(WRITE_TOOLS.map((t) => t.name));
+exports.WRITE_TOOL_NAMES = new Set([
+    ...WRITE_TOOLS.map((t) => t.name),
+    SWITCH_BOOK_TOOL.name,
+]);
+function toolsFor(channel) {
+    return channel === 'BOT'
+        ? exports.ASSISTANT_TOOLS
+        : [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+}
+const ALL_TOOL_NAMES = new Set([...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL].map((t) => t.name));
 const s = (v) => typeof v === 'string' && v.trim() ? v.trim() : null;
 const n = (v) => typeof v === 'number' && Number.isFinite(v) ? v : null;
 const id = (v) => {
@@ -215,7 +255,8 @@ let AssistantTools = class AssistantTools {
     names;
     splits;
     rules;
-    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules) {
+    links;
+    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links) {
         this.prisma = prisma;
         this.bookkeeping = bookkeeping;
         this.reports = reports;
@@ -226,6 +267,7 @@ let AssistantTools = class AssistantTools {
         this.names = names;
         this.splits = splits;
         this.rules = rules;
+        this.links = links;
     }
     async run(name, rawArgs, ctx) {
         let args;
@@ -235,7 +277,7 @@ let AssistantTools = class AssistantTools {
         catch {
             return { content: json({ error: 'arguments were not valid JSON' }) };
         }
-        if (!exports.ASSISTANT_TOOLS.some((t) => t.name === name)) {
+        if (!ALL_TOOL_NAMES.has(name)) {
             return { content: json({ error: `unknown tool ${name}` }) };
         }
         try {
@@ -260,6 +302,9 @@ let AssistantTools = class AssistantTools {
         const done = (summary, data = { ok: true }) => ({
             content: json(data),
             action: { tool: name, ok: true, summary },
+            ...(typeof a.attachmentId === 'number' && a.attachmentId > 0
+                ? { attachmentId: a.attachmentId }
+                : {}),
         });
         switch (name) {
             case 'list_statements': {
@@ -349,6 +394,34 @@ let AssistantTools = class AssistantTools {
                 };
             case 'list_rules':
                 return { content: json(await this.rules.listCustomerRules(scope)) };
+            case 'get_link': {
+                const type = s(a.type);
+                if (type !== 'statement' &&
+                    type !== 'attachment' &&
+                    type !== 'report' &&
+                    type !== 'ledger') {
+                    throw new Error('type must be statement, attachment, report or ledger');
+                }
+                const url = await this.links.link(scope, {
+                    kind: type,
+                    id: type === 'statement'
+                        ? id(a.statementId)
+                        : type === 'attachment'
+                            ? id(a.attachmentId)
+                            : undefined,
+                    from: s(a.from),
+                    to: s(a.to),
+                    format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
+                });
+                return {
+                    content: json({ url, expiresInDays: 7 }),
+                    ...(type === 'attachment'
+                        ? { attachmentId: id(a.attachmentId) }
+                        : {}),
+                };
+            }
+            case 'switch_book':
+                return this.switchBook(ctx, s(a.book));
             case 'attach_receipt': {
                 const view = await this.attachments.setTransaction(scope, id(a.attachmentId), id(a.transactionId));
                 const understood = a.understood !== false;
@@ -448,6 +521,36 @@ let AssistantTools = class AssistantTools {
         }
         return { content: json({ error: `unknown tool ${name}` }) };
     }
+    async switchBook(ctx, book) {
+        const conversation = ctx.conversation;
+        if (!conversation || conversation.channel === 'BOT' || !conversation.peer) {
+            throw new Error('books are switched on the website with the book picker');
+        }
+        const options = await (0, book_switch_1.bookOptions)(this.prisma, conversation.customerId);
+        const found = (0, assistant_prompt_1.bookCandidates)(book, options);
+        if (found.length !== 1) {
+            return {
+                content: json({
+                    error: found.length
+                        ? (0, assistant_prompt_1.whichBookQuestion)(found, options)
+                        : `No book called "${book ?? ''}". The books are: ${options.map((o, i) => `${i + 1} ${o.name}`).join(', ')}`,
+                }),
+            };
+        }
+        const choice = found[0];
+        const updated = await (0, book_switch_1.chooseBook)(this.prisma, conversation, choice);
+        const { moved, reread } = await (0, book_switch_1.moveRecentFiles)(this.prisma, updated, conversation.peer, choice.companyId);
+        if (reread)
+            this.processor.processSoon();
+        return {
+            content: json({ ok: true, book: choice.name, filesMoved: moved }),
+            action: {
+                tool: 'switch_book',
+                ok: true,
+                summary: `This chat now works on ${choice.name}${moved ? ` (moved ${moved} file${moved === 1 ? '' : 's'} there)` : ''}`,
+            },
+        };
+    }
     async fileAsStatement(scope, attachmentId) {
         const a = await this.prisma.transactionAttachment.findFirst({
             where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
@@ -489,6 +592,7 @@ exports.AssistantTools = AssistantTools = __decorate([
         attachment_processor_service_1.AttachmentProcessorService,
         name_memory_service_1.NameMemoryService,
         splits_service_1.SplitsService,
-        rules_service_1.RulesService])
+        rules_service_1.RulesService,
+        file_links_1.FileLinkService])
 ], AssistantTools);
 //# sourceMappingURL=assistant-tools.js.map

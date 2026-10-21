@@ -22,6 +22,7 @@ export interface AttachmentView {
     sourcePhone: string | null;
     message: string | null;
     folder: string | null;
+    messageCount: number;
     transaction: {
         id: number;
         name: string | null;
@@ -50,6 +51,7 @@ export declare class AttachmentsService {
     intake(scope: BookScope): Promise<IntakeView>;
     list(scope: BookScope): Promise<AttachmentView[]>;
     get(scope: BookScope, id: number): Promise<AttachmentView>;
+    private messageCounts;
     setTransaction(scope: BookScope, id: number, transactionId: number | null): Promise<AttachmentView>;
     applyItems(scope: BookScope, id: number): Promise<AttachmentView>;
     retry(scope: BookScope, id: number): Promise<AttachmentView>;

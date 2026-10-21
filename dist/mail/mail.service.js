@@ -39,6 +39,7 @@ let MailService = MailService_1 = class MailService {
             text: opts.text,
             ...(opts.html ? { html: opts.html } : {}),
             ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+            ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
         });
         this.logger.log(`sent mail to ${opts.to} in ${Date.now() - started}ms`);
     }

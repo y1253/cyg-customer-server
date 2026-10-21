@@ -3,7 +3,9 @@ import { JwtService } from '@nestjs/jwt';
 import type { ExecutionContext } from '@nestjs/common';
 import type { AiConversation, AiMessage } from '@prisma/client';
 import type { OpenAiClient } from '../ai/openai.client';
+import type { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
 import type { AttachmentsService } from '../bookkeeping/attachments.service';
+import type { CustomerMessenger } from '../messaging/customer-messenger.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   AssistantService,
@@ -78,6 +80,10 @@ function fakePrisma() {
         conversations.push(c);
         return c;
       }),
+      findUnique: jest.fn(
+        ({ where }: { where: { id: number } }) =>
+          conversations.find((c) => c.id === where.id) ?? null,
+      ),
       findFirst: jest.fn(
         ({ where }: { where: Partial<AiConversation> }) =>
           [...conversations]
@@ -97,7 +103,14 @@ function fakePrisma() {
         () => [] as Array<{ id: number; businessName: string }>,
       ),
     },
-    transactionAttachment: { updateMany: jest.fn(() => ({ count: 2 })) },
+    transactionAttachment: {
+      updateMany: jest.fn(() => ({ count: 2 })),
+      findMany: jest.fn(() => []),
+    },
+    aiMessageAttachment: {
+      findMany: jest.fn(() => []),
+      createMany: jest.fn(() => ({ count: 1 })),
+    },
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
   };
   return prisma;
@@ -134,7 +147,31 @@ function setup(
   const rules = {
     promptBlock: jest.fn(() => ''),
   } as unknown as RulesService;
-  const attachments = {} as AttachmentsService;
+  const attachments = {
+    get: jest.fn((_scope: unknown, id: number) => ({
+      id,
+      filename: `f${id}.jpg`,
+      kind: 'CHECK',
+      status: 'MATCHED',
+      reading: {
+        documentType: 'CHECK',
+        summary: `Cheque ${id}`,
+        kind: 'CHECK',
+      },
+      total: 100,
+      matchNote: 'Matched by cheque number.',
+      error: null,
+      transaction: null,
+    })),
+  } as unknown as AttachmentsService;
+  const processor = {
+    waitUntilRead: jest.fn(() => true),
+    family: jest.fn((ids: number[]) => [...ids, 99]),
+    processSoon: jest.fn(),
+  } as unknown as AttachmentProcessorService & {
+    waitUntilRead: jest.Mock;
+    family: jest.Mock;
+  };
   const service = new AssistantService(
     prisma as unknown as PrismaService,
     config(env),
@@ -142,8 +179,9 @@ function setup(
     tools,
     rules,
     attachments,
+    processor,
   );
-  return { prisma, openai, tools, service };
+  return { prisma, openai, tools, service, processor };
 }
 
 const call = (name: string, args: unknown, id = 'c') => ({
@@ -174,10 +212,10 @@ describe('AssistantService', () => {
     expect(tools.run).toHaveBeenCalledWith(
       'attach_receipt',
       expect.any(String),
-      {
+      expect.objectContaining({
         scope: { customerId: 7, companyId: 3 },
         messageId: res.message.id,
-      },
+      }),
     );
     expect(res.reply.text).toBe('Filed it.');
     expect(res.reply.actions).toEqual([
@@ -205,6 +243,39 @@ describe('AssistantService', () => {
     expect(last.tools).toBeUndefined();
   });
 
+  it('waits for the files a web message carries and tells the AI what each one is', async () => {
+    const { service, openai, processor, prisma } = setup([
+      { content: 'Two cheques, both filed.', toolCalls: [] },
+    ]);
+    const res = await service.chat(
+      { customerId: 7, companyId: null },
+      '',
+      undefined,
+      [5],
+    );
+    expect(processor.waitUntilRead).toHaveBeenCalledWith(
+      [5],
+      expect.any(Number),
+    );
+    expect(res.message.text).toBe('[sent a file]');
+    const system = (
+      openai.chatMessages.mock.calls[0] as [
+        { messages: Array<{ content: string }> },
+      ]
+    )[0].messages[0].content;
+    // The second cheque of the photo (sibling 99) is in the prompt too.
+    expect(system).toContain('Cheque 5');
+    expect(system).toContain('Cheque 99');
+    const links = prisma.aiMessageAttachment.createMany.mock
+      .calls as unknown as Array<
+      [{ data: Array<{ attachmentId: number; role: string }> }]
+    >;
+    expect(links[0][0].data.map((l) => [l.attachmentId, l.role])).toEqual([
+      [5, 'SENT'],
+      [99, 'SENT'],
+    ]);
+  });
+
   it('apologises instead of throwing when the AI fails', async () => {
     const { service, openai } = setup([]);
     openai.chatMessages.mockRejectedValueOnce(new Error('down'));
@@ -223,7 +294,7 @@ describe('AssistantService', () => {
 describe('AssistantTools', () => {
   it('refuses an unknown tool and bad JSON without throwing', async () => {
     const tools = new AssistantTools(
-      ...(Array.from({ length: 10 }, () => ({})) as ConstructorParameters<
+      ...(Array.from({ length: 11 }, () => ({})) as ConstructorParameters<
         typeof AssistantTools
       >),
     );
@@ -242,7 +313,7 @@ describe('AssistantTools', () => {
         .fn()
         .mockRejectedValue(new Error('still being read')),
     };
-    const deps = Array.from({ length: 10 }, () => ({})) as unknown[];
+    const deps = Array.from({ length: 11 }, () => ({})) as unknown[];
     deps[5] = attachments;
     const tools = new AssistantTools(
       ...(deps as ConstructorParameters<typeof AssistantTools>),
@@ -317,6 +388,26 @@ describe('IntakeAgentService', () => {
     );
     return { ...s, agent };
   }
+  /** The same, with files read first and replies sent from this server (step11b). */
+  function intakeSending(
+    companies: Array<{ id: number; businessName: string }> = [],
+  ) {
+    const s = intake(companies);
+    const messenger = {
+      configured: jest.fn(() => true),
+      send: jest.fn(() => Promise.resolve('sent')),
+    } as unknown as CustomerMessenger & { send: jest.Mock };
+    const agent = new IntakeAgentService(
+      s.prisma as unknown as PrismaService,
+      config({ AI_ASSISTANT: '1' }),
+      s.openai,
+      s.service,
+      s.processor,
+      messenger,
+    );
+    return { ...s, agent, messenger };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
   const msg = (text: string | null, attachmentIds: number[] = []) => ({
     channel: 'SMS' as const,
     peer: '+15145550001',
@@ -369,17 +460,71 @@ describe('IntakeAgentService', () => {
     expect(answer.reply).toContain('ABC Inc');
     const moved = prisma.transactionAttachment.updateMany.mock
       .calls as unknown as Array<
-      [{ where: Record<string, unknown>; data: unknown }]
+      [{ where: Record<string, unknown>; data: Record<string, unknown> }]
     >;
-    expect(moved[0][0].data).toEqual({ companyId: 3 });
-    expect(moved[0][0].where).toMatchObject({
+    const plain = moved.find((c) => !('status' in c[0].data))!;
+    expect(plain[0].data).toEqual({ companyId: 3 });
+    expect(plain[0].where).toMatchObject({
       customerId: 7,
-      companyId: null,
+      source: 'SMS',
       sourcePhone: '+15145550001',
+      transactionId: null,
     });
+    // From ANY other book, the general one included (NULL is not "not 3" in SQL).
+    expect(plain[0].where.OR).toEqual([
+      { companyId: null },
+      { companyId: { not: 3 } },
+    ]);
     expect(await agent.route(7, 'SMS', '+15145550001')).toEqual({
       companyId: 3,
       awaitingBook: false,
+    });
+  });
+
+  it('understands a switch in ordinary words, mid-conversation', async () => {
+    const { agent } = intake([
+      { id: 3, businessName: 'ABC Inc' },
+      { id: 4, businessName: 'Bakery Ltd' },
+    ]);
+    await agent.agent(7, msg('3'));
+    await agent.agent(7, msg('3')); // answers the question: Bakery
+    const res = await agent.agent(
+      7,
+      msg('can you switch to the abc account please'),
+    );
+    expect(res.companyId).toBe(3);
+    expect(res.reply).toContain('ABC Inc');
+    expect(await agent.route(7, 'SMS', '+15145550001')).toEqual({
+      companyId: 3,
+      awaitingBook: false,
+    });
+  });
+
+  it('still answers a question asked before a book was chosen', async () => {
+    const { agent } = intake([{ id: 3, businessName: 'ABC Inc' }]);
+    const res = await agent.agent(7, msg('what did I spend in March?'));
+    expect(res.reply).toContain('You spent $120 in March.');
+    expect(res.reply).toContain('1 Personal, 2 ABC Inc');
+  });
+
+  it('reads the files first, answers the words sent with them, and sends it itself', async () => {
+    const { agent, messenger, processor } = intakeSending();
+    const res = await agent.agent(7, {
+      ...msg('two cheques — and did the March rent go through?', [41]),
+      replyFrom: '+15145559999',
+    });
+    expect(res).toMatchObject({ reply: null, sent: true });
+    await flush();
+    await flush();
+    expect(processor.waitUntilRead).toHaveBeenCalledWith(
+      [41],
+      expect.any(Number),
+    );
+    expect(messenger.send).toHaveBeenCalledWith({
+      channel: 'SMS',
+      to: '+15145550001',
+      body: 'You spent $120 in March.',
+      from: '+15145559999',
     });
   });
 

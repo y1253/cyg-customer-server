@@ -2,9 +2,11 @@ import { agentBody } from '../ai/openai.client';
 import {
   bookQuestion,
   channelStyle,
+  bookCandidates,
   isSwitchRequest,
   parseBookChoice,
   systemPrompt,
+  whichBookQuestion,
 } from './assistant-prompt';
 import {
   cleanRuleText,
@@ -153,6 +155,39 @@ describe('book choice', () => {
     expect(parseBookChoice('bakery', options)?.companyId).toBe(4);
     expect(parseBookChoice('personal', options)?.companyId).toBeNull();
     expect(parseBookChoice('switch to bakery', options)?.companyId).toBe(4);
+  });
+
+  it('reads a switch in ordinary words (step11b)', () => {
+    const books = [
+      { companyId: null, name: 'Personal' },
+      { companyId: 3, name: 'ABC Construction Inc.' },
+      { companyId: 4, name: 'ABC Bakery' },
+    ];
+    expect(isSwitchRequest('can you switch to ABC Construction please')).toBe(
+      true,
+    );
+    expect(isSwitchRequest('this is for personal')).toBe(true);
+    expect(isSwitchRequest('move it to book 2')).toBe(true);
+    expect(
+      parseBookChoice('can you switch to ABC Construction please', books)
+        ?.companyId,
+    ).toBe(3);
+    expect(
+      parseBookChoice('switch to abc construction books', books)?.companyId,
+    ).toBe(3);
+    expect(parseBookChoice('move it to book 2', books)?.companyId).toBe(3);
+    expect(
+      parseBookChoice('this is for my personal books', books)?.companyId,
+    ).toBeNull();
+    expect(
+      parseBookChoice('switch to the bakery account', books)?.companyId,
+    ).toBe(4);
+    // "abc" fits two books: not a choice — the agent asks which one.
+    expect(parseBookChoice('switch to abc', books)).toBeNull();
+    expect(bookCandidates('switch to abc', books)).toHaveLength(2);
+    expect(whichBookQuestion(bookCandidates('abc', books), books)).toBe(
+      'Which one do you mean: 2 ABC Construction Inc. or 3 ABC Bakery? Reply with the number.',
+    );
   });
 
   it('is not a choice for a question or an unknown number', () => {

@@ -13,8 +13,11 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 var AttachmentProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AttachmentProcessorService = void 0;
+exports.AttachmentProcessorService = exports.siblingRef = void 0;
+exports.siblingName = siblingName;
 exports.readingTotal = readingTotal;
+exports.siblingOf = siblingOf;
+exports.kindFor = kindFor;
 exports.classOf = classOf;
 const common_1 = require("@nestjs/common");
 const rules_service_1 = require("../assistant/rules.service");
@@ -37,6 +40,9 @@ const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 10 * 60_000;
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
+function siblingName(filename, n, total) {
+    return `${filename.slice(0, 230)} (${n + 1} of ${total})`;
+}
 function readingTotal(r) {
     if (r.total)
         return r.total;
@@ -44,6 +50,35 @@ function readingTotal(r) {
         return ((0, reconcile_util_1.cents)(r.subtotal) + (0, reconcile_util_1.cents)(r.tax ?? 0)) / 100;
     const items = r.items.reduce((n, i) => n + (0, reconcile_util_1.cents)(i.amount), 0);
     return items > 0 ? (items + (0, reconcile_util_1.cents)(r.tax ?? 0)) / 100 : null;
+}
+const siblingRef = (rowId, n) => `doc:${rowId}:${n}`;
+exports.siblingRef = siblingRef;
+function siblingOf(sourceRef) {
+    const m = /^doc:(\d+):(\d+)$/.exec(sourceRef ?? '');
+    return m ? { rowId: Number(m[1]), index: Number(m[2]) } : null;
+}
+function kindFor(cls, reading) {
+    if (cls === 'audio')
+        return client_1.AttachmentKind.AUDIO;
+    if (cls === 'text')
+        return client_1.AttachmentKind.TEXT;
+    switch (reading.documentType) {
+        case 'INVOICE':
+            return client_1.AttachmentKind.INVOICE;
+        case 'CHECK':
+            return client_1.AttachmentKind.CHECK;
+        case 'DEPOSIT_SLIP':
+            return client_1.AttachmentKind.DEPOSIT_SLIP;
+        case 'DOCUMENT':
+            return client_1.AttachmentKind.DOCUMENT;
+        case 'BANK_STATEMENT':
+            return client_1.AttachmentKind.OTHER;
+        case 'RECEIPT':
+        case 'PAYMENT_NOTE':
+            return client_1.AttachmentKind.RECEIPT;
+        default:
+            return client_1.AttachmentKind[reading.kind];
+    }
 }
 function classOf(mimeType) {
     if (mimeType.startsWith('audio/'))
@@ -137,51 +172,163 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         try {
             const cls = classOf(row.mimeType);
             const file = await this.storage.getBuffer(row.storageKey);
-            const reading = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message, (await this.rules?.promptBlock(scope)) ?? '');
-            const kind = cls === 'audio'
-                ? client_1.AttachmentKind.AUDIO
-                : cls === 'text'
-                    ? client_1.AttachmentKind.TEXT
-                    : client_1.AttachmentKind[reading.kind];
-            let transactionId = row.transactionId;
-            let note;
-            if (transactionId) {
-                note = 'Added from the transaction.';
+            const readings = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message, (await this.rules?.promptBlock(scope)) ?? '');
+            const sibling = siblingOf(row.sourceRef);
+            if (sibling) {
+                const reading = readings[sibling.index] ?? readings[0];
+                const parent = await this.prisma.transactionAttachment.findUnique({
+                    where: { id: sibling.rowId },
+                    select: { sourceRef: true },
+                });
+                await this.finish(row, scope, cls, reading, (0, attachment_match_util_1.statementOf)(parent?.sourceRef));
+                return;
             }
-            else {
-                const found = await this.match(scope, reading, row.message, (0, attachment_match_util_1.statementOf)(row.sourceRef));
-                transactionId = found.transactionId;
-                note = found.note;
-            }
-            await this.prisma.transactionAttachment.update({
-                where: { id: row.id },
-                data: {
-                    kind,
-                    extracted: reading,
-                    transactionId,
-                    status: transactionId
-                        ? client_1.AttachmentStatus.MATCHED
-                        : client_1.AttachmentStatus.UNMATCHED,
-                    matchNote: note.slice(0, 512),
-                    error: null,
-                },
-            });
-            if (transactionId && kind === client_1.AttachmentKind.CHECK) {
-                await this.nameFromCheque(scope, transactionId, reading).catch((err) => this.logger.warn(`attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`));
-            }
-            if (transactionId) {
-                const itemsNote = await this.applyItems(scope, row.id, false).catch((err) => `The items could not be split: ${err instanceof Error ? err.message : String(err)}`);
-                if (itemsNote) {
-                    await this.prisma.transactionAttachment.update({
-                        where: { id: row.id },
-                        data: { matchNote: `${note} ${itemsNote}`.slice(0, 512) },
-                    });
-                }
-            }
-            this.logger.log(`attachment #${row.id}${scope.companyId ? ` (company #${scope.companyId})` : ''} (${kind}) ${transactionId ? `matched #${transactionId}` : 'unmatched'}`);
+            await this.finish(row, scope, cls, readings[0], (0, attachment_match_util_1.statementOf)(row.sourceRef));
+            await this.fileSiblings(row, scope, cls, readings);
         }
         catch (err) {
             await this.recordFailure(row, err);
+        }
+    }
+    async finish(row, scope, cls, reading, statementId) {
+        const kind = kindFor(cls, reading);
+        let transactionId = row.transactionId;
+        let note;
+        let status;
+        if (transactionId) {
+            note = 'Added from the transaction.';
+            status = client_1.AttachmentStatus.MATCHED;
+        }
+        else if (reading.documentType === 'BANK_STATEMENT') {
+            note =
+                row.mimeType === 'application/pdf'
+                    ? 'This looks like a bank statement, not a receipt. Ask the assistant to file it as a statement, or upload it on the Statements tab.'
+                    : 'This looks like a bank statement. Upload it as a PDF on the Statements tab so its transactions are read.';
+            status = client_1.AttachmentStatus.UNMATCHED;
+        }
+        else if (!(0, attachment_extractor_1.isPaymentDocument)(reading.documentType)) {
+            note =
+                reading.summary || 'Not a receipt or a payment — kept as a document.';
+            status = client_1.AttachmentStatus.DOCUMENT;
+        }
+        else {
+            const found = await this.match(scope, reading, row.message, statementId);
+            transactionId = found.transactionId;
+            note = found.note;
+            status = transactionId
+                ? client_1.AttachmentStatus.MATCHED
+                : client_1.AttachmentStatus.UNMATCHED;
+        }
+        await this.prisma.transactionAttachment.update({
+            where: { id: row.id },
+            data: {
+                kind,
+                extracted: reading,
+                transactionId,
+                status,
+                matchNote: note.slice(0, 512),
+                error: null,
+            },
+        });
+        if (transactionId && kind === client_1.AttachmentKind.CHECK) {
+            await this.nameFromCheque(scope, transactionId, reading).catch((err) => this.logger.warn(`attachment #${row.id}: payee not applied: ${err instanceof Error ? err.message : String(err)}`));
+        }
+        if (transactionId) {
+            const itemsNote = await this.applyItems(scope, row.id, false).catch((err) => `The items could not be split: ${err instanceof Error ? err.message : String(err)}`);
+            if (itemsNote) {
+                await this.prisma.transactionAttachment.update({
+                    where: { id: row.id },
+                    data: { matchNote: `${note} ${itemsNote}`.slice(0, 512) },
+                });
+            }
+        }
+        this.logger.log(`attachment #${row.id}${scope.companyId ? ` (company #${scope.companyId})` : ''} (${kind}) ${status === client_1.AttachmentStatus.MATCHED ? `matched #${transactionId}` : status.toLowerCase()}`);
+    }
+    async fileSiblings(row, scope, cls, readings) {
+        const existing = await this.prisma.transactionAttachment.findMany({
+            where: { sourceRef: { startsWith: `doc:${row.id}:` } },
+        });
+        const byRef = new Map(existing.map((x) => [x.sourceRef, x]));
+        const wanted = new Set();
+        for (let n = 1; n < readings.length; n++) {
+            const ref = (0, exports.siblingRef)(row.id, n);
+            wanted.add(ref);
+            const had = byRef.get(ref);
+            if (had?.deletedAt)
+                continue;
+            const sib = had ??
+                (await this.prisma.transactionAttachment.create({
+                    data: {
+                        customerId: row.customerId,
+                        companyId: row.companyId,
+                        kind: row.kind,
+                        status: client_1.AttachmentStatus.PROCESSING,
+                        filename: siblingName(row.filename, n, readings.length),
+                        mimeType: row.mimeType,
+                        size: row.size,
+                        storageKey: row.storageKey,
+                        source: row.source,
+                        sourcePhone: row.sourcePhone,
+                        sourceRef: ref,
+                        message: row.message,
+                    },
+                }));
+            if (had && had.transactionId && had.status === client_1.AttachmentStatus.MATCHED) {
+                continue;
+            }
+            await this.finish({ ...sib, transactionId: had?.transactionId ?? null }, scope, cls, readings[n], (0, attachment_match_util_1.statementOf)(row.sourceRef)).catch((err) => this.recordFailure(sib, err));
+        }
+        const gone = existing.filter((x) => !wanted.has(x.sourceRef ?? '') && !x.deletedAt && !x.transactionId);
+        if (gone.length) {
+            await this.prisma.transactionAttachment.updateMany({
+                where: { id: { in: gone.map((x) => x.id) } },
+                data: { deletedAt: new Date() },
+            });
+        }
+        if (readings.length > 1) {
+            this.logger.log(`attachment #${row.id}: ${readings.length} documents in one file`);
+        }
+    }
+    async family(ids) {
+        if (!ids.length)
+            return [];
+        const sibs = await this.prisma.transactionAttachment.findMany({
+            where: {
+                OR: ids.map((id) => ({ sourceRef: { startsWith: `doc:${id}:` } })),
+                deletedAt: null,
+            },
+            select: { id: true, sourceRef: true },
+            orderBy: { id: 'asc' },
+        });
+        const out = [];
+        for (const id of ids) {
+            out.push(id);
+            for (const s of sibs)
+                if (siblingOf(s.sourceRef)?.rowId === id)
+                    out.push(s.id);
+        }
+        return out;
+    }
+    async waitUntilRead(ids, timeoutMs = 90_000) {
+        if (!ids.length)
+            return true;
+        this.processSoon();
+        const until = Date.now() + timeoutMs;
+        for (;;) {
+            const busy = await this.prisma.transactionAttachment.count({
+                where: {
+                    id: { in: ids },
+                    deletedAt: null,
+                    status: {
+                        in: [client_1.AttachmentStatus.PENDING, client_1.AttachmentStatus.PROCESSING],
+                    },
+                },
+            });
+            if (!busy)
+                return true;
+            if (Date.now() >= until)
+                return false;
+            await new Promise((r) => setTimeout(r, 2_000));
         }
     }
     async nameFromCheque(scope, transactionId, reading) {

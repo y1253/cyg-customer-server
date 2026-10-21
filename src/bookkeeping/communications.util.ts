@@ -22,6 +22,8 @@ export const FILE_SOURCE: Partial<Record<CommChannel, string>> = {
   WHATSAPP: 'WHATSAPP',
   SMS: 'SMS',
   EMAIL: 'EMAIL',
+  // step11b: a file added in the website chat — listed in that chat, not under Uploads.
+  BOT: 'CHAT',
 };
 
 export interface CommFile {
@@ -91,8 +93,9 @@ const fileOf = (a: AttachmentIn): CommFile => ({
 
 /**
  * One page of a channel's chat, NEWEST first.
- * - messages: each with the files it carried (`files` looked up by id; a file deleted
- *   since is simply left out),
+ * - messages: each with the files it is linked to (`files` looked up by id — the caller
+ *   loads deleted ones too and marks them REMOVED, so a conversation keeps showing a file
+ *   the customer deleted since; an id missing from the map is left out),
  * - loose: files of that channel no message refers to (sent while the assistant was off,
  *   or uploaded on the website) — each its own "upload" bubble, with the words sent with it,
  * - statements: statements uploaded on the website.

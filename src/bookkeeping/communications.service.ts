@@ -101,7 +101,7 @@ export class CommunicationsService {
     }
 
     const source = FILE_SOURCE[channel];
-    const [messages, referenced] = await Promise.all([
+    const [found, referenced] = await Promise.all([
       this.prisma.aiMessage.findMany({
         where: { ...book, ...older, channel },
         orderBy: { createdAt: 'desc' },
@@ -117,12 +117,32 @@ export class CommunicationsService {
       }),
       source ? this.referencedIds(scope, channel) : Promise.resolve([]),
     ]);
+    // step11b: every file a message is LINKED to (sent with it, the "Ask AI" file it is
+    // about, one the assistant changed) — `AiMessageAttachment`, plus the old JSON column.
+    const links = found.length
+      ? await this.prisma.aiMessageAttachment.findMany({
+          where: { messageId: { in: found.map((m) => m.id) } },
+          select: { messageId: true, attachmentId: true },
+          orderBy: { id: 'asc' },
+        })
+      : [];
+    const messages = found.map((m) => ({
+      ...m,
+      attachmentIds: [
+        ...new Set([
+          ...idsOf(m.attachmentIds),
+          ...links
+            .filter((l) => l.messageId === m.id)
+            .map((l) => l.attachmentId),
+        ]),
+      ],
+    }));
     const [carried, loose] = await Promise.all([
-      // A message keeps showing what it carried, deleted or not (it was sent).
+      // A message keeps showing its files, deleted or not (it was sent / it was about them).
       this.prisma.transactionAttachment.findMany({
         where: {
           customerId: scope.customerId,
-          id: { in: messages.flatMap((m) => idsOf(m.attachmentIds)) },
+          id: { in: messages.flatMap((m) => m.attachmentIds) },
         },
         select: ATTACHMENT_FIELDS,
       }),
@@ -182,10 +202,25 @@ export class CommunicationsService {
     scope: BookScope,
     channel: CommChannel,
   ): Promise<number[]> {
-    const rows = await this.prisma.aiMessage.findMany({
-      where: { ...scopeWhere(scope), channel, role: 'USER' },
-      select: { attachmentIds: true },
-    });
-    return rows.flatMap((r) => idsOf(r.attachmentIds));
+    const [rows, links] = await Promise.all([
+      this.prisma.aiMessage.findMany({
+        where: { ...scopeWhere(scope), channel, role: 'USER' },
+        select: { attachmentIds: true },
+      }),
+      this.prisma.aiMessageAttachment.findMany({
+        where: {
+          ...scopeWhere(scope),
+          role: 'SENT',
+          message: { channel, role: 'USER' },
+        },
+        select: { attachmentId: true },
+      }),
+    ]);
+    return [
+      ...new Set([
+        ...rows.flatMap((r) => idsOf(r.attachmentIds)),
+        ...links.map((l) => l.attachmentId),
+      ]),
+    ];
   }
 }

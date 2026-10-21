@@ -10,11 +10,13 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 var AssistantService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AssistantService = exports.FAILED_REPLY = exports.HISTORY = exports.MAX_TOOL_ROUNDS = void 0;
+exports.AssistantService = exports.CHAT_READ_WAIT_MS = exports.FAILED_REPLY = exports.HISTORY = exports.MAX_TOOL_ROUNDS = void 0;
+exports.fileContext = fileContext;
 exports.toMessageView = toMessageView;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const openai_client_1 = require("../ai/openai.client");
+const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const attachments_service_1 = require("../bookkeeping/attachments.service");
 const scope_1 = require("../bookkeeping/scope");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -24,6 +26,29 @@ const rules_service_1 = require("./rules.service");
 exports.MAX_TOOL_ROUNDS = 6;
 exports.HISTORY = 20;
 exports.FAILED_REPLY = "Sorry — I couldn't answer that right now. Please try again in a minute.";
+exports.CHAT_READ_WAIT_MS = 75_000;
+function fileContext(a) {
+    return {
+        id: a.id,
+        filename: a.filename,
+        type: a.reading?.documentType ?? a.kind,
+        status: a.status,
+        whatItIs: a.reading?.summary ?? null,
+        total: a.total,
+        date: a.reading?.date ?? null,
+        payee: a.reading?.payee ?? a.reading?.vendor ?? null,
+        filedTo: a.transaction
+            ? {
+                id: a.transaction.id,
+                name: a.transaction.name ?? a.transaction.description,
+                amount: a.transaction.amount,
+                date: a.transaction.date,
+            }
+            : null,
+        note: a.matchNote ?? a.error,
+        transcript: a.reading?.transcript?.slice(0, 500) ?? null,
+    };
+}
 function toMessageView(m) {
     return {
         id: m.id,
@@ -51,14 +76,16 @@ let AssistantService = AssistantService_1 = class AssistantService {
     tools;
     rules;
     attachments;
+    processor;
     logger = new common_1.Logger(AssistantService_1.name);
-    constructor(prisma, config, openai, tools, rules, attachments) {
+    constructor(prisma, config, openai, tools, rules, attachments, processor) {
         this.prisma = prisma;
         this.config = config;
         this.openai = openai;
         this.tools = tools;
         this.rules = rules;
         this.attachments = attachments;
+        this.processor = processor;
     }
     get enabled() {
         return this.config.get('AI_ASSISTANT')?.trim() === '1';
@@ -74,18 +101,108 @@ let AssistantService = AssistantService_1 = class AssistantService {
         const n = Number(this.config.get('ASSISTANT_DAILY_LIMIT'));
         return Number.isFinite(n) && n > 0 ? n : 100;
     }
-    async chat(scope, text, conversationId) {
+    async chat(scope, text, conversationId, attachmentIds = []) {
         this.assertEnabled();
+        const ids = [...new Set(attachmentIds)].slice(0, 10);
+        for (const id of ids)
+            await this.attachments.get(scope, id);
+        const words = text.trim() || (ids.length ? this.fileLabel(ids.length) : '');
+        if (!words)
+            throw new common_1.BadRequestException('Write a message or add a file');
         const conversation = conversationId
             ? await this.ownConversation(scope, conversationId)
             : await this.prisma.aiConversation.create({
                 data: {
                     ...(0, scope_1.scopeWhere)(scope),
                     channel: 'BOT',
-                    title: text.slice(0, 60),
+                    title: words.slice(0, 60),
                 },
             });
-        return this.respond(conversation, text);
+        if (!ids.length)
+            return this.respond(conversation, words);
+        await this.prisma.transactionAttachment.updateMany({
+            where: { id: { in: ids }, ...(0, scope_1.scopeWhere)(scope), source: 'UPLOAD' },
+            data: { source: 'CHAT' },
+        });
+        await this.processor.waitUntilRead(ids, exports.CHAT_READ_WAIT_MS);
+        const all = await this.processor.family(ids);
+        return this.respond(conversation, words, {
+            attachmentIds: all,
+            files: await this.filesContext(scope, all),
+        });
+    }
+    fileLabel(n) {
+        return n === 1 ? '[sent a file]' : `[sent ${n} files]`;
+    }
+    async filesContext(scope, ids) {
+        const out = [];
+        for (const id of ids) {
+            try {
+                out.push(fileContext(await this.attachments.get(scope, id)));
+            }
+            catch {
+            }
+        }
+        return out;
+    }
+    async attachmentMessages(scope, attachmentId) {
+        const links = await this.prisma.aiMessageAttachment.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), attachmentId },
+            select: { messageId: true },
+        });
+        if (!links.length)
+            return [];
+        const linked = await this.prisma.aiMessage.findMany({
+            where: { id: { in: links.map((l) => l.messageId) } },
+            select: { id: true, conversationId: true, role: true },
+        });
+        const ids = new Set(linked.map((m) => m.id));
+        for (const m of linked.filter((x) => x.role === 'USER')) {
+            const next = await this.prisma.aiMessage.findFirst({
+                where: { conversationId: m.conversationId, id: { gt: m.id } },
+                orderBy: { id: 'asc' },
+                select: { id: true, role: true },
+            });
+            if (next?.role === 'ASSISTANT')
+                ids.add(next.id);
+        }
+        const rows = await this.prisma.aiMessage.findMany({
+            where: { id: { in: [...ids] }, ...(0, scope_1.scopeWhere)(scope) },
+            orderBy: { id: 'asc' },
+            take: 200,
+        });
+        return this.withFiles(rows);
+    }
+    async withFiles(rows) {
+        if (!rows.length)
+            return [];
+        const links = await this.prisma.aiMessageAttachment.findMany({
+            where: { messageId: { in: rows.map((m) => m.id) } },
+            select: { messageId: true, attachmentId: true, role: true },
+            orderBy: { id: 'asc' },
+        });
+        const files = links.length
+            ? await this.prisma.transactionAttachment.findMany({
+                where: { id: { in: [...new Set(links.map((l) => l.attachmentId))] } },
+                select: { id: true, filename: true, deletedAt: true },
+            })
+            : [];
+        const byId = new Map(files.map((f) => [f.id, f]));
+        return rows.map((m) => {
+            const mine = links.filter((l) => l.messageId === m.id);
+            return {
+                ...toMessageView(m),
+                files: mine.map((l) => {
+                    const f = byId.get(l.attachmentId);
+                    return {
+                        id: l.attachmentId,
+                        filename: f?.filename ?? 'File',
+                        role: l.role,
+                        live: !!f && !f.deletedAt,
+                    };
+                }),
+            };
+        });
     }
     async attachmentThread(scope, attachmentId) {
         await this.attachments.get(scope, attachmentId);
@@ -153,7 +270,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             orderBy: { id: 'asc' },
             take: 500,
         });
-        return rows.map(toMessageView);
+        return this.withFiles(rows);
     }
     async ownConversation(scope, id) {
         const c = await this.prisma.aiConversation.findFirst({
@@ -168,7 +285,6 @@ let AssistantService = AssistantService_1 = class AssistantService {
             customerId: conversation.customerId,
             companyId: conversation.companyId,
         };
-        const channel = conversation.channel;
         const history = await this.prisma.aiMessage.findMany({
             where: { conversationId: conversation.id },
             orderBy: { id: 'desc' },
@@ -183,23 +299,28 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 text: "You've reached today's limit for the assistant. It will answer again tomorrow.",
                 actions: [],
                 warning: null,
+                touched: [],
             };
         }
         else {
-            answer = await this.run(scope, channel, message.id, text, history.reverse(), opts.attachment);
+            answer = await this.run(scope, conversation, message.id, text, history.reverse(), opts.attachment, opts.files);
         }
-        const reply = await this.save(conversation, 'ASSISTANT', answer.text, {
+        const current = (await this.prisma.aiConversation.findUnique({
+            where: { id: conversation.id },
+        })) ?? conversation;
+        const reply = await this.save(current, 'ASSISTANT', answer.text, {
             actions: answer.actions,
             warning: answer.warning,
+            actedOn: answer.touched,
         });
-        return {
-            conversationId: conversation.id,
-            message: toMessageView(message),
-            reply: toMessageView(reply),
-        };
+        const [m, r] = await this.withFiles([message, reply]);
+        return { conversationId: conversation.id, message: m, reply: r };
     }
-    async run(scope, channel, messageId, text, history, attachment) {
+    async run(scope, conversation, messageId, text, history, attachment, files) {
+        const channel = conversation.channel;
         const actions = [];
+        const touched = [];
+        const tools = (0, assistant_tools_1.toolsFor)(channel);
         let warning = null;
         try {
             const messages = [
@@ -212,6 +333,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                         rules: await this.rules.promptBlock(scope),
                         preferredContact: await this.preferredContact(scope.customerId),
                         attachment,
+                        files,
                     }),
                 },
                 ...history.map((m) => m.role === 'USER'
@@ -224,7 +346,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 const reply = await this.openai.chatMessages({
                     model: this.model(),
                     messages,
-                    tools: last ? undefined : assistant_tools_1.ASSISTANT_TOOLS,
+                    tools: last ? undefined : tools,
                     maxTokens: 1200,
                     timeoutMs: 90_000,
                 });
@@ -234,6 +356,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                             (actions.length ? 'Done.' : exports.FAILED_REPLY),
                         actions,
                         warning,
+                        touched,
                     };
                 }
                 messages.push({
@@ -245,11 +368,14 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     const outcome = await this.tools.run(call.name, call.arguments, {
                         scope,
                         messageId,
+                        conversation,
                     });
                     if (outcome.action)
                         actions.push(outcome.action);
                     if (outcome.warning)
                         warning = outcome.warning;
+                    if (outcome.attachmentId)
+                        touched.push(outcome.attachmentId);
                     messages.push({
                         role: 'tool',
                         toolCallId: call.id,
@@ -261,7 +387,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
         catch (err) {
             this.logger.warn(`assistant customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`);
         }
-        return { text: exports.FAILED_REPLY, actions, warning };
+        return { text: exports.FAILED_REPLY, actions, warning, touched };
     }
     async overLimit(customerId) {
         const since = new Date();
@@ -316,7 +442,36 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 data: { lastMessageAt: new Date() },
             }),
         ]);
+        await this.link(row, conversation, extra.attachmentIds, extra.actedOn);
         return row;
+    }
+    async link(row, conversation, sent = [], acted = []) {
+        const links = new Map();
+        for (const id of acted)
+            if (id > 0)
+                links.set(id, 'ACTION');
+        if (conversation.attachmentId)
+            links.set(conversation.attachmentId, 'ABOUT');
+        for (const id of sent)
+            if (id > 0)
+                links.set(id, 'SENT');
+        if (!links.size)
+            return;
+        try {
+            await this.prisma.aiMessageAttachment.createMany({
+                data: [...links].map(([attachmentId, role]) => ({
+                    messageId: row.id,
+                    attachmentId,
+                    customerId: row.customerId,
+                    companyId: row.companyId,
+                    role,
+                })),
+                skipDuplicates: true,
+            });
+        }
+        catch (err) {
+            this.logger.warn(`message #${row.id}: attachment links not saved: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 };
 exports.AssistantService = AssistantService;
@@ -327,6 +482,7 @@ exports.AssistantService = AssistantService = AssistantService_1 = __decorate([
         openai_client_1.OpenAiClient,
         assistant_tools_1.AssistantTools,
         rules_service_1.RulesService,
-        attachments_service_1.AttachmentsService])
+        attachments_service_1.AttachmentsService,
+        attachment_processor_service_1.AttachmentProcessorService])
 ], AssistantService);
 //# sourceMappingURL=assistant.service.js.map

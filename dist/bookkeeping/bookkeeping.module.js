@@ -7,6 +7,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingModule = void 0;
+const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
 const rules_service_1 = require("../assistant/rules.service");
@@ -39,7 +40,11 @@ exports.BookkeepingModule = BookkeepingModule;
 exports.BookkeepingModule = BookkeepingModule = __decorate([
     (0, common_1.Module)({
         imports: [customer_auth_module_1.CustomerAuthModule],
-        controllers: [bookkeeping_controller_1.BookkeepingController, staff_rules_controller_1.StaffRulesController],
+        controllers: [
+            bookkeeping_controller_1.BookkeepingController,
+            staff_rules_controller_1.StaffRulesController,
+            file_links_1.FileLinkController,
+        ],
         providers: [
             attachment_extractor_1.AttachmentExtractor,
             attachment_processor_service_1.AttachmentProcessorService,
@@ -48,6 +53,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             book_scope_guard_1.BookScopeGuard,
             communications_service_1.CommunicationsService,
             customer_accounts_service_1.CustomerAccountsService,
+            file_links_1.FileLinkService,
             fx_service_1.FxService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
@@ -70,6 +76,8 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             bookkeeping_service_1.BookkeepingService,
             book_scope_guard_1.BookScopeGuard,
             customer_accounts_service_1.CustomerAccountsService,
+            file_links_1.FileLinkService,
+            export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
