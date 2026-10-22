@@ -137,7 +137,9 @@ export class StatementProcessorService {
       const pdf = await this.storage.getBuffer(row.storageKey);
       // One run does every re-read (at most MAX_REREADS); each round refreshes updatedAt
       // so a long run is not mistaken for a crashed one and claimed again.
-      const rules = (await this.rules?.promptBlock(scope)) ?? '';
+      const rules =
+        (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
+        '';
       const extracted = await this.extractor.extract(pdf, row.filename, {
         rules,
         onRound: async () => {

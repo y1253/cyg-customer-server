@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var AssistantService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AssistantService = exports.CHAT_READ_WAIT_MS = exports.FAILED_REPLY = exports.HISTORY = exports.MAX_TOOL_ROUNDS = void 0;
@@ -22,6 +25,7 @@ const scope_1 = require("../bookkeeping/scope");
 const prisma_service_1 = require("../prisma/prisma.service");
 const assistant_tools_1 = require("./assistant-tools");
 const assistant_prompt_1 = require("./assistant-prompt");
+const instructions_service_1 = require("./instructions.service");
 const rules_service_1 = require("./rules.service");
 exports.MAX_TOOL_ROUNDS = 6;
 exports.HISTORY = 20;
@@ -77,8 +81,9 @@ let AssistantService = AssistantService_1 = class AssistantService {
     rules;
     attachments;
     processor;
+    instructions;
     logger = new common_1.Logger(AssistantService_1.name);
-    constructor(prisma, config, openai, tools, rules, attachments, processor) {
+    constructor(prisma, config, openai, tools, rules, attachments, processor, instructions) {
         this.prisma = prisma;
         this.config = config;
         this.openai = openai;
@@ -86,6 +91,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
         this.rules = rules;
         this.attachments = attachments;
         this.processor = processor;
+        this.instructions = instructions;
     }
     get enabled() {
         return this.config.get('AI_ASSISTANT')?.trim() === '1';
@@ -394,7 +400,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             preferredContact: await this.preferredContact(scope.customerId),
             attachment: extra.attachment,
             files: extra.files,
-        });
+        }, await this.instructions?.assistant());
         return extra.note ? `${prompt}\n\n${extra.note}` : prompt;
     }
     isOverLimit(customerId) {
@@ -488,12 +494,14 @@ let AssistantService = AssistantService_1 = class AssistantService {
 exports.AssistantService = AssistantService;
 exports.AssistantService = AssistantService = AssistantService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         openai_client_1.OpenAiClient,
         assistant_tools_1.AssistantTools,
         rules_service_1.RulesService,
         attachments_service_1.AttachmentsService,
-        attachment_processor_service_1.AttachmentProcessorService])
+        attachment_processor_service_1.AttachmentProcessorService,
+        instructions_service_1.InstructionsService])
 ], AssistantService);
 //# sourceMappingURL=assistant.service.js.map

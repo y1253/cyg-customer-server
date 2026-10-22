@@ -7,6 +7,7 @@ import { type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantTools, type AgentAction } from './assistant-tools';
 import { type Channel } from './assistant-prompt';
+import { InstructionsService } from './instructions.service';
 import { RulesService } from './rules.service';
 export interface MessageFileView {
     id: number;
@@ -69,8 +70,9 @@ export declare class AssistantService {
     private readonly rules;
     private readonly attachments;
     private readonly processor;
+    private readonly instructions?;
     private readonly logger;
-    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService, processor: AttachmentProcessorService);
+    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService, processor: AttachmentProcessorService, instructions?: InstructionsService | undefined);
     get enabled(): boolean;
     assertEnabled(): void;
     private model;

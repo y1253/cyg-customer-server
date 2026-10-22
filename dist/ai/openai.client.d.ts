@@ -57,6 +57,7 @@ export interface AgentRequest {
     tools?: ToolDefinition[];
     temperature?: number;
     maxTokens?: number;
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     timeoutMs: number;
 }
 export interface AgentReply {
@@ -64,6 +65,8 @@ export interface AgentReply {
     toolCalls: ToolCall[];
 }
 export declare function agentBody(req: AgentRequest): Record<string, unknown>;
+export declare function responsesBody(req: AgentRequest): Record<string, unknown>;
+export declare function parseResponsesOutput(output: unknown): AgentReply;
 export declare class OpenAiClient {
     private readonly config;
     private readonly logger;
@@ -71,5 +74,6 @@ export declare class OpenAiClient {
     get configured(): boolean;
     chat(req: ChatRequest): Promise<string>;
     chatMessages(req: AgentRequest): Promise<AgentReply>;
+    responsesAgent(req: AgentRequest): Promise<AgentReply>;
     transcribe(audio: Buffer, filename: string, mimeType: string, timeoutMs?: number): Promise<string>;
 }

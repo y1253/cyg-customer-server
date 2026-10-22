@@ -53,7 +53,7 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
                     const answers = await this.categorizer.categorize(ask, {
                         store: context.store,
                         category: context.parentCategory,
-                        rules: (await this.rules?.promptBlock(scope, 'CATEGORY')) ?? '',
+                        rules: (await this.rules?.promptBlock(scope, 'CATEGORY', 'PRODUCT_CATEGORIZER')) ?? '',
                     });
                     const named = ask.flatMap((a) => {
                         const category = answers.get(a.key);

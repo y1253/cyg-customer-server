@@ -10,6 +10,7 @@ exports.BookkeepingModule = void 0;
 const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
+const instructions_service_1 = require("../assistant/instructions.service");
 const rules_service_1 = require("../assistant/rules.service");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const attachment_extractor_1 = require("./attachment-extractor");
@@ -55,6 +56,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             customer_accounts_service_1.CustomerAccountsService,
             file_links_1.FileLinkService,
             fx_service_1.FxService,
+            instructions_service_1.InstructionsService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
             openai_client_1.OpenAiClient,
@@ -77,6 +79,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             book_scope_guard_1.BookScopeGuard,
             customer_accounts_service_1.CustomerAccountsService,
             file_links_1.FileLinkService,
+            instructions_service_1.InstructionsService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
             reports_service_1.ReportsService,

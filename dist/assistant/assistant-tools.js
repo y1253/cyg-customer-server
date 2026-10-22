@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AssistantTools = exports.WRITE_TOOL_NAMES = exports.ASSISTANT_TOOLS = exports.NOT_UNDERSTOOD_WARNING = void 0;
+exports.AssistantTools = exports.WRITE_TOOL_NAMES = exports.ASSISTANT_TOOLS = exports.READ_TOOLS = exports.NOT_UNDERSTOOD_WARNING = void 0;
 exports.toolsFor = toolsFor;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
@@ -42,7 +42,7 @@ const obj = (properties, required = []) => ({
     required,
     additionalProperties: false,
 });
-const READ_TOOLS = [
+exports.READ_TOOLS = [
     {
         name: 'list_statements',
         description: "This book's bank / card statements: account, period, status, row count.",
@@ -222,12 +222,30 @@ const SEND_TEXT_TOOL = {
     description: 'Text the customer (the phone they are calling from) — a link from get_link, a list, or details too long to say. Tell them you sent it.',
     parameters: obj({ text: str }, ['text']),
 };
+const REPORT_ISSUE_TOOL = {
+    name: 'report_ai_issue',
+    description: 'The customer says the AI got something wrong (a file read wrong, a receipt attached to the wrong transaction or not attached, a wrong category or answer, something they said ignored). NOT for a new request or a change of mind. A specialist checks what happened and may fix how we work; follow what it returns.',
+    parameters: obj({
+        complaint: {
+            type: 'string',
+            description: "The customer's complaint in their own words",
+        },
+        whatWentWrong: {
+            type: 'string',
+            description: 'What you think the AI did wrong, as far as you can tell',
+        },
+        attachmentIds: { type: 'array', items: int },
+        transactionIds: { type: 'array', items: int },
+    }, ['complaint', 'whatWentWrong']),
+};
 exports.ASSISTANT_TOOLS = [
-    ...READ_TOOLS,
+    ...exports.READ_TOOLS,
     ...WRITE_TOOLS,
+    REPORT_ISSUE_TOOL,
 ];
 exports.WRITE_TOOL_NAMES = new Set([
     ...WRITE_TOOLS.map((t) => t.name),
+    REPORT_ISSUE_TOOL.name,
     SWITCH_BOOK_TOOL.name,
     SEND_TEXT_TOOL.name,
 ]);
@@ -279,6 +297,10 @@ let AssistantTools = class AssistantTools {
         this.rules = rules;
         this.links = links;
         this.messenger = messenger;
+    }
+    issueHandler = null;
+    setIssueHandler(handler) {
+        this.issueHandler = handler;
     }
     async run(name, rawArgs, ctx) {
         let args;
@@ -433,6 +455,32 @@ let AssistantTools = class AssistantTools {
             }
             case 'switch_book':
                 return this.switchBook(ctx, s(a.book));
+            case 'report_ai_issue': {
+                const ids = (v) => Array.isArray(v)
+                    ? v.filter((x) => Number.isInteger(x) && x > 0)
+                    : [];
+                const report = {
+                    complaint: s(a.complaint) ?? '',
+                    whatWentWrong: s(a.whatWentWrong) ?? '',
+                    attachmentIds: ids(a.attachmentIds),
+                    transactionIds: ids(a.transactionIds),
+                };
+                const outcome = this.issueHandler
+                    ? await this.issueHandler(ctx, report)
+                    : {
+                        instructions: 'Nobody can check this right now. Apologise, fix what the customer asked with your tools, and continue as you normally would.',
+                        summary: 'Problem noted',
+                        ok: true,
+                    };
+                return {
+                    content: json({ result: outcome.instructions }),
+                    action: {
+                        tool: 'report_ai_issue',
+                        ok: outcome.ok,
+                        summary: outcome.summary,
+                    },
+                };
+            }
             case 'send_text': {
                 const body = s(a.text);
                 const peer = ctx.conversation?.peer;

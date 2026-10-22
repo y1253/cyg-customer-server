@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiConversation, AiMessage, Prisma } from '@prisma/client';
@@ -17,6 +18,7 @@ import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantTools, toolsFor, type AgentAction } from './assistant-tools';
 import { systemPrompt, type Channel } from './assistant-prompt';
+import { InstructionsService } from './instructions.service';
 import { RulesService } from './rules.service';
 
 /** A file a message carried or is about (step11b) — kept even after the file is deleted. */
@@ -134,6 +136,7 @@ export class AssistantService {
     private readonly rules: RulesService,
     private readonly attachments: AttachmentsService,
     private readonly processor: AttachmentProcessorService,
+    @Optional() private readonly instructions?: InstructionsService,
   ) {}
 
   get enabled(): boolean {
@@ -543,15 +546,19 @@ export class AssistantService {
       customerId: conversation.customerId,
       companyId: conversation.companyId,
     };
-    const prompt = systemPrompt({
-      channel: conversation.channel as Channel,
-      today: new Date().toISOString().slice(0, 10),
-      bookLabel: await this.bookLabel(scope),
-      rules: await this.rules.promptBlock(scope),
-      preferredContact: await this.preferredContact(scope.customerId),
-      attachment: extra.attachment,
-      files: extra.files,
-    });
+    const prompt = systemPrompt(
+      {
+        channel: conversation.channel as Channel,
+        today: new Date().toISOString().slice(0, 10),
+        bookLabel: await this.bookLabel(scope),
+        rules: await this.rules.promptBlock(scope),
+        preferredContact: await this.preferredContact(scope.customerId),
+        attachment: extra.attachment,
+        files: extra.files,
+      },
+      // step12: the blocks as the strong AI / staff last left them (`AiInstruction`).
+      await this.instructions?.assistant(),
+    );
     return extra.note ? `${prompt}\n\n${extra.note}` : prompt;
   }
 

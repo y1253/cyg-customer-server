@@ -12,9 +12,12 @@ var OpenAiClient_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenAiClient = void 0;
 exports.agentBody = agentBody;
+exports.responsesBody = responsesBody;
+exports.parseResponsesOutput = parseResponsesOutput;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 function agentBody(req) {
     return {
@@ -52,6 +55,83 @@ function agentBody(req) {
             tool_choice: 'auto',
         }),
     };
+}
+function responsesBody(req) {
+    const instructions = req.messages
+        .filter((m) => m.role === 'system')
+        .map((m) => m.content)
+        .join('\n\n');
+    const input = req.messages.flatMap((m) => {
+        switch (m.role) {
+            case 'system':
+                return [];
+            case 'user':
+                return [{ role: 'user', content: m.content }];
+            case 'tool':
+                return [
+                    {
+                        type: 'function_call_output',
+                        call_id: m.toolCallId,
+                        output: m.content,
+                    },
+                ];
+            case 'assistant':
+                return [
+                    ...(m.content ? [{ role: 'assistant', content: m.content }] : []),
+                    ...(m.toolCalls ?? []).map((c) => ({
+                        type: 'function_call',
+                        call_id: c.id,
+                        name: c.name,
+                        arguments: c.arguments,
+                    })),
+                ];
+        }
+    });
+    return {
+        model: req.model,
+        store: false,
+        ...(instructions && { instructions }),
+        input,
+        ...(req.reasoningEffort
+            ? { reasoning: { effort: req.reasoningEffort } }
+            : { temperature: req.temperature ?? 0.2 }),
+        ...(req.maxTokens && { max_output_tokens: req.maxTokens }),
+        ...(req.tools?.length && {
+            tools: req.tools.map((t) => ({
+                type: 'function',
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+            })),
+            tool_choice: 'auto',
+        }),
+    };
+}
+function parseResponsesOutput(output) {
+    const items = Array.isArray(output)
+        ? output
+        : [];
+    const toolCalls = [];
+    const texts = [];
+    for (const item of items) {
+        if (item.type === 'function_call' &&
+            typeof item.call_id === 'string' &&
+            typeof item.name === 'string') {
+            toolCalls.push({
+                id: item.call_id,
+                name: item.name,
+                arguments: typeof item.arguments === 'string' ? item.arguments : '{}',
+            });
+        }
+        else if (item.type === 'message' && Array.isArray(item.content)) {
+            for (const part of item.content) {
+                const text = part.type === 'refusal' ? part.refusal : part.text;
+                if (typeof text === 'string' && text.trim())
+                    texts.push(text.trim());
+            }
+        }
+    }
+    return { content: texts.length ? texts.join('\n') : null, toolCalls };
 }
 let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
     config;
@@ -158,6 +238,35 @@ let OpenAiClient = OpenAiClient_1 = class OpenAiClient {
             : []);
         const content = message?.content?.trim() || message?.refusal?.trim() || null;
         return { content, toolCalls };
+    }
+    async responsesAgent(req) {
+        const key = this.config.get('OPENAI_API_KEY')?.trim();
+        if (!key)
+            throw new common_1.BadGatewayException('The AI service is not configured');
+        const started = Date.now();
+        let res;
+        try {
+            res = await fetch(RESPONSES_URL, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${key}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(responsesBody(req)),
+                signal: AbortSignal.timeout(req.timeoutMs),
+            });
+        }
+        catch (err) {
+            const reason = err instanceof Error ? err.name : 'error';
+            this.logger.warn(`openai ${req.model} responses FAILED ${reason} ${Date.now() - started}ms`);
+            throw new common_1.BadGatewayException('The AI service could not be reached');
+        }
+        const data = (await res.json().catch(() => null));
+        this.logger.log(`openai ${req.model} responses ${res.status} ${Date.now() - started}ms`);
+        if (!res.ok) {
+            throw new common_1.BadGatewayException(data?.error?.message ?? `The AI service answered ${res.status}`);
+        }
+        return parseResponsesOutput(data?.output);
     }
     async transcribe(audio, filename, mimeType, timeoutMs = 120_000) {
         const key = this.config.get('OPENAI_API_KEY')?.trim();

@@ -1,6 +1,7 @@
 import { FileLinkController, FileLinkService } from './file-links';
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
+import { InstructionsService } from '../assistant/instructions.service';
 import { RulesService } from '../assistant/rules.service';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { AttachmentExtractor } from './attachment-extractor';
@@ -43,6 +44,7 @@ import { CommunicationsService } from './communications.service';
     CustomerAccountsService,
     FileLinkService,
     FxService,
+    InstructionsService,
     LedgerExportService,
     NameMemoryService,
     OpenAiClient,
@@ -66,6 +68,7 @@ import { CommunicationsService } from './communications.service';
     BookScopeGuard,
     CustomerAccountsService,
     FileLinkService,
+    InstructionsService,
     LedgerExportService,
     NameMemoryService,
     ReportsService,

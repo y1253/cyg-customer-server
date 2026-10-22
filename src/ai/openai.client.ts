@@ -2,6 +2,7 @@ import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 
 export type ChatContent =
@@ -51,6 +52,13 @@ export interface AgentRequest {
   tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  /**
+   * step12: a reasoning model's effort (the strong AI, gpt-6-astra) — `responsesAgent` only.
+   * Measured 2026-10-21: chat completions REFUSES function tools together with
+   * `reasoning_effort` for gpt-6-astra ("use /v1/responses"), so a reasoning model with tools
+   * goes through the Responses API.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   timeoutMs: number;
 }
 
@@ -97,6 +105,93 @@ export function agentBody(req: AgentRequest): Record<string, unknown> {
       tool_choice: 'auto',
     }),
   };
+}
+
+/**
+ * The Responses-API body for an agent round (step12, the strong AI) — pure, so its shape is
+ * tested. Stateless (`store: false`): the whole history goes in every round, the system message
+ * as `instructions`, a tool call as a `function_call` item and its result as
+ * `function_call_output`. Verified live 2026-10-21 against gpt-6-astra: a two-round tool loop
+ * works without passing the model's reasoning items back.
+ */
+export function responsesBody(req: AgentRequest): Record<string, unknown> {
+  const instructions = req.messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .join('\n\n');
+  const input = req.messages.flatMap((m): Record<string, unknown>[] => {
+    switch (m.role) {
+      case 'system':
+        return [];
+      case 'user':
+        return [{ role: 'user', content: m.content }];
+      case 'tool':
+        return [
+          {
+            type: 'function_call_output',
+            call_id: m.toolCallId,
+            output: m.content,
+          },
+        ];
+      case 'assistant':
+        return [
+          ...(m.content ? [{ role: 'assistant', content: m.content }] : []),
+          ...(m.toolCalls ?? []).map((c) => ({
+            type: 'function_call',
+            call_id: c.id,
+            name: c.name,
+            arguments: c.arguments,
+          })),
+        ];
+    }
+  });
+  return {
+    model: req.model,
+    store: false,
+    ...(instructions && { instructions }),
+    input,
+    ...(req.reasoningEffort
+      ? { reasoning: { effort: req.reasoningEffort } }
+      : { temperature: req.temperature ?? 0.2 }),
+    ...(req.maxTokens && { max_output_tokens: req.maxTokens }),
+    ...(req.tools?.length && {
+      tools: req.tools.map((t) => ({
+        type: 'function',
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      })),
+      tool_choice: 'auto',
+    }),
+  };
+}
+
+/** The Responses API's output items → text and tool calls (reasoning items are skipped). */
+export function parseResponsesOutput(output: unknown): AgentReply {
+  const items = Array.isArray(output)
+    ? (output as Record<string, unknown>[])
+    : [];
+  const toolCalls: ToolCall[] = [];
+  const texts: string[] = [];
+  for (const item of items) {
+    if (
+      item.type === 'function_call' &&
+      typeof item.call_id === 'string' &&
+      typeof item.name === 'string'
+    ) {
+      toolCalls.push({
+        id: item.call_id,
+        name: item.name,
+        arguments: typeof item.arguments === 'string' ? item.arguments : '{}',
+      });
+    } else if (item.type === 'message' && Array.isArray(item.content)) {
+      for (const part of item.content as Record<string, unknown>[]) {
+        const text = part.type === 'refusal' ? part.refusal : part.text;
+        if (typeof text === 'string' && text.trim()) texts.push(text.trim());
+      }
+    }
+  }
+  return { content: texts.length ? texts.join('\n') : null, toolCalls };
 }
 
 /**
@@ -251,6 +346,47 @@ export class OpenAiClient {
     const content =
       message?.content?.trim() || message?.refusal?.trim() || null;
     return { content, toolCalls };
+  }
+
+  /**
+   * `chatMessages` through the Responses API (step12): the strong AI's reasoning model, which
+   * chat completions refuses when tools come with a reasoning effort.
+   */
+  async responsesAgent(req: AgentRequest): Promise<AgentReply> {
+    const key = this.config.get<string>('OPENAI_API_KEY')?.trim();
+    if (!key) throw new BadGatewayException('The AI service is not configured');
+    const started = Date.now();
+    let res: Response;
+    try {
+      res = await fetch(RESPONSES_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(responsesBody(req)),
+        signal: AbortSignal.timeout(req.timeoutMs),
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.name : 'error';
+      this.logger.warn(
+        `openai ${req.model} responses FAILED ${reason} ${Date.now() - started}ms`,
+      );
+      throw new BadGatewayException('The AI service could not be reached');
+    }
+    const data = (await res.json().catch(() => null)) as {
+      error?: { message?: string };
+      output?: unknown;
+    } | null;
+    this.logger.log(
+      `openai ${req.model} responses ${res.status} ${Date.now() - started}ms`,
+    );
+    if (!res.ok) {
+      throw new BadGatewayException(
+        data?.error?.message ?? `The AI service answered ${res.status}`,
+      );
+    }
+    return parseResponsesOutput(data?.output);
   }
 
   /**

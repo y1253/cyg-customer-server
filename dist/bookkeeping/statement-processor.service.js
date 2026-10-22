@@ -126,7 +126,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         const scope = (0, scope_1.scopeOf)(row);
         try {
             const pdf = await this.storage.getBuffer(row.storageKey);
-            const rules = (await this.rules?.promptBlock(scope)) ?? '';
+            const rules = (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
+                '';
             const extracted = await this.extractor.extract(pdf, row.filename, {
                 rules,
                 onRound: async () => {

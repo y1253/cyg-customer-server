@@ -625,7 +625,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                 .filter(({ r }) => r.category === chart_of_accounts_1.UNCATEGORIZED || !r.name);
             if (!unknown.length)
                 return lines;
-            const rules = (await this.rules?.promptBlock(scope, 'CATEGORY')) ?? '';
+            const rules = (await this.rules?.promptBlock(scope, 'CATEGORY', 'BANK_FEED_CATEGORIZER')) ?? '';
             const answers = await this.categorizer.categorize(unknown.map(({ l, i }) => ({
                 key: String(i),
                 description: l.description,

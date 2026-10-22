@@ -25,12 +25,25 @@ export interface ToolOutcome {
     warning?: string;
     attachmentId?: number;
 }
+export interface IssueReport {
+    complaint: string;
+    whatWentWrong: string;
+    attachmentIds: number[];
+    transactionIds: number[];
+}
+export interface IssueOutcome {
+    instructions: string;
+    summary: string;
+    ok: boolean;
+}
+export type IssueHandler = (ctx: ToolContext, report: IssueReport) => Promise<IssueOutcome>;
 export interface ToolContext {
     scope: BookScope;
     messageId: number | null;
     conversation?: AiConversation;
 }
 export declare const NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches \u2014 please double-check.";
+export declare const READ_TOOLS: ToolDefinition[];
 export declare const ASSISTANT_TOOLS: ToolDefinition[];
 export declare const WRITE_TOOL_NAMES: Set<string>;
 export declare function toolsFor(channel: Channel): ToolDefinition[];
@@ -48,6 +61,8 @@ export declare class AssistantTools {
     private readonly links;
     private readonly messenger?;
     constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined);
+    private issueHandler;
+    setIssueHandler(handler: IssueHandler): void;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;
     private exec;
     private switchBook;

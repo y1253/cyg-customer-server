@@ -17,6 +17,7 @@ const assistant_service_1 = require("./assistant.service");
 const assistant_tools_1 = require("./assistant-tools");
 const intake_agent_guard_1 = require("./intake-agent.guard");
 const intake_agent_service_1 = require("./intake-agent.service");
+const strong_ai_service_1 = require("./strong-ai.service");
 let AssistantModule = class AssistantModule {
 };
 exports.AssistantModule = AssistantModule;
@@ -35,6 +36,7 @@ exports.AssistantModule = AssistantModule = __decorate([
             intake_agent_guard_1.IntakeAgentGuard,
             intake_agent_service_1.IntakeAgentService,
             openai_client_1.OpenAiClient,
+            strong_ai_service_1.StrongAiService,
         ],
         exports: [assistant_service_1.AssistantService, assistant_tools_1.AssistantTools],
     })

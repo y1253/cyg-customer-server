@@ -226,7 +226,11 @@ export class AttachmentProcessorService {
         cls,
         day(row.createdAt)!,
         row.message,
-        (await this.rules?.promptBlock(scope)) ?? '',
+        (await this.rules?.promptBlock(
+          scope,
+          undefined,
+          'ATTACHMENT_READER',
+        )) ?? '',
       );
       const sibling = siblingOf(row.sourceRef);
       if (sibling) {
@@ -571,7 +575,7 @@ export class AttachmentProcessorService {
       reading,
       top,
       message,
-      (await this.rules?.promptBlock(scope, 'MATCHING')) ?? '',
+      (await this.rules?.promptBlock(scope, 'MATCHING', 'MATCHER')) ?? '',
     );
     const chosen = top.find((c) => c.id === pick.transactionId);
     if (chosen && pick.confident) {

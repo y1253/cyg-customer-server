@@ -1,6 +1,8 @@
+import { type AssistantTexts, type FixedAssistantKey } from './instructions.util';
 export type Channel = 'BOT' | 'SMS' | 'WHATSAPP' | 'EMAIL' | 'VOICE';
 export declare const CHANNELS: readonly Channel[];
 export declare const isChannel: (c: unknown) => c is Channel;
+export declare const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string>;
 export declare function channelStyle(channel: Channel): string;
 export interface PromptInput {
     channel: Channel;
@@ -11,7 +13,7 @@ export interface PromptInput {
     attachment?: unknown;
     files?: unknown[];
 }
-export declare function systemPrompt(p: PromptInput): string;
+export declare function systemPrompt(p: PromptInput, texts?: AssistantTexts): string;
 export interface BookOption {
     companyId: number | null;
     name: string;

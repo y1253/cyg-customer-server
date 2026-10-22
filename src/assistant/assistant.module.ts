@@ -13,11 +13,13 @@ import { AssistantService } from './assistant.service';
 import { AssistantTools } from './assistant-tools';
 import { IntakeAgentGuard } from './intake-agent.guard';
 import { IntakeAgentService } from './intake-agent.service';
+import { StrongAiService } from './strong-ai.service';
 
 /**
  * The AI assistant (step11): the website chat, "Ask AI" on unfiled attachments, and the
- * agent behind the receipt numbers. `RulesService` lives in `BookkeepingModule`, because
- * every AI step there reads the learned rules too.
+ * agent behind the receipt numbers. `RulesService` and `InstructionsService` live in
+ * `BookkeepingModule`, because every AI step there reads the learned rules and its extra
+ * instructions too. step12: `StrongAiService` answers the agent's `report_ai_issue`.
  */
 @Module({
   imports: [BookkeepingModule, CustomerAuthModule, MessagingModule],
@@ -33,6 +35,7 @@ import { IntakeAgentService } from './intake-agent.service';
     IntakeAgentGuard,
     IntakeAgentService,
     OpenAiClient,
+    StrongAiService,
   ],
   exports: [AssistantService, AssistantTools],
 })

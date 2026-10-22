@@ -1,6 +1,13 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { InstructionsService } from './instructions.service';
+import type { InstructionTarget } from './instructions.util';
 import {
   cleanRuleText,
   isRuleTopic,
@@ -27,13 +34,31 @@ export interface CustomerRuleView {
 export class RulesService {
   private readonly logger = new Logger(RulesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly instructions?: InstructionsService,
+  ) {}
 
   /**
    * The "house rules" for this book's AI steps ('' when none). Never throws: a rules
-   * outage must not stop a statement or a receipt from being read.
+   * outage must not stop a statement or a receipt from being read. step12: `target` puts
+   * that AI step's extra instructions (`AiInstruction` rows the strong AI or staff wrote)
+   * before the rules.
    */
-  async promptBlock(scope: BookScope, topic?: RuleTopic): Promise<string> {
+  async promptBlock(
+    scope: BookScope,
+    topic?: RuleTopic,
+    target?: InstructionTarget,
+  ): Promise<string> {
+    const extra =
+      target && this.instructions ? await this.instructions.block(target) : '';
+    return extra + (await this.rulesOnly(scope, topic));
+  }
+
+  private async rulesOnly(
+    scope: BookScope,
+    topic?: RuleTopic,
+  ): Promise<string> {
     try {
       const [global, own] = await Promise.all([
         this.prisma.aiRule.findMany({

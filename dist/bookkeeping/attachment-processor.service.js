@@ -172,7 +172,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         try {
             const cls = classOf(row.mimeType);
             const file = await this.storage.getBuffer(row.storageKey);
-            const readings = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message, (await this.rules?.promptBlock(scope)) ?? '');
+            const readings = await this.extractor.read(file, row.filename, row.mimeType, cls, day(row.createdAt), row.message, (await this.rules?.promptBlock(scope, undefined, 'ATTACHMENT_READER')) ?? '');
             const sibling = siblingOf(row.sourceRef);
             if (sibling) {
                 const reading = readings[sibling.index] ?? readings[0];
@@ -420,7 +420,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             };
         }
         const top = list.slice(0, attachment_match_util_1.MAX_FOR_AI);
-        const pick = await this.extractor.pick(reading, top, message, (await this.rules?.promptBlock(scope, 'MATCHING')) ?? '');
+        const pick = await this.extractor.pick(reading, top, message, (await this.rules?.promptBlock(scope, 'MATCHING', 'MATCHER')) ?? '');
         const chosen = top.find((c) => c.id === pick.transactionId);
         if (chosen && pick.confident) {
             return {

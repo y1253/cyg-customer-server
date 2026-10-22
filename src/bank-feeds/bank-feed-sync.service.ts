@@ -834,7 +834,12 @@ export class BankFeedSyncService {
         .map((l, i) => ({ l, i, r: resolveRow(l, ctx) }))
         .filter(({ r }) => r.category === UNCATEGORIZED || !r.name);
       if (!unknown.length) return lines;
-      const rules = (await this.rules?.promptBlock(scope, 'CATEGORY')) ?? '';
+      const rules =
+        (await this.rules?.promptBlock(
+          scope,
+          'CATEGORY',
+          'BANK_FEED_CATEGORIZER',
+        )) ?? '';
       const answers = await this.categorizer.categorize(
         unknown.map(({ l, i }) => ({
           key: String(i),
