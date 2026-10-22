@@ -190,8 +190,8 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         if (item.status === 'LOGIN_REQUIRED') {
             throw new common_1.BadRequestException('Sign in to your bank again first');
         }
-        this.sync.syncSoon(item.id);
-        return this.view(item.id);
+        const refreshNote = await this.sync.refreshNow(item.id);
+        return { ...(await this.view(item.id)), refreshNote };
     }
     async setStartDates(scope, id, accounts) {
         const item = await this.owned(scope, id);

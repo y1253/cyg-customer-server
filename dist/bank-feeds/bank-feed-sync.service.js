@@ -56,6 +56,9 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     logger = new common_1.Logger(BankFeedSyncService_1.name);
     running = new Map();
     again = new Set();
+    lastRefreshAt = new Map();
+    noteLoggedOn = new Map();
+    refreshUnsupportedLogged = false;
     constructor(prisma, plaid, config, names, categorizer, rules) {
         this.prisma = prisma;
         this.plaid = plaid;
@@ -141,11 +144,25 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             const byPlaidId = await this.saveAccounts(item, accounts);
             const { added, modified, removed, cursor, updateStatus } = await this.fetchChanges(accessToken, item.cursor);
             await this.saveTransactions(byPlaidId, added, modified, removed);
-            const note = !item.historyDone && updateStatus === 'NOT_READY'
-                ? await this.delayNote(item, accessToken)
-                : null;
-            if (note && note !== item.error) {
-                this.logger.log(`item #${item.id} waiting on the bank: ${note}`);
+            let note = null;
+            if (!item.historyDone && updateStatus === 'NOT_READY') {
+                const bank = await this.bankStatus(item, accessToken);
+                note = bank
+                    ? (0, bank_feed_util_1.bankDelayNote)(item.institutionName, bank.updates, bank.health)
+                    : null;
+                this.logNote(item, note, bank);
+                const failedWithoutSuccess = Boolean(bank?.updates?.last_failed_update &&
+                    !bank.updates.last_successful_update);
+                const decision = (0, bank_feed_util_1.shouldRequestRefresh)({
+                    now: new Date(),
+                    lastRefreshAt: this.lastRefreshAt.get(item.id) ?? null,
+                    institutionId: item.institutionId,
+                    failedWithoutSuccess,
+                    manual: false,
+                });
+                if (decision === 'ok') {
+                    await this.requestRefresh(item, accessToken, 'auto');
+                }
             }
             const historyDone = item.historyDone ||
                 updateStatus === 'HISTORICAL_UPDATE_COMPLETE' ||
@@ -172,12 +189,75 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
         }
     }
-    async delayNote(item, accessToken) {
+    async refreshNow(itemId) {
+        const item = await this.prisma.plaidItem.findUnique({
+            where: { id: itemId },
+        });
+        if (item && !item.deletedAt && item.status === 'ACTIVE') {
+            const decision = (0, bank_feed_util_1.shouldRequestRefresh)({
+                now: new Date(),
+                lastRefreshAt: this.lastRefreshAt.get(item.id) ?? null,
+                institutionId: item.institutionId,
+                failedWithoutSuccess: false,
+                manual: true,
+            });
+            if (decision === 'outside-window') {
+                this.syncSoon(item.id);
+                return (0, bank_feed_util_1.refreshWindowNote)(item.institutionName, item.institutionId);
+            }
+            if (decision === 'ok') {
+                try {
+                    await this.requestRefresh(item, (0, crypto_util_1.decrypt)(item.accessToken, this.key), 'manual');
+                }
+                catch (err) {
+                    this.logger.warn(`item #${item.id} refresh skipped: ${String(err)}`);
+                }
+            }
+        }
+        this.syncSoon(itemId);
+        return null;
+    }
+    async requestRefresh(item, accessToken, why) {
+        this.lastRefreshAt.set(item.id, new Date());
+        try {
+            await this.plaid.call('/transactions/refresh', {
+                access_token: accessToken,
+            });
+            this.logger.log(`item #${item.id} refresh requested (${why})`);
+        }
+        catch (err) {
+            const code = err instanceof plaid_client_1.PlaidApiError ? err.code : null;
+            if (code === 'PRODUCTS_NOT_SUPPORTED' || code === 'INVALID_PRODUCT') {
+                if (!this.refreshUnsupportedLogged) {
+                    this.refreshUnsupportedLogged = true;
+                    this.logger.warn(`item #${item.id} refresh refused: ${code} — enable Transactions Refresh ` +
+                        '(transactions_refresh) for this Plaid account in the Plaid dashboard');
+                }
+                return;
+            }
+            this.logger.warn(`item #${item.id} refresh refused (${why}): ${code ?? String(err)}`);
+        }
+    }
+    logNote(item, note, bank) {
+        if (!note) {
+            this.noteLoggedOn.delete(item.id);
+            return;
+        }
+        const today = (0, bank_feed_util_1.isoDay)();
+        if (note === item.error && this.noteLoggedOn.get(item.id) === today)
+            return;
+        this.noteLoggedOn.set(item.id, today);
+        this.logger.log(`item #${item.id} waiting on the bank: ${note} ` +
+            `(Plaid last_failed_update=${bank?.updates?.last_failed_update ?? '-'}, ` +
+            `last_successful_update=${bank?.updates?.last_successful_update ?? '-'}, ` +
+            `bank updates=${bank?.health?.updates ?? '-'}, open incidents=${bank?.health?.openIncidents ?? '-'})`);
+    }
+    async bankStatus(item, accessToken) {
         try {
             const { item: info, status } = await this.plaid.call('/item/get', { access_token: accessToken });
-            const updates = status?.transactions;
+            const updates = status?.transactions ?? null;
             if (!updates?.last_failed_update || updates.last_successful_update) {
-                return null;
+                return { updates, health: null };
             }
             const institutionId = info.institution_id ?? item.institutionId;
             const health = institutionId
@@ -193,7 +273,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                 }))
                     .catch(() => null)
                 : null;
-            return (0, bank_feed_util_1.bankDelayNote)(item.institutionName, updates, health);
+            return { updates, health };
         }
         catch {
             return null;

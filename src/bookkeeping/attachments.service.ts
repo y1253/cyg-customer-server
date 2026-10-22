@@ -26,6 +26,15 @@ import { attachmentType } from './attachment-uploads';
 import { scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
 
+/**
+ * step12: a voice note that was only a message (`kind AUDIO` read as a DOCUMENT — no
+ * payment in it) is not a file: the assistant answered its words, and it lives in the
+ * Communication tab's chat with its recording, never on the Attachments tab.
+ */
+export const NOT_VOICE_MESSAGE = {
+  NOT: { kind: AttachmentKind.AUDIO, status: AttachmentStatus.DOCUMENT },
+};
+
 export interface AttachmentView {
   id: number;
   kind: AttachmentKind;
@@ -256,7 +265,7 @@ export class AttachmentsService {
 
   async list(scope: BookScope): Promise<AttachmentView[]> {
     const rows = await this.prisma.transactionAttachment.findMany({
-      where: { ...scopeWhere(scope), deletedAt: null },
+      where: { ...scopeWhere(scope), deletedAt: null, ...NOT_VOICE_MESSAGE },
       include: INCLUDE,
       orderBy: { createdAt: 'desc' },
     });

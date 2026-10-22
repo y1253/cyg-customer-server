@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MANUAL_REFRESH_EVERY_MS = exports.AUTO_REFRESH_EVERY_MS = exports.REFRESH_WINDOWS_UTC = void 0;
 exports.feedCents = feedCents;
 exports.monthOf = monthOf;
 exports.planMonths = planMonths;
@@ -8,6 +9,8 @@ exports.kindOfPlaidType = kindOfPlaidType;
 exports.defaultAccountName = defaultAccountName;
 exports.isoDay = isoDay;
 exports.bankDelayNote = bankDelayNote;
+exports.shouldRequestRefresh = shouldRequestRefresh;
+exports.refreshWindowNote = refreshWindowNote;
 function feedCents(plaidAmount) {
     return -Math.round(Number(plaidAmount) * 100);
 }
@@ -119,5 +122,40 @@ function bankDelayNote(institutionName, updates, health) {
             'your history can take until tomorrow morning. We keep checking and bring it in automatically.');
     }
     return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
+}
+exports.REFRESH_WINDOWS_UTC = { ins_42: [4, 11] };
+exports.AUTO_REFRESH_EVERY_MS = 60 * 60 * 1000;
+exports.MANUAL_REFRESH_EVERY_MS = 5 * 60 * 1000;
+function shouldRequestRefresh(p) {
+    const window = p.institutionId ? exports.REFRESH_WINDOWS_UTC[p.institutionId] : null;
+    if (window) {
+        const hour = p.now.getUTCHours();
+        if (hour < window[0] || hour >= window[1])
+            return 'outside-window';
+    }
+    if (!p.manual && !p.failedWithoutSuccess)
+        return 'not-stuck';
+    const every = p.manual ? exports.MANUAL_REFRESH_EVERY_MS : exports.AUTO_REFRESH_EVERY_MS;
+    if (p.lastRefreshAt && p.now.getTime() - p.lastRefreshAt.getTime() < every) {
+        return 'too-soon';
+    }
+    return 'ok';
+}
+function refreshWindowNote(institutionName, institutionId, now = new Date()) {
+    const window = institutionId ? exports.REFRESH_WINDOWS_UTC[institutionId] : null;
+    if (!window)
+        return null;
+    const at = (h) => {
+        const d = new Date(now);
+        d.setUTCHours(h, 0, 0, 0);
+        return d.toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit',
+            timeZone: 'America/Toronto',
+        });
+    };
+    const bank = institutionName?.trim() || 'Your bank';
+    return (`${bank} only lets Plaid collect transactions between ${at(window[0])} and ` +
+        `${at(window[1])} Eastern time. We'll ask it again then, automatically.`);
 }
 //# sourceMappingURL=bank-feed.util.js.map

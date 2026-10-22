@@ -181,7 +181,14 @@ function setup(
     attachments,
     processor,
   );
-  return { prisma, openai, tools, service, processor };
+  return {
+    prisma,
+    openai,
+    tools,
+    service,
+    processor,
+    attachments: attachments as unknown as { get: jest.Mock },
+  };
 }
 
 const call = (name: string, args: unknown, id = 'c') => ({
@@ -273,6 +280,50 @@ describe('AssistantService', () => {
     expect(links[0][0].data.map((l) => [l.attachmentId, l.role])).toEqual([
       [5, 'SENT'],
       [99, 'SENT'],
+    ]);
+  });
+
+  it('a voice note is the message: its words are answered, not reported as a file', async () => {
+    const { service, openai, processor, attachments, prisma } = setup([
+      { content: 'Here is your January report.', toolCalls: [] },
+    ]);
+    processor.family.mockImplementation((ids: number[]) => ids);
+    attachments.get.mockImplementation((_scope: unknown, id: number) => ({
+      id,
+      filename: 'note.ogg',
+      kind: 'AUDIO',
+      status: 'DOCUMENT',
+      reading: {
+        documentType: 'DOCUMENT',
+        summary: 'A request for a report',
+        kind: 'OTHER',
+        transcript: 'can you send me my January report',
+      },
+      total: null,
+      matchNote: null,
+      error: null,
+      transaction: null,
+    }));
+    const res = await service.chat(
+      { customerId: 7, companyId: null },
+      '',
+      undefined,
+      [5],
+    );
+    expect(res.message.text).toBe('can you send me my January report');
+    const system = (
+      openai.chatMessages.mock.calls[0] as [
+        { messages: Array<{ content: string }> },
+      ]
+    )[0].messages[0].content;
+    expect(system).not.toContain('THE CUSTOMER JUST SENT THESE FILES');
+    // The recording stays linked to the message (Communication tab).
+    const links = prisma.aiMessageAttachment.createMany.mock
+      .calls as unknown as Array<
+      [{ data: Array<{ attachmentId: number; role: string }> }]
+    >;
+    expect(links[0][0].data.map((l) => [l.attachmentId, l.role])).toEqual([
+      [5, 'SENT'],
     ]);
   });
 

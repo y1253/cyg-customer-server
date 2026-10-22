@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { AiConversation } from '@prisma/client';
+import { AttachmentKind, type AiConversation } from '@prisma/client';
 import { OpenAiClient } from '../ai/openai.client';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
 import {
@@ -322,14 +322,17 @@ export class IntakeAgentService {
           await this.processor!.waitUntilRead(files, budget);
           const all = await this.processor!.family(files);
           const scope = { customerId, companyId: current.companyId };
-          const result = await this.assistant.respond(
-            current,
-            text ?? this.assistant.fileLabel(files.length),
-            {
-              attachmentIds: all,
-              files: await this.assistant.filesContext(scope, all),
-            },
+          // step12: a voice note is listened to first — its words are the message.
+          const { words, files: context } = await this.assistant.filesMessage(
+            scope,
+            text,
+            all,
+            files.length,
           );
+          const result = await this.assistant.respond(current, words, {
+            attachmentIds: all,
+            files: context,
+          });
           return [switched, result.reply.text].filter(Boolean).join('\n\n');
         },
       };
@@ -369,6 +372,33 @@ export class IntakeAgentService {
     const ask = async (reply: string) => {
       await this.askedBook(conversation, reply);
     };
+    // step12: only voice notes — listen first, then answer them like a typed question.
+    if (files.length && this.processor && (await this.onlyVoiceNotes(files))) {
+      const processor = this.processor;
+      return {
+        reply: null,
+        fileText: false,
+        companyId: null,
+        later: async (budget) => {
+          await processor.waitUntilRead(files, budget);
+          const all = await processor.family(files);
+          const { words, files: context } = await this.assistant.filesMessage(
+            { customerId: conversation.customerId, companyId: null },
+            text,
+            all,
+            files.length,
+          );
+          const answer = await this.assistant.respond(conversation, words, {
+            attachmentIds: all,
+            files: context,
+          });
+          await ask(question);
+          return `${answer.reply.text}
+
+${question}`;
+        },
+      };
+    }
     if (text && !files.length && !note) {
       return {
         reply: null,
@@ -390,6 +420,18 @@ export class IntakeAgentService {
     );
     await ask(reply);
     return { reply, fileText: note, companyId: null };
+  }
+
+  /** Every file is a voice note (`kind AUDIO`) — read them before answering. */
+  private async onlyVoiceNotes(ids: number[]): Promise<boolean> {
+    const kinds = await this.prisma.transactionAttachment.findMany({
+      where: { id: { in: ids } },
+      select: { kind: true },
+    });
+    return (
+      kinds.length === ids.length &&
+      kinds.every((k) => k.kind === AttachmentKind.AUDIO)
+    );
   }
 
   /** Stores the "which books?" question and waits for the answer. */

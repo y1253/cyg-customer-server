@@ -41,6 +41,7 @@ export declare class IntakeAgentService {
     private mark;
     private turn;
     private undecided;
+    private onlyVoiceNotes;
     private askedBook;
     private stillValid;
     private find;

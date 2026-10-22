@@ -36,8 +36,9 @@ export declare class FileLinkService {
     private liveScope;
     ownerName(scope: BookScope): Promise<string>;
 }
+export declare function linkProblemPage(reason: string): string;
 export declare class FileLinkController {
     private readonly links;
     constructor(links: FileLinkService);
-    open(token: string, res: Response): Promise<StreamableFile>;
+    open(token: string, res: Response): Promise<StreamableFile | string>;
 }

@@ -13,6 +13,7 @@ export interface BankConnectionView {
     createdAt: Date;
     setupAt: Date | null;
     syncing: boolean;
+    refreshNote?: string | null;
     newAccounts: boolean;
     earliestDate: string;
     accounts: Array<{

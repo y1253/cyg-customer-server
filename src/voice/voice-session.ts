@@ -5,6 +5,7 @@ import type { AgentAction, AssistantTools } from '../assistant/assistant-tools';
 import { toolsFor } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
 import { bookOptions } from '../assistant/book-switch';
+import { fillLinks, type LinkBook } from '../assistant/links.util';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
@@ -72,6 +73,8 @@ export class VoiceSession {
   /** The customer's last saved sentence — the "message" a tool's action belongs to. */
   private lastUserMessageId: number | null = null;
   private turnActions: AgentAction[] = [];
+  /** step12: links get_link issued on this call; `send_text` swaps the placeholders back. */
+  private readonly links: LinkBook = new Map();
   private turnTouched: number[] = [];
   private turnWarning: string | null = null;
   private responding = false;
@@ -388,6 +391,7 @@ export class VoiceSession {
       },
       messageId: this.lastUserMessageId,
       conversation,
+      links: this.links,
     });
     if (outcome.action) this.turnActions.push(outcome.action);
     if (outcome.warning) this.turnWarning = outcome.warning;
@@ -406,11 +410,16 @@ export class VoiceSession {
   /** The AI's sentence, with what it changed while answering. */
   private async saveAssistant(said: string): Promise<void> {
     const conversation = await this.freshConversation();
-    await this.deps.assistant.save(conversation, 'ASSISTANT', said, {
-      actions: this.turnActions,
-      warning: this.turnWarning,
-      actedOn: this.turnTouched,
-    });
+    await this.deps.assistant.save(
+      conversation,
+      'ASSISTANT',
+      fillLinks(said, this.links),
+      {
+        actions: this.turnActions,
+        warning: this.turnWarning,
+        actedOn: this.turnTouched,
+      },
+    );
     this.turnActions = [];
     this.turnTouched = [];
     this.turnWarning = null;

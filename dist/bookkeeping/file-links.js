@@ -13,6 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FileLinkController = exports.FileLinkService = exports.FILE_LINK_TTL_DAYS = exports.FILE_LINK_TOKEN_TYPE = void 0;
+exports.linkProblemPage = linkProblemPage;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
@@ -178,13 +179,39 @@ exports.FileLinkService = FileLinkService = __decorate([
         reports_service_1.ReportsService,
         export_service_1.LedgerExportService])
 ], FileLinkService);
+function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
+}
+function linkProblemPage(reason) {
+    return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Link not available · CYG Finance</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1f2937">
+<h1 style="font-size:1.25rem">This link can't be opened</h1>
+<p>${escapeHtml(reason)}</p>
+<p>Links to your files work for 7 days. Ask the CYG Finance assistant for a new one, or sign in at <a href="https://cygfinance.com/login">cygfinance.com</a>.</p>
+</body></html>`;
+}
 let FileLinkController = class FileLinkController {
     links;
     constructor(links) {
         this.links = links;
     }
     async open(token, res) {
-        const f = await this.links.open(token);
+        let f;
+        try {
+            f = await this.links.open(token);
+        }
+        catch (err) {
+            if (!(err instanceof common_1.NotFoundException))
+                throw err;
+            res.status(404).set({
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'private, no-store',
+                'X-Robots-Tag': 'noindex',
+            });
+            return linkProblemPage(err.message);
+        }
         res.set({
             'Content-Type': f.mimeType,
             'Content-Disposition': contentDisposition(f.filename),

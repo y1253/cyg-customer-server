@@ -14,6 +14,7 @@ import { FileLinkService } from '../bookkeeping/file-links';
 import { type Channel } from './assistant-prompt';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
+import { type LinkBook } from './links.util';
 export interface AgentAction {
     tool: string;
     ok: boolean;
@@ -41,6 +42,7 @@ export interface ToolContext {
     scope: BookScope;
     messageId: number | null;
     conversation?: AiConversation;
+    links?: LinkBook;
 }
 export declare const NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches \u2014 please double-check.";
 export declare const READ_TOOLS: ToolDefinition[];

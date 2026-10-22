@@ -6,6 +6,12 @@ import { ObjectStorageService } from '../storage/object-storage.service';
 import type { AttachmentReading } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { type BookScope } from './scope';
+export declare const NOT_VOICE_MESSAGE: {
+    NOT: {
+        kind: "AUDIO";
+        status: "DOCUMENT";
+    };
+};
 export interface AttachmentView {
     id: number;
     kind: AttachmentKind;

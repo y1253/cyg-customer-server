@@ -365,6 +365,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
                     ...book,
                     deletedAt: null,
                     status: client_1.AttachmentStatus.DOCUMENT,
+                    kind: { not: client_1.AttachmentKind.AUDIO },
                     createdAt: { gte: from },
                 },
             }),

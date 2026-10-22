@@ -44,6 +44,7 @@ export declare const HISTORY = 20;
 export declare const FAILED_REPLY = "Sorry \u2014 I couldn't answer that right now. Please try again in a minute.";
 export declare const CHAT_READ_WAIT_MS = 75000;
 export declare function fileContext(a: AttachmentView): {
+    voiceNote?: boolean | undefined;
     id: number;
     filename: string;
     type: "PAYMENT_NOTE" | "BANK_STATEMENT" | import("@prisma/client").$Enums.AttachmentKind;
@@ -59,7 +60,6 @@ export declare function fileContext(a: AttachmentView): {
         date: string | null;
     } | null;
     note: string | null;
-    transcript: string | null;
 };
 export declare function toMessageView(m: AiMessage): AssistantMessageView;
 export declare class AssistantService {
@@ -79,7 +79,10 @@ export declare class AssistantService {
     private dailyLimit;
     chat(scope: BookScope, text: string, conversationId?: number, attachmentIds?: number[]): Promise<ChatResult>;
     fileLabel(n: number): string;
-    filesContext(scope: BookScope, ids: number[]): Promise<unknown[]>;
+    filesMessage(scope: BookScope, text: string | null, ids: number[], sent?: number): Promise<{
+        words: string;
+        files: unknown[];
+    }>;
     attachmentMessages(scope: BookScope, attachmentId: number): Promise<AssistantMessageView[]>;
     withFiles(rows: AiMessage[]): Promise<AssistantMessageView[]>;
     attachmentThread(scope: BookScope, attachmentId: number): Promise<{

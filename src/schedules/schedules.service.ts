@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
+  AttachmentKind,
   AttachmentStatus,
   BookScheduleType,
   StatementStatus,
@@ -524,6 +525,7 @@ export class SchedulesService implements OnModuleInit {
           ...book,
           deletedAt: null,
           status: AttachmentStatus.DOCUMENT,
+          kind: { not: AttachmentKind.AUDIO }, // a voice message is not a document
           createdAt: { gte: from },
         },
       }),

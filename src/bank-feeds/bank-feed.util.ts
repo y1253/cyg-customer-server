@@ -236,3 +236,73 @@ export function bankDelayNote(
   }
   return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
 }
+
+/**
+ * Hours (UTC, [from, to)) a bank lets Plaid collect transactions, by Plaid institution id.
+ * A `/transactions/refresh` outside them is wasted. TD (`ins_42`): Plaid's own standing
+ * incident since 2021 — "only allows Transaction updates daily between 4am-11am UTC".
+ */
+export const REFRESH_WINDOWS_UTC: Readonly<
+  Record<string, readonly [number, number]>
+> = { ins_42: [4, 11] };
+
+/** An automatic refresh of a stuck connection is asked for at most this often. */
+export const AUTO_REFRESH_EVERY_MS = 60 * 60 * 1000;
+/** "Refresh now" may ask Plaid again this soon (each refresh is billed). */
+export const MANUAL_REFRESH_EVERY_MS = 5 * 60 * 1000;
+
+export type RefreshDecision =
+  | 'ok'
+  | 'outside-window'
+  | 'too-soon'
+  | 'not-stuck';
+
+/**
+ * Whether to ask Plaid to go to the bank again now (`/transactions/refresh`). step12: Plaid's
+ * one scheduled pull from TD failed (2026-10-22 09:13Z) and nothing asked it to try again —
+ * "Refresh now" only re-read Plaid's cache. Automatic = only while Plaid's tries have failed
+ * with no success, at most hourly; manual ("Refresh now") skips both, never the bank's window.
+ */
+export function shouldRequestRefresh(p: {
+  now: Date;
+  lastRefreshAt: Date | null;
+  institutionId: string | null;
+  failedWithoutSuccess: boolean;
+  manual: boolean;
+}): RefreshDecision {
+  const window = p.institutionId ? REFRESH_WINDOWS_UTC[p.institutionId] : null;
+  if (window) {
+    const hour = p.now.getUTCHours();
+    if (hour < window[0] || hour >= window[1]) return 'outside-window';
+  }
+  if (!p.manual && !p.failedWithoutSuccess) return 'not-stuck';
+  const every = p.manual ? MANUAL_REFRESH_EVERY_MS : AUTO_REFRESH_EVERY_MS;
+  if (p.lastRefreshAt && p.now.getTime() - p.lastRefreshAt.getTime() < every) {
+    return 'too-soon';
+  }
+  return 'ok';
+}
+
+/** "Refresh now" outside the bank's hours: when it will be asked, in Eastern time. */
+export function refreshWindowNote(
+  institutionName: string | null,
+  institutionId: string | null,
+  now: Date = new Date(),
+): string | null {
+  const window = institutionId ? REFRESH_WINDOWS_UTC[institutionId] : null;
+  if (!window) return null;
+  const at = (h: number) => {
+    const d = new Date(now);
+    d.setUTCHours(h, 0, 0, 0);
+    return d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'America/Toronto',
+    });
+  };
+  const bank = institutionName?.trim() || 'Your bank';
+  return (
+    `${bank} only lets Plaid collect transactions between ${at(window[0])} and ` +
+    `${at(window[1])} Eastern time. We'll ask it again then, automatically.`
+  );
+}

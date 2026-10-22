@@ -214,6 +214,28 @@ export class FileLinkService {
   }
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
+        c
+      ] ?? c,
+  );
+}
+
+/** The page a dead link answers: why, and how to get a new one. */
+export function linkProblemPage(reason: string): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Link not available · CYG Finance</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1f2937">
+<h1 style="font-size:1.25rem">This link can't be opened</h1>
+<p>${escapeHtml(reason)}</p>
+<p>Links to your files work for 7 days. Ask the CYG Finance assistant for a new one, or sign in at <a href="https://cygfinance.com/login">cygfinance.com</a>.</p>
+</body></html>`;
+}
+
 /**
  * `GET /api/f/:token` — the ONE unauthenticated file route: whoever holds the link (the
  * customer, on their phone) opens the file. Its own class holding nothing else, so no other
@@ -227,8 +249,20 @@ export class FileLinkController {
   async open(
     @Param('token') token: string,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<StreamableFile> {
-    const f = await this.links.open(token);
+  ): Promise<StreamableFile | string> {
+    let f: Awaited<ReturnType<FileLinkService['open']>>;
+    try {
+      f = await this.links.open(token);
+    } catch (err) {
+      if (!(err instanceof NotFoundException)) throw err;
+      // step12: a customer opens this from a text or an email — a page, not raw JSON.
+      res.status(404).set({
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'private, no-store',
+        'X-Robots-Tag': 'noindex',
+      });
+      return linkProblemPage(err.message);
+    }
     res.set({
       'Content-Type': f.mimeType,
       'Content-Disposition': contentDisposition(f.filename),

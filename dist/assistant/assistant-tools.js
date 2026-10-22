@@ -31,6 +31,7 @@ const customer_messenger_service_1 = require("../messaging/customer-messenger.se
 const rules_service_1 = require("./rules.service");
 const rules_util_1 = require("./rules.util");
 const transaction_filter_util_1 = require("./transaction-filter.util");
+const links_util_1 = require("./links.util");
 const MAX_RESULT_CHARS = 12_000;
 exports.NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches — please double-check.";
 const str = { type: 'string' };
@@ -455,6 +456,18 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     to: s(a.to),
                     format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
                 });
+                if (ctx.links) {
+                    return {
+                        content: json({
+                            link: (0, links_util_1.addLink)(ctx.links, url),
+                            expiresInDays: 7,
+                            note: 'Write this placeholder exactly where the link goes; it is replaced with the real link when your answer is sent. Never write a link yourself.',
+                        }),
+                        ...(type === 'attachment'
+                            ? { attachmentId: id(a.attachmentId) }
+                            : {}),
+                    };
+                }
                 return {
                     content: json({ url, expiresInDays: 7 }),
                     ...(type === 'attachment'
@@ -491,7 +504,8 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 };
             }
             case 'send_text': {
-                const body = s(a.text);
+                const raw = s(a.text);
+                const body = raw ? (0, links_util_1.fillLinks)(raw, ctx.links) : raw;
                 const peer = ctx.conversation?.peer;
                 if (!body)
                     throw new Error('nothing to text');

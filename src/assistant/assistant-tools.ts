@@ -30,6 +30,7 @@ import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
+import { addLink, fillLinks, type LinkBook } from './links.util';
 
 /** One thing the agent did, shown under its answer and kept in `AiMessage.actions`. */
 export interface AgentAction {
@@ -76,6 +77,12 @@ export interface ToolContext {
   messageId: number | null;
   /** step11b: the conversation being answered (switch_book changes its book). */
   conversation?: AiConversation;
+  /**
+   * step12: the links `get_link` issued in this answer (or phone call). When present, the
+   * model gets a `[[link:N]]` placeholder instead of the URL and `fillLinks` swaps it back —
+   * the model re-typing a 300-character token broke the link (links.util.ts).
+   */
+  links?: LinkBook;
 }
 
 /** The longest tool result handed back to the model. */
@@ -622,6 +629,18 @@ export class AssistantTools {
           to: s(a.to),
           format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
         });
+        if (ctx.links) {
+          return {
+            content: json({
+              link: addLink(ctx.links, url),
+              expiresInDays: 7,
+              note: 'Write this placeholder exactly where the link goes; it is replaced with the real link when your answer is sent. Never write a link yourself.',
+            }),
+            ...(type === 'attachment'
+              ? { attachmentId: id(a.attachmentId) }
+              : {}),
+          };
+        }
         return {
           content: json({ url, expiresInDays: 7 }),
           ...(type === 'attachment'
@@ -660,7 +679,8 @@ export class AssistantTools {
         };
       }
       case 'send_text': {
-        const body = s(a.text);
+        const raw = s(a.text);
+        const body = raw ? fillLinks(raw, ctx.links) : raw;
         const peer = ctx.conversation?.peer;
         if (!body) throw new Error('nothing to text');
         if (!peer || !this.messenger)

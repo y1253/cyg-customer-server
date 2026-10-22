@@ -26,7 +26,9 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const assistant_tools_1 = require("./assistant-tools");
 const assistant_prompt_1 = require("./assistant-prompt");
 const instructions_service_1 = require("./instructions.service");
+const links_util_1 = require("./links.util");
 const rules_service_1 = require("./rules.service");
+const voice_notes_util_1 = require("./voice-notes.util");
 exports.MAX_TOOL_ROUNDS = 6;
 exports.HISTORY = 20;
 exports.FAILED_REPLY = "Sorry — I couldn't answer that right now. Please try again in a minute.";
@@ -50,7 +52,7 @@ function fileContext(a) {
             }
             : null,
         note: a.matchNote ?? a.error,
-        transcript: a.reading?.transcript?.slice(0, 500) ?? null,
+        ...(a.reading?.transcript ? { voiceNote: true } : {}),
     };
 }
 function toMessageView(m) {
@@ -112,8 +114,8 @@ let AssistantService = AssistantService_1 = class AssistantService {
         const ids = [...new Set(attachmentIds)].slice(0, 10);
         for (const id of ids)
             await this.attachments.get(scope, id);
-        const words = text.trim() || (ids.length ? this.fileLabel(ids.length) : '');
-        if (!words)
+        const typed = text.trim() || (ids.length ? this.fileLabel(ids.length) : '');
+        if (!typed)
             throw new common_1.BadRequestException('Write a message or add a file');
         const conversation = conversationId
             ? await this.ownConversation(scope, conversationId)
@@ -121,35 +123,37 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 data: {
                     ...(0, scope_1.scopeWhere)(scope),
                     channel: 'BOT',
-                    title: words.slice(0, 60),
+                    title: typed.slice(0, 60),
                 },
             });
         if (!ids.length)
-            return this.respond(conversation, words);
+            return this.respond(conversation, typed);
         await this.prisma.transactionAttachment.updateMany({
             where: { id: { in: ids }, ...(0, scope_1.scopeWhere)(scope), source: 'UPLOAD' },
             data: { source: 'CHAT' },
         });
         await this.processor.waitUntilRead(ids, exports.CHAT_READ_WAIT_MS);
         const all = await this.processor.family(ids);
-        return this.respond(conversation, words, {
-            attachmentIds: all,
-            files: await this.filesContext(scope, all),
-        });
+        const { words, files } = await this.filesMessage(scope, text, all, ids.length);
+        return this.respond(conversation, words, { attachmentIds: all, files });
     }
     fileLabel(n) {
         return n === 1 ? '[sent a file]' : `[sent ${n} files]`;
     }
-    async filesContext(scope, ids) {
-        const out = [];
+    async filesMessage(scope, text, ids, sent = ids.length) {
+        const views = [];
         for (const id of ids) {
             try {
-                out.push(fileContext(await this.attachments.get(scope, id)));
+                views.push(await this.attachments.get(scope, id));
             }
             catch {
             }
         }
-        return out;
+        const spoken = (0, voice_notes_util_1.spokenMessage)(text, views);
+        return {
+            words: spoken.words || this.fileLabel(sent),
+            files: spoken.files.map(fileContext),
+        };
     }
     async attachmentMessages(scope, attachmentId) {
         const links = await this.prisma.aiMessageAttachment.findMany({
@@ -327,6 +331,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
         const actions = [];
         const touched = [];
         const tools = (0, assistant_tools_1.toolsFor)(channel);
+        const links = new Map();
         let warning = null;
         try {
             const messages = [
@@ -349,9 +354,13 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     timeoutMs: 90_000,
                 });
                 if (!reply.toolCalls.length || last) {
+                    const said = reply.content?.trim();
                     return {
-                        text: reply.content?.trim() ||
-                            (actions.length ? 'Done.' : exports.FAILED_REPLY),
+                        text: said
+                            ? (0, links_util_1.fillLinks)(said, links)
+                            : actions.length
+                                ? 'Done.'
+                                : exports.FAILED_REPLY,
                         actions,
                         warning,
                         touched,
@@ -367,6 +376,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                         scope,
                         messageId,
                         conversation,
+                        links,
                     });
                     if (outcome.action)
                         actions.push(outcome.action);

@@ -41,6 +41,11 @@ export interface BankConnectionView {
   setupAt: Date | null;
   /** A sync is running right now. */
   syncing: boolean;
+  /**
+   * Only on a "Refresh now" answer: why the bank was not asked again right now (TD lets
+   * Plaid collect only at set hours). Null otherwise.
+   */
+  refreshNote?: string | null;
   /** The bank has an account the customer has not shared yet ("Change accounts"). */
   newAccounts: boolean;
   /** YYYY-MM-DD — the oldest day Plaid can give (2 years before connecting). */
@@ -289,14 +294,18 @@ export class BankFeedsService {
     return this.view(item.id);
   }
 
-  /** "Refresh now": starts a sync and answers at once (the list shows `syncing`). */
+  /**
+   * "Refresh now": asks Plaid to go to the bank again (`/transactions/refresh`, step12 —
+   * it used to only re-read Plaid's cache), starts a sync and answers at once (the list
+   * shows `syncing`). `refreshNote` says when the bank's hours did not allow it.
+   */
   async refresh(scope: BookScope, id: number): Promise<BankConnectionView> {
     const item = await this.owned(scope, id);
     if (item.status === 'LOGIN_REQUIRED') {
       throw new BadRequestException('Sign in to your bank again first');
     }
-    this.sync.syncSoon(item.id);
-    return this.view(item.id);
+    const refreshNote = await this.sync.refreshNow(item.id);
+    return { ...(await this.view(item.id)), refreshNote };
   }
 
   /**

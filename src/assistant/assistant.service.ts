@@ -19,7 +19,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AssistantTools, toolsFor, type AgentAction } from './assistant-tools';
 import { systemPrompt, type Channel } from './assistant-prompt';
 import { InstructionsService } from './instructions.service';
+import { fillLinks, type LinkBook } from './links.util';
 import { RulesService } from './rules.service';
+import { spokenMessage } from './voice-notes.util';
 
 /** A file a message carried or is about (step11b) — kept even after the file is deleted. */
 export interface MessageFileView {
@@ -92,7 +94,8 @@ export function fileContext(a: AttachmentView) {
         }
       : null,
     note: a.matchNote ?? a.error,
-    transcript: a.reading?.transcript?.slice(0, 500) ?? null,
+    // step12: a voice note's words are the customer's message itself (`spokenMessage`).
+    ...(a.reading?.transcript ? { voiceNote: true } : {}),
   };
 }
 
@@ -175,18 +178,18 @@ export class AssistantService {
     this.assertEnabled();
     const ids = [...new Set(attachmentIds)].slice(0, 10);
     for (const id of ids) await this.attachments.get(scope, id); // 404 when not this book's
-    const words = text.trim() || (ids.length ? this.fileLabel(ids.length) : '');
-    if (!words) throw new BadRequestException('Write a message or add a file');
+    const typed = text.trim() || (ids.length ? this.fileLabel(ids.length) : '');
+    if (!typed) throw new BadRequestException('Write a message or add a file');
     const conversation = conversationId
       ? await this.ownConversation(scope, conversationId)
       : await this.prisma.aiConversation.create({
           data: {
             ...scopeWhere(scope),
             channel: 'BOT',
-            title: words.slice(0, 60),
+            title: typed.slice(0, 60),
           },
         });
-    if (!ids.length) return this.respond(conversation, words);
+    if (!ids.length) return this.respond(conversation, typed);
     // Added in the chat: listed in the website chat, not under Uploads (Communication tab).
     await this.prisma.transactionAttachment.updateMany({
       where: { id: { in: ids }, ...scopeWhere(scope), source: 'UPLOAD' },
@@ -194,10 +197,13 @@ export class AssistantService {
     });
     await this.processor.waitUntilRead(ids, CHAT_READ_WAIT_MS);
     const all = await this.processor.family(ids);
-    return this.respond(conversation, words, {
-      attachmentIds: all,
-      files: await this.filesContext(scope, all),
-    });
+    const { words, files } = await this.filesMessage(
+      scope,
+      text,
+      all,
+      ids.length,
+    );
+    return this.respond(conversation, words, { attachmentIds: all, files });
   }
 
   /** "[sent a file]" — what a message with files and no words says. */
@@ -205,17 +211,33 @@ export class AssistantService {
     return n === 1 ? '[sent a file]' : `[sent ${n} files]`;
   }
 
-  /** step11b: what the model is told about files that came with a message (see `fileContext`). */
-  async filesContext(scope: BookScope, ids: number[]): Promise<unknown[]> {
-    const out: unknown[] = [];
+  /**
+   * step11b/12: the message and the file list the model gets for files that came with a
+   * message (all already read). A voice note's words become the customer's message, and a
+   * voice note with no payment in it is not a file at all (`spokenMessage`) — the WhatsApp
+   * voice note asking for a report used to be answered "couldn't find where to attach it".
+   * `attachmentIds` stays ALL the ids, so the recording is still linked to the message.
+   */
+  async filesMessage(
+    scope: BookScope,
+    text: string | null,
+    ids: number[],
+    /** How many files the customer SENT (siblings excluded) — for "[sent 2 files]". */
+    sent = ids.length,
+  ): Promise<{ words: string; files: unknown[] }> {
+    const views: AttachmentView[] = [];
     for (const id of ids) {
       try {
-        out.push(fileContext(await this.attachments.get(scope, id)));
+        views.push(await this.attachments.get(scope, id));
       } catch {
         // deleted or moved since: nothing to say about it
       }
     }
-    return out;
+    const spoken = spokenMessage(text, views);
+    return {
+      words: spoken.words || this.fileLabel(sent),
+      files: spoken.files.map(fileContext),
+    };
   }
 
   /**
@@ -470,6 +492,8 @@ export class AssistantService {
     const actions: AgentAction[] = [];
     const touched: number[] = [];
     const tools = toolsFor(channel);
+    // step12: links issued in this answer — the model sees `[[link:N]]`, never the URL.
+    const links: LinkBook = new Map();
     let warning: string | null = null;
     try {
       const messages: AgentMessage[] = [
@@ -495,10 +519,13 @@ export class AssistantService {
           timeoutMs: 90_000,
         });
         if (!reply.toolCalls.length || last) {
+          const said = reply.content?.trim();
           return {
-            text:
-              reply.content?.trim() ||
-              (actions.length ? 'Done.' : FAILED_REPLY),
+            text: said
+              ? fillLinks(said, links)
+              : actions.length
+                ? 'Done.'
+                : FAILED_REPLY,
             actions,
             warning,
             touched,
@@ -514,6 +541,7 @@ export class AssistantService {
             scope,
             messageId,
             conversation,
+            links,
           });
           if (outcome.action) actions.push(outcome.action);
           if (outcome.warning) warning = outcome.warning;

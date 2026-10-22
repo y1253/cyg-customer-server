@@ -16,6 +16,9 @@ export declare class BankFeedSyncService {
     private readonly logger;
     private readonly running;
     private readonly again;
+    private readonly lastRefreshAt;
+    private readonly noteLoggedOn;
+    private refreshUnsupportedLogged;
     constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, rules?: RulesService | undefined);
     private get key();
     syncSoon(itemId: number): void;
@@ -25,7 +28,10 @@ export declare class BankFeedSyncService {
     syncAll(): Promise<void>;
     rebuildAll(): Promise<void>;
     private runSync;
-    private delayNote;
+    refreshNow(itemId: number): Promise<string | null>;
+    private requestRefresh;
+    private logNote;
+    private bankStatus;
     private recordError;
     private fetchChanges;
     saveAccounts(item: PlaidItem, accounts: readonly PlaidAccountData[]): Promise<Map<string, PlaidAccount>>;

@@ -16,6 +16,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.IntakeAgentService = exports.SEND_FAILED = exports.NOT_DELIVERED = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
@@ -204,9 +205,10 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
                     await this.processor.waitUntilRead(files, budget);
                     const all = await this.processor.family(files);
                     const scope = { customerId, companyId: current.companyId };
-                    const result = await this.assistant.respond(current, text ?? this.assistant.fileLabel(files.length), {
+                    const { words, files: context } = await this.assistant.filesMessage(scope, text, all, files.length);
+                    const result = await this.assistant.respond(current, words, {
                         attachmentIds: all,
-                        files: await this.assistant.filesContext(scope, all),
+                        files: context,
                     });
                     return [switched, result.reply.text].filter(Boolean).join('\n\n');
                 },
@@ -234,6 +236,27 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
         const ask = async (reply) => {
             await this.askedBook(conversation, reply);
         };
+        if (files.length && this.processor && (await this.onlyVoiceNotes(files))) {
+            const processor = this.processor;
+            return {
+                reply: null,
+                fileText: false,
+                companyId: null,
+                later: async (budget) => {
+                    await processor.waitUntilRead(files, budget);
+                    const all = await processor.family(files);
+                    const { words, files: context } = await this.assistant.filesMessage({ customerId: conversation.customerId, companyId: null }, text, all, files.length);
+                    const answer = await this.assistant.respond(conversation, words, {
+                        attachmentIds: all,
+                        files: context,
+                    });
+                    await ask(question);
+                    return `${answer.reply.text}
+
+${question}`;
+                },
+            };
+        }
         if (text && !files.length && !note) {
             return {
                 reply: null,
@@ -250,6 +273,14 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
         await this.assistant.save(conversation, 'USER', text ?? this.assistant.fileLabel(files.length), { attachmentIds: files });
         await ask(reply);
         return { reply, fileText: note, companyId: null };
+    }
+    async onlyVoiceNotes(ids) {
+        const kinds = await this.prisma.transactionAttachment.findMany({
+            where: { id: { in: ids } },
+            select: { kind: true },
+        });
+        return (kinds.length === ids.length &&
+            kinds.every((k) => k.kind === client_1.AttachmentKind.AUDIO));
     }
     async askedBook(conversation, reply) {
         await this.assistant.save(conversation, 'ASSISTANT', reply, {

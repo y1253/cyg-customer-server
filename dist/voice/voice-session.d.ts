@@ -27,6 +27,7 @@ export declare class VoiceSession {
     private recordingSid;
     private lastUserMessageId;
     private turnActions;
+    private readonly links;
     private turnTouched;
     private turnWarning;
     private responding;

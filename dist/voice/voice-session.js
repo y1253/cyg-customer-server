@@ -8,6 +8,7 @@ const common_1 = require("@nestjs/common");
 const ws_1 = __importDefault(require("ws"));
 const assistant_tools_1 = require("../assistant/assistant-tools");
 const book_switch_1 = require("../assistant/book-switch");
+const links_util_1 = require("../assistant/links.util");
 const voice_util_1 = require("./voice.util");
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
 function rawText(raw) {
@@ -33,6 +34,7 @@ class VoiceSession {
     recordingSid = null;
     lastUserMessageId = null;
     turnActions = [];
+    links = new Map();
     turnTouched = [];
     turnWarning = null;
     responding = false;
@@ -282,6 +284,7 @@ class VoiceSession {
             },
             messageId: this.lastUserMessageId,
             conversation,
+            links: this.links,
         });
         if (outcome.action)
             this.turnActions.push(outcome.action);
@@ -301,7 +304,7 @@ class VoiceSession {
     }
     async saveAssistant(said) {
         const conversation = await this.freshConversation();
-        await this.deps.assistant.save(conversation, 'ASSISTANT', said, {
+        await this.deps.assistant.save(conversation, 'ASSISTANT', (0, links_util_1.fillLinks)(said, this.links), {
             actions: this.turnActions,
             warning: this.turnWarning,
             actedOn: this.turnTouched,

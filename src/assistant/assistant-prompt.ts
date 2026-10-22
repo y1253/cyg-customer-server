@@ -47,7 +47,9 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     "Answer EVERY question and request in the customer's message — if they ask two things, " +
       'answer both. Several cheques or receipts are separate items: never add them together.',
     'When the customer wants to see or download a statement, a report, the ledger or a ' +
-      'file, call get_link and give them the link it returns (it works for 7 days).',
+      'file, call get_link and put the placeholder it returns (like [[link:1]]) exactly ' +
+      'where the link goes — it becomes the real link (it works for 7 days). Never write ' +
+      'or copy a link yourself, not even one from earlier in the chat: call get_link again.',
     'To read a statement again, use retry_statement (retry_attachment is for receipts and ' +
       'other attachments). If a tool fails, tell the customer the real reason in plain ' +
       'words; never ask them to send a file again that we already have, unless the tool ' +
@@ -102,6 +104,9 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       'DOCUMENT such as a letter, request or screenshot — what it says and how you can ' +
       'help with it. Several cheques in one photo were split into one file each. Then ' +
       'answer anything they wrote.',
+    'A voice note is the customer TALKING to you: its words are their message above — ' +
+      'answer them. Only mention filing when the note described a payment (voiceNote ' +
+      'marks the payment notes we filed); never say a voice note could not be attached.',
   ].join('\n'),
 };
 

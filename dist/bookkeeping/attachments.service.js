@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AttachmentsService = void 0;
+exports.AttachmentsService = exports.NOT_VOICE_MESSAGE = void 0;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
@@ -22,6 +22,9 @@ const attachment_folders_util_1 = require("./attachment-folders.util");
 const attachment_uploads_1 = require("./attachment-uploads");
 const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
+exports.NOT_VOICE_MESSAGE = {
+    NOT: { kind: client_1.AttachmentKind.AUDIO, status: client_1.AttachmentStatus.DOCUMENT },
+};
 const INCLUDE = {
     transaction: {
         include: {
@@ -160,7 +163,7 @@ let AttachmentsService = class AttachmentsService {
     }
     async list(scope) {
         const rows = await this.prisma.transactionAttachment.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, ...exports.NOT_VOICE_MESSAGE },
             include: INCLUDE,
             orderBy: { createdAt: 'desc' },
         });

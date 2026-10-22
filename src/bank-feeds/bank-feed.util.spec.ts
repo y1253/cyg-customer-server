@@ -5,6 +5,8 @@ import {
   kindOfPlaidType,
   monthLabel,
   planMonths,
+  refreshWindowNote,
+  shouldRequestRefresh,
   type FeedTxn,
 } from './bank-feed.util';
 
@@ -239,5 +241,105 @@ describe('bankDelayNote', () => {
         { updates: 'DOWN' },
       ),
     ).toBeNull();
+  });
+});
+
+describe('shouldRequestRefresh', () => {
+  const at = (iso: string) => new Date(iso);
+  const base = {
+    lastRefreshAt: null,
+    institutionId: 'ins_42',
+    failedWithoutSuccess: true,
+    manual: false,
+  };
+  it('asks only inside TD’s 4–11 UTC window', () => {
+    expect(
+      shouldRequestRefresh({ ...base, now: at('2026-10-22T03:59:00Z') }),
+    ).toBe('outside-window');
+    expect(
+      shouldRequestRefresh({ ...base, now: at('2026-10-22T04:00:00Z') }),
+    ).toBe('ok');
+    expect(
+      shouldRequestRefresh({ ...base, now: at('2026-10-22T10:59:00Z') }),
+    ).toBe('ok');
+    expect(
+      shouldRequestRefresh({ ...base, now: at('2026-10-22T11:00:00Z') }),
+    ).toBe('outside-window');
+    expect(
+      shouldRequestRefresh({
+        ...base,
+        manual: true,
+        now: at('2026-10-22T15:00:00Z'),
+      }),
+    ).toBe('outside-window');
+  });
+  it('any hour for a bank with no known window', () => {
+    expect(
+      shouldRequestRefresh({
+        ...base,
+        institutionId: 'ins_3',
+        now: at('2026-10-22T15:00:00Z'),
+      }),
+    ).toBe('ok');
+    expect(
+      shouldRequestRefresh({
+        ...base,
+        institutionId: null,
+        now: at('2026-10-22T15:00:00Z'),
+      }),
+    ).toBe('ok');
+  });
+  it('automatic: only while Plaid failed with no success, at most hourly', () => {
+    const now = at('2026-10-22T05:00:00Z');
+    expect(
+      shouldRequestRefresh({ ...base, now, failedWithoutSuccess: false }),
+    ).toBe('not-stuck');
+    expect(
+      shouldRequestRefresh({
+        ...base,
+        now,
+        lastRefreshAt: at('2026-10-22T04:30:00Z'),
+      }),
+    ).toBe('too-soon');
+    expect(
+      shouldRequestRefresh({
+        ...base,
+        now,
+        lastRefreshAt: at('2026-10-22T04:00:00Z'),
+      }),
+    ).toBe('ok');
+  });
+  it('manual: skips the hourly limit and the stuck check, not a 5-minute floor', () => {
+    const now = at('2026-10-22T05:00:00Z');
+    const manual = { ...base, now, manual: true, failedWithoutSuccess: false };
+    expect(
+      shouldRequestRefresh({
+        ...manual,
+        lastRefreshAt: at('2026-10-22T04:50:00Z'),
+      }),
+    ).toBe('ok');
+    expect(
+      shouldRequestRefresh({
+        ...manual,
+        lastRefreshAt: at('2026-10-22T04:58:00Z'),
+      }),
+    ).toBe('too-soon');
+  });
+});
+
+describe('refreshWindowNote', () => {
+  it('names the window in Eastern time', () => {
+    expect(
+      refreshWindowNote(
+        'TD Canada Trust',
+        'ins_42',
+        new Date('2026-10-22T15:00:00Z'),
+      ),
+    ).toBe(
+      "TD Canada Trust only lets Plaid collect transactions between 12:00 AM and 7:00 AM Eastern time. We'll ask it again then, automatically.",
+    );
+  });
+  it('is null for a bank with no window', () => {
+    expect(refreshWindowNote('RBC', 'ins_3')).toBeNull();
   });
 });

@@ -29,6 +29,8 @@ import {
   monthLabel,
   monthOf,
   planMonths,
+  refreshWindowNote,
+  shouldRequestRefresh,
   type BankHealth,
   type MonthPlan,
   type PlaidUpdateStatus,
@@ -67,6 +69,11 @@ const money = (cents: number | null): string | null =>
 
 export type ItemStatus = 'ACTIVE' | 'LOGIN_REQUIRED' | 'ERROR' | 'REMOVED';
 
+interface BankStatus {
+  updates: PlaidUpdateStatus | null;
+  health: BankHealth | null;
+}
+
 /**
  * Bank feeds (step11): keeps each connected bank's transactions in `PlaidTransaction`
  * and turns them into one `BankStatement` (`source` PLAID, status DONE) per account and
@@ -89,6 +96,11 @@ export class BankFeedSyncService {
   private readonly logger = new Logger(BankFeedSyncService.name);
   private readonly running = new Map<number, Promise<void>>();
   private readonly again = new Set<number>();
+  /** Last `/transactions/refresh` per item (in-process; pm2 fork mode). */
+  private readonly lastRefreshAt = new Map<number, Date>();
+  /** Day the unchanged "waiting on the bank" note was last logged, per item. */
+  private readonly noteLoggedOn = new Map<number, string>();
+  private refreshUnsupportedLogged = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -195,13 +207,29 @@ export class BankFeedSyncService {
       const { added, modified, removed, cursor, updateStatus } =
         await this.fetchChanges(accessToken, item.cursor);
       await this.saveTransactions(byPlaidId, added, modified, removed);
-      // Plaid has nothing yet: ask it why, so the card can say so instead of spinning.
-      const note =
-        !item.historyDone && updateStatus === 'NOT_READY'
-          ? await this.delayNote(item, accessToken)
+      // Plaid has nothing yet: ask it why, so the card can say so instead of spinning —
+      // and, when its own tries at the bank failed, ask it to go again (step12).
+      let note: string | null = null;
+      if (!item.historyDone && updateStatus === 'NOT_READY') {
+        const bank = await this.bankStatus(item, accessToken);
+        note = bank
+          ? bankDelayNote(item.institutionName, bank.updates, bank.health)
           : null;
-      if (note && note !== item.error) {
-        this.logger.log(`item #${item.id} waiting on the bank: ${note}`);
+        this.logNote(item, note, bank);
+        const failedWithoutSuccess = Boolean(
+          bank?.updates?.last_failed_update &&
+          !bank.updates.last_successful_update,
+        );
+        const decision = shouldRequestRefresh({
+          now: new Date(),
+          lastRefreshAt: this.lastRefreshAt.get(item.id) ?? null,
+          institutionId: item.institutionId,
+          failedWithoutSuccess,
+          manual: false,
+        });
+        if (decision === 'ok') {
+          await this.requestRefresh(item, accessToken, 'auto');
+        }
       }
       // `/transactions/sync` says itself when the history is in — the webhook is not the
       // only way to learn it (a missed one left the card loading forever). While the bank
@@ -235,21 +263,115 @@ export class BankFeedSyncService {
   }
 
   /**
-   * Why Plaid has no transactions yet (`bankDelayNote`): its own failed tries at the bank
-   * (`/item/get`) and, when there are some, the bank's status at Plaid. Null on any error.
+   * "Refresh now": ask Plaid to go to the bank (not just re-read its cache), then sync.
+   * Answers the note to show when the bank does not allow it at this hour, else null.
    */
-  private async delayNote(
+  async refreshNow(itemId: number): Promise<string | null> {
+    const item = await this.prisma.plaidItem.findUnique({
+      where: { id: itemId },
+    });
+    if (item && !item.deletedAt && item.status === 'ACTIVE') {
+      const decision = shouldRequestRefresh({
+        now: new Date(),
+        lastRefreshAt: this.lastRefreshAt.get(item.id) ?? null,
+        institutionId: item.institutionId,
+        failedWithoutSuccess: false,
+        manual: true,
+      });
+      if (decision === 'outside-window') {
+        this.syncSoon(item.id);
+        return refreshWindowNote(item.institutionName, item.institutionId);
+      }
+      if (decision === 'ok') {
+        try {
+          await this.requestRefresh(
+            item,
+            decrypt(item.accessToken, this.key),
+            'manual',
+          );
+        } catch (err) {
+          this.logger.warn(`item #${item.id} refresh skipped: ${String(err)}`);
+        }
+      }
+    }
+    this.syncSoon(itemId);
+    return null;
+  }
+
+  /**
+   * `/transactions/refresh`: Plaid pulls from the bank now and fires
+   * `SYNC_UPDATES_AVAILABLE` (→ `syncSoon`); the `*\/5` cron is the backstop. Billed per
+   * call, so callers go through `shouldRequestRefresh`. Never throws.
+   */
+  private async requestRefresh(
     item: PlaidItem,
     accessToken: string,
-  ): Promise<string | null> {
+    why: 'auto' | 'manual',
+  ): Promise<void> {
+    this.lastRefreshAt.set(item.id, new Date());
+    try {
+      await this.plaid.call('/transactions/refresh', {
+        access_token: accessToken,
+      });
+      this.logger.log(`item #${item.id} refresh requested (${why})`);
+    } catch (err) {
+      const code = err instanceof PlaidApiError ? err.code : null;
+      if (code === 'PRODUCTS_NOT_SUPPORTED' || code === 'INVALID_PRODUCT') {
+        if (!this.refreshUnsupportedLogged) {
+          this.refreshUnsupportedLogged = true;
+          this.logger.warn(
+            `item #${item.id} refresh refused: ${code} — enable Transactions Refresh ` +
+              '(transactions_refresh) for this Plaid account in the Plaid dashboard',
+          );
+        }
+        return;
+      }
+      this.logger.warn(
+        `item #${item.id} refresh refused (${why}): ${code ?? String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The "waiting on the bank" note in the log: when it changes, and once a day while it
+   * stays (it used to go silent, which looked like nothing was happening).
+   */
+  private logNote(
+    item: PlaidItem,
+    note: string | null,
+    bank: BankStatus | null,
+  ): void {
+    if (!note) {
+      this.noteLoggedOn.delete(item.id);
+      return;
+    }
+    const today = isoDay();
+    if (note === item.error && this.noteLoggedOn.get(item.id) === today) return;
+    this.noteLoggedOn.set(item.id, today);
+    this.logger.log(
+      `item #${item.id} waiting on the bank: ${note} ` +
+        `(Plaid last_failed_update=${bank?.updates?.last_failed_update ?? '-'}, ` +
+        `last_successful_update=${bank?.updates?.last_successful_update ?? '-'}, ` +
+        `bank updates=${bank?.health?.updates ?? '-'}, open incidents=${bank?.health?.openIncidents ?? '-'})`,
+    );
+  }
+
+  /**
+   * Plaid's own tries at the bank (`/item/get` → `status.transactions`) and, when one
+   * failed with no success, the bank's status at Plaid. Null on any error.
+   */
+  private async bankStatus(
+    item: PlaidItem,
+    accessToken: string,
+  ): Promise<BankStatus | null> {
     try {
       const { item: info, status } = await this.plaid.call<{
         item: { institution_id: string | null };
         status?: { transactions?: PlaidUpdateStatus | null };
       }>('/item/get', { access_token: accessToken });
-      const updates = status?.transactions;
+      const updates = status?.transactions ?? null;
       if (!updates?.last_failed_update || updates.last_successful_update) {
-        return null;
+        return { updates, health: null };
       }
       const institutionId = info.institution_id ?? item.institutionId;
       const health: BankHealth | null = institutionId
@@ -274,7 +396,7 @@ export class BankFeedSyncService {
             }))
             .catch(() => null)
         : null;
-      return bankDelayNote(item.institutionName, updates, health);
+      return { updates, health };
     } catch {
       return null;
     }
