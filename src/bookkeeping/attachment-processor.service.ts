@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { RulesService } from '../assistant/rules.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -195,7 +196,12 @@ export class AttachmentProcessorService {
 
     let next = 0;
     const worker = async (): Promise<void> => {
-      while (next < due.length) await this.processOne(due[next++]);
+      while (next < due.length) {
+        const row = due[next++];
+        await withAiUsage({ ...scopeOf(row), feature: 'ATTACHMENT' }, () =>
+          this.processOne(row),
+        );
+      }
     };
     await Promise.all(
       Array.from({ length: Math.min(CONCURRENCY, due.length) }, worker),

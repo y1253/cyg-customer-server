@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -962,15 +963,19 @@ export class BankFeedSyncService {
           'CATEGORY',
           'BANK_FEED_CATEGORIZER',
         )) ?? '';
-      const answers = await this.categorizer.categorize(
-        unknown.map(({ l, i }) => ({
-          key: String(i),
-          description: l.description,
-          merchant: l.name ?? null,
-          amount: l.amount,
-          hint: txns[i].category,
-        })),
-        rules,
+      const answers = await withAiUsage(
+        { ...scope, feature: 'BANK_ROWS' },
+        () =>
+          this.categorizer.categorize(
+            unknown.map(({ l, i }) => ({
+              key: String(i),
+              description: l.description,
+              merchant: l.name ?? null,
+              amount: l.amount,
+              hint: txns[i].category,
+            })),
+            rules,
+          ),
       );
       return lines.map((l, i) => {
         const a = answers.get(String(i));

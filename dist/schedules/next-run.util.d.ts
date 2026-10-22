@@ -1,5 +1,6 @@
-export type Frequency = 'WEEKLY' | 'MONTHLY';
+export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
 export declare const FREQUENCIES: readonly Frequency[];
+export declare const AI_FREQUENCIES: readonly Frequency[];
 export interface ScheduleRule {
     frequency: Frequency;
     weekday: number | null;

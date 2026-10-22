@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import {
   AttachmentStatus,
   StatementStatus,
@@ -28,6 +28,10 @@ import {
 import { bookOptions, chooseBook, moveRecentFiles } from './book-switch';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
+import {
+  AiSchedulesStore,
+  type AiScheduleInput,
+} from '../schedules/ai-schedules.store';
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
 import { addLink, fillLinks, type LinkBook } from './links.util';
@@ -204,6 +208,12 @@ export const READ_TOOLS: ToolDefinition[] = [
       ['type'],
     ),
   },
+  {
+    name: 'list_schedules',
+    description:
+      'The messages this book sends the customer on a schedule: the two built-ins (account status, financial report — set in the Schedules tab) and the ones made with create_schedule (id, title, task, when, channel, active, next run).',
+    parameters: obj({}),
+  },
 ];
 
 /**
@@ -318,6 +328,65 @@ const WRITE_TOOLS: ToolDefinition[] = [
     parameters: obj({ attachmentId: int }, ['attachmentId']),
   },
   {
+    name: 'create_schedule',
+    description:
+      'The customer asks for something sent to them REPEATEDLY ("text me my financial report every day at 6am", "email me unmatched receipts every Friday"). Saves a schedule in this book; each time it fires, an assistant answers `task` with the read tools and sends the answer. Ask first when the time or day is missing. time = "HH:mm" 24 h in their time zone. channel: SMS for "text me", EMAIL for "email me", omit for their preferred contact. Confirm back what you saved in words (e.g. "every day at 6:00 AM by text").',
+    parameters: obj(
+      {
+        title: {
+          type: 'string',
+          description: 'Short name, e.g. "Daily financial report"',
+        },
+        task: {
+          type: 'string',
+          description:
+            'What to look up and send each time, as an instruction, e.g. "Summarise income, expenses and net for this month so far, with a link to the report"',
+        },
+        frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+        weekday: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 6,
+          description: 'WEEKLY only: 0 = Sunday … 6 = Saturday',
+        },
+        monthDay: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 28,
+          description: 'MONTHLY only: 1–28, or 0 = the last day',
+        },
+        time: { type: 'string', description: 'HH:mm, 24 h' },
+        channel: { type: 'string', enum: ['SMS', 'EMAIL'] },
+      },
+      ['title', 'task', 'frequency', 'time'],
+    ),
+  },
+  {
+    name: 'update_schedule',
+    description:
+      'Change a schedule made with create_schedule (id from list_schedules): any field, or active=false to pause / true to resume. channel PREFERRED = their preferred contact.',
+    parameters: obj(
+      {
+        scheduleId: int,
+        title: str,
+        task: str,
+        frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+        weekday: { type: 'integer', minimum: 0, maximum: 6 },
+        monthDay: { type: 'integer', minimum: 0, maximum: 28 },
+        time: { type: 'string', description: 'HH:mm, 24 h' },
+        channel: { type: 'string', enum: ['SMS', 'EMAIL', 'PREFERRED'] },
+        active: { type: 'boolean' },
+      },
+      ['scheduleId'],
+    ),
+  },
+  {
+    name: 'delete_schedule',
+    description:
+      'Stop and remove a schedule made with create_schedule (the built-ins are turned off in the Schedules tab, not here).',
+    parameters: obj({ scheduleId: int }, ['scheduleId']),
+  },
+  {
     name: 'save_rule',
     description:
       "Remember a lesson so the AI gets it right next time. Shortest wording possible (max 15 words). scope 'customer' = about this customer's own habits, names or private details; 'global' = would help every customer (staff approve it first).",
@@ -411,6 +480,25 @@ const id = (v: unknown): number => {
     throw new Error('a valid id is required');
   return x;
 };
+/** step12: a schedule tool's arguments → the store's input (only what was given). */
+const scheduleInput = (a: Args): AiScheduleInput => {
+  const out: AiScheduleInput = {};
+  if (typeof a.title === 'string') out.title = a.title;
+  if (typeof a.task === 'string') out.task = a.task;
+  if (
+    a.frequency === 'DAILY' ||
+    a.frequency === 'WEEKLY' ||
+    a.frequency === 'MONTHLY'
+  )
+    out.frequency = a.frequency;
+  if (typeof a.weekday === 'number') out.weekday = a.weekday;
+  if (typeof a.monthDay === 'number') out.monthDay = a.monthDay;
+  if (typeof a.time === 'string') out.time = a.time;
+  if (a.channel === 'SMS' || a.channel === 'EMAIL') out.channel = a.channel;
+  if (a.channel === 'PREFERRED') out.channel = null;
+  if (typeof a.active === 'boolean') out.active = a.active;
+  return out;
+};
 const json = (v: unknown) => {
   const text = JSON.stringify(v);
   return text.length > MAX_RESULT_CHARS
@@ -439,6 +527,8 @@ export class AssistantTools {
     private readonly rules: RulesService,
     private readonly links: FileLinkService,
     private readonly messenger?: CustomerMessenger,
+    /** step12: the schedules the customer asks for (absent in old specs). */
+    @Optional() private readonly aiSchedules?: AiSchedulesStore,
   ) {}
 
   private readonly logger = new Logger(AssistantTools.name);
@@ -448,6 +538,36 @@ export class AssistantTools {
 
   setIssueHandler(handler: IssueHandler): void {
     this.issueHandler = handler;
+  }
+
+  private schedulesStore(): AiSchedulesStore {
+    if (!this.aiSchedules) throw new Error('schedules are not available');
+    return this.aiSchedules;
+  }
+
+  /** step12: the book's built-in schedules and its AI-made ones, for the model. */
+  private async schedulesList(scope: BookScope) {
+    const builtIn = await this.prisma.bookSchedule.findMany({
+      where: scopeWhere(scope),
+      select: { type: true, enabled: true, nextRunAt: true },
+    });
+    const own = await this.schedulesStore().list(scope);
+    return {
+      builtIn: builtIn.map((b) => ({
+        type: b.type,
+        on: b.enabled,
+        nextRunAt: b.nextRunAt?.toISOString() ?? null,
+      })),
+      schedules: own.map((r) => ({
+        id: r.id,
+        title: r.title,
+        task: r.task,
+        when: this.schedulesStore().describe(r),
+        channel: r.channel ?? 'preferred contact',
+        active: r.active,
+        nextRunAt: r.nextRunAt?.toISOString() ?? null,
+      })),
+    };
   }
 
   /** Runs one tool. Never throws: a failure is reported to the model (and as a failed action). */
@@ -804,6 +924,44 @@ export class AssistantTools {
       }
       case 'file_pdf_as_statement':
         return done(await this.fileAsStatement(scope, id(a.attachmentId)));
+      case 'list_schedules':
+        return { content: json(await this.schedulesList(scope)) };
+      case 'create_schedule': {
+        const row = await this.schedulesStore().create(
+          scope,
+          scheduleInput(a),
+          { createdBy: 'AI', conversationId: ctx.conversation?.id ?? null },
+        );
+        const when = this.schedulesStore().describe(row);
+        return done(`Scheduled "${row.title}" — ${when}`, {
+          ok: true,
+          id: row.id,
+          when,
+          channel: row.channel ?? 'preferred contact',
+          nextRunAt: row.nextRunAt?.toISOString() ?? null,
+        });
+      }
+      case 'update_schedule': {
+        const row = await this.schedulesStore().update(
+          scope,
+          id(a.scheduleId),
+          scheduleInput(a),
+        );
+        const when = this.schedulesStore().describe(row);
+        return done(
+          `Updated "${row.title}" — ${row.active ? when : 'paused'}`,
+          {
+            ok: true,
+            id: row.id,
+            when,
+            active: row.active,
+          },
+        );
+      }
+      case 'delete_schedule': {
+        const row = await this.schedulesStore().remove(scope, id(a.scheduleId));
+        return done(`Removed the schedule "${row.title}"`);
+      }
       case 'save_rule': {
         const text = s(a.text);
         if (!text) throw new Error('the rule needs words');

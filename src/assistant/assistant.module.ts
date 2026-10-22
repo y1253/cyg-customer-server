@@ -3,6 +3,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { AiSchedulesStore } from '../schedules/ai-schedules.store';
 import {
   AssistantConfigController,
   AssistantController,
@@ -32,11 +33,12 @@ import { StrongAiService } from './strong-ai.service';
   providers: [
     AssistantService,
     AssistantTools,
+    AiSchedulesStore,
     IntakeAgentGuard,
     IntakeAgentService,
     OpenAiClient,
     StrongAiService,
   ],
-  exports: [AssistantService, AssistantTools],
+  exports: [AssistantService, AssistantTools, AiSchedulesStore],
 })
 export class AssistantModule {}

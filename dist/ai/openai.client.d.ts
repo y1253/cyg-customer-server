@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 export type ChatContent = string | Array<{
     type: 'text';
     text: string;
@@ -69,8 +70,9 @@ export declare function responsesBody(req: AgentRequest): Record<string, unknown
 export declare function parseResponsesOutput(output: unknown): AgentReply;
 export declare class OpenAiClient {
     private readonly config;
+    private readonly usage?;
     private readonly logger;
-    constructor(config: ConfigService);
+    constructor(config: ConfigService, usage?: AiUsageService | undefined);
     get configured(): boolean;
     chat(req: ChatRequest): Promise<string>;
     chatMessages(req: AgentRequest): Promise<AgentReply>;

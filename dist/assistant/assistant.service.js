@@ -18,6 +18,7 @@ exports.fileContext = fileContext;
 exports.toMessageView = toMessageView;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const openai_client_1 = require("../ai/openai.client");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const attachments_service_1 = require("../bookkeeping/attachments.service");
@@ -68,6 +69,10 @@ function toMessageView(m) {
         createdAt: m.createdAt.toISOString(),
     };
 }
+const SCHEDULED_NOTE = 'This is a SCHEDULED message the customer asked for: the user message below is the ' +
+    'task they set. Look the data up with your tools and write the message itself, ready to ' +
+    'send — no questions, no "let me know", no greeting beyond one short line. You cannot ' +
+    'change anything in this run. If there is nothing to report, say so in one line.';
 function historyText(m) {
     const actions = Array.isArray(m.actions)
         ? m.actions
@@ -326,13 +331,23 @@ let AssistantService = AssistantService_1 = class AssistantService {
         const [m, r] = await this.withFiles([message, reply]);
         return { conversationId: conversation.id, message: m, reply: r };
     }
-    async run(scope, conversation, messageId, text, history, attachment, files) {
+    run(scope, conversation, messageId, text, history, attachment, files) {
+        return (0, ai_usage_context_1.withAiUsage)({
+            customerId: scope.customerId,
+            companyId: scope.companyId,
+            feature: 'ASSISTANT',
+        }, () => this.runChat(scope, conversation, messageId, text, history, attachment, files));
+    }
+    async runChat(scope, conversation, messageId, text, history, attachment, files) {
         const channel = conversation.channel;
-        const actions = [];
-        const touched = [];
         const tools = (0, assistant_tools_1.toolsFor)(channel);
         const links = new Map();
-        let warning = null;
+        const done = {
+            text: '',
+            actions: [],
+            warning: null,
+            touched: [],
+        };
         try {
             const messages = [
                 {
@@ -344,58 +359,89 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     : { role: 'assistant', content: historyText(m) }),
                 { role: 'user', content: text },
             ];
-            for (let round = 0; round <= exports.MAX_TOOL_ROUNDS; round++) {
-                const last = round === exports.MAX_TOOL_ROUNDS;
-                const reply = await this.openai.chatMessages({
-                    model: this.model(),
-                    messages,
-                    tools: last ? undefined : tools,
-                    maxTokens: 1200,
-                    timeoutMs: 90_000,
-                });
-                if (!reply.toolCalls.length || last) {
-                    const said = reply.content?.trim();
-                    return {
-                        text: said
-                            ? (0, links_util_1.fillLinks)(said, links)
-                            : actions.length
-                                ? 'Done.'
-                                : exports.FAILED_REPLY,
-                        actions,
-                        warning,
-                        touched,
-                    };
-                }
-                messages.push({
-                    role: 'assistant',
-                    content: reply.content,
-                    toolCalls: reply.toolCalls,
-                });
-                for (const call of reply.toolCalls) {
-                    const outcome = await this.tools.run(call.name, call.arguments, {
-                        scope,
-                        messageId,
-                        conversation,
-                        links,
-                    });
-                    if (outcome.action)
-                        actions.push(outcome.action);
-                    if (outcome.warning)
-                        warning = outcome.warning;
-                    if (outcome.attachmentId)
-                        touched.push(outcome.attachmentId);
-                    messages.push({
-                        role: 'tool',
-                        toolCallId: call.id,
-                        content: outcome.content,
-                    });
-                }
-            }
+            return await this.loop(messages, tools, { scope, messageId, conversation, links }, done);
         }
         catch (err) {
             this.logger.warn(`assistant customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`);
         }
-        return { text: exports.FAILED_REPLY, actions, warning, touched };
+        return { ...done, text: exports.FAILED_REPLY };
+    }
+    async loop(messages, tools, ctx, acc = { text: '', actions: [], warning: null, touched: [] }) {
+        const { actions, touched } = acc;
+        for (let round = 0; round <= exports.MAX_TOOL_ROUNDS; round++) {
+            const last = round === exports.MAX_TOOL_ROUNDS;
+            const reply = await this.openai.chatMessages({
+                model: this.model(),
+                messages,
+                tools: last ? undefined : tools,
+                maxTokens: 1200,
+                timeoutMs: 90_000,
+            });
+            if (!reply.toolCalls.length || last) {
+                const said = reply.content?.trim();
+                return {
+                    text: said
+                        ? (0, links_util_1.fillLinks)(said, ctx.links)
+                        : actions.length
+                            ? 'Done.'
+                            : exports.FAILED_REPLY,
+                    actions,
+                    warning: acc.warning,
+                    touched,
+                };
+            }
+            messages.push({
+                role: 'assistant',
+                content: reply.content,
+                toolCalls: reply.toolCalls,
+            });
+            for (const call of reply.toolCalls) {
+                const outcome = await this.tools.run(call.name, call.arguments, ctx);
+                if (outcome.action)
+                    actions.push(outcome.action);
+                if (outcome.warning)
+                    acc.warning = outcome.warning;
+                if (outcome.attachmentId)
+                    touched.push(outcome.attachmentId);
+                messages.push({
+                    role: 'tool',
+                    toolCallId: call.id,
+                    content: outcome.content,
+                });
+            }
+        }
+        return { ...acc, text: exports.FAILED_REPLY };
+    }
+    runTask(scope, task, channel) {
+        return (0, ai_usage_context_1.withAiUsage)({
+            customerId: scope.customerId,
+            companyId: scope.companyId,
+            feature: 'SCHEDULE',
+        }, async () => {
+            try {
+                const prompt = (0, assistant_prompt_1.systemPrompt)({
+                    channel,
+                    today: new Date().toISOString().slice(0, 10),
+                    bookLabel: await this.bookLabel(scope),
+                    rules: await this.rules.promptBlock(scope),
+                    preferredContact: await this.preferredContact(scope.customerId),
+                }, await this.instructions?.assistant());
+                const messages = [
+                    { role: 'system', content: `${prompt}\n\n${SCHEDULED_NOTE}` },
+                    { role: 'user', content: task },
+                ];
+                const out = await this.loop(messages, assistant_tools_1.READ_TOOLS, {
+                    scope,
+                    messageId: null,
+                    links: new Map(),
+                });
+                return out.text === exports.FAILED_REPLY ? null : out.text;
+            }
+            catch (err) {
+                this.logger.warn(`scheduled task for customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`);
+                return null;
+            }
+        });
     }
     async promptFor(conversation, extra = {}) {
         const scope = {

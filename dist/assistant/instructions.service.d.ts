@@ -24,9 +24,9 @@ export declare class InstructionsService implements OnModuleInit {
     strong(): Promise<AiInstruction[]>;
     regular(): Promise<AiInstruction[]>;
     history(instructionId: number, take?: number): Promise<{
-        reason: string | null;
         id: number;
         createdAt: Date;
+        reason: string | null;
         instructionId: number;
         action: string;
         beforeText: string | null;

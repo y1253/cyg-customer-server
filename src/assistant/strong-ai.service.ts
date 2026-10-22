@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiConversation, AiEscalation } from '@prisma/client';
@@ -169,7 +170,14 @@ export class StrongAiService implements OnModuleInit {
           model: this.model(),
         },
       });
-      const run = this.investigate(escalation, conversation, report);
+      const run = withAiUsage(
+        {
+          customerId: conversation.customerId,
+          companyId: conversation.companyId,
+          feature: 'STRONG_AI',
+        },
+        () => this.investigate(escalation, conversation, report),
+      );
 
       // On a call the caller must never wait in silence: check in the background, and text
       // them when it is fixed.

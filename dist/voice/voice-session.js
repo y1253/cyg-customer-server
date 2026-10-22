@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceSession = void 0;
 const common_1 = require("@nestjs/common");
 const ws_1 = __importDefault(require("ws"));
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const assistant_tools_1 = require("../assistant/assistant-tools");
 const book_switch_1 = require("../assistant/book-switch");
 const links_util_1 = require("../assistant/links.util");
@@ -30,6 +31,7 @@ class VoiceSession {
     callSid = null;
     claims = null;
     conversation = null;
+    model = voice_util_1.DEFAULT_REALTIME_MODEL;
     settings = null;
     recordingSid = null;
     lastUserMessageId = null;
@@ -127,6 +129,7 @@ class VoiceSession {
         const conversation = this.conversation;
         const claims = this.claims;
         const model = this.deps.model || voice_util_1.DEFAULT_REALTIME_MODEL;
+        this.model = model;
         const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
         const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
         this.openai = this.deps.connect
@@ -225,6 +228,7 @@ class VoiceSession {
         }
         else if (has(voice_util_1.RT.responseDone, type)) {
             this.responding = false;
+            this.recordUsage(this.model, 'realtime', ev.response?.usage);
             if (this.fillerWanted && this.toolsRunning > 0) {
                 this.fillerWanted = false;
                 this.sendOpenAi({
@@ -237,6 +241,7 @@ class VoiceSession {
             this.answerToolsIfReady();
         }
         else if (has(voice_util_1.RT.userText, type)) {
+            this.recordUsage(voice_util_1.REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
             const said = typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
             if (said && this.conversation) {
                 const m = await this.deps.assistant.save(this.conversation, 'USER', said);
@@ -272,20 +277,27 @@ class VoiceSession {
         this.toolOutputsPending = false;
         this.sendOpenAi({ type: 'response.create' });
     }
+    recordUsage(model, kind, usage) {
+        const c = this.conversation;
+        if (!c || !usage)
+            return;
+        this.deps.usage?.recordFor({ customerId: c.customerId, companyId: c.companyId, feature: 'VOICE' }, model, kind, usage, 0);
+    }
     async runTool(ev) {
         const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
         const name = typeof ev.name === 'string' ? ev.name : '';
         const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
         const conversation = await this.freshConversation();
-        const outcome = await this.deps.tools.run(name, args, {
-            scope: {
-                customerId: conversation.customerId,
-                companyId: conversation.companyId,
-            },
+        const scope = {
+            customerId: conversation.customerId,
+            companyId: conversation.companyId,
+        };
+        const outcome = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'VOICE' }, () => this.deps.tools.run(name, args, {
+            scope,
             messageId: this.lastUserMessageId,
             conversation,
             links: this.links,
-        });
+        }));
         if (outcome.action)
             this.turnActions.push(outcome.action);
         if (outcome.warning)

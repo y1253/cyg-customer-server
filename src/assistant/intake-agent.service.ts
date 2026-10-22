@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AttachmentKind, type AiConversation } from '@prisma/client';
@@ -340,7 +341,7 @@ export class IntakeAgentService {
     if (!text) return { reply: null, fileText: false, companyId };
 
     // 4. A text: a receipt note to file, or a message for the assistant.
-    if (await this.isReceiptNote(text)) {
+    if (await this.isReceiptNote(text, conversation)) {
       const reply = `Got it — I'll file that${bookName ? ` in ${bookName}` : ''}.`;
       await this.assistant.save(conversation, 'USER', text);
       await this.assistant.save(conversation, 'ASSISTANT', reply);
@@ -368,7 +369,8 @@ export class IntakeAgentService {
     files: number[],
   ): Promise<Turn> {
     const question = bookQuestion(options);
-    const note = !files.length && !!text && (await this.isReceiptNote(text));
+    const note =
+      !files.length && !!text && (await this.isReceiptNote(text, conversation));
     const ask = async (reply: string) => {
       await this.askedBook(conversation, reply);
     };
@@ -485,19 +487,30 @@ ${question}`;
    * Receipt note or message? step11b: when unsure — or the AI is out — it is a MESSAGE, so
    * a question is never filed away unanswered (it used to be filed silently).
    */
-  private async isReceiptNote(text: string): Promise<boolean> {
+  private async isReceiptNote(
+    text: string,
+    conversation: AiConversation,
+  ): Promise<boolean> {
     if (/\?\s*$/.test(text)) return false;
     try {
-      const reply = await this.openai.chat({
-        model:
-          this.config.get<string>('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
-          'gpt-4.1-mini',
-        system: CLASSIFY_PROMPT,
-        user: `Text: """${text.slice(0, 2000)}"""`,
-        jsonSchema: { name: 'intake_text', schema: CLASSIFY_SCHEMA },
-        maxTokens: 20,
-        timeoutMs: 20_000,
-      });
+      const reply = await withAiUsage(
+        {
+          customerId: conversation.customerId,
+          companyId: conversation.companyId,
+          feature: 'INTAKE',
+        },
+        () =>
+          this.openai.chat({
+            model:
+              this.config.get<string>('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
+              'gpt-4.1-mini',
+            system: CLASSIFY_PROMPT,
+            user: `Text: """${text.slice(0, 2000)}"""`,
+            jsonSchema: { name: 'intake_text', schema: CLASSIFY_SCHEMA },
+            maxTokens: 20,
+            timeoutMs: 20_000,
+          }),
+      );
       return (JSON.parse(reply) as { kind?: string }).kind === 'RECEIPT_NOTE';
     } catch (err) {
       this.logger.warn(

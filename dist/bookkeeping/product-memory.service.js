@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var ProductMemoryService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProductMemoryService = void 0;
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const common_1 = require("@nestjs/common");
 const rules_service_1 = require("../assistant/rules.service");
 const client_1 = require("@prisma/client");
@@ -50,11 +51,12 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
             const ask = (0, product_memory_util_1.itemsToAsk)(names, rules, memory);
             if (ask.length && this.categorizer.configured) {
                 try {
-                    const answers = await this.categorizer.categorize(ask, {
+                    const rules = (await this.rules?.promptBlock(scope, 'CATEGORY', 'PRODUCT_CATEGORIZER')) ?? '';
+                    const answers = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'PRODUCTS' }, () => this.categorizer.categorize(ask, {
                         store: context.store,
                         category: context.parentCategory,
-                        rules: (await this.rules?.promptBlock(scope, 'CATEGORY', 'PRODUCT_CATEGORIZER')) ?? '',
-                    });
+                        rules,
+                    }));
                     const named = ask.flatMap((a) => {
                         const category = answers.get(a.key);
                         return category ? [{ ...a, category }] : [];

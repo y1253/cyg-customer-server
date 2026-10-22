@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_TIMEZONE = exports.FREQUENCIES = void 0;
+exports.DEFAULT_TIMEZONE = exports.AI_FREQUENCIES = exports.FREQUENCIES = void 0;
 exports.safeZone = safeZone;
 exports.parseTime = parseTime;
 exports.wallClock = wallClock;
@@ -9,6 +9,11 @@ exports.nextRun = nextRun;
 exports.previousMonth = previousMonth;
 exports.describeRule = describeRule;
 exports.FREQUENCIES = ['WEEKLY', 'MONTHLY'];
+exports.AI_FREQUENCIES = [
+    'DAILY',
+    'WEEKLY',
+    'MONTHLY',
+];
 exports.DEFAULT_TIMEZONE = 'America/Toronto';
 function safeZone(tz) {
     try {
@@ -75,7 +80,9 @@ function nextRun(rule, after) {
         const y = day.getUTCFullYear();
         const m = day.getUTCMonth() + 1;
         const d = day.getUTCDate();
-        if (rule.frequency === 'WEEKLY') {
+        if (rule.frequency === 'DAILY') {
+        }
+        else if (rule.frequency === 'WEEKLY') {
             if (rule.weekday === null || day.getUTCDay() !== rule.weekday)
                 continue;
         }
@@ -125,6 +132,8 @@ function describeRule(rule) {
             timeZone: 'UTC',
         })
         : rule.time;
+    if (rule.frequency === 'DAILY')
+        return `Every day at ${time}`;
     if (rule.frequency === 'WEEKLY') {
         return `Every ${WEEKDAY_NAMES[rule.weekday ?? 1]} at ${time}`;
     }

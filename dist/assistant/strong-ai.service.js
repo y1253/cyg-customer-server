@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var StrongAiService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StrongAiService = exports.STRONG_MAX_ROUNDS = void 0;
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const openai_client_1 = require("../ai/openai.client");
@@ -128,7 +129,11 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
                     model: this.model(),
                 },
             });
-            const run = this.investigate(escalation, conversation, report);
+            const run = (0, ai_usage_context_1.withAiUsage)({
+                customerId: conversation.customerId,
+                companyId: conversation.companyId,
+                feature: 'STRONG_AI',
+            }, () => this.investigate(escalation, conversation, report));
             if (conversation.channel === 'VOICE') {
                 void run.then((f) => this.textAfterCall(conversation, f));
                 return {

@@ -1,6 +1,7 @@
 import { OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Server } from 'http';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { AssistantTools } from '../assistant/assistant-tools';
 import { AssistantService } from '../assistant/assistant.service';
 import { SignalWireClient } from '../messaging/signalwire.client';
@@ -14,9 +15,10 @@ export declare class VoiceGateway implements OnModuleDestroy {
     private readonly assistant;
     private readonly tools;
     private readonly signalwire;
+    private readonly usage;
     private readonly logger;
     private readonly wss;
-    constructor(prisma: PrismaService, config: ConfigService, calls: VoiceCallsService, assistant: AssistantService, tools: AssistantTools, signalwire: SignalWireClient);
+    constructor(prisma: PrismaService, config: ConfigService, calls: VoiceCallsService, assistant: AssistantService, tools: AssistantTools, signalwire: SignalWireClient, usage: AiUsageService);
     attach(server: Server): void;
     onModuleDestroy(): void;
 }

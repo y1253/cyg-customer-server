@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import {
   Injectable,
   Logger,
@@ -65,16 +66,21 @@ export class ProductMemoryService {
       const ask = itemsToAsk(names, rules, memory);
       if (ask.length && this.categorizer.configured) {
         try {
-          const answers = await this.categorizer.categorize(ask, {
-            store: context.store,
-            category: context.parentCategory,
-            rules:
-              (await this.rules?.promptBlock(
-                scope,
-                'CATEGORY',
-                'PRODUCT_CATEGORIZER',
-              )) ?? '',
-          });
+          const rules =
+            (await this.rules?.promptBlock(
+              scope,
+              'CATEGORY',
+              'PRODUCT_CATEGORIZER',
+            )) ?? '';
+          const answers = await withAiUsage(
+            { ...scope, feature: 'PRODUCTS' },
+            () =>
+              this.categorizer.categorize(ask, {
+                store: context.store,
+                category: context.parentCategory,
+                rules,
+              }),
+          );
           const named = ask.flatMap((a) => {
             const category = answers.get(a.key);
             return category ? [{ ...a, category }] : [];

@@ -68,13 +68,26 @@ export declare class SchedulesService implements OnModuleInit {
     tick(): Promise<void>;
     private run;
     private compose;
-    private email;
+    email(to: string, m: {
+        subject: string;
+        text: string;
+        html: string;
+        attachments: Array<{
+            filename: string;
+            content: Buffer;
+            contentType: string;
+        }>;
+    }): Promise<string | null>;
     status(scope: BookScope, since: Date | null): Promise<AccountStatus>;
     private ensure;
     private view;
-    private delivery;
-    private liveBook;
+    delivery(customerId: number, noCall?: boolean): Promise<ScheduleView['delivery']>;
+    liveBook(scope: BookScope): Promise<{
+        customerName: string;
+        email: string | null;
+        book: string;
+    } | null>;
     private dashboardLink;
-    private logText;
+    logText(scope: BookScope, phone: string, text: string): Promise<void>;
     static typeOf(raw: string): BookScheduleType;
 }

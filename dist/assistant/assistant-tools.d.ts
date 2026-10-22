@@ -14,6 +14,7 @@ import { FileLinkService } from '../bookkeeping/file-links';
 import { type Channel } from './assistant-prompt';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
+import { AiSchedulesStore } from '../schedules/ai-schedules.store';
 import { type LinkBook } from './links.util';
 export interface AgentAction {
     tool: string;
@@ -62,10 +63,13 @@ export declare class AssistantTools {
     private readonly rules;
     private readonly links;
     private readonly messenger?;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined);
+    private readonly aiSchedules?;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined);
     private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;
+    private schedulesStore;
+    private schedulesList;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;
     private exec;
     private switchBook;

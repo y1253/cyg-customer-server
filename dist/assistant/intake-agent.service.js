@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var IntakeAgentService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.IntakeAgentService = exports.SEND_FAILED = exports.NOT_DELIVERED = void 0;
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
@@ -216,7 +217,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
         }
         if (!text)
             return { reply: null, fileText: false, companyId };
-        if (await this.isReceiptNote(text)) {
+        if (await this.isReceiptNote(text, conversation)) {
             const reply = `Got it — I'll file that${bookName ? ` in ${bookName}` : ''}.`;
             await this.assistant.save(conversation, 'USER', text);
             await this.assistant.save(conversation, 'ASSISTANT', reply);
@@ -232,7 +233,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
     }
     async undecided(conversation, options, text, files) {
         const question = (0, assistant_prompt_1.bookQuestion)(options);
-        const note = !files.length && !!text && (await this.isReceiptNote(text));
+        const note = !files.length && !!text && (await this.isReceiptNote(text, conversation));
         const ask = async (reply) => {
             await this.askedBook(conversation, reply);
         };
@@ -316,11 +317,15 @@ ${question}`;
             orderBy: { id: 'desc' },
         });
     }
-    async isReceiptNote(text) {
+    async isReceiptNote(text, conversation) {
         if (/\?\s*$/.test(text))
             return false;
         try {
-            const reply = await this.openai.chat({
+            const reply = await (0, ai_usage_context_1.withAiUsage)({
+                customerId: conversation.customerId,
+                companyId: conversation.companyId,
+                feature: 'INTAKE',
+            }, () => this.openai.chat({
                 model: this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
                     'gpt-4.1-mini',
                 system: CLASSIFY_PROMPT,
@@ -328,7 +333,7 @@ ${question}`;
                 jsonSchema: { name: 'intake_text', schema: CLASSIFY_SCHEMA },
                 maxTokens: 20,
                 timeoutMs: 20_000,
-            });
+            }));
             return JSON.parse(reply).kind === 'RECEIPT_NOTE';
         }
         catch (err) {

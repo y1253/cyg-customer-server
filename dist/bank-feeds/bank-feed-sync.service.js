@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var BankFeedSyncService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BankFeedSyncService = void 0;
+const ai_usage_context_1 = require("../ai/ai-usage.context");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const schedule_1 = require("@nestjs/schedule");
@@ -706,13 +707,13 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             if (!unknown.length)
                 return lines;
             const rules = (await this.rules?.promptBlock(scope, 'CATEGORY', 'BANK_FEED_CATEGORIZER')) ?? '';
-            const answers = await this.categorizer.categorize(unknown.map(({ l, i }) => ({
+            const answers = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'BANK_ROWS' }, () => this.categorizer.categorize(unknown.map(({ l, i }) => ({
                 key: String(i),
                 description: l.description,
                 merchant: l.name ?? null,
                 amount: l.amount,
                 hint: txns[i].category,
-            })), rules);
+            })), rules));
             return lines.map((l, i) => {
                 const a = answers.get(String(i));
                 return a

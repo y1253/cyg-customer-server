@@ -12,6 +12,7 @@ const openai_client_1 = require("../ai/openai.client");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const messaging_module_1 = require("../messaging/messaging.module");
+const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const assistant_controller_1 = require("./assistant.controller");
 const assistant_service_1 = require("./assistant.service");
 const assistant_tools_1 = require("./assistant-tools");
@@ -33,12 +34,13 @@ exports.AssistantModule = AssistantModule = __decorate([
         providers: [
             assistant_service_1.AssistantService,
             assistant_tools_1.AssistantTools,
+            ai_schedules_store_1.AiSchedulesStore,
             intake_agent_guard_1.IntakeAgentGuard,
             intake_agent_service_1.IntakeAgentService,
             openai_client_1.OpenAiClient,
             strong_ai_service_1.StrongAiService,
         ],
-        exports: [assistant_service_1.AssistantService, assistant_tools_1.AssistantTools],
+        exports: [assistant_service_1.AssistantService, assistant_tools_1.AssistantTools, ai_schedules_store_1.AiSchedulesStore],
     })
 ], AssistantModule);
 //# sourceMappingURL=assistant.module.js.map

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage, Server } from 'http';
 import type { Duplex } from 'stream';
 import { WebSocketServer } from 'ws';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { AssistantTools } from '../assistant/assistant-tools';
 import { AssistantService } from '../assistant/assistant.service';
 import { SignalWireClient } from '../messaging/signalwire.client';
@@ -32,6 +33,7 @@ export class VoiceGateway implements OnModuleDestroy {
     private readonly assistant: AssistantService,
     private readonly tools: AssistantTools,
     private readonly signalwire: SignalWireClient,
+    private readonly usage: AiUsageService,
   ) {}
 
   attach(server: Server): void {
@@ -47,6 +49,7 @@ export class VoiceGateway implements OnModuleDestroy {
             assistant: this.assistant,
             tools: this.tools,
             signalwire: this.signalwire,
+            usage: this.usage,
             openaiKey:
               this.config.get<string>('OPENAI_API_KEY')?.trim() || null,
             model:

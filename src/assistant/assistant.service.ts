@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiConversation, AiMessage, Prisma } from '@prisma/client';
+import { withAiUsage } from '../ai/ai-usage.context';
 import { OpenAiClient, type AgentMessage } from '../ai/openai.client';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
 import {
@@ -16,7 +17,13 @@ import {
 } from '../bookkeeping/attachments.service';
 import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
-import { AssistantTools, toolsFor, type AgentAction } from './assistant-tools';
+import {
+  AssistantTools,
+  READ_TOOLS,
+  toolsFor,
+  type AgentAction,
+  type ToolContext,
+} from './assistant-tools';
 import { systemPrompt, type Channel } from './assistant-prompt';
 import { InstructionsService } from './instructions.service';
 import { fillLinks, type LinkBook } from './links.util';
@@ -112,6 +119,23 @@ export function toMessageView(m: AiMessage): AssistantMessageView {
     createdAt: m.createdAt.toISOString(),
   };
 }
+
+interface LoopResult {
+  text: string;
+  actions: AgentAction[];
+  warning: string | null;
+  touched: number[];
+}
+
+/**
+ * step12: appended to the prompt of a scheduled run — nobody is there to answer a question,
+ * and nothing may be changed.
+ */
+const SCHEDULED_NOTE =
+  'This is a SCHEDULED message the customer asked for: the user message below is the ' +
+  'task they set. Look the data up with your tools and write the message itself, ready to ' +
+  'send — no questions, no "let me know", no greeting beyond one short line. You cannot ' +
+  'change anything in this run. If there is nothing to report, say so in one line.';
 
 /** What the model remembers of an earlier answer: its text plus what it changed. */
 function historyText(m: AiMessage): string {
@@ -473,8 +497,8 @@ export class AssistantService {
     return { conversationId: conversation.id, message: m, reply: r };
   }
 
-  /** The tool loop. */
-  private async run(
+  /** The tool loop (step12: its OpenAI calls are this customer's ASSISTANT cost). */
+  private run(
     scope: BookScope,
     conversation: AiConversation,
     messageId: number,
@@ -482,19 +506,46 @@ export class AssistantService {
     history: AiMessage[],
     attachment?: unknown,
     files?: unknown[],
-  ): Promise<{
-    text: string;
-    actions: AgentAction[];
-    warning: string | null;
-    touched: number[];
-  }> {
+  ): Promise<LoopResult> {
+    return withAiUsage(
+      {
+        customerId: scope.customerId,
+        companyId: scope.companyId,
+        feature: 'ASSISTANT',
+      },
+      () =>
+        this.runChat(
+          scope,
+          conversation,
+          messageId,
+          text,
+          history,
+          attachment,
+          files,
+        ),
+    );
+  }
+
+  private async runChat(
+    scope: BookScope,
+    conversation: AiConversation,
+    messageId: number,
+    text: string,
+    history: AiMessage[],
+    attachment?: unknown,
+    files?: unknown[],
+  ): Promise<LoopResult> {
     const channel = conversation.channel as Channel;
-    const actions: AgentAction[] = [];
-    const touched: number[] = [];
     const tools = toolsFor(channel);
     // step12: links issued in this answer — the model sees `[[link:N]]`, never the URL.
     const links: LinkBook = new Map();
-    let warning: string | null = null;
+    // What was done before an AI failure is still reported under the failed reply.
+    const done: LoopResult = {
+      text: '',
+      actions: [],
+      warning: null,
+      touched: [],
+    };
     try {
       const messages: AgentMessage[] = [
         {
@@ -509,56 +560,116 @@ export class AssistantService {
         ),
         { role: 'user', content: text },
       ];
-      for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-        const last = round === MAX_TOOL_ROUNDS;
-        const reply = await this.openai.chatMessages({
-          model: this.model(),
-          messages,
-          tools: last ? undefined : tools,
-          maxTokens: 1200,
-          timeoutMs: 90_000,
-        });
-        if (!reply.toolCalls.length || last) {
-          const said = reply.content?.trim();
-          return {
-            text: said
-              ? fillLinks(said, links)
-              : actions.length
-                ? 'Done.'
-                : FAILED_REPLY,
-            actions,
-            warning,
-            touched,
-          };
-        }
-        messages.push({
-          role: 'assistant',
-          content: reply.content,
-          toolCalls: reply.toolCalls,
-        });
-        for (const call of reply.toolCalls) {
-          const outcome = await this.tools.run(call.name, call.arguments, {
-            scope,
-            messageId,
-            conversation,
-            links,
-          });
-          if (outcome.action) actions.push(outcome.action);
-          if (outcome.warning) warning = outcome.warning;
-          if (outcome.attachmentId) touched.push(outcome.attachmentId);
-          messages.push({
-            role: 'tool',
-            toolCallId: call.id,
-            content: outcome.content,
-          });
-        }
-      }
+      return await this.loop(
+        messages,
+        tools,
+        { scope, messageId, conversation, links },
+        done,
+      );
     } catch (err) {
       this.logger.warn(
         `assistant customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`,
       );
     }
-    return { text: FAILED_REPLY, actions, warning, touched };
+    return { ...done, text: FAILED_REPLY };
+  }
+
+  /** Model ↔ tools until the model answers (or `MAX_TOOL_ROUNDS`). Throws on an AI outage. */
+  private async loop(
+    messages: AgentMessage[],
+    tools: ReturnType<typeof toolsFor>,
+    ctx: ToolContext & { links: LinkBook },
+    acc: LoopResult = { text: '', actions: [], warning: null, touched: [] },
+  ): Promise<LoopResult> {
+    const { actions, touched } = acc;
+    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+      const last = round === MAX_TOOL_ROUNDS;
+      const reply = await this.openai.chatMessages({
+        model: this.model(),
+        messages,
+        tools: last ? undefined : tools,
+        maxTokens: 1200,
+        timeoutMs: 90_000,
+      });
+      if (!reply.toolCalls.length || last) {
+        const said = reply.content?.trim();
+        return {
+          text: said
+            ? fillLinks(said, ctx.links)
+            : actions.length
+              ? 'Done.'
+              : FAILED_REPLY,
+          actions,
+          warning: acc.warning,
+          touched,
+        };
+      }
+      messages.push({
+        role: 'assistant',
+        content: reply.content,
+        toolCalls: reply.toolCalls,
+      });
+      for (const call of reply.toolCalls) {
+        const outcome = await this.tools.run(call.name, call.arguments, ctx);
+        if (outcome.action) actions.push(outcome.action);
+        if (outcome.warning) acc.warning = outcome.warning;
+        if (outcome.attachmentId) touched.push(outcome.attachmentId);
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          content: outcome.content,
+        });
+      }
+    }
+    return { ...acc, text: FAILED_REPLY };
+  }
+
+  /**
+   * step12: one run of a schedule the customer asked for (`AiSchedule.task`) — the same
+   * agent, READ tools only, no conversation saved. The answer is the message that goes out
+   * by `channel`; null when the AI failed (nothing is sent). Its cost is SCHEDULE.
+   */
+  runTask(
+    scope: BookScope,
+    task: string,
+    channel: 'SMS' | 'EMAIL',
+  ): Promise<string | null> {
+    return withAiUsage(
+      {
+        customerId: scope.customerId,
+        companyId: scope.companyId,
+        feature: 'SCHEDULE',
+      },
+      async () => {
+        try {
+          const prompt = systemPrompt(
+            {
+              channel,
+              today: new Date().toISOString().slice(0, 10),
+              bookLabel: await this.bookLabel(scope),
+              rules: await this.rules.promptBlock(scope),
+              preferredContact: await this.preferredContact(scope.customerId),
+            },
+            await this.instructions?.assistant(),
+          );
+          const messages: AgentMessage[] = [
+            { role: 'system', content: `${prompt}\n\n${SCHEDULED_NOTE}` },
+            { role: 'user', content: task },
+          ];
+          const out = await this.loop(messages, READ_TOOLS, {
+            scope,
+            messageId: null,
+            links: new Map(),
+          });
+          return out.text === FAILED_REPLY ? null : out.text;
+        } catch (err) {
+          this.logger.warn(
+            `scheduled task for customer ${scope.customerId} failed: ${err instanceof Error ? err.message : err}`,
+          );
+          return null;
+        }
+      },
+    );
   }
 
   /**

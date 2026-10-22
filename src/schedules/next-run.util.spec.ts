@@ -85,6 +85,25 @@ describe('nextRun (step11b schedules)', () => {
     );
   });
 
+  it('fires daily at the next 6:00 local (step12)', () => {
+    const daily: ScheduleRule = {
+      frequency: 'DAILY',
+      weekday: null,
+      monthDay: null,
+      time: '06:00',
+      timezone: TZ,
+    };
+    // Thu 2026-10-22 09:00 EDT -> Fri 06:00 EDT = 10:00 UTC
+    expect(
+      nextRun(daily, new Date('2026-10-22T13:00:00Z'))?.toISOString(),
+    ).toBe('2026-10-23T10:00:00.000Z');
+    // 05:00 EDT -> same day 06:00
+    expect(
+      nextRun(daily, new Date('2026-10-22T09:00:00Z'))?.toISOString(),
+    ).toBe('2026-10-22T10:00:00.000Z');
+    expect(describeRule(daily)).toBe('Every day at 6:00 AM');
+  });
+
   it('describes a rule in words', () => {
     expect(describeRule(weekly(1, '14:00'))).toBe('Every Monday at 2:00 PM');
     expect(describeRule(monthly(0, '09:00'))).toBe(

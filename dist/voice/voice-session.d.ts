@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import type { AiUsageService } from '../ai-usage/ai-usage.service';
 import type { AssistantTools } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
 import type { SignalWireClient } from '../messaging/signalwire.client';
@@ -10,6 +11,7 @@ export interface VoiceDeps {
     assistant: AssistantService;
     tools: AssistantTools;
     signalwire: SignalWireClient;
+    usage?: AiUsageService;
     openaiKey: string | null;
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
@@ -23,6 +25,7 @@ export declare class VoiceSession {
     private callSid;
     private claims;
     private conversation;
+    private model;
     private settings;
     private recordingSid;
     private lastUserMessageId;
@@ -49,6 +52,7 @@ export declare class VoiceSession {
     private opening;
     private onOpenAi;
     private answerToolsIfReady;
+    private recordUsage;
     private runTool;
     private saveAssistant;
     private freshConversation;

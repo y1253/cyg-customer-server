@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import type { AiConversation } from '@prisma/client';
 import WebSocket from 'ws';
+import { withAiUsage } from '../ai/ai-usage.context';
+import type { AiUsageService } from '../ai-usage/ai-usage.service';
 import type { AgentAction, AssistantTools } from '../assistant/assistant-tools';
 import { toolsFor } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
@@ -12,6 +14,7 @@ import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
 import {
   DEFAULT_REALTIME_MODEL,
   MuLawTrack,
+  REALTIME_TRANSCRIBE_MODEL,
   RT,
   muLawStereoWav,
   languageName,
@@ -26,6 +29,8 @@ export interface VoiceDeps {
   assistant: AssistantService;
   tools: AssistantTools;
   signalwire: SignalWireClient;
+  /** step12: AI cost tracking (absent in the spec). */
+  usage?: AiUsageService;
   openaiKey: string | null;
   model: string | null;
   /** Opens the Realtime socket — injectable so the spec can hand in a fake. */
@@ -33,6 +38,8 @@ export interface VoiceDeps {
 }
 
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
+
+type Obj = Record<string, unknown>;
 
 /** A WebSocket frame as text (it may arrive as a Buffer, an ArrayBuffer or fragments). */
 function rawText(raw: WebSocket.RawData): string {
@@ -68,6 +75,8 @@ export class VoiceSession {
   private callSid: string | null = null;
   private claims: VoiceTokenClaims | null = null;
   private conversation: AiConversation | null = null;
+  /** step12: the Realtime model, for cost tracking. */
+  private model = DEFAULT_REALTIME_MODEL;
   private settings: VoiceSettings | null = null;
   private recordingSid: string | null = null;
   /** The customer's last saved sentence — the "message" a tool's action belongs to. */
@@ -211,6 +220,7 @@ export class VoiceSession {
     const conversation = this.conversation!;
     const claims = this.claims!;
     const model = this.deps.model || DEFAULT_REALTIME_MODEL;
+    this.model = model;
     const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
     const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
     this.openai = this.deps.connect
@@ -323,6 +333,11 @@ export class VoiceSession {
       this.spoke = false;
     } else if (has(RT.responseDone, type)) {
       this.responding = false;
+      this.recordUsage(
+        this.model,
+        'realtime',
+        (ev.response as Obj | undefined)?.usage,
+      );
       if (this.fillerWanted && this.toolsRunning > 0) {
         // The model went straight to a tool without a word: never leave the caller in silence.
         this.fillerWanted = false;
@@ -335,6 +350,7 @@ export class VoiceSession {
       this.fillerWanted = false;
       this.answerToolsIfReady();
     } else if (has(RT.userText, type)) {
+      this.recordUsage(REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
       const said =
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
       if (said && this.conversation) {
@@ -378,21 +394,41 @@ export class VoiceSession {
     this.sendOpenAi({ type: 'response.create' });
   }
 
+  /** step12: one Realtime response's / transcription's usage → this customer's VOICE cost. */
+  private recordUsage(
+    model: string,
+    kind: 'realtime' | 'transcribe',
+    usage: unknown,
+  ): void {
+    const c = this.conversation;
+    if (!c || !usage) return;
+    this.deps.usage?.recordFor(
+      { customerId: c.customerId, companyId: c.companyId, feature: 'VOICE' },
+      model,
+      kind,
+      usage,
+      0,
+    );
+  }
+
   /** One tool call from the model, run exactly as the chat would, its result handed back. */
   private async runTool(ev: Record<string, unknown>): Promise<void> {
     const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
     const name = typeof ev.name === 'string' ? ev.name : '';
     const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
     const conversation = await this.freshConversation();
-    const outcome = await this.deps.tools.run(name, args, {
-      scope: {
-        customerId: conversation.customerId,
-        companyId: conversation.companyId,
-      },
-      messageId: this.lastUserMessageId,
-      conversation,
-      links: this.links,
-    });
+    const scope = {
+      customerId: conversation.customerId,
+      companyId: conversation.companyId,
+    };
+    const outcome = await withAiUsage({ ...scope, feature: 'VOICE' }, () =>
+      this.deps.tools.run(name, args, {
+        scope,
+        messageId: this.lastUserMessageId,
+        conversation,
+        links: this.links,
+      }),
+    );
     if (outcome.action) this.turnActions.push(outcome.action);
     if (outcome.warning) this.turnWarning = outcome.warning;
     if (outcome.attachmentId) this.turnTouched.push(outcome.attachmentId);

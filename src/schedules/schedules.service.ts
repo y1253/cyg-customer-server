@@ -472,8 +472,8 @@ export class SchedulesService implements OnModuleInit {
     };
   }
 
-  /** Sends one scheduled email; null = sent, else why not. */
-  private async email(
+  /** Sends one scheduled email; null = sent, else why not (step12: AI schedules too). */
+  async email(
     to: string,
     m: {
       subject: string;
@@ -622,7 +622,7 @@ export class SchedulesService implements OnModuleInit {
    * How a scheduled message reaches this customer: a TEXT when they prefer SMS or WhatsApp
    * and have a phone we can text, else their email address.
    */
-  private async delivery(
+  async delivery(
     customerId: number,
     /** A call was just missed: the text / email fallback. */
     noCall = false,
@@ -660,7 +660,7 @@ export class SchedulesService implements OnModuleInit {
   }
 
   /** The customer and the book's display name, or null when either is gone. */
-  private async liveBook(scope: BookScope): Promise<{
+  async liveBook(scope: BookScope): Promise<{
     customerName: string;
     email: string | null;
     book: string;
@@ -710,11 +710,7 @@ export class SchedulesService implements OnModuleInit {
    * A sent text is saved in that phone's assistant chat, so when the customer replies the
    * assistant knows what they are answering. A new chat starts on this book.
    */
-  private async logText(
-    scope: BookScope,
-    phone: string,
-    text: string,
-  ): Promise<void> {
+  async logText(scope: BookScope, phone: string, text: string): Promise<void> {
     try {
       const conversation =
         (await this.prisma.aiConversation.findFirst({

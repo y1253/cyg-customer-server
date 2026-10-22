@@ -1,3 +1,4 @@
+import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { StatementStatus, type BankStatement } from '@prisma/client';
@@ -106,7 +107,9 @@ export class StatementProcessorService {
     const worker = async (): Promise<void> => {
       while (next < due.length) {
         const row = due[next++];
-        await this.processOne(row);
+        await withAiUsage({ ...scopeOf(row), feature: 'STATEMENT' }, () =>
+          this.processOne(row),
+        );
       }
     };
     await Promise.all(

@@ -99,6 +99,9 @@ export declare class AssistantService {
         files?: unknown[];
     }): Promise<ChatResult>;
     private run;
+    private runChat;
+    private loop;
+    runTask(scope: BookScope, task: string, channel: 'SMS' | 'EMAIL'): Promise<string | null>;
     promptFor(conversation: AiConversation, extra?: {
         attachment?: unknown;
         files?: unknown[];

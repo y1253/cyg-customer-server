@@ -14,6 +14,7 @@ exports.VoiceGateway = exports.VOICE_WS_PATH = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const ws_1 = require("ws");
+const ai_usage_service_1 = require("../ai-usage/ai-usage.service");
 const assistant_tools_1 = require("../assistant/assistant-tools");
 const assistant_service_1 = require("../assistant/assistant.service");
 const signalwire_client_1 = require("../messaging/signalwire.client");
@@ -28,15 +29,17 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
     assistant;
     tools;
     signalwire;
+    usage;
     logger = new common_1.Logger(VoiceGateway_1.name);
     wss = new ws_1.WebSocketServer({ noServer: true });
-    constructor(prisma, config, calls, assistant, tools, signalwire) {
+    constructor(prisma, config, calls, assistant, tools, signalwire, usage) {
         this.prisma = prisma;
         this.config = config;
         this.calls = calls;
         this.assistant = assistant;
         this.tools = tools;
         this.signalwire = signalwire;
+        this.usage = usage;
     }
     attach(server) {
         server.on('upgrade', (req, socket, head) => {
@@ -50,6 +53,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
                     assistant: this.assistant,
                     tools: this.tools,
                     signalwire: this.signalwire,
+                    usage: this.usage,
                     openaiKey: this.config.get('OPENAI_API_KEY')?.trim() || null,
                     model: this.config.get('OPENAI_REALTIME_MODEL')?.trim() || null,
                 });
@@ -71,6 +75,7 @@ exports.VoiceGateway = VoiceGateway = VoiceGateway_1 = __decorate([
         voice_calls_service_1.VoiceCallsService,
         assistant_service_1.AssistantService,
         assistant_tools_1.AssistantTools,
-        signalwire_client_1.SignalWireClient])
+        signalwire_client_1.SignalWireClient,
+        ai_usage_service_1.AiUsageService])
 ], VoiceGateway);
 //# sourceMappingURL=voice.gateway.js.map

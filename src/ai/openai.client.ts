@@ -1,5 +1,11 @@
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
@@ -203,7 +209,11 @@ export function parseResponsesOutput(output: unknown): AgentReply {
 export class OpenAiClient {
   private readonly logger = new Logger(OpenAiClient.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    /** step12: cost tracking; absent in scripts and specs. */
+    @Optional() private readonly usage?: AiUsageService,
+  ) {}
 
   get configured(): boolean {
     return Boolean(this.config.get<string>('OPENAI_API_KEY')?.trim());
@@ -254,6 +264,7 @@ export class OpenAiClient {
 
     const data = (await res.json().catch(() => null)) as {
       error?: { message?: string };
+      usage?: unknown;
       choices?: Array<{
         message?: { content?: string | null; refusal?: string | null };
         finish_reason?: string;
@@ -262,6 +273,7 @@ export class OpenAiClient {
     this.logger.log(
       `openai ${req.model} ${res.status} ${Date.now() - started}ms`,
     );
+    this.usage?.record(req.model, 'chat', data?.usage, Date.now() - started);
 
     if (!res.ok) {
       throw new BadGatewayException(
@@ -311,6 +323,7 @@ export class OpenAiClient {
     }
     const data = (await res.json().catch(() => null)) as {
       error?: { message?: string };
+      usage?: unknown;
       choices?: Array<{
         message?: {
           content?: string | null;
@@ -326,6 +339,7 @@ export class OpenAiClient {
     this.logger.log(
       `openai ${req.model} agent ${res.status} ${Date.now() - started}ms`,
     );
+    this.usage?.record(req.model, 'chat', data?.usage, Date.now() - started);
     if (!res.ok) {
       throw new BadGatewayException(
         data?.error?.message ?? `The AI service answered ${res.status}`,
@@ -377,9 +391,16 @@ export class OpenAiClient {
     const data = (await res.json().catch(() => null)) as {
       error?: { message?: string };
       output?: unknown;
+      usage?: unknown;
     } | null;
     this.logger.log(
       `openai ${req.model} responses ${res.status} ${Date.now() - started}ms`,
+    );
+    this.usage?.record(
+      req.model,
+      'responses',
+      data?.usage,
+      Date.now() - started,
     );
     if (!res.ok) {
       throw new BadGatewayException(
@@ -434,10 +455,18 @@ export class OpenAiClient {
     }
     const data = (await res.json().catch(() => null)) as {
       text?: string;
+      usage?: unknown;
       error?: { message?: string };
     } | null;
     this.logger.log(
       `openai ${model} transcribe ${res.status} ${Date.now() - started}ms`,
+    );
+    this.usage?.record(
+      model,
+      'transcribe',
+      data?.usage,
+      Date.now() - started,
+      'TRANSCRIBE',
     );
     if (!res.ok) {
       throw new BadGatewayException(

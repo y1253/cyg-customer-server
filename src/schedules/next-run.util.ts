@@ -7,8 +7,14 @@
  * turned into an instant by asking `Intl` what the zone's offset is at that moment.
  */
 
-export type Frequency = 'WEEKLY' | 'MONTHLY';
+/** DAILY (step12) is only for the schedules the AI makes; the two built-ins stay weekly/monthly. */
+export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
 export const FREQUENCIES: readonly Frequency[] = ['WEEKLY', 'MONTHLY'];
+export const AI_FREQUENCIES: readonly Frequency[] = [
+  'DAILY',
+  'WEEKLY',
+  'MONTHLY',
+];
 
 export interface ScheduleRule {
   frequency: Frequency;
@@ -111,7 +117,9 @@ export function nextRun(rule: ScheduleRule, after: Date): Date | null {
     const y = day.getUTCFullYear();
     const m = day.getUTCMonth() + 1;
     const d = day.getUTCDate();
-    if (rule.frequency === 'WEEKLY') {
+    if (rule.frequency === 'DAILY') {
+      // every day matches
+    } else if (rule.frequency === 'WEEKLY') {
       if (rule.weekday === null || day.getUTCDay() !== rule.weekday) continue;
     } else {
       const want = rule.monthDay ?? 1;
@@ -168,6 +176,7 @@ export function describeRule(rule: ScheduleRule): string {
         timeZone: 'UTC',
       })
     : rule.time;
+  if (rule.frequency === 'DAILY') return `Every day at ${time}`;
   if (rule.frequency === 'WEEKLY') {
     return `Every ${WEEKDAY_NAMES[rule.weekday ?? 1]} at ${time}`;
   }
