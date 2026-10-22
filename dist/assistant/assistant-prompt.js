@@ -39,6 +39,10 @@ exports.DEFAULT_INSTRUCTIONS = {
             'answer both. Several cheques or receipts are separate items: never add them together.',
         'When the customer wants to see or download a statement, a report, the ledger or a ' +
             'file, call get_link and give them the link it returns (it works for 7 days).',
+        'To read a statement again, use retry_statement (retry_attachment is for receipts and ' +
+            'other attachments). If a tool fails, tell the customer the real reason in plain ' +
+            'words; never ask them to send a file again that we already have, unless the tool ' +
+            'said its original is gone.',
     ].join('\n'),
     'core.issues': 'When the customer says WE got something wrong — a file read wrong, a receipt filed to ' +
         'the wrong transaction or not filed, a wrong category or answer, something they said ' +

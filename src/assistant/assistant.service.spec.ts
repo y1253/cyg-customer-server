@@ -325,6 +325,63 @@ describe('AssistantTools', () => {
     );
     expect(out.action).toMatchObject({ tool: 'attach_receipt', ok: false });
   });
+
+  const ctx = { scope: { customerId: 1, companyId: null }, messageId: null };
+  const withDeps = (set: (deps: unknown[]) => void) => {
+    const deps = Array.from({ length: 11 }, () => ({})) as unknown[];
+    set(deps);
+    return new AssistantTools(
+      ...(deps as ConstructorParameters<typeof AssistantTools>),
+    );
+  };
+
+  it('re-reads a statement on its book and reports it', async () => {
+    const bookkeeping = {
+      retry: jest.fn().mockResolvedValue({ label: 'TD 5234 · Oct 2024' }),
+    };
+    const tools = withDeps((d) => (d[1] = bookkeeping));
+    const out = await tools.run(
+      'retry_statement',
+      JSON.stringify({ statementId: 178 }),
+      ctx,
+    );
+    expect(bookkeeping.retry).toHaveBeenCalledWith(ctx.scope, 178);
+    expect(out.action).toEqual({
+      tool: 'retry_statement',
+      ok: true,
+      summary: 'Reading TD 5234 · Oct 2024 again',
+    });
+  });
+
+  it('shows a link that could not be made as a failed action, with the reason', async () => {
+    const links = {
+      link: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('The original PDF of this statement is no longer stored'),
+        ),
+    };
+    const tools = withDeps((d) => (d[10] = links));
+    const out = await tools.run(
+      'get_link',
+      JSON.stringify({ type: 'statement', statementId: 178 }),
+      ctx,
+    );
+    expect(out.content).toContain('no longer stored');
+    expect(out.action).toMatchObject({ tool: 'get_link', ok: false });
+  });
+
+  it('keeps a failed plain read out of the actions', async () => {
+    const tools = withDeps(
+      (d) =>
+        (d[9] = {
+          listCustomerRules: jest.fn().mockRejectedValue(new Error('db down')),
+        }),
+    );
+    const out = await tools.run('list_rules', '{}', ctx);
+    expect(out.content).toContain('db down');
+    expect(out.action).toBeUndefined();
+  });
 });
 
 describe('RulesService', () => {

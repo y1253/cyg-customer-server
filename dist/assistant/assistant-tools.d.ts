@@ -61,6 +61,7 @@ export declare class AssistantTools {
     private readonly links;
     private readonly messenger?;
     constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined);
+    private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;

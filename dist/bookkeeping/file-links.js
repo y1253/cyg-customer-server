@@ -53,7 +53,7 @@ let FileLinkService = class FileLinkService {
     }
     async link(scope, target) {
         if (target.kind === 'statement') {
-            await this.bookkeeping.file(scope, target.id ?? 0);
+            await this.bookkeeping.fileInfo(scope, target.id ?? 0);
         }
         else if (target.kind === 'attachment') {
             await this.attachments.get(scope, target.id ?? 0);

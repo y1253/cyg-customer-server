@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   AttachmentStatus,
   StatementStatus,
@@ -289,8 +289,15 @@ const WRITE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'retry_attachment',
-    description: 'Read a failed or unmatched attachment again.',
+    description:
+      'Read a failed or unmatched attachment (receipt, cheque, voice note…) again. Not for a bank statement: use retry_statement.',
     parameters: obj({ attachmentId: int }, ['attachmentId']),
+  },
+  {
+    name: 'retry_statement',
+    description:
+      'Read a bank / card statement again from its PDF — one we could not read or that needs review (statementId from list_statements). Free; it takes a few minutes.',
+    parameters: obj({ statementId: int }, ['statementId']),
   },
   {
     name: 'delete_attachment',
@@ -376,6 +383,12 @@ export function toolsFor(channel: Channel): ToolDefinition[] {
     return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
   return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
 }
+/**
+ * Tools whose FAILURE is shown under the answer ("AI did:") and kept for the strong AI: every
+ * write, and get_link — a link the customer asked for that could not be made is something
+ * they must hear about, not a silent miss.
+ */
+const SHOWN_ON_FAILURE = new Set([...WRITE_TOOL_NAMES, 'get_link']);
 const ALL_TOOL_NAMES = new Set(
   [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name),
 );
@@ -421,6 +434,8 @@ export class AssistantTools {
     private readonly messenger?: CustomerMessenger,
   ) {}
 
+  private readonly logger = new Logger(AssistantTools.name);
+
   /** step12: set by `StrongAiService` (it depends on this class, so not injected here). */
   private issueHandler: IssueHandler | null = null;
 
@@ -447,9 +462,13 @@ export class AssistantTools {
       return await this.exec(name, args, ctx);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // A failed read leaves no other trace (only writes are stored as actions).
+      this.logger.warn(
+        `tool ${name} failed (conversation ${ctx.conversation?.id ?? '-'}): ${message}`,
+      );
       return {
         content: json({ error: message }),
-        ...(WRITE_TOOL_NAMES.has(name) && {
+        ...(SHOWN_ON_FAILURE.has(name) && {
           action: {
             tool: name,
             ok: false,
@@ -753,6 +772,10 @@ export class AssistantTools {
       case 'retry_attachment': {
         const view = await this.attachments.retry(scope, id(a.attachmentId));
         return done(`Reading ${view.filename} again`);
+      }
+      case 'retry_statement': {
+        const view = await this.bookkeeping.retry(scope, id(a.statementId));
+        return done(`Reading ${view.label} again`);
       }
       case 'delete_attachment': {
         const view = await this.attachments.get(scope, id(a.attachmentId));

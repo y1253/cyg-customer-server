@@ -86,6 +86,11 @@ export declare class BookkeepingService {
         filename: string;
         size: number;
     }>;
+    fileInfo(scope: BookScope, id: number): Promise<{
+        storageKey: string;
+        filename: string;
+        size: number;
+    }>;
     retry(scope: BookScope, id: number): Promise<StatementView>;
     remove(scope: BookScope, id: number): Promise<void>;
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;

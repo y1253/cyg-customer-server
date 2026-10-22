@@ -506,18 +506,31 @@ export class BookkeepingService {
     scope: BookScope,
     id: number,
   ): Promise<{ stream: Readable; filename: string; size: number }> {
+    const f = await this.fileInfo(scope, id);
+    return {
+      stream: await this.storage.getStream(f.storageKey),
+      filename: f.filename,
+      size: f.size,
+    };
+  }
+
+  /** The statement's PDF exists — checked without opening it (the assistant's links). */
+  async fileInfo(
+    scope: BookScope,
+    id: number,
+  ): Promise<{ storageKey: string; filename: string; size: number }> {
     const s = await this.owned(scope, id);
     // A bank-feed month (step11) was built from transactions; there is no file.
     if (!s.storageKey)
-      throw new NotFoundException('This statement came from your bank feed');
+      throw new NotFoundException(
+        'This statement came from the bank feed, so there is no PDF of it',
+      );
     const info = await this.storage.head(s.storageKey);
     if (!info)
-      throw new NotFoundException('The original file is no longer available');
-    return {
-      stream: await this.storage.getStream(s.storageKey),
-      filename: s.filename,
-      size: info.size,
-    };
+      throw new NotFoundException(
+        'The original PDF of this statement is no longer stored',
+      );
+    return { storageKey: s.storageKey, filename: s.filename, size: info.size };
   }
 
   async retry(scope: BookScope, id: number): Promise<StatementView> {

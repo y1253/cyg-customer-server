@@ -8,6 +8,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var AssistantTools_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AssistantTools = exports.WRITE_TOOL_NAMES = exports.ASSISTANT_TOOLS = exports.READ_TOOLS = exports.NOT_UNDERSTOOD_WARNING = void 0;
 exports.toolsFor = toolsFor;
@@ -194,8 +195,13 @@ const WRITE_TOOLS = [
     },
     {
         name: 'retry_attachment',
-        description: 'Read a failed or unmatched attachment again.',
+        description: 'Read a failed or unmatched attachment (receipt, cheque, voice note…) again. Not for a bank statement: use retry_statement.',
         parameters: obj({ attachmentId: int }, ['attachmentId']),
+    },
+    {
+        name: 'retry_statement',
+        description: 'Read a bank / card statement again from its PDF — one we could not read or that needs review (statementId from list_statements). Free; it takes a few minutes.',
+        parameters: obj({ statementId: int }, ['statementId']),
     },
     {
         name: 'delete_attachment',
@@ -256,6 +262,7 @@ function toolsFor(channel) {
         return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
     return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
 }
+const SHOWN_ON_FAILURE = new Set([...exports.WRITE_TOOL_NAMES, 'get_link']);
 const ALL_TOOL_NAMES = new Set([...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name));
 const s = (v) => typeof v === 'string' && v.trim() ? v.trim() : null;
 const n = (v) => typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -271,7 +278,7 @@ const json = (v) => {
         ? `${text.slice(0, MAX_RESULT_CHARS)}… (cut — narrow the search)`
         : text;
 };
-let AssistantTools = class AssistantTools {
+let AssistantTools = AssistantTools_1 = class AssistantTools {
     prisma;
     bookkeeping;
     reports;
@@ -298,6 +305,7 @@ let AssistantTools = class AssistantTools {
         this.links = links;
         this.messenger = messenger;
     }
+    logger = new common_1.Logger(AssistantTools_1.name);
     issueHandler = null;
     setIssueHandler(handler) {
         this.issueHandler = handler;
@@ -318,9 +326,10 @@ let AssistantTools = class AssistantTools {
         }
         catch (err) {
             const message = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`tool ${name} failed (conversation ${ctx.conversation?.id ?? '-'}): ${message}`);
             return {
                 content: json({ error: message }),
-                ...(exports.WRITE_TOOL_NAMES.has(name) && {
+                ...(SHOWN_ON_FAILURE.has(name) && {
                     action: {
                         tool: name,
                         ok: false,
@@ -572,6 +581,10 @@ let AssistantTools = class AssistantTools {
                 const view = await this.attachments.retry(scope, id(a.attachmentId));
                 return done(`Reading ${view.filename} again`);
             }
+            case 'retry_statement': {
+                const view = await this.bookkeeping.retry(scope, id(a.statementId));
+                return done(`Reading ${view.label} again`);
+            }
             case 'delete_attachment': {
                 const view = await this.attachments.get(scope, id(a.attachmentId));
                 await this.attachments.remove(scope, view.id);
@@ -656,7 +669,7 @@ let AssistantTools = class AssistantTools {
     }
 };
 exports.AssistantTools = AssistantTools;
-exports.AssistantTools = AssistantTools = __decorate([
+exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         bookkeeping_service_1.BookkeepingService,

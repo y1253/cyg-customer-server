@@ -319,17 +319,21 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return ctx.anyForeign ? withFx(views, ctx, byId) : views;
     }
     async file(scope, id) {
+        const f = await this.fileInfo(scope, id);
+        return {
+            stream: await this.storage.getStream(f.storageKey),
+            filename: f.filename,
+            size: f.size,
+        };
+    }
+    async fileInfo(scope, id) {
         const s = await this.owned(scope, id);
         if (!s.storageKey)
-            throw new common_1.NotFoundException('This statement came from your bank feed');
+            throw new common_1.NotFoundException('This statement came from the bank feed, so there is no PDF of it');
         const info = await this.storage.head(s.storageKey);
         if (!info)
-            throw new common_1.NotFoundException('The original file is no longer available');
-        return {
-            stream: await this.storage.getStream(s.storageKey),
-            filename: s.filename,
-            size: info.size,
-        };
+            throw new common_1.NotFoundException('The original PDF of this statement is no longer stored');
+        return { storageKey: s.storageKey, filename: s.filename, size: info.size };
     }
     async retry(scope, id) {
         const s = await this.owned(scope, id);

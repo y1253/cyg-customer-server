@@ -52,14 +52,27 @@ const row = (
 });
 
 describe('systemPrompt from instruction rows', () => {
-  it('is exactly the pre-step12 prompt when the new issues block is off', () => {
+  it('is exactly the pre-step12 prompt with the old answers block and no issues block', () => {
+    const oldAnswers = DEFAULT_INSTRUCTIONS['core.answers']
+      .split('\n')
+      .slice(0, 2)
+      .join('\n');
     expect(
-      systemPrompt(SMS_INPUT, { byKey: { 'core.issues': '' }, extras: [] }),
+      systemPrompt(SMS_INPUT, {
+        byKey: { 'core.issues': '', 'core.answers': oldAnswers },
+        extras: [],
+      }),
     ).toBe(LEGACY_SMS_PROMPT);
   });
 
   it('tells the agent about report_ai_issue by default', () => {
     expect(systemPrompt(SMS_INPUT)).toContain('report_ai_issue');
+  });
+
+  it('tells the agent how to re-read a statement and to give a tool failure its real reason', () => {
+    const prompt = systemPrompt(SMS_INPUT);
+    expect(prompt).toContain('use retry_statement');
+    expect(prompt).toContain('tell the customer the real reason');
   });
 
   it('uses an edited block, fills placeholders, adds extras before the channel style', () => {
