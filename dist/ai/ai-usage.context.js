@@ -10,6 +10,7 @@ function withAiUsage(ctx, fn) {
         customerId: ctx.customerId !== undefined
             ? ctx.customerId
             : (outer?.customerId ?? null),
+        bookId: ctx.bookId !== undefined ? ctx.bookId : (outer?.bookId ?? null),
         companyId: ctx.companyId !== undefined
             ? ctx.companyId
             : (outer?.companyId ?? null),
@@ -19,6 +20,7 @@ function withAiUsage(ctx, fn) {
 function currentAiUsage() {
     return (storage.getStore() ?? {
         customerId: null,
+        bookId: null,
         companyId: null,
         feature: 'OTHER',
     });

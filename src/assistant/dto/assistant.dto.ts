@@ -74,3 +74,19 @@ export class IntakeAgentDto extends IntakeRouteDto {
   @MaxLength(64)
   replyFrom?: string | null;
 }
+
+/** step12c: a text / call from a number that is no customer — maybe someone the AI reached. */
+export class ContactReplyDto {
+  @IsIn(['SMS', 'WHATSAPP', 'CALL'])
+  channel!: 'SMS' | 'WHATSAPP' | 'CALL';
+
+  /** Their phone, E.164. */
+  @IsString()
+  @Length(3, 32)
+  phone!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  text?: string | null;
+}

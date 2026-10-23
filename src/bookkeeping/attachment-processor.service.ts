@@ -372,6 +372,7 @@ export class AttachmentProcessorService {
         (await this.prisma.transactionAttachment.create({
           data: {
             customerId: row.customerId,
+            bookId: row.bookId,
             companyId: row.companyId,
             kind: row.kind,
             status: AttachmentStatus.PROCESSING,

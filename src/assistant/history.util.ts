@@ -13,7 +13,7 @@ export interface HistoryRow {
   role: string;
   text: string;
   createdAt: Date;
-  companyId: number | null;
+  bookId: number;
   /** `AiMessage.actions` as stored. */
   actions: unknown;
   files: { attachmentId: number; filename: string; removed: boolean }[];
@@ -99,8 +99,8 @@ export function whenLabel(at: Date, tz = DEFAULT_TIMEZONE): string {
 export function historyLine(
   r: HistoryRow,
   opts: {
-    currentCompanyId: number | null;
-    bookName: (id: number | null) => string;
+    currentBookId: number;
+    bookName: (id: number) => string;
   },
   maxLine = OTHER_CHANNELS.maxLine,
 ): string {
@@ -108,8 +108,8 @@ export function historyLine(
     CHANNEL_LABEL[r.channel] ?? r.channel,
     whenLabel(r.createdAt),
     r.role === 'USER' ? 'customer' : 'you',
-    ...(r.companyId !== opts.currentCompanyId
-      ? [opts.bookName(r.companyId)]
+    ...(r.bookId !== opts.currentBookId
+      ? [opts.bookName(r.bookId)]
       : []),
   ].join(' · ');
   const files = r.files.length
@@ -133,8 +133,8 @@ export function otherChannelsBlock(
   rows: HistoryRow[],
   opts: {
     now: Date;
-    currentCompanyId: number | null;
-    bookName: (id: number | null) => string;
+    currentBookId: number;
+    bookName: (id: number) => string;
   },
 ): string | null {
   const since = opts.now.getTime() - OTHER_CHANNELS.hours * 3600_000;
@@ -162,14 +162,14 @@ export function otherChannelsBlock(
 /** One `search_communications` hit for the model. */
 export function searchHit(
   r: HistoryRow,
-  bookName: (id: number | null) => string,
+  bookName: (id: number) => string,
 ) {
   return {
     messageId: r.id,
     at: r.createdAt.toISOString(),
     when: whenLabel(r.createdAt),
     channel: CHANNEL_LABEL[r.channel] ?? r.channel,
-    book: bookName(r.companyId),
+    book: bookName(r.bookId),
     who: r.role === 'USER' ? 'customer' : 'assistant',
     text: cut(r.text, 600),
     ...(r.files.length ? { files: r.files } : {}),

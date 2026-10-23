@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
+import { companyBook } from './books';
 import type { BookScope } from './scope';
 
 /**
@@ -104,7 +105,7 @@ export class StaffBookGuard implements CanActivate {
       select: { customerId: true },
     });
     if (!company?.customerId) throw new NotFoundException('Business not found');
-    return { customerId: company.customerId, companyId };
+    return companyBook(this.prisma, companyId);
   }
 }
 

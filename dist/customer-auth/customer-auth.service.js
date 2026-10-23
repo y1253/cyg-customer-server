@@ -19,6 +19,7 @@ const client_1 = require("@prisma/client");
 const bcryptjs_1 = require("bcryptjs");
 const crypto_1 = require("crypto");
 const google_auth_library_1 = require("google-auth-library");
+const books_1 = require("../bookkeeping/books");
 const mail_service_1 = require("../mail/mail.service");
 const code_mail_limiter_1 = require("./code-mail-limiter");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -38,6 +39,7 @@ const NOT_HUMAN = 'Please confirm you are human and try again.';
 const sha256 = (code) => (0, crypto_1.createHash)('sha256').update(code).digest();
 const CODE_EXPIRED = 'This code has expired. Please sign up again.';
 const RESET_EXPIRED = 'This code has expired. Please ask for a new one.';
+const NEEDS_EMAIL = 'Add an email to your account first — you sign in with your email and password';
 const BAD_CREDENTIALS = 'Email or password is incorrect';
 function toPublicCustomer(c) {
     return {
@@ -45,6 +47,7 @@ function toPublicCustomer(c) {
         name: c.name,
         email: c.email,
         authType: c.authType,
+        createdWith: c.createdWith,
         hasPassword: c.passwordHash !== null,
         avatarUrl: c.avatarUrl,
         phone: c.phone,
@@ -61,6 +64,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     hits = new Map();
     pending = new Map();
     resets = new Map();
+    emailCodes = new Map();
     googleClient = null;
     codeMails;
     constructor(prisma, jwt, config, mail) {
@@ -147,10 +151,12 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
                 name: entry.name,
                 email,
                 authType: client_1.CustomerAuthType.PASSWORD,
+                createdWith: client_1.CustomerCreatedWith.WEB_EMAIL,
                 passwordHash: entry.passwordHash,
                 lastLoginAt: new Date(),
             },
         });
+        await (0, books_1.ensureDefaultBook)(this.prisma, customer.id);
         return this.sign(customer);
     }
     async resendSignupCode(dto, ip) {
@@ -178,7 +184,11 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         }
     }
     async sendCode(entry, kind, ip, onLimit = 'throw') {
-        const store = kind === 'signup' ? this.pending : this.resets;
+        const store = kind === 'signup'
+            ? this.pending
+            : kind === 'email'
+                ? this.emailCodes
+                : this.resets;
         const verdict = this.codeMails.check(entry.email);
         if (verdict !== 'ok') {
             if (entry.sentAt === 0)
@@ -217,7 +227,9 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
                 fromName: 'CYG Finance',
                 ...(kind === 'signup'
                     ? (0, signup_code_email_1.buildSignupCodeEmail)(code, minutes)
-                    : (0, password_reset_email_1.buildPasswordCodeEmail)(code, minutes)),
+                    : kind === 'email'
+                        ? (0, signup_code_email_1.buildEmailConfirmCodeEmail)(code, minutes)
+                        : (0, password_reset_email_1.buildPasswordCodeEmail)(code, minutes)),
             });
         }
         catch (err) {
@@ -230,7 +242,11 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     }
     prunePending() {
         const now = Date.now();
-        const stores = [this.pending, this.resets];
+        const stores = [
+            this.pending,
+            this.resets,
+            this.emailCodes,
+        ];
         for (const store of stores) {
             for (const [key, entry] of store) {
                 if (entry.expiresAt < now)
@@ -288,6 +304,8 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             }
         }
         else {
+            if (!customer.email)
+                throw new common_1.BadRequestException(NEEDS_EMAIL);
             if (!dto.code) {
                 throw new common_1.BadRequestException('Enter the 6-digit code from the email');
             }
@@ -306,9 +324,64 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         if (customer.passwordHash) {
             throw new common_1.BadRequestException('Your account already has a password — enter it to change it');
         }
+        if (!customer.email)
+            throw new common_1.BadRequestException(NEEDS_EMAIL);
         this.prunePending();
         await this.issuePasswordCode(customer.email, ip, 'throw');
         return { email: customer.email };
+    }
+    async sendEmailCode(customerId, rawEmail, ip) {
+        this.throttle(ip);
+        const customer = await this.findActive(customerId);
+        if (!customer)
+            throw new common_1.UnauthorizedException();
+        if (customer.email) {
+            throw new common_1.BadRequestException('Your account already has an email');
+        }
+        const email = rawEmail.toLowerCase();
+        await this.assertEmailFree(email);
+        this.prunePending();
+        const existing = this.emailCodes.get(email);
+        if (existing && Date.now() - existing.sentAt < exports.SIGNUP_RESEND_MS) {
+            throw new common_1.HttpException('Please wait a minute before asking for another code.', common_1.HttpStatus.TOO_MANY_REQUESTS);
+        }
+        const entry = {
+            customerId,
+            email,
+            codeHash: Buffer.alloc(0),
+            expiresAt: 0,
+            tries: 0,
+            sentAt: 0,
+        };
+        this.emailCodes.set(email, entry);
+        await this.sendCode(entry, 'email', ip);
+        return { email };
+    }
+    async verifyEmail(customerId, rawEmail, code, ip) {
+        this.throttle(ip);
+        const email = rawEmail.toLowerCase();
+        const entry = this.emailCodes.get(email);
+        if (!entry ||
+            entry.customerId !== customerId ||
+            entry.expiresAt < Date.now()) {
+            throw new common_1.BadRequestException(RESET_EXPIRED);
+        }
+        if (!(0, crypto_1.timingSafeEqual)(sha256(code), entry.codeHash)) {
+            this.note(ip);
+            entry.tries += 1;
+            if (entry.tries >= exports.SIGNUP_CODE_TRIES) {
+                this.emailCodes.delete(email);
+                throw new common_1.BadRequestException('Too many wrong codes. Please ask for a new one.');
+            }
+            throw new common_1.BadRequestException('That code is not right. Please try again.');
+        }
+        this.emailCodes.delete(email);
+        await this.assertEmailFree(email);
+        const updated = await this.prisma.customer.update({
+            where: { id: customerId },
+            data: { email },
+        });
+        return toPublicCustomer(updated);
     }
     async issuePasswordCode(email, ip, onLimit) {
         const existing = this.resets.get(email);
@@ -394,10 +467,12 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
                 name: identity.name || email.split('@')[0],
                 email,
                 authType: client_1.CustomerAuthType.GOOGLE,
+                createdWith: client_1.CustomerCreatedWith.GOOGLE,
                 avatarUrl: identity.picture,
                 lastLoginAt: new Date(),
             },
         });
+        await (0, books_1.ensureDefaultBook)(this.prisma, created.id);
         return this.sign(created);
     }
     async findActive(id) {
@@ -417,6 +492,13 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         if (dto.phone !== undefined) {
             data.phone = dto.phone || null;
             data.phoneE164 = (0, phone_number_util_1.toE164)(dto.phone);
+            if (data.phoneE164 && (await this.phoneTaken(data.phoneE164, id))) {
+                throw new common_1.BadRequestException('This phone number is already on another CYG Finance account');
+            }
+        }
+        const before = await this.findActive(id);
+        if (before && !before.email && dto.phone !== undefined && !data.phoneE164) {
+            throw new common_1.BadRequestException('You sign in with this phone number — add an email before removing it');
         }
         if (dto.preferredContact !== undefined) {
             data.preferredContact = dto.preferredContact;
@@ -462,6 +544,20 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             name: payload.name ?? null,
             picture: payload.picture ?? null,
         };
+    }
+    async phoneTaken(phoneE164, exceptId) {
+        const other = await this.prisma.customer.findFirst({
+            where: {
+                phoneE164,
+                deletedAt: null,
+                ...(exceptId ? { id: { not: exceptId } } : {}),
+            },
+            select: { id: true },
+        });
+        return !!other;
+    }
+    issueFor(customer) {
+        return this.issue(customer);
     }
     async issue(customer) {
         const updated = await this.prisma.customer.update({

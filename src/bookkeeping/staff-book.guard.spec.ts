@@ -16,7 +16,16 @@ function setup(
   company: { customerId: number | null } | null = { customerId: 7 },
 ) {
   const findFirst = jest.fn().mockResolvedValue(company);
-  const prisma = { company: { findFirst } } as unknown as PrismaService;
+  // step12c: the company's own book (created on first use).
+  const book = {
+    findUnique: jest
+      .fn()
+      .mockResolvedValue({ id: 12, customerId: 7, companyId: 3 }),
+  };
+  const prisma = {
+    company: { findFirst },
+    book,
+  } as unknown as PrismaService;
   const config = {
     getOrThrow: () => SECRET,
   } as unknown as ConfigService;
@@ -50,7 +59,7 @@ describe('StaffBookGuard', () => {
     const { context, req } = ctx(staffToken());
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(req.staffBook).toEqual({
-      scope: { customerId: 7, companyId: 3 },
+      scope: { customerId: 7, bookId: 12, companyId: 3 },
       staffUserId: 11,
       canEdit: false,
     });

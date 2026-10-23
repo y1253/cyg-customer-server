@@ -53,6 +53,7 @@ let AiUsageService = AiUsageService_1 = class AiUsageService {
         await this.prisma.aiUsage.create({
             data: {
                 customerId: ctx.customerId,
+                bookId: ctx.bookId,
                 companyId: ctx.companyId,
                 feature: ctx.feature,
                 modelId: row.id,

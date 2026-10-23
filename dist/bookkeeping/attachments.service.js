@@ -8,13 +8,18 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AttachmentsService = exports.NOT_VOICE_MESSAGE = void 0;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
+const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
+const reach_1 = require("../messaging/reach");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_processor_service_1 = require("./attachment-processor.service");
@@ -85,11 +90,13 @@ let AttachmentsService = class AttachmentsService {
     storage;
     openai;
     processor;
-    constructor(prisma, storage, openai, processor) {
+    config;
+    constructor(prisma, storage, openai, processor, config) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
+        this.config = config;
     }
     async upload(scope, files, transactionId) {
         try {
@@ -136,29 +143,20 @@ let AttachmentsService = class AttachmentsService {
         }
     }
     async intake(scope) {
-        const [numbers, me, inbox] = await Promise.all([
-            this.prisma.intakeNumber.findMany({
-                where: { releasedAt: null },
-                orderBy: { createdAt: 'asc' },
-                select: { phoneNumber: true, whatsappStatus: true },
-            }),
+        const [reach, me] = await Promise.all([
+            this.config ? (0, reach_1.firmReach)(this.prisma, this.config) : Promise.resolve(null),
             this.prisma.customer.findUnique({
                 where: { id: scope.customerId },
                 select: { phone: true, phoneE164: true },
             }),
-            this.prisma.customerInboxAccount.findFirst({
-                orderBy: { id: 'desc' },
-                select: { emailAddress: true },
-            }),
         ]);
         return {
-            numbers: numbers.map((n) => n.phoneNumber),
-            whatsapp: numbers
-                .filter((n) => n.whatsappStatus === 'CONNECTED')
-                .map((n) => n.phoneNumber),
+            numbers: reach?.numbers ?? [],
+            whatsapp: reach?.whatsapp ?? [],
             phone: me?.phoneE164 ?? null,
             phoneSaved: !!me?.phone,
-            email: inbox?.emailAddress ?? null,
+            email: reach?.email ?? null,
+            voice: reach?.voice ?? false,
         };
     }
     async list(scope) {
@@ -320,9 +318,11 @@ let AttachmentsService = class AttachmentsService {
 exports.AttachmentsService = AttachmentsService;
 exports.AttachmentsService = AttachmentsService = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
-        attachment_processor_service_1.AttachmentProcessorService])
+        attachment_processor_service_1.AttachmentProcessorService,
+        config_1.ConfigService])
 ], AttachmentsService);
 //# sourceMappingURL=attachments.service.js.map

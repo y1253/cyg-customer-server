@@ -2,26 +2,34 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.scopeWhere = scopeWhere;
 exports.scopeOf = scopeOf;
-exports.generalScope = generalScope;
+exports.bookScope = bookScope;
 exports.storagePrefix = storagePrefix;
 exports.bookLabel = bookLabel;
 function scopeWhere(scope) {
-    return { customerId: scope.customerId, companyId: scope.companyId };
+    return {
+        customerId: scope.customerId,
+        bookId: scope.bookId,
+        companyId: scope.companyId,
+    };
 }
 function scopeOf(row) {
-    return { customerId: row.customerId, companyId: row.companyId };
+    return {
+        customerId: row.customerId,
+        bookId: row.bookId,
+        companyId: row.companyId,
+    };
 }
-function generalScope(customerId) {
-    return { customerId, companyId: null };
+function bookScope(book) {
+    return {
+        customerId: book.customerId,
+        bookId: book.id,
+        companyId: book.companyId,
+    };
 }
 function storagePrefix(scope) {
-    return scope.companyId === null
-        ? `bookkeeping/${scope.customerId}`
-        : `bookkeeping/${scope.customerId}/companies/${scope.companyId}`;
+    return `bookkeeping/${scope.customerId}/books/${scope.bookId}`;
 }
 function bookLabel(scope) {
-    return scope.companyId === null
-        ? `customer ${scope.customerId}`
-        : `customer ${scope.customerId} company ${scope.companyId}`;
+    return `customer ${scope.customerId} book ${scope.bookId}`;
 }
 //# sourceMappingURL=scope.js.map

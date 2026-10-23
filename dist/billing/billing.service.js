@@ -18,18 +18,16 @@ const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const stripe_1 = __importDefault(require("stripe"));
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
+const books_1 = require("../bookkeeping/books");
 const scope_1 = require("../bookkeeping/scope");
 const prisma_service_1 = require("../prisma/prisma.service");
 const pricing_1 = require("./pricing");
 const pricing_util_1 = require("./pricing.util");
 const stripe_client_1 = require("./stripe.client");
 const PURPOSE = 'generate';
-function scopeOfIntent(intent) {
-    const companyId = Number(intent.metadata.companyId);
-    return {
-        customerId: Number(intent.metadata.customerId),
-        companyId: Number.isInteger(companyId) && companyId > 0 ? companyId : null,
-    };
+function metaId(raw) {
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
 }
 let BillingService = BillingService_1 = class BillingService {
     prisma;
@@ -102,11 +100,12 @@ let BillingService = BillingService_1 = class BillingService {
             customer: customer.stripeCustomerId,
             allowed_payment_method_types: ['card'],
             setup_future_usage: 'off_session',
-            receipt_email: customer.email,
+            receipt_email: customer.email ?? undefined,
             description: `CYG Finance bookkeeping — Generate (${waiting} statement${waiting === 1 ? '' : 's'})`,
             metadata: {
                 purpose: PURPOSE,
                 customerId: String(customerId),
+                bookId: String(scope.bookId),
                 companyId: scope.companyId === null ? '' : String(scope.companyId),
                 listPriceCents: String(pricing.generatePriceCents),
                 promoCodeId: promo ? String(promo.id) : '',
@@ -139,7 +138,7 @@ let BillingService = BillingService_1 = class BillingService {
     async complete(scope, paymentIntentId) {
         const intent = await this.retrieveIntent(paymentIntentId);
         if (intent.metadata.customerId !== String(scope.customerId) ||
-            scopeOfIntent(intent).companyId !== scope.companyId)
+            (await this.scopeOfIntent(intent)).bookId !== scope.bookId)
             throw new common_1.NotFoundException('Payment not found');
         if (intent.status !== 'succeeded')
             throw new common_1.BadRequestException('The payment has not gone through yet.');
@@ -165,7 +164,7 @@ let BillingService = BillingService_1 = class BillingService {
     }
     async recordAndGenerate(paymentIntentId) {
         const intent = await this.retrieveIntent(paymentIntentId);
-        const scope = scopeOfIntent(intent);
+        const scope = await this.scopeOfIntent(intent);
         const charge = typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
         const card = charge?.payment_method_details?.card ?? null;
         const promoCodeId = Number(intent.metadata.promoCodeId) || null;
@@ -261,6 +260,12 @@ let BillingService = BillingService_1 = class BillingService {
         });
         return row?.stripeCustomerId ?? null;
     }
+    scopeOfIntent(intent) {
+        return (0, books_1.legacyBook)(this.prisma, Number(intent.metadata.customerId), {
+            bookId: metaId(intent.metadata.bookId),
+            companyId: metaId(intent.metadata.companyId),
+        });
+    }
     async ensureStripeCustomer(customerId) {
         const customer = await this.prisma.customer.findUnique({
             where: { id: customerId },
@@ -273,7 +278,7 @@ let BillingService = BillingService_1 = class BillingService {
                 email: customer.email,
             };
         const created = await this.stripeClient.stripe.customers.create({
-            email: customer.email,
+            email: customer.email ?? undefined,
             name: customer.name,
             phone: customer.phone ?? undefined,
             metadata: { customerId: String(customerId) },

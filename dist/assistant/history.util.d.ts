@@ -4,7 +4,7 @@ export interface HistoryRow {
     role: string;
     text: string;
     createdAt: Date;
-    companyId: number | null;
+    bookId: number;
     actions: unknown;
     files: {
         attachmentId: number;
@@ -31,15 +31,15 @@ export declare function doneOf(raw: unknown): string[];
 export declare function linksOf(raw: unknown): LinkRef[];
 export declare function whenLabel(at: Date, tz?: string): string;
 export declare function historyLine(r: HistoryRow, opts: {
-    currentCompanyId: number | null;
-    bookName: (id: number | null) => string;
+    currentBookId: number;
+    bookName: (id: number) => string;
 }, maxLine?: number): string;
 export declare function otherChannelsBlock(rows: HistoryRow[], opts: {
     now: Date;
-    currentCompanyId: number | null;
-    bookName: (id: number | null) => string;
+    currentBookId: number;
+    bookName: (id: number) => string;
 }): string | null;
-export declare function searchHit(r: HistoryRow, bookName: (id: number | null) => string): {
+export declare function searchHit(r: HistoryRow, bookName: (id: number) => string): {
     done?: string[] | undefined;
     linksSent?: LinkRef[] | undefined;
     files?: {

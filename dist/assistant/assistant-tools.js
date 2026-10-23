@@ -38,6 +38,12 @@ const transaction_filter_util_1 = require("./transaction-filter.util");
 const links_util_1 = require("./links.util");
 const communications_history_service_1 = require("./communications-history.service");
 const customer_outbox_service_1 = require("./customer-outbox.service");
+const ai_contacts_service_1 = require("../ai-contacts/ai-contacts.service");
+const phone_number_util_1 = require("../customer-auth/phone-number.util");
+function textsToOthersPerDay() {
+    const n = Number(process.env.AI_TEXTS_TO_OTHERS_PER_DAY);
+    return Number.isFinite(n) && n >= 0 ? n : 10;
+}
 const MAX_RESULT_CHARS = 12_000;
 exports.NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches — please double-check.";
 const str = { type: 'string' };
@@ -337,6 +343,45 @@ const CALL_ME_TOOL = {
         },
     }, ['about']),
 };
+const LIST_CONTACTS_TOOL = {
+    name: 'list_contacts',
+    description: 'The customer\'s saved contacts (people you call or text for them) — id, name, phone, email. Use it to find who "call John" means.',
+    parameters: obj({}),
+};
+const SAVE_CONTACT_TOOL = {
+    name: 'save_contact',
+    description: 'Save (or rename / fill in) a contact of the customer — someone you call or text for them. Only when the customer gave the name and agreed to save it. A contact with the same phone is updated.',
+    parameters: obj({ name: str, phone: str, email: str, note: str }, ['name']),
+};
+const UPDATE_MY_PROFILE_TOOL = {
+    name: 'update_my_profile',
+    description: 'Save the customer\'s own name on their account, when they tell you it ("I\'m Sarah Cohen"). Never their email or phone — they change those on the Account page.',
+    parameters: obj({ name: str }, ['name']),
+};
+const PERSON = {
+    contactId: {
+        type: 'integer',
+        description: 'A saved contact (list_contacts)',
+    },
+    phone: {
+        type: 'string',
+        description: 'The number to reach, when it is not a saved contact',
+    },
+    name: {
+        type: 'string',
+        description: 'Their name, if the customer said it',
+    },
+};
+const TEXT_PERSON_TOOL = {
+    name: 'text_person',
+    description: 'Text someone OTHER than the customer for them ("text John that I\'m running late"). Give contactId, or phone (+ name). The text says it is from the customer via CYG Finance. Before sending, repeat who and what back to the customer and get a yes. If the person is not a saved contact, ask their name and offer to save them (save_contact) — then their reply reaches the customer. Never put the customer\'s financial details in it unless they asked for exactly that.',
+    parameters: obj({ ...PERSON, message: str }, ['message']),
+};
+const CALL_PERSON_TOOL = {
+    name: 'call_person',
+    description: 'Phone someone OTHER than the customer for them and pass on a message ("call 514 555 1234 and tell him the meeting moved to 3"). Give contactId, or phone (+ name). You (the same assistant, by voice) say you are calling for the customer, give the message and note any reply; the customer is told how it went. Before calling, repeat who and what back and get a yes. If the person is not a saved contact, ask their name and offer to save them (save_contact). For calling the customer themselves use call_me.',
+    parameters: obj({ ...PERSON, message: str }, ['message']),
+};
 const REPORT_ISSUE_TOOL = {
     name: 'report_ai_issue',
     description: 'The customer says the AI got something wrong (a file read wrong, a receipt attached to the wrong transaction or not attached, a wrong category or answer, something they said ignored). NOT for a new request or a change of mind. A specialist checks what happened and may fix how we work; follow what it returns.',
@@ -353,13 +398,22 @@ const REPORT_ISSUE_TOOL = {
         transactionIds: { type: 'array', items: int },
     }, ['complaint', 'whatWentWrong']),
 };
+const PEOPLE_TOOLS = [
+    LIST_CONTACTS_TOOL,
+    SAVE_CONTACT_TOOL,
+    UPDATE_MY_PROFILE_TOOL,
+    TEXT_PERSON_TOOL,
+    CALL_PERSON_TOOL,
+];
 exports.ASSISTANT_TOOLS = [
     ...exports.READ_TOOLS,
     ...WRITE_TOOLS,
+    ...PEOPLE_TOOLS,
     REPORT_ISSUE_TOOL,
 ];
 exports.WRITE_TOOL_NAMES = new Set([
     ...WRITE_TOOLS.map((t) => t.name),
+    ...PEOPLE_TOOLS.filter((t) => t !== LIST_CONTACTS_TOOL).map((t) => t.name),
     REPORT_ISSUE_TOOL.name,
     SWITCH_BOOK_TOOL.name,
     SEND_TEXT_TOOL.name,
@@ -460,7 +514,8 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
     aiSchedules;
     history;
     outbox;
-    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links, messenger, aiSchedules, history, outbox) {
+    contacts;
+    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links, messenger, aiSchedules, history, outbox, contacts) {
         this.prisma = prisma;
         this.bookkeeping = bookkeeping;
         this.reports = reports;
@@ -476,6 +531,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
         this.aiSchedules = aiSchedules;
         this.history = history;
         this.outbox = outbox;
+        this.contacts = contacts;
     }
     logger = new common_1.Logger(AssistantTools_1.name);
     issueHandler = null;
@@ -485,6 +541,43 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
     callHandler = null;
     setCallHandler(handler) {
         this.callHandler = handler;
+    }
+    personCallHandler = null;
+    setPersonCallHandler(handler) {
+        this.personCallHandler = handler;
+    }
+    textsToOthers = new Map();
+    contactsService() {
+        if (!this.contacts)
+            throw new Error('contacts are not available');
+        return this.contacts;
+    }
+    async person(customerId, a) {
+        const contacts = this.contactsService();
+        if (n(a.contactId) !== null) {
+            const c = await contacts.get(customerId, id(a.contactId));
+            if (!c.phoneE164)
+                throw new Error(`${c.name} has no phone number saved`);
+            return { phone: c.phoneE164, contactId: c.id, name: c.name };
+        }
+        const raw = s(a.phone);
+        if (!raw)
+            throw new Error('say who: a contactId from list_contacts, or a phone number');
+        const phone = (0, phone_number_util_1.toE164)(raw);
+        if (!phone)
+            throw new Error('that is not a phone number I can dial — ask for it with the area code (and the country code outside Canada / the US)');
+        const ours = await this.prisma.intakeNumber.findFirst({
+            where: { phoneNumber: phone },
+            select: { id: true },
+        });
+        if (ours)
+            throw new Error('that is our own number');
+        const saved = await contacts.byPhone(customerId, phone);
+        return {
+            phone,
+            contactId: saved?.id ?? null,
+            name: saved?.name ?? s(a.name),
+        };
     }
     schedulesStore() {
         if (!this.aiSchedules)
@@ -775,6 +868,92 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     note: 'Their phone rings in a few seconds. Tell them to pick up — keep this reply short.',
                 });
             }
+            case 'list_contacts': {
+                const list = await this.contactsService().list(scope.customerId);
+                return {
+                    content: json(list.map((c) => ({
+                        id: c.id,
+                        name: c.name,
+                        phone: c.phone,
+                        email: c.email,
+                        note: c.note,
+                    }))),
+                };
+            }
+            case 'save_contact': {
+                const name = s(a.name);
+                if (!name)
+                    throw new Error('a contact needs a name');
+                const saved = await this.contactsService().save(scope.customerId, {
+                    name,
+                    ...(s(a.phone) ? { phone: s(a.phone) } : {}),
+                    ...(s(a.email) ? { email: s(a.email) } : {}),
+                    ...(s(a.note) ? { note: s(a.note) } : {}),
+                });
+                return done(`Saved ${saved.name} to your contacts`, {
+                    ok: true,
+                    contactId: saved.id,
+                });
+            }
+            case 'update_my_profile': {
+                const name = s(a.name)?.slice(0, 120);
+                if (!name)
+                    throw new Error('say the name to save');
+                await this.prisma.customer.update({
+                    where: { id: scope.customerId },
+                    data: { name },
+                });
+                return done(`Saved your name as ${name}`);
+            }
+            case 'text_person': {
+                const message = s(a.message);
+                if (!message)
+                    throw new Error('nothing to text');
+                if (!this.messenger)
+                    throw new Error('texting is not available');
+                const who = await this.person(scope.customerId, a);
+                const key = `${scope.customerId}:${new Date().toISOString().slice(0, 10)}`;
+                const sentToday = this.textsToOthers.get(key) ?? 0;
+                if (sentToday >= textsToOthersPerDay()) {
+                    throw new Error("today's limit of texts to other people is reached — try again tomorrow");
+                }
+                const me = await this.prisma.customer.findUnique({
+                    where: { id: scope.customerId },
+                    select: { name: true },
+                });
+                const from = me?.name?.trim() || 'A CYG Finance customer';
+                const outcome = await this.messenger.send({
+                    channel: 'SMS',
+                    to: who.phone,
+                    body: `From ${from} (sent by CYG Finance's assistant): ${(0, links_util_1.fillLinks)(message, ctx.links)}`,
+                });
+                if (outcome !== 'sent')
+                    throw new Error(`the text was not sent (${outcome})`);
+                this.textsToOthers.set(key, sentToday + 1);
+                if (who.contactId)
+                    await this.contactsService().touched(who.contactId);
+                return done(`Texted ${who.name ?? who.phone} (${who.phone})`, {
+                    ok: true,
+                    savedContact: !!who.contactId,
+                });
+            }
+            case 'call_person': {
+                const message = s(a.message);
+                if (!message)
+                    throw new Error('say what to tell them');
+                if (!this.personCallHandler)
+                    throw new Error('phone calls are not available');
+                const who = await this.person(scope.customerId, a);
+                const placed = await this.personCallHandler(ctx, who, message.slice(0, 1000));
+                if (!placed.ok)
+                    throw new Error(placed.error);
+                if (who.contactId)
+                    await this.contactsService().touched(who.contactId);
+                return done(placed.summary, {
+                    ok: true,
+                    note: 'The call starts in a few seconds. Tell the customer you will let them know how it went.',
+                });
+            }
             case 'search_communications': {
                 if (!this.history)
                     throw new Error('history is not available');
@@ -936,7 +1115,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
         }
         const choice = found[0];
         const updated = await (0, book_switch_1.chooseBook)(this.prisma, conversation, choice);
-        const { moved, reread } = await (0, book_switch_1.moveRecentFiles)(this.prisma, updated, conversation.peer, choice.companyId);
+        const { moved, reread } = await (0, book_switch_1.moveRecentFiles)(this.prisma, updated, conversation.peer, choice);
         if (reread)
             this.processor.processSoon();
         return {
@@ -983,6 +1162,7 @@ exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
     __param(12, (0, common_1.Optional)()),
     __param(13, (0, common_1.Optional)()),
     __param(14, (0, common_1.Optional)()),
+    __param(15, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         bookkeeping_service_1.BookkeepingService,
         reports_service_1.ReportsService,
@@ -997,6 +1177,7 @@ exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
         customer_messenger_service_1.CustomerMessenger,
         ai_schedules_store_1.AiSchedulesStore,
         communications_history_service_1.CommunicationsHistory,
-        customer_outbox_service_1.CustomerOutbox])
+        customer_outbox_service_1.CustomerOutbox,
+        ai_contacts_service_1.AiContactsService])
 ], AssistantTools);
 //# sourceMappingURL=assistant-tools.js.map

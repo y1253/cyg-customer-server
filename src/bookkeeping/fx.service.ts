@@ -139,22 +139,15 @@ export class FxService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * The currency one book is kept in: the customer's own setting for their general book,
-   * the company's (`Company.bookHomeCurrency`) for a company's books.
+   * The currency one book is kept in (step12c: `Book.homeCurrency`; it replaced
+   * `Customer.homeCurrency` / `Company.bookHomeCurrency`, copied into it by the migration).
    */
   async home(scope: BookScope): Promise<string> {
-    if (scope.companyId !== null) {
-      const c = await this.prisma.company.findUnique({
-        where: { id: scope.companyId },
-        select: { bookHomeCurrency: true },
-      });
-      return c?.bookHomeCurrency || 'CAD';
-    }
-    const c = await this.prisma.customer.findUnique({
-      where: { id: scope.customerId },
+    const b = await this.prisma.book.findUnique({
+      where: { id: scope.bookId },
       select: { homeCurrency: true },
     });
-    return c?.homeCurrency || 'CAD';
+    return b?.homeCurrency || 'CAD';
   }
 
   async setHome(scope: BookScope, currency: string): Promise<string> {
@@ -164,17 +157,10 @@ export class FxService {
         `${code} is not a currency we have daily rates for`,
       );
     }
-    if (scope.companyId !== null) {
-      await this.prisma.company.update({
-        where: { id: scope.companyId },
-        data: { bookHomeCurrency: code },
-      });
-    } else {
-      await this.prisma.customer.update({
-        where: { id: scope.customerId },
-        data: { homeCurrency: code },
-      });
-    }
+    await this.prisma.book.update({
+      where: { id: scope.bookId },
+      data: { homeCurrency: code },
+    });
     return code;
   }
 

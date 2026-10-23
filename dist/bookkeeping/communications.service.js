@@ -108,6 +108,10 @@ let CommunicationsService = class CommunicationsService {
                 },
                 orderBy: { startedAt: 'desc' },
                 take,
+                include: {
+                    contact: { select: { name: true } },
+                    customer: { select: { name: true } },
+                },
             })).map((c) => ({ ...(0, voice_calls_service_1.toCallView)(c), startedAt: c.startedAt }))
             : [];
         const [carried, loose] = await Promise.all([

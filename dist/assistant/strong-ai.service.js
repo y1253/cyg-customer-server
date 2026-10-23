@@ -124,14 +124,14 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
                     conversationId: conversation.id,
                     messageId,
                     customerId: conversation.customerId,
+                    bookId: conversation.bookId,
                     companyId: conversation.companyId,
                     complaint: `${report.complaint}\n\nThe assistant's view: ${report.whatWentWrong}`.slice(0, 10_000),
                     model: this.model(),
                 },
             });
             const run = (0, ai_usage_context_1.withAiUsage)({
-                customerId: conversation.customerId,
-                companyId: conversation.companyId,
+                ...(0, scope_1.scopeOf)(conversation),
                 feature: 'STRONG_AI',
             }, () => this.investigate(escalation, conversation, report));
             if (conversation.channel === 'VOICE') {
@@ -200,10 +200,7 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
     }
     async investigate(escalation, conversation, report) {
         const started = Date.now();
-        const scope = {
-            customerId: conversation.customerId,
-            companyId: conversation.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(conversation);
         const who = {
             by: 'STRONG_AI',
             reason: '',
@@ -318,7 +315,7 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
         });
         const prompt = await this.assistant.promptFor(conversation);
         return [
-            `CASE #${escalation.id}. Channel ${conversation.channel}, customer ${conversation.customerId}, ${conversation.companyId ? `business book ${conversation.companyId}` : 'general book'}${conversation.attachmentId ? `, an "Ask AI" chat about attachment ${conversation.attachmentId}` : ''}.`,
+            `CASE #${escalation.id}. Channel ${conversation.channel}, customer ${conversation.customerId}, book ${conversation.bookId}${conversation.companyId ? ` (registered business ${conversation.companyId})` : ''}${conversation.attachmentId ? `, an "Ask AI" chat about attachment ${conversation.attachmentId}` : ''}.`,
             '',
             `THE COMPLAINT (message #${escalation.messageId}): ${report.complaint}`,
             `What the regular assistant thinks went wrong: ${report.whatWentWrong}`,

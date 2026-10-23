@@ -4,8 +4,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   AttachmentKind,
   AttachmentStatus,
@@ -14,6 +16,7 @@ import {
 } from '@prisma/client';
 import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
+import { firmReach } from '../messaging/reach';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import type { AttachmentReading } from './attachment-extractor';
@@ -91,6 +94,8 @@ export interface IntakeView {
   phoneSaved: boolean;
   /** The customer inbox (step12): where they can EMAIL receipts and questions; null = none connected. */
   email: string | null;
+  /** step12c: calling a receipt number reaches the AI assistant right now. */
+  voice: boolean;
 }
 
 const INCLUDE = {
@@ -171,6 +176,7 @@ export class AttachmentsService {
     private readonly storage: ObjectStorageService,
     private readonly openai: OpenAiClient,
     private readonly processor: AttachmentProcessorService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   /**
@@ -237,29 +243,20 @@ export class AttachmentsService {
    * book (a text cannot say which company it is for). Takes the scope only to stay uniform.
    */
   async intake(scope: BookScope): Promise<IntakeView> {
-    const [numbers, me, inbox] = await Promise.all([
-      this.prisma.intakeNumber.findMany({
-        where: { releasedAt: null },
-        orderBy: { createdAt: 'asc' },
-        select: { phoneNumber: true, whatsappStatus: true },
-      }),
+    const [reach, me] = await Promise.all([
+      this.config ? firmReach(this.prisma, this.config) : Promise.resolve(null),
       this.prisma.customer.findUnique({
         where: { id: scope.customerId },
         select: { phone: true, phoneE164: true },
       }),
-      this.prisma.customerInboxAccount.findFirst({
-        orderBy: { id: 'desc' },
-        select: { emailAddress: true },
-      }),
     ]);
     return {
-      numbers: numbers.map((n) => n.phoneNumber),
-      whatsapp: numbers
-        .filter((n) => n.whatsappStatus === 'CONNECTED')
-        .map((n) => n.phoneNumber),
+      numbers: reach?.numbers ?? [],
+      whatsapp: reach?.whatsapp ?? [],
       phone: me?.phoneE164 ?? null,
       phoneSaved: !!me?.phone,
-      email: inbox?.emailAddress ?? null,
+      email: reach?.email ?? null,
+      voice: reach?.voice ?? false,
     };
   }
 

@@ -2,6 +2,7 @@ import type { Request } from 'express';
 import { CustomerAuthService, type AuthResult, type PublicCustomer, type SignupStarted } from './customer-auth.service';
 import type { CustomerRequestUser } from './customer-jwt.strategy';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { EmailCodeDto, EmailVerifyDto } from './dto/email-change.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { LoginDto } from './dto/login.dto';
@@ -31,5 +32,7 @@ export declare class CustomerAuthController {
     updateMe(req: AuthedRequest, dto: UpdateMeDto): Promise<PublicCustomer>;
     changePassword(req: AuthedRequest, dto: ChangePasswordDto): Promise<AuthResult>;
     sendPasswordCode(req: AuthedRequest): Promise<SignupStarted>;
+    sendEmailCode(req: AuthedRequest, dto: EmailCodeDto): Promise<SignupStarted>;
+    verifyEmail(req: AuthedRequest, dto: EmailVerifyDto): Promise<PublicCustomer>;
 }
 export {};

@@ -9,11 +9,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AssistantModule = void 0;
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
+const ai_contacts_module_1 = require("../ai-contacts/ai-contacts.module");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const messaging_module_1 = require("../messaging/messaging.module");
 const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const assistant_controller_1 = require("./assistant.controller");
+const contact_relay_service_1 = require("./contact-relay.service");
 const assistant_service_1 = require("./assistant.service");
 const assistant_tools_1 = require("./assistant-tools");
 const communications_history_service_1 = require("./communications-history.service");
@@ -26,11 +28,17 @@ let AssistantModule = class AssistantModule {
 exports.AssistantModule = AssistantModule;
 exports.AssistantModule = AssistantModule = __decorate([
     (0, common_1.Module)({
-        imports: [bookkeeping_module_1.BookkeepingModule, customer_auth_module_1.CustomerAuthModule, messaging_module_1.MessagingModule],
+        imports: [
+            ai_contacts_module_1.AiContactsModule,
+            bookkeeping_module_1.BookkeepingModule,
+            customer_auth_module_1.CustomerAuthModule,
+            messaging_module_1.MessagingModule,
+        ],
         controllers: [
             assistant_controller_1.AssistantConfigController,
             assistant_controller_1.AssistantController,
             assistant_controller_1.AttachmentChatController,
+            assistant_controller_1.ContactReplyController,
             assistant_controller_1.IntakeController,
         ],
         providers: [
@@ -38,6 +46,7 @@ exports.AssistantModule = AssistantModule = __decorate([
             assistant_tools_1.AssistantTools,
             ai_schedules_store_1.AiSchedulesStore,
             communications_history_service_1.CommunicationsHistory,
+            contact_relay_service_1.ContactRelayService,
             customer_outbox_service_1.CustomerOutbox,
             intake_agent_guard_1.IntakeAgentGuard,
             intake_agent_service_1.IntakeAgentService,

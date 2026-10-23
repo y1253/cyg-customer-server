@@ -1,6 +1,6 @@
 import { OnModuleInit } from '@nestjs/common';
 import { AssistantService } from '../assistant/assistant.service';
-import type { BookScope } from '../bookkeeping/scope';
+import { type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceCallsService } from '../voice/voice-calls.service';

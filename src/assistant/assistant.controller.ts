@@ -23,7 +23,10 @@ import {
   ChatDto,
   IntakeAgentDto,
   IntakeRouteDto,
+  ContactReplyDto,
 } from './dto/assistant.dto';
+import { IntakeSystemGuard } from '../customer-auth/intake-system.guard';
+import { ContactRelayService, type RelayResult } from './contact-relay.service';
 import { IntakeAgentGuard, IntakeCustomer } from './intake-agent.guard';
 import {
   IntakeAgentService,
@@ -123,6 +126,22 @@ export class AttachmentChatController {
     @Body() dto: AttachmentChatDto,
   ): Promise<ChatResult> {
     return this.assistant.attachmentChat(scope, id, dto.text);
+  }
+}
+
+/**
+ * step12c: `/api/intake-system/contact-reply` — called by the INTERNAL API only, for a text /
+ * call from a number that is no customer: someone the AI reached for a customer answering.
+ */
+@Controller('intake-system')
+@UseGuards(IntakeSystemGuard)
+export class ContactReplyController {
+  constructor(private readonly relay: ContactRelayService) {}
+
+  @Post('contact-reply')
+  @HttpCode(200)
+  contactReply(@Body() dto: ContactReplyDto): Promise<RelayResult> {
+    return this.relay.relay(dto);
   }
 }
 

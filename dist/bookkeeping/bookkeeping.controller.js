@@ -19,6 +19,7 @@ const customer_auth_service_1 = require("../customer-auth/customer-auth.service"
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const prisma_service_1 = require("../prisma/prisma.service");
 const book_scope_guard_1 = require("./book-scope.guard");
+const books_1 = require("./books");
 const attachments_service_1 = require("./attachments.service");
 const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
@@ -68,16 +69,8 @@ let BookkeepingController = class BookkeepingController {
         this.prisma = prisma;
         this.communications = communications;
     }
-    async ownerName(scope) {
-        if (scope.companyId !== null) {
-            const c = await this.prisma.company.findUnique({
-                where: { id: scope.companyId },
-                select: { businessName: true },
-            });
-            if (c)
-                return c.businessName;
-        }
-        return (await this.customers.me(scope.customerId)).name;
+    ownerName(scope) {
+        return (0, books_1.bookOwnerName)(this.prisma, scope);
     }
     generate(scope) {
         return this.bookkeeping.generateIfFree(scope);

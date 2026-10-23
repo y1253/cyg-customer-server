@@ -37,6 +37,14 @@ import { filterTransactions, type LedgerRow } from './transaction-filter.util';
 import { addLink, fillLinks, type LinkBook } from './links.util';
 import { CommunicationsHistory } from './communications-history.service';
 import { CustomerOutbox, type OutboxChannel } from './customer-outbox.service';
+import { AiContactsService } from '../ai-contacts/ai-contacts.service';
+import { toE164 } from '../customer-auth/phone-number.util';
+
+/** step12c: texts the AI may send to other people per customer per day. */
+function textsToOthersPerDay(): number {
+  const n = Number(process.env.AI_TEXTS_TO_OTHERS_PER_DAY);
+  return Number.isFinite(n) && n >= 0 ? n : 10;
+}
 
 /** One thing the agent did, shown under its answer and kept in `AiMessage.actions`. */
 export interface AgentAction {
@@ -83,6 +91,22 @@ export type IssueHandler = (
 export type CallHandler = (
   ctx: ToolContext,
   about: string,
+) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
+
+/** step12c: the person a call_person / text_person reaches. */
+export interface PersonTarget {
+  /** E.164. */
+  phone: string;
+  contactId: number | null;
+  /** The contact's name, else the one the customer gave, else null. */
+  name: string | null;
+}
+
+/** step12c: places a call to someone else for the customer (`VoiceCallsService`). */
+export type PersonCallHandler = (
+  ctx: ToolContext,
+  person: PersonTarget,
+  message: string,
 ) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
 
 export interface ToolContext {
@@ -487,6 +511,62 @@ const CALL_ME_TOOL: ToolDefinition = {
   ),
 };
 
+/** step12c: the people the AI called / texted for the customer, and saved. */
+const LIST_CONTACTS_TOOL: ToolDefinition = {
+  name: 'list_contacts',
+  description:
+    'The customer\'s saved contacts (people you call or text for them) — id, name, phone, email. Use it to find who "call John" means.',
+  parameters: obj({}),
+};
+
+const SAVE_CONTACT_TOOL: ToolDefinition = {
+  name: 'save_contact',
+  description:
+    'Save (or rename / fill in) a contact of the customer — someone you call or text for them. Only when the customer gave the name and agreed to save it. A contact with the same phone is updated.',
+  parameters: obj({ name: str, phone: str, email: str, note: str }, ['name']),
+};
+
+/** step12c: an account opened by text has no name yet — the AI asks and saves it. */
+const UPDATE_MY_PROFILE_TOOL: ToolDefinition = {
+  name: 'update_my_profile',
+  description:
+    'Save the customer\'s own name on their account, when they tell you it ("I\'m Sarah Cohen"). Never their email or phone — they change those on the Account page.',
+  parameters: obj({ name: str }, ['name']),
+};
+
+const PERSON = {
+  contactId: {
+    type: 'integer',
+    description: 'A saved contact (list_contacts)',
+  },
+  phone: {
+    type: 'string',
+    description: 'The number to reach, when it is not a saved contact',
+  },
+  name: {
+    type: 'string',
+    description: 'Their name, if the customer said it',
+  },
+};
+
+/**
+ * step12c (user's request: "allow calling other people so customer can say call 1222… and
+ * tell him this"): text / call SOMEONE ELSE for the customer.
+ */
+const TEXT_PERSON_TOOL: ToolDefinition = {
+  name: 'text_person',
+  description:
+    'Text someone OTHER than the customer for them ("text John that I\'m running late"). Give contactId, or phone (+ name). The text says it is from the customer via CYG Finance. Before sending, repeat who and what back to the customer and get a yes. If the person is not a saved contact, ask their name and offer to save them (save_contact) — then their reply reaches the customer. Never put the customer\'s financial details in it unless they asked for exactly that.',
+  parameters: obj({ ...PERSON, message: str }, ['message']),
+};
+
+const CALL_PERSON_TOOL: ToolDefinition = {
+  name: 'call_person',
+  description:
+    'Phone someone OTHER than the customer for them and pass on a message ("call 514 555 1234 and tell him the meeting moved to 3"). Give contactId, or phone (+ name). You (the same assistant, by voice) say you are calling for the customer, give the message and note any reply; the customer is told how it went. Before calling, repeat who and what back and get a yes. If the person is not a saved contact, ask their name and offer to save them (save_contact). For calling the customer themselves use call_me.',
+  parameters: obj({ ...PERSON, message: str }, ['message']),
+};
+
 /**
  * step12: the customer says WE got something wrong — the conversation goes to the strong AI
  * (`StrongAiService`), which may fix our instructions; its answer tells this agent how to go on.
@@ -512,13 +592,24 @@ const REPORT_ISSUE_TOOL: ToolDefinition = {
   ),
 };
 
+/** step12c: contacts, the customer's own name, and reaching other people — every channel. */
+const PEOPLE_TOOLS: ToolDefinition[] = [
+  LIST_CONTACTS_TOOL,
+  SAVE_CONTACT_TOOL,
+  UPDATE_MY_PROFILE_TOOL,
+  TEXT_PERSON_TOOL,
+  CALL_PERSON_TOOL,
+];
+
 export const ASSISTANT_TOOLS: ToolDefinition[] = [
   ...READ_TOOLS,
   ...WRITE_TOOLS,
+  ...PEOPLE_TOOLS,
   REPORT_ISSUE_TOOL,
 ];
 export const WRITE_TOOL_NAMES = new Set([
   ...WRITE_TOOLS.map((t) => t.name),
+  ...PEOPLE_TOOLS.filter((t) => t !== LIST_CONTACTS_TOOL).map((t) => t.name),
   REPORT_ISSUE_TOOL.name,
   SWITCH_BOOK_TOOL.name,
   SEND_TEXT_TOOL.name,
@@ -641,6 +732,8 @@ export class AssistantTools {
     /** step12b: every channel's history, and sending on another channel. */
     @Optional() private readonly history?: CommunicationsHistory,
     @Optional() private readonly outbox?: CustomerOutbox,
+    /** step12c: the people the AI calls / texts for the customer. */
+    @Optional() private readonly contacts?: AiContactsService,
   ) {}
 
   private readonly logger = new Logger(AssistantTools.name);
@@ -657,6 +750,55 @@ export class AssistantTools {
 
   setCallHandler(handler: CallHandler): void {
     this.callHandler = handler;
+  }
+
+  /** step12c: set by `VoiceCallsService` — call_person. */
+  private personCallHandler: PersonCallHandler | null = null;
+
+  setPersonCallHandler(handler: PersonCallHandler): void {
+    this.personCallHandler = handler;
+  }
+
+  /** step12c: texts sent to other people today, per customer (pm2 runs one fork). */
+  private readonly textsToOthers = new Map<string, number>();
+
+  private contactsService(): AiContactsService {
+    if (!this.contacts) throw new Error('contacts are not available');
+    return this.contacts;
+  }
+
+  /**
+   * step12c: who a call_person / text_person reaches — a saved contact of THIS customer, or a
+   * number the customer gave. Never one of our own receipt numbers.
+   */
+  private async person(customerId: number, a: Args): Promise<PersonTarget> {
+    const contacts = this.contactsService();
+    if (n(a.contactId) !== null) {
+      const c = await contacts.get(customerId, id(a.contactId));
+      if (!c.phoneE164) throw new Error(`${c.name} has no phone number saved`);
+      return { phone: c.phoneE164, contactId: c.id, name: c.name };
+    }
+    const raw = s(a.phone);
+    if (!raw)
+      throw new Error(
+        'say who: a contactId from list_contacts, or a phone number',
+      );
+    const phone = toE164(raw);
+    if (!phone)
+      throw new Error(
+        'that is not a phone number I can dial — ask for it with the area code (and the country code outside Canada / the US)',
+      );
+    const ours = await this.prisma.intakeNumber.findFirst({
+      where: { phoneNumber: phone },
+      select: { id: true },
+    });
+    if (ours) throw new Error('that is our own number');
+    const saved = await contacts.byPhone(customerId, phone);
+    return {
+      phone,
+      contactId: saved?.id ?? null,
+      name: saved?.name ?? s(a.name),
+    };
   }
 
   private schedulesStore(): AiSchedulesStore {
@@ -982,6 +1124,92 @@ export class AssistantTools {
           note: 'Their phone rings in a few seconds. Tell them to pick up — keep this reply short.',
         });
       }
+      case 'list_contacts': {
+        const list = await this.contactsService().list(scope.customerId);
+        return {
+          content: json(
+            list.map((c) => ({
+              id: c.id,
+              name: c.name,
+              phone: c.phone,
+              email: c.email,
+              note: c.note,
+            })),
+          ),
+        };
+      }
+      case 'save_contact': {
+        const name = s(a.name);
+        if (!name) throw new Error('a contact needs a name');
+        const saved = await this.contactsService().save(scope.customerId, {
+          name,
+          ...(s(a.phone) ? { phone: s(a.phone) } : {}),
+          ...(s(a.email) ? { email: s(a.email) } : {}),
+          ...(s(a.note) ? { note: s(a.note) } : {}),
+        });
+        return done(`Saved ${saved.name} to your contacts`, {
+          ok: true,
+          contactId: saved.id,
+        });
+      }
+      case 'update_my_profile': {
+        const name = s(a.name)?.slice(0, 120);
+        if (!name) throw new Error('say the name to save');
+        await this.prisma.customer.update({
+          where: { id: scope.customerId },
+          data: { name },
+        });
+        return done(`Saved your name as ${name}`);
+      }
+      case 'text_person': {
+        const message = s(a.message);
+        if (!message) throw new Error('nothing to text');
+        if (!this.messenger) throw new Error('texting is not available');
+        const who = await this.person(scope.customerId, a);
+        const key = `${scope.customerId}:${new Date().toISOString().slice(0, 10)}`;
+        const sentToday = this.textsToOthers.get(key) ?? 0;
+        if (sentToday >= textsToOthersPerDay()) {
+          throw new Error(
+            "today's limit of texts to other people is reached — try again tomorrow",
+          );
+        }
+        const me = await this.prisma.customer.findUnique({
+          where: { id: scope.customerId },
+          select: { name: true },
+        });
+        const from = me?.name?.trim() || 'A CYG Finance customer';
+        const outcome = await this.messenger.send({
+          channel: 'SMS',
+          to: who.phone,
+          body: `From ${from} (sent by CYG Finance's assistant): ${fillLinks(message, ctx.links)}`,
+        });
+        if (outcome !== 'sent')
+          throw new Error(`the text was not sent (${outcome})`);
+        this.textsToOthers.set(key, sentToday + 1);
+        if (who.contactId) await this.contactsService().touched(who.contactId);
+        return done(`Texted ${who.name ?? who.phone} (${who.phone})`, {
+          ok: true,
+          savedContact: !!who.contactId,
+        });
+      }
+      case 'call_person': {
+        const message = s(a.message);
+        if (!message) throw new Error('say what to tell them');
+        if (!this.personCallHandler)
+          throw new Error('phone calls are not available');
+        const who = await this.person(scope.customerId, a);
+        const placed = await this.personCallHandler(
+          ctx,
+          who,
+          message.slice(0, 1000),
+        );
+        if (!placed.ok) throw new Error(placed.error);
+        if (who.contactId) await this.contactsService().touched(who.contactId);
+        return done(placed.summary, {
+          ok: true,
+          note: 'The call starts in a few seconds. Tell the customer you will let them know how it went.',
+        });
+      }
       case 'search_communications': {
         if (!this.history) throw new Error('history is not available');
         return {
@@ -1203,7 +1431,7 @@ export class AssistantTools {
       this.prisma,
       updated,
       conversation.peer,
-      choice.companyId,
+      choice,
     );
     if (reread) this.processor.processSoon();
     return {

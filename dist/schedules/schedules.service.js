@@ -175,10 +175,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
         }
     }
     async run(s, manual, mode = 'NORMAL') {
-        const scope = {
-            customerId: s.customerId,
-            companyId: s.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(s);
         const record = (data) => this.prisma.bookScheduleRun.create({
             data: {
                 scheduleId: s.id,
@@ -296,6 +293,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
                     status,
                     link: this.dashboardLink(scope),
                     sms,
+                    canCall: await this.voice.canCall(),
                 }),
                 attachments: [],
             };
@@ -484,36 +482,37 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
         });
         if (!customer)
             return null;
-        if (scope.companyId === null) {
-            return {
-                customerName: customer.name,
-                email: customer.email,
-                book: 'your personal books',
-            };
-        }
-        const company = await this.prisma.company.findFirst({
-            where: {
-                id: scope.companyId,
-                customerId: scope.customerId,
-                isDraft: false,
-                isInternal: false,
-                deletedAt: null,
-            },
-            select: { businessName: true },
+        const book = await this.prisma.book.findFirst({
+            where: { id: scope.bookId, customerId: scope.customerId, deletedAt: null },
+            select: { name: true },
         });
-        return company
-            ? {
-                customerName: customer.name,
-                email: customer.email,
-                book: company.businessName,
-            }
-            : null;
+        if (!book)
+            return null;
+        if (scope.companyId !== null) {
+            const company = await this.prisma.company.findFirst({
+                where: {
+                    id: scope.companyId,
+                    customerId: scope.customerId,
+                    isDraft: false,
+                    isInternal: false,
+                    deletedAt: null,
+                },
+                select: { id: true },
+            });
+            if (!company)
+                return null;
+        }
+        return {
+            customerName: customer.name,
+            email: customer.email,
+            book: book.name,
+        };
     }
     dashboardLink(scope) {
         const base = this.config.get('PUBLIC_BASE_URL')?.trim().replace(/\/+$/, '') ||
             'https://cygfinance.com';
         return scope.companyId === null
-            ? `${base}/dashboard/bookkeeping`
+            ? `${base}/dashboard/bookkeeping?book=${scope.bookId}`
             : `${base}/dashboard/businesses/${scope.companyId}`;
     }
     async logText(scope, phone, text) {
@@ -530,6 +529,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
                 (await this.prisma.aiConversation.create({
                     data: {
                         customerId: scope.customerId,
+                        bookId: scope.bookId,
                         companyId: scope.companyId,
                         channel: 'SMS',
                         peer: phone,

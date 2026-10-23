@@ -112,6 +112,7 @@ export declare class AssistantService {
     }): Promise<string>;
     isOverLimit(customerId: number): Promise<boolean>;
     private overLimit;
+    private nameUnknown;
     private preferredContact;
     private bookLabel;
     save(conversation: AiConversation, role: 'USER' | 'ASSISTANT', text: string, extra?: {

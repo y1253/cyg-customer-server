@@ -10,10 +10,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { CustomerAuthType, type Customer } from '@prisma/client';
+import {
+  CustomerAuthType,
+  CustomerCreatedWith,
+  type Customer,
+} from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
 import { createHash, randomInt, timingSafeEqual } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
+import { ensureDefaultBook } from '../bookkeeping/books';
 import { MailService } from '../mail/mail.service';
 import {
   CODE_MAIL_PER_HOUR_DEFAULT,
@@ -23,7 +28,10 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { toE164 } from './phone-number.util';
 import { buildPasswordCodeEmail } from './password-reset-email';
-import { buildSignupCodeEmail } from './signup-code-email';
+import {
+  buildEmailConfirmCodeEmail,
+  buildSignupCodeEmail,
+} from './signup-code-email';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { ForgotPasswordDto } from './dto/forgot-password.dto';
 import type { GoogleLoginDto } from './dto/google-login.dto';
@@ -39,7 +47,8 @@ export const CUSTOMER_TOKEN_TYPE = 'customer';
 
 export interface CustomerJwtPayload {
   sub: number;
-  email: string;
+  /** step12c: null for an account opened by phone that has not added an email. */
+  email: string | null;
   name: string;
   typ: typeof CUSTOMER_TOKEN_TYPE;
   /** Issued-at, seconds — set by the JWT library. Compared with `passwordChangedAt`. */
@@ -50,8 +59,11 @@ export interface CustomerJwtPayload {
 export interface PublicCustomer {
   id: number;
   name: string;
-  email: string;
+  /** step12c: null for an account opened by phone that has not added an email yet. */
+  email: string | null;
   authType: CustomerAuthType;
+  /** step12c: where the account was opened (null = before step12c). */
+  createdWith: CustomerCreatedWith | null;
   /** False for an account created through Google that never set a password. */
   hasPassword: boolean;
   avatarUrl: string | null;
@@ -109,8 +121,13 @@ interface PendingSignup extends PendingCode {
   passwordHash: string;
 }
 
+/** step12c: a code confirming an email added to a phone-opened account. */
+interface PendingEmail extends PendingCode {
+  customerId: number;
+}
+
 /** Which email a code goes out in. */
-type CodeKind = 'signup' | 'password';
+type CodeKind = 'signup' | 'password' | 'email';
 
 /**
  * What to do when a code email is refused by the limits: tell the caller, or answer as if
@@ -130,6 +147,10 @@ const sha256 = (code: string): Buffer =>
 const CODE_EXPIRED = 'This code has expired. Please sign up again.';
 const RESET_EXPIRED = 'This code has expired. Please ask for a new one.';
 
+/** step12c: a password signs in with the email, so an account opened by phone adds one first. */
+const NEEDS_EMAIL =
+  'Add an email to your account first — you sign in with your email and password';
+
 /** One message for every password failure, so the response never says whether an email exists. */
 const BAD_CREDENTIALS = 'Email or password is incorrect';
 
@@ -139,6 +160,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     name: c.name,
     email: c.email,
     authType: c.authType,
+    createdWith: c.createdWith,
     hasPassword: c.passwordHash !== null,
     avatarUrl: c.avatarUrl,
     phone: c.phone,
@@ -165,6 +187,8 @@ export class CustomerAuthService {
   private readonly pending = new Map<string, PendingSignup>();
   /** Password codes (forgot password, or a Google account setting one), by lower-cased email. */
   private readonly resets = new Map<string, PendingCode>();
+  /** step12c: codes confirming an email being added, by lower-cased email. */
+  private readonly emailCodes = new Map<string, PendingEmail>();
   private googleClient: OAuth2Client | null = null;
   /** Per-address and server-wide limits on code emails. */
   private readonly codeMails: CodeMailLimiter;
@@ -281,10 +305,12 @@ export class CustomerAuthService {
         name: entry.name,
         email,
         authType: CustomerAuthType.PASSWORD,
+        createdWith: CustomerCreatedWith.WEB_EMAIL,
         passwordHash: entry.passwordHash,
         lastLoginAt: new Date(),
       },
     });
+    await ensureDefaultBook(this.prisma, customer.id);
     return this.sign(customer);
   }
 
@@ -337,7 +363,11 @@ export class CustomerAuthService {
     onLimit: OnLimit = 'throw',
   ): Promise<void> {
     const store: Map<string, PendingCode> =
-      kind === 'signup' ? this.pending : this.resets;
+      kind === 'signup'
+        ? this.pending
+        : kind === 'email'
+          ? this.emailCodes
+          : this.resets;
     const verdict = this.codeMails.check(entry.email);
     if (verdict !== 'ok') {
       // Drop only an entry that never had a code. One already mailed stays usable, so a
@@ -390,7 +420,9 @@ export class CustomerAuthService {
         fromName: 'CYG Finance',
         ...(kind === 'signup'
           ? buildSignupCodeEmail(code, minutes)
-          : buildPasswordCodeEmail(code, minutes)),
+          : kind === 'email'
+            ? buildEmailConfirmCodeEmail(code, minutes)
+            : buildPasswordCodeEmail(code, minutes)),
       });
     } catch (err) {
       store.delete(entry.email);
@@ -406,7 +438,11 @@ export class CustomerAuthService {
 
   private prunePending(): void {
     const now = Date.now();
-    const stores: Map<string, PendingCode>[] = [this.pending, this.resets];
+    const stores: Map<string, PendingCode>[] = [
+      this.pending,
+      this.resets,
+      this.emailCodes,
+    ];
     for (const store of stores) {
       for (const [key, entry] of store) {
         if (entry.expiresAt < now) store.delete(key);
@@ -484,6 +520,8 @@ export class CustomerAuthService {
         );
       }
     } else {
+      // A password signs in with the EMAIL — an account opened by phone adds one first.
+      if (!customer.email) throw new BadRequestException(NEEDS_EMAIL);
       if (!dto.code) {
         throw new BadRequestException('Enter the 6-digit code from the email');
       }
@@ -508,9 +546,88 @@ export class CustomerAuthService {
         'Your account already has a password — enter it to change it',
       );
     }
+    if (!customer.email) throw new BadRequestException(NEEDS_EMAIL);
     this.prunePending();
     await this.issuePasswordCode(customer.email, ip, 'throw');
     return { email: customer.email };
+  }
+
+  /**
+   * step12c: emails a code to an address an account opened by phone wants to add. The address
+   * must be free. Confirming it matters: Google sign-in finds accounts by email, so an
+   * unconfirmed address would let one person claim another's Google login.
+   */
+  async sendEmailCode(
+    customerId: number,
+    rawEmail: string,
+    ip: string,
+  ): Promise<SignupStarted> {
+    this.throttle(ip);
+    const customer = await this.findActive(customerId);
+    if (!customer) throw new UnauthorizedException();
+    if (customer.email) {
+      throw new BadRequestException('Your account already has an email');
+    }
+    const email = rawEmail.toLowerCase();
+    await this.assertEmailFree(email);
+    this.prunePending();
+    const existing = this.emailCodes.get(email);
+    if (existing && Date.now() - existing.sentAt < SIGNUP_RESEND_MS) {
+      throw new HttpException(
+        'Please wait a minute before asking for another code.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const entry: PendingEmail = {
+      customerId,
+      email,
+      codeHash: Buffer.alloc(0),
+      expiresAt: 0,
+      tries: 0,
+      sentAt: 0,
+    };
+    this.emailCodes.set(email, entry);
+    await this.sendCode(entry, 'email', ip);
+    return { email };
+  }
+
+  /** step12c: the emailed code is right → the address is the account's. */
+  async verifyEmail(
+    customerId: number,
+    rawEmail: string,
+    code: string,
+    ip: string,
+  ): Promise<PublicCustomer> {
+    this.throttle(ip);
+    const email = rawEmail.toLowerCase();
+    const entry = this.emailCodes.get(email);
+    if (
+      !entry ||
+      entry.customerId !== customerId ||
+      entry.expiresAt < Date.now()
+    ) {
+      throw new BadRequestException(RESET_EXPIRED);
+    }
+    if (!timingSafeEqual(sha256(code), entry.codeHash)) {
+      this.note(ip);
+      entry.tries += 1;
+      if (entry.tries >= SIGNUP_CODE_TRIES) {
+        this.emailCodes.delete(email);
+        throw new BadRequestException(
+          'Too many wrong codes. Please ask for a new one.',
+        );
+      }
+      throw new BadRequestException(
+        'That code is not right. Please try again.',
+      );
+    }
+    this.emailCodes.delete(email);
+    await this.assertEmailFree(email);
+    const updated = await this.prisma.customer.update({
+      where: { id: customerId },
+      data: { email },
+    });
+    return toPublicCustomer(updated);
   }
 
   /** A new password code for this email — at most one a minute. */
@@ -627,10 +744,12 @@ export class CustomerAuthService {
         name: identity.name || email.split('@')[0],
         email,
         authType: CustomerAuthType.GOOGLE,
+        createdWith: CustomerCreatedWith.GOOGLE,
         avatarUrl: identity.picture,
         lastLoginAt: new Date(),
       },
     });
+    await ensureDefaultBook(this.prisma, created.id);
     return this.sign(created);
   }
 
@@ -658,6 +777,19 @@ export class CustomerAuthService {
       data.phone = dto.phone || null;
       // What a text to an intake number is matched on (`IntakeSmsService`, internal API).
       data.phoneE164 = toE164(dto.phone);
+      // step12c: a phone signs in (a texted code) and names ONE account's texts — never two.
+      if (data.phoneE164 && (await this.phoneTaken(data.phoneE164, id))) {
+        throw new BadRequestException(
+          'This phone number is already on another CYG Finance account',
+        );
+      }
+    }
+    const before = await this.findActive(id);
+    // An account opened by phone signs in with it: it cannot be removed until an email is added.
+    if (before && !before.email && dto.phone !== undefined && !data.phoneE164) {
+      throw new BadRequestException(
+        'You sign in with this phone number — add an email before removing it',
+      );
     }
     if (dto.preferredContact !== undefined) {
       data.preferredContact = dto.preferredContact;
@@ -721,6 +853,24 @@ export class CustomerAuthService {
     };
   }
 
+  /** step12c: another live account already uses this phone (E.164). */
+  async phoneTaken(phoneE164: string, exceptId?: number): Promise<boolean> {
+    const other = await this.prisma.customer.findFirst({
+      where: {
+        phoneE164,
+        deletedAt: null,
+        ...(exceptId ? { id: { not: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    return !!other;
+  }
+
+  /** Signs a customer in (a verified texted code, step12c). */
+  issueFor(customer: Customer): Promise<AuthResult> {
+    return this.issue(customer);
+  }
+
   private async issue(customer: Customer): Promise<AuthResult> {
     const updated = await this.prisma.customer.update({
       where: { id: customer.id },
@@ -743,7 +893,7 @@ export class CustomerAuthService {
   }
 
   /** Refuses once an IP has failed (or signed up) `AUTH_LIMIT` times in the window. */
-  private throttle(ip: string): void {
+  throttle(ip: string): void {
     const now = Date.now();
     const recent = (this.hits.get(ip) ?? []).filter(
       (t) => now - t < AUTH_WINDOW_MS,
@@ -757,7 +907,8 @@ export class CustomerAuthService {
     }
   }
 
-  private note(ip: string): void {
+  /** Counts one failure (or signup) of this IP toward `throttle`. */
+  note(ip: string): void {
     const list = this.hits.get(ip) ?? [];
     list.push(Date.now());
     this.hits.set(ip, list);

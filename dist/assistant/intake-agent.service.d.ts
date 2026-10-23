@@ -5,14 +5,16 @@ import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantService } from './assistant.service';
 export type IntakeChannel = 'SMS' | 'WHATSAPP' | 'EMAIL';
-export interface IntakeRoute {
+export interface BookRef {
+    bookId: number;
     companyId: number | null;
+}
+export interface IntakeRoute extends BookRef {
     awaitingBook: boolean;
 }
-export interface IntakeReply {
+export interface IntakeReply extends BookRef {
     reply: string | null;
     fileText: boolean;
-    companyId: number | null;
     sent?: boolean;
 }
 export interface IntakeInput {

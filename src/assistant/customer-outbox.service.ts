@@ -140,6 +140,7 @@ export class CustomerOutbox {
         (await this.prisma.aiConversation.create({
           data: {
             customerId: scope.customerId,
+            bookId: scope.bookId,
             companyId: scope.companyId,
             channel,
             peer,
@@ -151,6 +152,7 @@ export class CustomerOutbox {
           data: {
             conversationId: conversation.id,
             customerId: conversation.customerId,
+            bookId: conversation.bookId,
             companyId: conversation.companyId,
             channel,
             role: 'ASSISTANT',

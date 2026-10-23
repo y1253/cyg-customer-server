@@ -20,6 +20,8 @@ const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
 const rxjs_1 = require("rxjs");
 const assistant_tools_1 = require("../assistant/assistant-tools");
+const customer_outbox_service_1 = require("../assistant/customer-outbox.service");
+const books_1 = require("../bookkeeping/books");
 const scope_1 = require("../bookkeeping/scope");
 const signalwire_client_1 = require("../messaging/signalwire.client");
 const messaging_util_1 = require("../messaging/messaging.util");
@@ -34,21 +36,25 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     signalwire;
     storage;
     tools;
+    outbox;
     logger = new common_1.Logger(VoiceCallsService_1.name);
     jwt;
     outboundMissed$ = new rxjs_1.Subject();
-    constructor(prisma, config, signalwire, storage, tools) {
+    personCalls = new Map();
+    constructor(prisma, config, signalwire, storage, tools, outbox) {
         this.prisma = prisma;
         this.config = config;
         this.signalwire = signalwire;
         this.storage = storage;
         this.tools = tools;
+        this.outbox = outbox;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
     }
     onModuleInit() {
         this.tools?.setCallHandler((ctx, about) => this.callMeNow(ctx, about));
+        this.tools?.setPersonCallHandler((ctx, person, message) => this.callPersonNow(ctx, person, message));
     }
     async callMeNow(ctx, about) {
         const customer = await this.prisma.customer.findFirst({
@@ -87,6 +93,114 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             summary: `Calling the customer at the number ending ${peer.slice(-4)}`,
         };
     }
+    async callPersonNow(ctx, person, message) {
+        if (!(await this.canCall()))
+            return { ok: false, error: 'Phone calls are not set up right now.' };
+        if (await this.overCallLimit(ctx.scope.customerId)) {
+            return {
+                ok: false,
+                error: "Today's limit of calls from the assistant is reached — try again tomorrow.",
+            };
+        }
+        const scope = ctx.scope;
+        const origin = ctx.conversation?.id ?? null;
+        const label = person.name ?? person.phone;
+        setTimeout(() => {
+            void this.callCustomer({
+                scope,
+                peer: person.phone,
+                purpose: 'THIRD_PARTY',
+                script: message,
+                contactId: person.contactId,
+                contactName: person.name,
+            }).then((r) => {
+                if ('error' in r) {
+                    this.logger.warn(`call_person for customer ${scope.customerId} not placed: ${r.error}`);
+                    if (origin)
+                        void this.reportToCustomer(origin, `I couldn't call ${label}: ${r.error}`);
+                }
+                else if (origin) {
+                    this.personCalls.set(r.callSid, {
+                        originConversationId: origin,
+                        name: person.name,
+                        phone: person.phone,
+                    });
+                }
+            });
+        }, 4000);
+        return { ok: true, summary: `Calling ${label} (${person.phone})` };
+    }
+    async reportPersonCall(call) {
+        const pending = this.personCalls.get(call.callSid);
+        if (!pending)
+            return;
+        this.personCalls.delete(call.callSid);
+        const label = pending.name
+            ? `${pending.name} (${pending.phone})`
+            : pending.phone;
+        let text;
+        if (!call.answeredAt) {
+            text = `I called ${label} but nobody answered, so your message was not delivered. Want me to text them instead, or try again later?`;
+        }
+        else {
+            const said = await this.prisma.aiMessage.findMany({
+                where: {
+                    conversationId: call.conversationId,
+                    role: 'USER',
+                    createdAt: { gte: call.startedAt },
+                },
+                orderBy: { id: 'asc' },
+                select: { text: true },
+            });
+            const words = said
+                .map((m) => m.text.trim())
+                .filter(Boolean)
+                .join(' ')
+                .slice(0, 600);
+            text = `I called ${label} and gave them your message.${words ? ` They said: "${words}"` : ''}`;
+        }
+        await this.reportToCustomer(pending.originConversationId, text);
+    }
+    async reportToCustomer(conversationId, text) {
+        try {
+            const origin = await this.prisma.aiConversation.findUnique({
+                where: { id: conversationId },
+            });
+            if (!origin)
+                return;
+            const scope = (0, scope_1.scopeOf)(origin);
+            const channel = origin.channel === 'SMS' ||
+                origin.channel === 'WHATSAPP' ||
+                origin.channel === 'EMAIL'
+                ? origin.channel
+                : origin.channel === 'VOICE'
+                    ? 'SMS'
+                    : null;
+            if (channel && this.outbox) {
+                const sent = await this.outbox.send(scope, channel, text);
+                if (sent.ok)
+                    return;
+            }
+            await this.prisma.aiMessage.create({
+                data: {
+                    conversationId: origin.id,
+                    customerId: origin.customerId,
+                    bookId: origin.bookId,
+                    companyId: origin.companyId,
+                    channel: origin.channel,
+                    role: 'ASSISTANT',
+                    text,
+                },
+            });
+            await this.prisma.aiConversation.update({
+                where: { id: origin.id },
+                data: { lastMessageAt: new Date() },
+            });
+        }
+        catch (err) {
+            this.logger.warn(`call_person report not delivered: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
     async overCallLimit(customerId) {
         const max = Number(this.config.get('AI_CALLS_PER_DAY'));
         const limit = Number.isFinite(max) && max >= 0 ? max : DEFAULT_AI_CALLS_PER_DAY;
@@ -96,7 +210,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             where: {
                 customerId,
                 direction: 'OUTBOUND',
-                purpose: { in: ['REQUESTED', 'AI_SCHEDULE'] },
+                purpose: { in: ['REQUESTED', 'AI_SCHEDULE', 'THIRD_PARTY'] },
                 startedAt: { gte: since },
             },
         });
@@ -158,9 +272,14 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             },
             orderBy: { id: 'desc' },
         });
-        const book = claims.dir === 'OUTBOUND' && claims.companyId !== undefined
+        const pinned = claims.dir === 'OUTBOUND' &&
+            (claims.bookId !== undefined || claims.companyId !== undefined)
+            ? await (0, books_1.legacyBook)(this.prisma, claims.sub, claims)
+            : null;
+        const book = pinned
             ? {
-                companyId: claims.companyId ?? null,
+                bookId: pinned.bookId,
+                companyId: pinned.companyId,
                 bookChosen: true,
                 awaitingBook: false,
             }
@@ -184,13 +303,17 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 },
                 orderBy: { lastMessageAt: 'desc' },
             });
+        const fallback = book || sms ? null : await (0, books_1.ensureDefaultBook)(this.prisma, claims.sub);
         return this.prisma.aiConversation.create({
             data: {
                 customerId: claims.sub,
                 channel: 'VOICE',
                 peer: claims.peer,
-                title: 'Phone calls',
-                companyId: book?.companyId ?? sms?.companyId ?? null,
+                title: claims.purpose === 'THIRD_PARTY'
+                    ? `Calls with ${claims.contactName ?? claims.peer}`
+                    : 'Phone calls',
+                bookId: (book ?? sms ?? fallback).bookId,
+                companyId: (book ?? sms ?? fallback).companyId,
                 bookChosen: book?.bookChosen ?? !!sms,
             },
         });
@@ -212,6 +335,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         return this.prisma.aiCall.create({
             data: {
                 customerId: claims.sub,
+                bookId: conversation.bookId,
                 companyId: conversation.companyId,
                 conversationId: conversation.id,
                 callSid,
@@ -219,6 +343,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 peer: claims.peer,
                 fromNumber: claims.to ?? null,
                 purpose: claims.purpose ?? 'INBOUND',
+                contactId: claims.contactId ?? null,
                 scheduleRunId: claims.runId ?? null,
                 status: 'IN_PROGRESS',
                 answeredAt: new Date(),
@@ -252,6 +377,13 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 ...(extra.error ? { error: extra.error.slice(0, 512) } : {}),
             },
         });
+        if (call.purpose === 'THIRD_PARTY') {
+            const fresh = await this.prisma.aiCall.findUnique({
+                where: { id: call.id },
+            });
+            if (fresh)
+                await this.reportPersonCall(fresh);
+        }
     }
     async callCustomer(input) {
         const to = (0, messaging_util_1.asE164)(input.peer);
@@ -272,9 +404,15 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             to: from.phoneNumber,
             dir: 'OUTBOUND',
             purpose: input.purpose,
-            companyId: input.scope.companyId,
+            bookId: input.scope.bookId,
             runId: input.runId ?? null,
             script: input.script.slice(0, 1500),
+            ...(input.purpose === 'THIRD_PARTY'
+                ? {
+                    contactId: input.contactId ?? null,
+                    contactName: input.contactName ?? null,
+                }
+                : {}),
         };
         try {
             const callSid = await this.signalwire.createCall({
@@ -294,6 +432,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             await this.prisma.aiCall.create({
                 data: {
                     customerId: input.scope.customerId,
+                    bookId: input.scope.bookId,
                     companyId: input.scope.companyId,
                     conversationId: conversation.id,
                     callSid,
@@ -301,6 +440,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                     peer: to,
                     fromNumber: from.phoneNumber,
                     purpose: input.purpose,
+                    contactId: input.contactId ?? null,
                     scheduleRunId: input.runId ?? null,
                     aiScheduleRunId: input.aiScheduleRunId ?? null,
                     status: 'RINGING',
@@ -329,6 +469,9 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                     : {}),
             },
         });
+        if (terminal && !call.answeredAt && call.purpose === 'THIRD_PARTY') {
+            await this.reportPersonCall(call);
+        }
         if (terminal &&
             !call.answeredAt &&
             (status === 'NO_ANSWER' || status === 'FAILED') &&
@@ -348,6 +491,10 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             },
             orderBy: { startedAt: 'desc' },
             take,
+            include: {
+                contact: { select: { name: true } },
+                customer: { select: { name: true } },
+            },
         });
         return rows.map(toCallView);
     }
@@ -389,19 +536,32 @@ exports.VoiceCallsService = VoiceCallsService;
 exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
+    __param(5, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         signalwire_client_1.SignalWireClient,
         object_storage_service_1.ObjectStorageService,
-        assistant_tools_1.AssistantTools])
+        assistant_tools_1.AssistantTools,
+        customer_outbox_service_1.CustomerOutbox])
 ], VoiceCallsService);
 function toCallView(c) {
+    const inbound = c.direction === 'INBOUND';
+    const thirdParty = c.purpose === 'THIRD_PARTY';
+    const contactName = thirdParty ? (c.contact?.name ?? null) : null;
     return {
         id: c.id,
         direction: c.direction,
         purpose: c.purpose,
         status: c.status,
         startedAt: c.startedAt.toISOString(),
+        answeredAt: c.answeredAt?.toISOString() ?? null,
+        endedAt: c.endedAt?.toISOString() ?? null,
+        fromNumber: inbound ? c.peer : c.fromNumber,
+        toNumber: inbound ? c.fromNumber : c.peer,
+        withName: thirdParty
+            ? (contactName ?? c.peer)
+            : c.customer?.name?.trim() || 'you',
+        contactName,
         durationSec: c.durationSec,
         hasRecording: !!c.recordingSid ||
             !!c.recordingKey ||

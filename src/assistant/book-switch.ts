@@ -1,4 +1,5 @@
 import { AttachmentStatus, type AiConversation } from '@prisma/client';
+import { listBooks } from '../bookkeeping/books';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { BookOption } from './assistant-prompt';
 
@@ -12,20 +13,17 @@ const QUESTION_SLACK_MS = 5 * 60_000;
 /** A book question older than this no longer explains where a file landed. */
 const QUESTION_MAX_AGE_MS = 24 * 60 * 60_000;
 
-/** "Personal" plus the customer's submitted businesses — the numbered choices. */
+/**
+ * The customer's bookkeeping companies — the numbered choices (step12c: `Book` rows; a
+ * registered business's own book is hidden while "My businesses" is). The first is their
+ * default book.
+ */
 export async function bookOptions(
   prisma: PrismaService,
   customerId: number,
 ): Promise<BookOption[]> {
-  const companies = await prisma.company.findMany({
-    where: { customerId, isDraft: false, isInternal: false, deletedAt: null },
-    orderBy: { businessName: 'asc' },
-    select: { id: true, businessName: true },
-  });
-  return [
-    { companyId: null, name: 'Personal' },
-    ...companies.map((c) => ({ companyId: c.id, name: c.businessName })),
-  ];
+  const books = await listBooks(prisma, customerId);
+  return books.map((b) => ({ bookId: b.id, companyId: null, name: b.name }));
 }
 
 /** The conversation now works in `choice`'s book (any channel). */
@@ -37,6 +35,7 @@ export function chooseBook(
   return prisma.aiConversation.update({
     where: { id: conversation.id },
     data: {
+      bookId: choice.bookId,
       companyId: choice.companyId,
       bookChosen: true,
       awaitingBook: false,
@@ -55,7 +54,7 @@ export async function moveRecentFiles(
   prisma: PrismaService,
   conversation: AiConversation,
   peer: string,
-  companyId: number | null,
+  book: { bookId: number; companyId: number | null },
 ): Promise<{ moved: number; reread: number }> {
   const now = Date.now();
   let since = now - RECENT_MS;
@@ -79,29 +78,20 @@ export async function moveRecentFiles(
     const first = questions[questions.length - 1].createdAt.getTime();
     since = Math.min(since, first - QUESTION_SLACK_MS);
   }
-  const where = {
+  const scoped = {
     customerId: conversation.customerId,
-    companyId: { not: companyId },
+    bookId: { not: book.bookId },
     source: conversation.channel,
     sourcePhone: peer,
     createdAt: { gte: new Date(since) },
     deletedAt: null,
     transactionId: null,
   };
-  // `companyId: { not: null }` excludes NULL rows in SQL, so moving TO a business must also
-  // catch the general book's files explicitly.
-  const scoped =
-    companyId === null
-      ? where
-      : {
-          ...where,
-          companyId: undefined,
-          OR: [{ companyId: null }, { companyId: { not: companyId } }],
-        };
+  const target = { bookId: book.bookId, companyId: book.companyId };
   const reread = await prisma.transactionAttachment.updateMany({
     where: { ...scoped, status: AttachmentStatus.UNMATCHED },
     data: {
-      companyId,
+      ...target,
       status: AttachmentStatus.PENDING,
       attempts: 0,
       error: null,
@@ -109,7 +99,7 @@ export async function moveRecentFiles(
   });
   const rest = await prisma.transactionAttachment.updateMany({
     where: scoped,
-    data: { companyId },
+    data: target,
   });
   return { moved: reread.count + rest.count, reread: reread.count };
 }

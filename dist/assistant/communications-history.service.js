@@ -34,7 +34,7 @@ let CommunicationsHistory = CommunicationsHistory_1 = class CommunicationsHistor
                 return null;
             return (0, history_util_1.otherChannelsBlock)(rows, {
                 now: new Date(),
-                currentCompanyId: conversation.companyId,
+                currentBookId: conversation.bookId,
                 bookName: await this.bookNames(conversation.customerId),
             });
         }
@@ -127,7 +127,7 @@ let CommunicationsHistory = CommunicationsHistory_1 = class CommunicationsHistor
                 role: true,
                 text: true,
                 createdAt: true,
-                companyId: true,
+                bookId: true,
                 actions: true,
                 attachmentLinks: { select: { attachmentId: true } },
             },
@@ -148,7 +148,7 @@ let CommunicationsHistory = CommunicationsHistory_1 = class CommunicationsHistor
             role: m.role,
             text: m.text,
             createdAt: m.createdAt,
-            companyId: m.companyId,
+            bookId: m.bookId,
             actions: m.actions,
             files: m.attachmentLinks.map((l) => {
                 const f = byId.get(l.attachmentId);
@@ -161,12 +161,12 @@ let CommunicationsHistory = CommunicationsHistory_1 = class CommunicationsHistor
         }));
     }
     async bookNames(customerId) {
-        const companies = await this.prisma.company.findMany({
-            where: { customerId, isInternal: false },
-            select: { id: true, businessName: true },
+        const books = await this.prisma.book.findMany({
+            where: { customerId },
+            select: { id: true, name: true },
         });
-        const names = new Map(companies.map((c) => [c.id, c.businessName]));
-        return (id) => id === null ? 'Personal books' : (names.get(id) ?? 'a deleted business');
+        const names = new Map(books.map((b) => [b.id, b.name]));
+        return (id) => names.get(id) ?? 'a deleted company';
     }
 };
 exports.CommunicationsHistory = CommunicationsHistory;

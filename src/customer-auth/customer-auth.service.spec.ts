@@ -36,6 +36,7 @@ function customer(over: Partial<Customer> = {}): Customer {
     phone: null,
     phoneE164: null,
     preferredContact: null,
+    createdWith: null,
     createdAt: new Date('2026-10-01'),
     updatedAt: new Date('2026-10-01'),
     lastLoginAt: null,
@@ -61,6 +62,14 @@ function setup(
       ),
       update: jest.fn(({ data }: { data: Partial<Customer> }) =>
         Promise.resolve({ ...(existing ?? customer()), ...data }),
+      ),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    // step12c: every new account gets its first book, "Company1".
+    book: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn(({ data }: { data: { customerId: number } }) =>
+        Promise.resolve({ id: 1, companyId: null, ...data }),
       ),
     },
   };

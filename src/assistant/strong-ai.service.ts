@@ -7,7 +7,7 @@ import {
   type AgentMessage,
   type AgentRequest,
 } from '../ai/openai.client';
-import { scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { DEFAULT_INSTRUCTIONS } from './assistant-prompt';
@@ -161,6 +161,7 @@ export class StrongAiService implements OnModuleInit {
           conversationId: conversation.id,
           messageId,
           customerId: conversation.customerId,
+          bookId: conversation.bookId,
           companyId: conversation.companyId,
           complaint:
             `${report.complaint}\n\nThe assistant's view: ${report.whatWentWrong}`.slice(
@@ -172,8 +173,7 @@ export class StrongAiService implements OnModuleInit {
       });
       const run = withAiUsage(
         {
-          customerId: conversation.customerId,
-          companyId: conversation.companyId,
+          ...scopeOf(conversation),
           feature: 'STRONG_AI',
         },
         () => this.investigate(escalation, conversation, report),
@@ -267,10 +267,7 @@ export class StrongAiService implements OnModuleInit {
     report: IssueReport,
   ): Promise<StrongFinish> {
     const started = Date.now();
-    const scope: BookScope = {
-      customerId: conversation.customerId,
-      companyId: conversation.companyId,
-    };
+    const scope: BookScope = scopeOf(conversation);
     const who: ChangeBy = {
       by: 'STRONG_AI',
       reason: '',
@@ -413,7 +410,7 @@ export class StrongAiService implements OnModuleInit {
     });
     const prompt = await this.assistant.promptFor(conversation);
     return [
-      `CASE #${escalation.id}. Channel ${conversation.channel}, customer ${conversation.customerId}, ${conversation.companyId ? `business book ${conversation.companyId}` : 'general book'}${conversation.attachmentId ? `, an "Ask AI" chat about attachment ${conversation.attachmentId}` : ''}.`,
+      `CASE #${escalation.id}. Channel ${conversation.channel}, customer ${conversation.customerId}, book ${conversation.bookId}${conversation.companyId ? ` (registered business ${conversation.companyId})` : ''}${conversation.attachmentId ? `, an "Ask AI" chat about attachment ${conversation.attachmentId}` : ''}.`,
       '',
       `THE COMPLAINT (message #${escalation.messageId}): ${report.complaint}`,
       `What the regular assistant thinks went wrong: ${report.whatWentWrong}`,

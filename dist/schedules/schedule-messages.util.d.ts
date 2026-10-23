@@ -19,6 +19,7 @@ export declare function accountStatusMessage(input: {
     status: AccountStatus;
     link: string;
     sms: boolean;
+    canCall?: boolean;
 }): StatusMessage;
 export declare function financialReportMessage(input: {
     firstName: string;

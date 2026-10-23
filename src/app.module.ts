@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AiContactsModule } from './ai-contacts/ai-contacts.module';
 import { AiUsageModule } from './ai-usage/ai-usage.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -28,6 +29,7 @@ import { StorageModule } from './storage/storage.module';
     CustomerAuthModule,
     BookkeepingModule,
     BillingModule,
+    AiContactsModule,
     AssistantModule,
     BankFeedsModule,
     SchedulesModule,

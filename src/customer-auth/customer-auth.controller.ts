@@ -18,6 +18,7 @@ import {
 import { CustomerJwtGuard } from './customer-jwt.guard';
 import type { CustomerRequestUser } from './customer-jwt.strategy';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { EmailCodeDto, EmailVerifyDto } from './dto/email-change.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { LoginDto } from './dto/login.dto';
@@ -149,5 +150,35 @@ export class CustomerAuthController {
   @HttpCode(202)
   sendPasswordCode(@Req() req: AuthedRequest): Promise<SignupStarted> {
     return this.auth.sendPasswordCode(req.user.customerId, req.ip ?? 'unknown');
+  }
+
+  /** step12c: an account opened by phone adds an email — a code is emailed to it first. */
+  @Post('me/email/code')
+  @UseGuards(CustomerJwtGuard)
+  @HttpCode(202)
+  sendEmailCode(
+    @Req() req: AuthedRequest,
+    @Body() dto: EmailCodeDto,
+  ): Promise<SignupStarted> {
+    return this.auth.sendEmailCode(
+      req.user.customerId,
+      dto.email,
+      req.ip ?? 'unknown',
+    );
+  }
+
+  @Post('me/email')
+  @UseGuards(CustomerJwtGuard)
+  @HttpCode(200)
+  verifyEmail(
+    @Req() req: AuthedRequest,
+    @Body() dto: EmailVerifyDto,
+  ): Promise<PublicCustomer> {
+    return this.auth.verifyEmail(
+      req.user.customerId,
+      dto.email,
+      dto.code,
+      req.ip ?? 'unknown',
+    );
   }
 }

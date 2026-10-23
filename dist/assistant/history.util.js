@@ -57,8 +57,8 @@ function historyLine(r, opts, maxLine = exports.OTHER_CHANNELS.maxLine) {
         exports.CHANNEL_LABEL[r.channel] ?? r.channel,
         whenLabel(r.createdAt),
         r.role === 'USER' ? 'customer' : 'you',
-        ...(r.companyId !== opts.currentCompanyId
-            ? [opts.bookName(r.companyId)]
+        ...(r.bookId !== opts.currentBookId
+            ? [opts.bookName(r.bookId)]
             : []),
     ].join(' · ');
     const files = r.files.length
@@ -98,7 +98,7 @@ function searchHit(r, bookName) {
         at: r.createdAt.toISOString(),
         when: whenLabel(r.createdAt),
         channel: exports.CHANNEL_LABEL[r.channel] ?? r.channel,
-        book: bookName(r.companyId),
+        book: bookName(r.bookId),
         who: r.role === 'USER' ? 'customer' : 'assistant',
         text: cut(r.text, 600),
         ...(r.files.length ? { files: r.files } : {}),

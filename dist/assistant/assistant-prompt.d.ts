@@ -1,3 +1,4 @@
+import { type FirmReach } from '../messaging/reach';
 import { type AssistantTexts, type FixedAssistantKey } from './instructions.util';
 export type Channel = 'BOT' | 'SMS' | 'WHATSAPP' | 'EMAIL' | 'VOICE';
 export declare const CHANNELS: readonly Channel[];
@@ -10,11 +11,14 @@ export interface PromptInput {
     bookLabel: string;
     rules: string;
     preferredContact?: string | null;
+    reach?: FirmReach | null;
+    nameUnknown?: boolean;
     attachment?: unknown;
     files?: unknown[];
 }
 export declare function systemPrompt(p: PromptInput, texts?: AssistantTexts): string;
 export interface BookOption {
+    bookId: number;
     companyId: number | null;
     name: string;
 }

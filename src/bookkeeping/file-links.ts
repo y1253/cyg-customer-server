@@ -16,6 +16,7 @@ import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
 import { reportPdf } from './report-pdf';
 import { ReportsService } from './reports.service';
+import { bookOwnerName, legacyBook } from './books';
 import type { BookScope } from './scope';
 
 /** The claim on a file link — never a login (`CustomerJwtStrategy` wants `'customer'`). */
@@ -39,7 +40,10 @@ export interface FileLinkTarget {
 interface FileLinkClaims {
   typ: string;
   sub: number;
-  c: number | null;
+  /** step12c: the book. */
+  b?: number;
+  /** Links signed before step12c: the business (null = the general book, now the default). */
+  c?: number | null;
   k: FileLinkKind;
   i?: number;
   f?: string | null;
@@ -93,7 +97,7 @@ export class FileLinkService {
     const claims: FileLinkClaims = {
       typ: FILE_LINK_TOKEN_TYPE,
       sub: scope.customerId,
-      c: scope.companyId,
+      b: scope.bookId,
       k: target.kind,
       ...(target.id ? { i: target.id } : {}),
       ...(target.from ? { f: target.from } : {}),
@@ -121,7 +125,10 @@ export class FileLinkService {
     if (p.typ !== FILE_LINK_TOKEN_TYPE || typeof p.sub !== 'number') {
       throw new NotFoundException('This link is not valid');
     }
-    const scope = await this.liveScope(p.sub, p.c ?? null);
+    const scope = await this.liveScope(p.sub, {
+      bookId: p.b ?? null,
+      companyId: p.c ?? null,
+    });
     switch (p.k) {
       case 'statement': {
         const f = await this.bookkeeping.file(scope, p.i ?? 0);
@@ -174,43 +181,23 @@ export class FileLinkService {
   /** The book still exists and is still this customer's (the BookScopeGuard rule). */
   private async liveScope(
     customerId: number,
-    companyId: number | null,
+    ref: { bookId: number | null; companyId: number | null },
   ): Promise<BookScope> {
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, deletedAt: null },
       select: { id: true },
     });
     if (!customer) throw new NotFoundException('This link is not valid');
-    if (companyId !== null) {
-      const company = await this.prisma.company.findFirst({
-        where: {
-          id: companyId,
-          customerId,
-          isDraft: false,
-          isInternal: false,
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-      if (!company) throw new NotFoundException('This link is not valid');
+    try {
+      return await legacyBook(this.prisma, customerId, ref);
+    } catch {
+      throw new NotFoundException('This link is not valid');
     }
-    return { customerId, companyId };
   }
 
-  /** The business's name for a company book, else the customer's. */
+  /** Whose name heads an export: the book's (the company's) name. */
   async ownerName(scope: BookScope): Promise<string> {
-    if (scope.companyId !== null) {
-      const c = await this.prisma.company.findUnique({
-        where: { id: scope.companyId },
-        select: { businessName: true },
-      });
-      if (c) return c.businessName;
-    }
-    const me = await this.prisma.customer.findUnique({
-      where: { id: scope.customerId },
-      select: { name: true },
-    });
-    return me?.name ?? 'Your books';
+    return bookOwnerName(this.prisma, scope);
   }
 }
 

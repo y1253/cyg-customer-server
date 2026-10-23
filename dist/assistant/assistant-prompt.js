@@ -8,6 +8,7 @@ exports.bookKey = bookKey;
 exports.bookCandidates = bookCandidates;
 exports.parseBookChoice = parseBookChoice;
 exports.whichBookQuestion = whichBookQuestion;
+const reach_1 = require("../messaging/reach");
 const instructions_util_1 = require("./instructions.util");
 exports.CHANNELS = [
     'BOT',
@@ -56,9 +57,13 @@ exports.DEFAULT_INSTRUCTIONS = {
         'When they ask you to send something somewhere else ("email me the docs", "text me ' +
         'that link"), get fresh links with get_link and use send_message — it only ever goes ' +
         'to their own email / phone. When they ask you to call them, use call_me (now) or ' +
-        'create_schedule with channel CALL (a later time, or every week). You only ever call ' +
-        'or message the customer themselves, never anyone else. Confirm in words what you sent ' +
-        'or when you will call.',
+        'create_schedule with channel CALL (a later time, or every week). When they ask you to ' +
+        'call or text SOMEONE ELSE ("call 514… and tell him…", "text John that…"), use ' +
+        'call_person / text_person: look the person up with list_contacts first; for a new ' +
+        "number ask their name and whether to save them (save_contact) — a saved contact's " +
+        'reply reaches the customer. Before calling or texting anyone else, repeat who and what ' +
+        "back and get a yes. Never tell anyone else anything about the customer's books. " +
+        'Confirm in words what you sent or when you will call.',
     'channel.BOT': 'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.',
     'channel.SMS': 'You are answering by TEXT MESSAGE, like a person texting: plain text only, no markdown, at most about 600 characters. Summarise lists (count, total, the top 3).',
     'channel.WHATSAPP': 'You are answering on WhatsApp, like a person chatting: short and plain (no tables or headings; *bold* is fine), at most about 800 characters. Summarise long lists.',
@@ -131,6 +136,15 @@ function systemPrompt(p, texts = instructions_util_1.NO_TEXTS) {
     push(block('core.answers'));
     push(block('core.issues'));
     push(block('core.channels'));
+    if (p.reach) {
+        const ways = (0, reach_1.reachWords)(p.reach);
+        lines.push(ways
+            ? `How customers reach us right now: ${ways}. Offer only these${p.reach.voice ? '' : ' — calling our number does not reach you at the moment'}${p.reach.email ? '' : ', and there is no email inbox'}.`
+            : 'Customers can reach us only on the website right now.');
+    }
+    if (p.nameUnknown) {
+        lines.push("You don't know the customer's name yet (they opened their account by text). Ask for it once, early and briefly, and save it with update_my_profile.");
+    }
     for (const extra of texts.extras)
         push((0, instructions_util_1.fillPlaceholders)(extra, values));
     push(block(`channel.${p.channel}`));
@@ -195,7 +209,7 @@ function bookCandidates(text, options) {
         return o ? [o] : [];
     }
     if (/^(personal|general|me|mine|myself|my own|my personal|personal books?)$/.test(t)) {
-        const o = options.find((x) => x.companyId === null);
+        const o = options[0];
         return o ? [o] : [];
     }
     const key = bookKey(t);

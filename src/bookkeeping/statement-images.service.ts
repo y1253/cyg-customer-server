@@ -39,6 +39,7 @@ export class StatementImagesService {
       BankStatement,
       | 'id'
       | 'customerId'
+      | 'bookId'
       | 'companyId'
       | 'filename'
       | 'accountName'

@@ -20,11 +20,16 @@ const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
+const books_1 = require("../bookkeeping/books");
+const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const assistant_prompt_1 = require("./assistant-prompt");
 const assistant_service_1 = require("./assistant.service");
 const book_switch_1 = require("./book-switch");
+function ref(b) {
+    return { bookId: b.bookId, companyId: b.companyId };
+}
 const SEND_BUDGET_MS = 120_000;
 const INLINE_BUDGET_MS = 20_000;
 const CLASSIFY_SCHEMA = {
@@ -58,8 +63,10 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
         this.messenger = messenger;
     }
     async route(customerId, channel, peer, text) {
-        if (!this.assistant.enabled)
-            return { companyId: null, awaitingBook: false };
+        if (!this.assistant.enabled) {
+            const def = await (0, books_1.ensureDefaultBook)(this.prisma, customerId);
+            return { ...ref(def), awaitingBook: false };
+        }
         const options = await (0, book_switch_1.bookOptions)(this.prisma, customerId);
         let conversation = await this.find(customerId, channel, peer);
         if (conversation)
@@ -74,9 +81,9 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             }
         }
         if (conversation?.bookChosen) {
-            return { companyId: conversation.companyId, awaitingBook: false };
+            return { ...ref(conversation), awaitingBook: false };
         }
-        return { companyId: null, awaitingBook: options.length > 1 };
+        return { ...ref(options[0]), awaitingBook: options.length > 1 };
     }
     async agent(customerId, input) {
         const sends = this.sendsItself(input);
@@ -137,8 +144,10 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
         });
     }
     async turn(customerId, input) {
-        if (!this.assistant.enabled)
-            return { reply: null, fileText: true, companyId: null };
+        if (!this.assistant.enabled) {
+            const def = await (0, books_1.ensureDefaultBook)(this.prisma, customerId);
+            return { reply: null, fileText: true, ...ref(def) };
+        }
         const text = input.text?.trim() || null;
         const files = input.attachmentIds.filter((n) => Number.isInteger(n) && n > 0);
         const options = await (0, book_switch_1.bookOptions)(this.prisma, customerId);
@@ -147,7 +156,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             (await this.prisma.aiConversation.create({
                 data: {
                     customerId,
-                    companyId: null,
+                    ...ref(options[0]),
                     channel: input.channel,
                     peer: input.peer,
                 },
@@ -159,7 +168,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             if (found.length === 1) {
                 const choice = found[0];
                 conversation = await (0, book_switch_1.chooseBook)(this.prisma, conversation, choice);
-                const { moved, reread } = await (0, book_switch_1.moveRecentFiles)(this.prisma, conversation, input.peer, choice.companyId);
+                const { moved, reread } = await (0, book_switch_1.moveRecentFiles)(this.prisma, conversation, input.peer, choice);
                 if (reread)
                     this.processor?.processSoon();
                 switched = `Done — this chat is now for ${choice.name}.${moved ? ` I moved ${moved} file${moved === 1 ? '' : 's'} there.` : ''}`;
@@ -167,7 +176,7 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
                     const reply = `${switched} Send receipts or ask me anything about those books.`;
                     await this.assistant.save(conversation, 'USER', text);
                     await this.assistant.save(conversation, 'ASSISTANT', reply);
-                    return { reply, fileText: false, companyId: choice.companyId };
+                    return { reply, fileText: false, ...ref(choice) };
                 }
             }
             else if (found.length > 1) {
@@ -179,33 +188,33 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
                 return {
                     reply,
                     fileText: false,
-                    companyId: conversation.bookChosen ? conversation.companyId : null,
+                    ...ref(conversation.bookChosen ? conversation : options[0]),
                 };
             }
         }
         if (multi && !conversation.bookChosen) {
             return this.undecided(conversation, options, text, files);
         }
-        const companyId = conversation.bookChosen ? conversation.companyId : null;
+        const book = ref(conversation.bookChosen ? conversation : options[0]);
         const bookName = multi
-            ? (options.find((o) => o.companyId === companyId)?.name ?? null)
+            ? (options.find((o) => o.bookId === book.bookId)?.name ?? null)
             : null;
         if (files.length) {
             if (!this.processor) {
                 const reply = `${this.received(files.length)}${bookName ? ` (${bookName})` : ''} I'll match ${files.length === 1 ? 'it' : 'them'} to your transactions once read.`;
                 await this.assistant.save(conversation, 'USER', text ?? this.assistant.fileLabel(files.length), { attachmentIds: files });
                 await this.assistant.save(conversation, 'ASSISTANT', reply);
-                return { reply, fileText: false, companyId };
+                return { reply, fileText: false, ...book };
             }
             const current = conversation;
             return {
                 reply: null,
                 fileText: false,
-                companyId,
+                ...book,
                 later: async (budget) => {
                     await this.processor.waitUntilRead(files, budget);
                     const all = await this.processor.family(files);
-                    const scope = { customerId, companyId: current.companyId };
+                    const scope = (0, scope_1.scopeOf)(current);
                     const { words, files: context } = await this.assistant.filesMessage(scope, text, all, files.length);
                     const result = await this.assistant.respond(current, words, {
                         attachmentIds: all,
@@ -216,23 +225,24 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             };
         }
         if (!text)
-            return { reply: null, fileText: false, companyId };
+            return { reply: null, fileText: false, ...book };
         if (await this.isReceiptNote(text, conversation)) {
             const reply = `Got it — I'll file that${bookName ? ` in ${bookName}` : ''}.`;
             await this.assistant.save(conversation, 'USER', text);
             await this.assistant.save(conversation, 'ASSISTANT', reply);
-            return { reply, fileText: true, companyId };
+            return { reply, fileText: true, ...book };
         }
         const current = conversation;
         return {
             reply: null,
             fileText: false,
-            companyId,
+            ...book,
             later: async () => (await this.assistant.respond(current, text)).reply.text,
         };
     }
     async undecided(conversation, options, text, files) {
         const question = (0, assistant_prompt_1.bookQuestion)(options);
+        const def = ref(options[0]);
         const note = !files.length && !!text && (await this.isReceiptNote(text, conversation));
         const ask = async (reply) => {
             await this.askedBook(conversation, reply);
@@ -242,11 +252,11 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             return {
                 reply: null,
                 fileText: false,
-                companyId: null,
+                ...def,
                 later: async (budget) => {
                     await processor.waitUntilRead(files, budget);
                     const all = await processor.family(files);
-                    const { words, files: context } = await this.assistant.filesMessage({ customerId: conversation.customerId, companyId: null }, text, all, files.length);
+                    const { words, files: context } = await this.assistant.filesMessage({ customerId: conversation.customerId, ...def }, text, all, files.length);
                     const answer = await this.assistant.respond(conversation, words, {
                         attachmentIds: all,
                         files: context,
@@ -262,7 +272,7 @@ ${question}`;
             return {
                 reply: null,
                 fileText: false,
-                companyId: null,
+                ...def,
                 later: async () => {
                     const answer = await this.assistant.respond(conversation, text);
                     await ask(question);
@@ -273,7 +283,7 @@ ${question}`;
         const reply = `${files.length || note ? `${this.received(files.length || 1)} ` : ''}${question}`;
         await this.assistant.save(conversation, 'USER', text ?? this.assistant.fileLabel(files.length), { attachmentIds: files });
         await ask(reply);
-        return { reply, fileText: note, companyId: null };
+        return { reply, fileText: note, ...def };
     }
     async onlyVoiceNotes(ids) {
         const kinds = await this.prisma.transactionAttachment.findMany({
@@ -301,14 +311,12 @@ ${question}`;
         }
     }
     async stillValid(conversation, options) {
-        if (!conversation.bookChosen ||
-            conversation.companyId === null ||
-            options.some((o) => o.companyId === conversation.companyId)) {
+        if (options.some((o) => o.bookId === conversation.bookId)) {
             return conversation;
         }
         return this.prisma.aiConversation.update({
             where: { id: conversation.id },
-            data: { bookChosen: false, companyId: null },
+            data: { bookChosen: false, ...ref(options[0]) },
         });
     }
     find(customerId, channel, peer) {
@@ -322,8 +330,7 @@ ${question}`;
             return false;
         try {
             const reply = await (0, ai_usage_context_1.withAiUsage)({
-                customerId: conversation.customerId,
-                companyId: conversation.companyId,
+                ...(0, scope_1.scopeOf)(conversation),
                 feature: 'INTAKE',
             }, () => this.openai.chat({
                 model: this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||

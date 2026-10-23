@@ -23,6 +23,8 @@ export type AiFeature =
 
 export interface AiUsageContext {
   customerId: number | null;
+  /** step12c: the book the call worked on. */
+  bookId: number | null;
   companyId: number | null;
   feature: AiFeature;
 }
@@ -44,6 +46,8 @@ export function withAiUsage<T>(
         ctx.customerId !== undefined
           ? ctx.customerId
           : (outer?.customerId ?? null),
+      bookId:
+        ctx.bookId !== undefined ? ctx.bookId : (outer?.bookId ?? null),
       companyId:
         ctx.companyId !== undefined
           ? ctx.companyId
@@ -59,6 +63,7 @@ export function currentAiUsage(): AiUsageContext {
   return (
     storage.getStore() ?? {
       customerId: null,
+      bookId: null,
       companyId: null,
       feature: 'OTHER',
     }

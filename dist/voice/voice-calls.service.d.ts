@@ -2,7 +2,8 @@ import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiCall, AiConversation } from '@prisma/client';
 import { Subject } from 'rxjs';
-import { AssistantTools, type ToolContext } from '../assistant/assistant-tools';
+import { AssistantTools, type PersonTarget, type ToolContext } from '../assistant/assistant-tools';
+import { CustomerOutbox } from '../assistant/customer-outbox.service';
 import { type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -26,8 +27,14 @@ export interface CallView {
     purpose: string;
     status: string;
     startedAt: string;
+    answeredAt: string | null;
+    endedAt: string | null;
     durationSec: number | null;
     hasRecording: boolean;
+    fromNumber: string | null;
+    toNumber: string | null;
+    withName: string;
+    contactName: string | null;
 }
 export declare class VoiceCallsService implements OnModuleInit {
     private readonly prisma;
@@ -35,10 +42,12 @@ export declare class VoiceCallsService implements OnModuleInit {
     private readonly signalwire;
     private readonly storage;
     private readonly tools?;
+    private readonly outbox?;
     private readonly logger;
     private readonly jwt;
     readonly outboundMissed$: Subject<OutboundMissed>;
-    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined);
+    private readonly personCalls;
+    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined);
     onModuleInit(): void;
     callMeNow(ctx: ToolContext, about: string): Promise<{
         ok: true;
@@ -47,6 +56,15 @@ export declare class VoiceCallsService implements OnModuleInit {
         ok: false;
         error: string;
     }>;
+    callPersonNow(ctx: ToolContext, person: PersonTarget, message: string): Promise<{
+        ok: true;
+        summary: string;
+    } | {
+        ok: false;
+        error: string;
+    }>;
+    private reportPersonCall;
+    private reportToCustomer;
     overCallLimit(customerId: number): Promise<boolean>;
     settings(): Promise<VoiceSettings>;
     canCall(): Promise<boolean>;
@@ -69,6 +87,8 @@ export declare class VoiceCallsService implements OnModuleInit {
         runId?: number | null;
         aiScheduleRunId?: number | null;
         script: string;
+        contactId?: number | null;
+        contactName?: string | null;
     }): Promise<{
         callSid: string;
     } | {
@@ -82,4 +102,11 @@ export declare class VoiceCallsService implements OnModuleInit {
         filename: string;
     }>;
 }
-export declare function toCallView(c: AiCall): CallView;
+export declare function toCallView(c: AiCall & {
+    contact?: {
+        name: string;
+    } | null;
+    customer?: {
+        name: string;
+    } | null;
+}): CallView;

@@ -18,6 +18,7 @@ import { AiSchedulesStore } from '../schedules/ai-schedules.store';
 import { type LinkBook } from './links.util';
 import { CommunicationsHistory } from './communications-history.service';
 import { CustomerOutbox } from './customer-outbox.service';
+import { AiContactsService } from '../ai-contacts/ai-contacts.service';
 export interface AgentAction {
     tool: string;
     ok: boolean;
@@ -43,6 +44,18 @@ export interface IssueOutcome {
 }
 export type IssueHandler = (ctx: ToolContext, report: IssueReport) => Promise<IssueOutcome>;
 export type CallHandler = (ctx: ToolContext, about: string) => Promise<{
+    ok: true;
+    summary: string;
+} | {
+    ok: false;
+    error: string;
+}>;
+export interface PersonTarget {
+    phone: string;
+    contactId: number | null;
+    name: string | null;
+}
+export type PersonCallHandler = (ctx: ToolContext, person: PersonTarget, message: string) => Promise<{
     ok: true;
     summary: string;
 } | {
@@ -76,12 +89,18 @@ export declare class AssistantTools {
     private readonly aiSchedules?;
     private readonly history?;
     private readonly outbox?;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined);
+    private readonly contacts?;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined, contacts?: AiContactsService | undefined);
     private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;
     private callHandler;
     setCallHandler(handler: CallHandler): void;
+    private personCallHandler;
+    setPersonCallHandler(handler: PersonCallHandler): void;
+    private readonly textsToOthers;
+    private contactsService;
+    private person;
     private schedulesStore;
     private schedulesList;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;

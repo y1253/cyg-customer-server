@@ -59,6 +59,7 @@ export declare class BillingService {
     private generateFor;
     private usablePromo;
     private stripeCustomerIdOf;
+    private scopeOfIntent;
     private ensureStripeCustomer;
     private ownCard;
     private retrieveIntent;

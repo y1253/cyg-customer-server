@@ -24,6 +24,7 @@ import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { Book, BookScopeGuard } from './book-scope.guard';
+import { bookOwnerName } from './books';
 import type { BookScope } from './scope';
 import {
   AttachmentsService,
@@ -118,16 +119,9 @@ export class BookkeepingController {
     private readonly communications: CommunicationsService,
   ) {}
 
-  /** Whose name heads an export: the business's for its books, else the customer's. */
-  private async ownerName(scope: BookScope): Promise<string> {
-    if (scope.companyId !== null) {
-      const c = await this.prisma.company.findUnique({
-        where: { id: scope.companyId },
-        select: { businessName: true },
-      });
-      if (c) return c.businessName;
-    }
-    return (await this.customers.me(scope.customerId)).name;
+  /** Whose name heads an export: the book's (the company's) name. */
+  private ownerName(scope: BookScope): Promise<string> {
+    return bookOwnerName(this.prisma, scope);
   }
 
   /**

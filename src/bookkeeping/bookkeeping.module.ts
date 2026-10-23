@@ -8,6 +8,7 @@ import { AttachmentExtractor } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { AttachmentsService } from './attachments.service';
 import { BookScopeGuard } from './book-scope.guard';
+import { BooksController } from './books.controller';
 import { BookkeepingController } from './bookkeeping.controller';
 import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
@@ -30,6 +31,7 @@ import { CommunicationsService } from './communications.service';
 @Module({
   imports: [CustomerAuthModule],
   controllers: [
+    BooksController,
     BookkeepingController,
     StaffRulesController,
     FileLinkController,

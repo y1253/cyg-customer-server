@@ -14,6 +14,7 @@ exports.AiSchedulesService = void 0;
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const assistant_service_1 = require("../assistant/assistant.service");
+const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const answer_html_1 = require("../mail/answer-html");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -111,10 +112,7 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
         }
     }
     async run(s, manual, mode = 'NORMAL') {
-        const scope = {
-            customerId: s.customerId,
-            companyId: s.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(s);
         const record = (data) => this.prisma.aiScheduleRun.create({
             data: {
                 scheduleId: s.id,

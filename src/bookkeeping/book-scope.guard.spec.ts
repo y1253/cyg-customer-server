@@ -1,45 +1,123 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { PrismaService } from '../prisma/prisma.service';
-import { BookScopeGuard, parseCompanyParam } from './book-scope.guard';
+import { BookScopeGuard, parseIdParam } from './book-scope.guard';
 
-describe('parseCompanyParam', () => {
-  it('reads an absent or blank value as the general book', () => {
-    expect(parseCompanyParam(undefined)).toBeNull();
-    expect(parseCompanyParam('')).toBeNull();
+describe('parseIdParam', () => {
+  it('reads an absent or blank value as none', () => {
+    expect(parseIdParam(undefined)).toBeNull();
+    expect(parseIdParam('')).toBeNull();
   });
 
   it('accepts a positive integer', () => {
-    expect(parseCompanyParam('42')).toBe(42);
+    expect(parseIdParam('42')).toBe(42);
   });
 
   it.each(['0', '-1', '1.5', 'abc', '01', ['1', '2']])('refuses %p', (raw) => {
-    expect(() => parseCompanyParam(raw)).toThrow(BadRequestException);
+    expect(() => parseIdParam(raw)).toThrow(BadRequestException);
   });
 });
 
-describe('BookScopeGuard.resolve', () => {
-  function guardWith(company: { id: number } | null) {
-    const findFirst = jest.fn().mockResolvedValue(company);
-    const prisma = { company: { findFirst } } as unknown as PrismaService;
-    return { guard: new BookScopeGuard(prisma), findFirst };
+describe('BookScopeGuard.resolve (step12c: books)', () => {
+  type BookRow = { id: number; customerId: number; companyId: number | null };
+  function guardWith(opts: {
+    books?: BookRow[];
+    company?: { id: number } | null;
+  }) {
+    const books = opts.books ?? [];
+    const book = {
+      findFirst: jest.fn(
+        ({
+          where,
+        }: {
+          where: { id?: number; customerId: number; companyId?: null };
+        }) =>
+          Promise.resolve(
+            books.find(
+              (b) =>
+                b.customerId === where.customerId &&
+                (where.id === undefined || b.id === where.id) &&
+                (where.companyId === undefined ||
+                  b.companyId === where.companyId),
+            ) ?? null,
+          ),
+      ),
+      findUnique: jest.fn(({ where }: { where: { companyId: number } }) =>
+        Promise.resolve(
+          books.find((b) => b.companyId === where.companyId) ?? null,
+        ),
+      ),
+      create: jest.fn(({ data }: { data: Omit<BookRow, 'id'> }) =>
+        Promise.resolve({ id: 99, companyId: null, ...data }),
+      ),
+    };
+    const company = {
+      findFirst: jest.fn().mockResolvedValue(opts.company ?? null),
+      findUnique: jest.fn().mockResolvedValue(null),
+    };
+    const customer = {
+      findUnique: jest.fn().mockResolvedValue({ homeCurrency: 'CAD' }),
+    };
+    const prisma = { book, company, customer } as unknown as PrismaService;
+    return { guard: new BookScopeGuard(prisma), book, company };
   }
 
-  it('is the general book without a companyId, and asks nothing', async () => {
-    const { guard, findFirst } = guardWith(null);
-    await expect(guard.resolve(7, undefined)).resolves.toEqual({
+  it("is the customer's default book without a param", async () => {
+    const { guard } = guardWith({
+      books: [{ id: 5, customerId: 7, companyId: null }],
+    });
+    await expect(guard.resolve(7, {})).resolves.toEqual({
       customerId: 7,
+      bookId: 5,
       companyId: null,
     });
-    expect(findFirst).not.toHaveBeenCalled();
   });
 
-  it("scopes to the caller's own submitted company", async () => {
-    const { guard, findFirst } = guardWith({ id: 3 });
-    await expect(guard.resolve(7, '3')).resolves.toEqual({
+  it('creates "Company1" for a customer with no book yet', async () => {
+    const { guard, book } = guardWith({});
+    await expect(guard.resolve(7, {})).resolves.toEqual({
       customerId: 7,
+      bookId: 99,
+      companyId: null,
+    });
+    expect(book.create).toHaveBeenCalledWith({
+      data: { customerId: 7, name: 'Company1', homeCurrency: 'CAD' },
+    });
+  });
+
+  it("scopes to the caller's own book by ?bookId=", async () => {
+    const { guard } = guardWith({
+      books: [
+        { id: 5, customerId: 7, companyId: null },
+        { id: 6, customerId: 7, companyId: null },
+      ],
+    });
+    await expect(guard.resolve(7, { bookId: '6' })).resolves.toEqual({
+      customerId: 7,
+      bookId: 6,
+      companyId: null,
+    });
+  });
+
+  it("is a 404 for somebody else's book", async () => {
+    const { guard } = guardWith({
+      books: [{ id: 8, customerId: 2, companyId: null }],
+    });
+    await expect(guard.resolve(7, { bookId: '8' })).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it("maps ?companyId= to that business's own book", async () => {
+    const { guard, company } = guardWith({
+      books: [{ id: 12, customerId: 7, companyId: 3 }],
+      company: { id: 3 },
+    });
+    await expect(guard.resolve(7, { companyId: '3' })).resolves.toEqual({
+      customerId: 7,
+      bookId: 12,
       companyId: 3,
     });
-    expect(findFirst).toHaveBeenCalledWith({
+    expect(company.findFirst).toHaveBeenCalledWith({
       where: {
         id: 3,
         customerId: 7,
@@ -52,8 +130,8 @@ describe('BookScopeGuard.resolve', () => {
   });
 
   it("is a 404 for somebody else's company, a draft or a deleted one", async () => {
-    const { guard } = guardWith(null);
-    await expect(guard.resolve(7, '99')).rejects.toBeInstanceOf(
+    const { guard } = guardWith({ company: null });
+    await expect(guard.resolve(7, { companyId: '99' })).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });

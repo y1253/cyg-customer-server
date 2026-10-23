@@ -47,7 +47,7 @@ export declare const DEFAULT_LANGUAGE = "en";
 export declare const isLanguage: (v: unknown) => v is string;
 export declare const languageName: (id: string | null | undefined) => string;
 export declare const VOICE_TOKEN_TYPE = "voice-call";
-export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT' | 'AI_SCHEDULE' | 'REQUESTED';
+export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT' | 'AI_SCHEDULE' | 'REQUESTED' | 'THIRD_PARTY';
 export interface VoiceTokenClaims {
     typ: string;
     sub: number;
@@ -55,9 +55,12 @@ export interface VoiceTokenClaims {
     to?: string | null;
     dir: 'INBOUND' | 'OUTBOUND';
     purpose?: CallPurpose;
+    bookId?: number | null;
     companyId?: number | null;
     runId?: number | null;
     script?: string | null;
+    contactId?: number | null;
+    contactName?: string | null;
 }
 export declare function realtimeTools(defs: readonly ToolDefinition[]): {
     type: "function";
@@ -80,6 +83,13 @@ export declare function muLawStereoWav(left: Buffer, right: Buffer): Buffer;
 export declare function signalWireSignatureValid(url: string, params: Record<string, unknown>, signature: string | null | undefined, key: string | null | undefined): boolean;
 export declare const DEFAULT_REALTIME_MODEL = "gpt-realtime";
 export declare const REALTIME_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+export declare function thirdPartyInstructions(input: {
+    customerName: string;
+    personName: string | null;
+    message: string;
+    language: string;
+    maxMinutes: number;
+}): string;
 export declare function realtimeSession(input: {
     model: string;
     instructions: string;

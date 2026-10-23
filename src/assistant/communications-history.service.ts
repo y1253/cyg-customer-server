@@ -51,7 +51,7 @@ export class CommunicationsHistory {
       if (!rows.length) return null;
       return otherChannelsBlock(rows, {
         now: new Date(),
-        currentCompanyId: conversation.companyId,
+        currentBookId: conversation.bookId,
         bookName: await this.bookNames(conversation.customerId),
       });
     } catch (err) {
@@ -166,7 +166,7 @@ export class CommunicationsHistory {
         role: true,
         text: true,
         createdAt: true,
-        companyId: true,
+        bookId: true,
         actions: true,
         attachmentLinks: { select: { attachmentId: true } },
       },
@@ -189,7 +189,7 @@ export class CommunicationsHistory {
       role: m.role,
       text: m.text,
       createdAt: m.createdAt,
-      companyId: m.companyId,
+      bookId: m.bookId,
       actions: m.actions,
       files: m.attachmentLinks.map((l) => {
         const f = byId.get(l.attachmentId);
@@ -202,16 +202,13 @@ export class CommunicationsHistory {
     }));
   }
 
-  /** The customer's books by id → name (NULL = personal). */
-  private async bookNames(
-    customerId: number,
-  ): Promise<(id: number | null) => string> {
-    const companies = await this.prisma.company.findMany({
-      where: { customerId, isInternal: false },
-      select: { id: true, businessName: true },
+  /** The customer's books (step12c: `Book` rows) by id → name. */
+  private async bookNames(customerId: number): Promise<(id: number) => string> {
+    const books = await this.prisma.book.findMany({
+      where: { customerId },
+      select: { id: true, name: true },
     });
-    const names = new Map(companies.map((c) => [c.id, c.businessName]));
-    return (id) =>
-      id === null ? 'Personal books' : (names.get(id) ?? 'a deleted business');
+    const names = new Map(books.map((b) => [b.id, b.name]));
+    return (id) => names.get(id) ?? 'a deleted company';
   }
 }

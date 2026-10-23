@@ -17,6 +17,7 @@ const common_1 = require("@nestjs/common");
 const customer_auth_service_1 = require("./customer-auth.service");
 const customer_jwt_guard_1 = require("./customer-jwt.guard");
 const change_password_dto_1 = require("./dto/change-password.dto");
+const email_change_dto_1 = require("./dto/email-change.dto");
 const forgot_password_dto_1 = require("./dto/forgot-password.dto");
 const google_login_dto_1 = require("./dto/google-login.dto");
 const login_dto_1 = require("./dto/login.dto");
@@ -72,6 +73,12 @@ let CustomerAuthController = class CustomerAuthController {
     }
     sendPasswordCode(req) {
         return this.auth.sendPasswordCode(req.user.customerId, req.ip ?? 'unknown');
+    }
+    sendEmailCode(req, dto) {
+        return this.auth.sendEmailCode(req.user.customerId, dto.email, req.ip ?? 'unknown');
+    }
+    verifyEmail(req, dto) {
+        return this.auth.verifyEmail(req.user.customerId, dto.email, dto.code, req.ip ?? 'unknown');
     }
 };
 exports.CustomerAuthController = CustomerAuthController;
@@ -179,6 +186,26 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], CustomerAuthController.prototype, "sendPasswordCode", null);
+__decorate([
+    (0, common_1.Post)('me/email/code'),
+    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
+    (0, common_1.HttpCode)(202),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, email_change_dto_1.EmailCodeDto]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "sendEmailCode", null);
+__decorate([
+    (0, common_1.Post)('me/email'),
+    (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, email_change_dto_1.EmailVerifyDto]),
+    __metadata("design:returntype", Promise)
+], CustomerAuthController.prototype, "verifyEmail", null);
 exports.CustomerAuthController = CustomerAuthController = __decorate([
     (0, common_1.Controller)('customer-auth'),
     __metadata("design:paramtypes", [customer_auth_service_1.CustomerAuthService])

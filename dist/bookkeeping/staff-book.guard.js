@@ -14,6 +14,7 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
 const prisma_service_1 = require("../prisma/prisma.service");
+const books_1 = require("./books");
 exports.STAFF_BOOK_TOKEN_TYPE = 'staff-book';
 let StaffBookGuard = class StaffBookGuard {
     prisma;
@@ -71,7 +72,7 @@ let StaffBookGuard = class StaffBookGuard {
         });
         if (!company?.customerId)
             throw new common_1.NotFoundException('Business not found');
-        return { customerId: company.customerId, companyId };
+        return (0, books_1.companyBook)(this.prisma, companyId);
     }
 };
 exports.StaffBookGuard = StaffBookGuard;

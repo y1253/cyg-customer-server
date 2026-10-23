@@ -18,6 +18,7 @@ exports.fileContext = fileContext;
 exports.toMessageView = toMessageView;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const reach_1 = require("../messaging/reach");
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const openai_client_1 = require("../ai/openai.client");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
@@ -300,10 +301,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
         return c;
     }
     async respond(conversation, text, opts = {}) {
-        const scope = {
-            customerId: conversation.customerId,
-            companyId: conversation.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(conversation);
         const history = await this.prisma.aiMessage.findMany({
             where: { conversationId: conversation.id },
             orderBy: { id: 'desc' },
@@ -337,8 +335,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
     }
     run(scope, conversation, messageId, text, history, attachment, files) {
         return (0, ai_usage_context_1.withAiUsage)({
-            customerId: scope.customerId,
-            companyId: scope.companyId,
+            ...scope,
             feature: 'ASSISTANT',
         }, () => this.runChat(scope, conversation, messageId, text, history, attachment, files));
     }
@@ -418,8 +415,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
     }
     runTask(scope, task, channel) {
         return (0, ai_usage_context_1.withAiUsage)({
-            customerId: scope.customerId,
-            companyId: scope.companyId,
+            ...scope,
             feature: 'SCHEDULE',
         }, async () => {
             try {
@@ -429,6 +425,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     bookLabel: await this.bookLabel(scope),
                     rules: await this.rules.promptBlock(scope),
                     preferredContact: await this.preferredContact(scope.customerId),
+                    reach: await (0, reach_1.firmReach)(this.prisma, this.config).catch(() => null),
                 }, await this.instructions?.assistant());
                 const messages = [
                     { role: 'system', content: `${prompt}\n\n${SCHEDULED_NOTE}` },
@@ -448,16 +445,15 @@ let AssistantService = AssistantService_1 = class AssistantService {
         });
     }
     async promptFor(conversation, extra = {}) {
-        const scope = {
-            customerId: conversation.customerId,
-            companyId: conversation.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(conversation);
         const prompt = (0, assistant_prompt_1.systemPrompt)({
             channel: conversation.channel,
             today: new Date().toISOString().slice(0, 10),
             bookLabel: await this.bookLabel(scope),
             rules: await this.rules.promptBlock(scope),
             preferredContact: await this.preferredContact(scope.customerId),
+            reach: await (0, reach_1.firmReach)(this.prisma, this.config).catch(() => null),
+            nameUnknown: await this.nameUnknown(scope.customerId),
             attachment: extra.attachment,
             files: extra.files,
         }, await this.instructions?.assistant());
@@ -486,6 +482,12 @@ let AssistantService = AssistantService_1 = class AssistantService {
         });
         return count > this.dailyLimit();
     }
+    async nameUnknown(customerId) {
+        const c = await this.prisma.customer
+            .findUnique({ where: { id: customerId }, select: { name: true } })
+            .catch(() => null);
+        return !!c && !c.name.trim();
+    }
     async preferredContact(customerId) {
         try {
             const c = await this.prisma.customer.findUnique({
@@ -499,13 +501,14 @@ let AssistantService = AssistantService_1 = class AssistantService {
         }
     }
     async bookLabel(scope) {
-        if (scope.companyId === null)
-            return 'their personal / general books';
-        const company = await this.prisma.company.findFirst({
-            where: { id: scope.companyId },
-            select: { businessName: true },
+        const book = await this.prisma.book.findUnique({
+            where: { id: scope.bookId },
+            select: { name: true },
         });
-        return `the books of their business "${company?.businessName ?? 'this business'}"`;
+        const name = book?.name ?? 'this company';
+        return scope.companyId === null
+            ? `the books of their company "${name}"`
+            : `the books of their registered business "${name}"`;
     }
     async save(conversation, role, text, extra = {}) {
         const [row] = await this.prisma.$transaction([
@@ -513,6 +516,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 data: {
                     conversationId: conversation.id,
                     customerId: conversation.customerId,
+                    bookId: conversation.bookId,
                     companyId: conversation.companyId,
                     channel: conversation.channel,
                     role,
@@ -552,6 +556,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     messageId: row.id,
                     attachmentId,
                     customerId: row.customerId,
+                    bookId: row.bookId,
                     companyId: row.companyId,
                     role,
                 })),

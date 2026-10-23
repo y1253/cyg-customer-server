@@ -10,14 +10,15 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Book = exports.BookScopeGuard = void 0;
-exports.parseCompanyParam = parseCompanyParam;
+exports.parseIdParam = parseIdParam;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
-function parseCompanyParam(raw) {
+const books_1 = require("./books");
+function parseIdParam(raw, name = 'id') {
     if (raw === undefined || raw === null || raw === '')
         return null;
     if (typeof raw !== 'string' || !/^[1-9]\d{0,9}$/.test(raw)) {
-        throw new common_1.BadRequestException('companyId must be a company id');
+        throw new common_1.BadRequestException(`${name} must be an id`);
     }
     return Number(raw);
 }
@@ -31,26 +32,17 @@ let BookScopeGuard = class BookScopeGuard {
         const customerId = req.user?.customerId;
         if (!customerId)
             return false;
-        req.bookScope = await this.resolve(customerId, req.query?.companyId);
+        req.bookScope = await this.resolve(customerId, req.query ?? {});
         return true;
     }
-    async resolve(customerId, raw) {
-        const companyId = parseCompanyParam(raw);
-        if (companyId === null)
-            return { customerId, companyId: null };
-        const company = await this.prisma.company.findFirst({
-            where: {
-                id: companyId,
-                customerId,
-                isDraft: false,
-                isInternal: false,
-                deletedAt: null,
-            },
-            select: { id: true },
-        });
-        if (!company)
-            throw new common_1.NotFoundException('Business not found');
-        return { customerId, companyId };
+    async resolve(customerId, query) {
+        const bookId = parseIdParam(query.bookId, 'bookId');
+        if (bookId !== null)
+            return (0, books_1.ownBook)(this.prisma, customerId, bookId);
+        const companyId = parseIdParam(query.companyId, 'companyId');
+        if (companyId !== null)
+            return (0, books_1.businessBook)(this.prisma, customerId, companyId);
+        return (0, books_1.ensureDefaultBook)(this.prisma, customerId);
     }
 };
 exports.BookScopeGuard = BookScopeGuard;

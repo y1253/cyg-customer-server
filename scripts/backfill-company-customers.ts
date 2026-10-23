@@ -48,7 +48,11 @@ async function main(): Promise<void> {
         privateEmail: c.contactInfo?.privateEmail ?? null,
         personalName: c.contactInfo?.personalName ?? null,
       })),
-      new Map(customers.map((c) => [c.email.toLowerCase(), c.id])),
+      new Map(
+        customers
+          .filter((c) => c.email)
+          .map((c) => [c.email!.toLowerCase(), c.id]),
+      ),
     );
 
     const nameOf = (id: number) =>

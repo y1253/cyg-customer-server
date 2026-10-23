@@ -17,6 +17,7 @@ const attachment_extractor_1 = require("./attachment-extractor");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const attachments_service_1 = require("./attachments.service");
 const book_scope_guard_1 = require("./book-scope.guard");
+const books_controller_1 = require("./books.controller");
 const bookkeeping_controller_1 = require("./bookkeeping.controller");
 const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
@@ -42,6 +43,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
     (0, common_1.Module)({
         imports: [customer_auth_module_1.CustomerAuthModule],
         controllers: [
+            books_controller_1.BooksController,
             bookkeeping_controller_1.BookkeepingController,
             staff_rules_controller_1.StaffRulesController,
             file_links_1.FileLinkController,

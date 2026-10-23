@@ -82,8 +82,11 @@ export function accountStatusMessage(input: {
   status: AccountStatus;
   link: string;
   sms: boolean;
+  /** step12c: calling our number reaches the AI right now — the email says so. */
+  canCall?: boolean;
 }): StatusMessage {
   const lines = statusLines(input.status);
+  const reply = `Reply to this email, text us${input.canCall ? ', call us' : ''}, or ask the assistant on the website and we’ll help you sort them out.`;
   const hi = `Hi ${input.firstName || 'there'},`;
   if (input.sms) {
     const text = [
@@ -102,7 +105,7 @@ export function accountStatusMessage(input: {
     '',
     ...lines.map((l) => `• ${l}`),
     '',
-    'Reply to this email, text us, or ask the assistant on the website and we’ll help you sort them out.',
+    reply,
     `Open your books: ${input.link}`,
     '',
     '— CYG Finance',
@@ -111,7 +114,7 @@ export function accountStatusMessage(input: {
     .map((l) => `<li>${esc(l)}</li>`)
     .join(
       '',
-    )}</ul><p>Reply to this email, text us, or ask the assistant on the website and we’ll help you sort them out.</p><p><a href="${esc(input.link)}">Open your books</a></p><p>— CYG Finance</p>`;
+    )}</ul><p>${esc(reply)}</p><p><a href="${esc(input.link)}">Open your books</a></p><p>— CYG Finance</p>`;
   return { subject, text, html };
 }
 

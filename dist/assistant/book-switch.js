@@ -5,32 +5,27 @@ exports.bookOptions = bookOptions;
 exports.chooseBook = chooseBook;
 exports.moveRecentFiles = moveRecentFiles;
 const client_1 = require("@prisma/client");
+const books_1 = require("../bookkeeping/books");
 exports.ASK_BOOK = 'ask_book';
 const RECENT_MS = 10 * 60_000;
 const QUESTION_SLACK_MS = 5 * 60_000;
 const QUESTION_MAX_AGE_MS = 24 * 60 * 60_000;
 async function bookOptions(prisma, customerId) {
-    const companies = await prisma.company.findMany({
-        where: { customerId, isDraft: false, isInternal: false, deletedAt: null },
-        orderBy: { businessName: 'asc' },
-        select: { id: true, businessName: true },
-    });
-    return [
-        { companyId: null, name: 'Personal' },
-        ...companies.map((c) => ({ companyId: c.id, name: c.businessName })),
-    ];
+    const books = await (0, books_1.listBooks)(prisma, customerId);
+    return books.map((b) => ({ bookId: b.id, companyId: null, name: b.name }));
 }
 function chooseBook(prisma, conversation, choice) {
     return prisma.aiConversation.update({
         where: { id: conversation.id },
         data: {
+            bookId: choice.bookId,
             companyId: choice.companyId,
             bookChosen: true,
             awaitingBook: false,
         },
     });
 }
-async function moveRecentFiles(prisma, conversation, peer, companyId) {
+async function moveRecentFiles(prisma, conversation, peer, book) {
     const now = Date.now();
     let since = now - RECENT_MS;
     const asked = await prisma.aiMessage.findMany({
@@ -49,26 +44,20 @@ async function moveRecentFiles(prisma, conversation, peer, companyId) {
         const first = questions[questions.length - 1].createdAt.getTime();
         since = Math.min(since, first - QUESTION_SLACK_MS);
     }
-    const where = {
+    const scoped = {
         customerId: conversation.customerId,
-        companyId: { not: companyId },
+        bookId: { not: book.bookId },
         source: conversation.channel,
         sourcePhone: peer,
         createdAt: { gte: new Date(since) },
         deletedAt: null,
         transactionId: null,
     };
-    const scoped = companyId === null
-        ? where
-        : {
-            ...where,
-            companyId: undefined,
-            OR: [{ companyId: null }, { companyId: { not: companyId } }],
-        };
+    const target = { bookId: book.bookId, companyId: book.companyId };
     const reread = await prisma.transactionAttachment.updateMany({
         where: { ...scoped, status: client_1.AttachmentStatus.UNMATCHED },
         data: {
-            companyId,
+            ...target,
             status: client_1.AttachmentStatus.PENDING,
             attempts: 0,
             error: null,
@@ -76,7 +65,7 @@ async function moveRecentFiles(prisma, conversation, peer, companyId) {
     });
     const rest = await prisma.transactionAttachment.updateMany({
         where: scoped,
-        data: { companyId },
+        data: target,
     });
     return { moved: reread.count + rest.count, reread: reread.count };
 }

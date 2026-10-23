@@ -24,9 +24,56 @@ function fakePrisma() {
   const messages: AiMessage[] = [];
   let nextId = 1;
   const conversations: AiConversation[] = [];
+  // step12c: the customer's bookkeeping companies; "Company1" is their default book.
+  const books = [
+    {
+      id: 1,
+      customerId: 7,
+      name: 'Company1',
+      companyId: null as number | null,
+      homeCurrency: 'CAD',
+      deletedAt: null,
+    },
+  ];
+  type BookWhere = { id?: number; customerId?: number; companyId?: null };
+  const bookMatch = (where: BookWhere) => (b: (typeof books)[number]) =>
+    (where.id === undefined || b.id === where.id) &&
+    (where.customerId === undefined || b.customerId === where.customerId) &&
+    (where.companyId === undefined || b.companyId === where.companyId);
   const prisma = {
     messages,
     conversations,
+    books,
+    book: {
+      findFirst: jest.fn(
+        ({ where }: { where: BookWhere }) =>
+          books.find(bookMatch(where)) ?? null,
+      ),
+      findMany: jest.fn(({ where }: { where: BookWhere }) =>
+        books.filter(bookMatch(where)),
+      ),
+      findUnique: jest.fn(
+        ({ where }: { where: { id?: number; companyId?: number } }) =>
+          books.find((b) =>
+            where.id !== undefined
+              ? b.id === where.id
+              : b.companyId === where.companyId,
+          ) ?? null,
+      ),
+      create: jest.fn(),
+    },
+    customer: {
+      findUnique: jest.fn(() =>
+        Promise.resolve({
+          name: 'Sam',
+          preferredContact: null,
+          homeCurrency: 'CAD',
+        }),
+      ),
+    },
+    intakeNumber: { findMany: jest.fn(() => []) },
+    customerInboxAccount: { findFirst: jest.fn(() => null) },
+    customerVoiceSettings: { findUnique: jest.fn(() => Promise.resolve(null)) },
     aiMessage: {
       findMany: jest.fn(({ where }: { where: { conversationId?: number } }) =>
         messages.filter(
@@ -74,6 +121,7 @@ function fakePrisma() {
           title: null,
           lastMessageAt: new Date(),
           createdAt: new Date(),
+          bookId: 1,
           companyId: null,
           ...data,
         } as AiConversation;
@@ -213,14 +261,14 @@ describe('AssistantService', () => {
       { content: 'Filed it.', toolCalls: [] },
     ]);
     const res = await service.chat(
-      { customerId: 7, companyId: 3 },
+      { customerId: 7, bookId: 3, companyId: 3 },
       'it is the Amazon charge',
     );
     expect(tools.run).toHaveBeenCalledWith(
       'attach_receipt',
       expect.any(String),
       expect.objectContaining({
-        scope: { customerId: 7, companyId: 3 },
+        scope: { customerId: 7, bookId: 3, companyId: 3 },
         messageId: res.message.id,
       }),
     );
@@ -229,7 +277,7 @@ describe('AssistantService', () => {
       { tool: 'attach_receipt', ok: true, summary: 'Attached' },
     ]);
     expect(res.reply.warning).toBe(NOT_UNDERSTOOD_WARNING);
-    expect(prisma.messages.map((m) => [m.role, m.companyId])).toEqual([
+    expect(prisma.messages.map((m) => [m.role, m.bookId])).toEqual([
       ['USER', 3],
       ['ASSISTANT', 3],
     ]);
@@ -241,7 +289,10 @@ describe('AssistantService', () => {
       toolCalls: [call('list_rules', {}, `c${i}`)],
     }));
     const { service, openai } = setup(loop);
-    await service.chat({ customerId: 7, companyId: null }, 'loop forever');
+    await service.chat(
+      { customerId: 7, bookId: 1, companyId: null },
+      'loop forever',
+    );
     expect(openai.chatMessages).toHaveBeenCalledTimes(MAX_TOOL_ROUNDS + 1);
     const calls = openai.chatMessages.mock.calls as Array<
       [{ tools?: unknown }]
@@ -255,7 +306,7 @@ describe('AssistantService', () => {
       { content: 'Two cheques, both filed.', toolCalls: [] },
     ]);
     const res = await service.chat(
-      { customerId: 7, companyId: null },
+      { customerId: 7, bookId: 1, companyId: null },
       '',
       undefined,
       [5],
@@ -305,7 +356,7 @@ describe('AssistantService', () => {
       transaction: null,
     }));
     const res = await service.chat(
-      { customerId: 7, companyId: null },
+      { customerId: 7, bookId: 1, companyId: null },
       '',
       undefined,
       [5],
@@ -330,14 +381,17 @@ describe('AssistantService', () => {
   it('apologises instead of throwing when the AI fails', async () => {
     const { service, openai } = setup([]);
     openai.chatMessages.mockRejectedValueOnce(new Error('down'));
-    const res = await service.chat({ customerId: 7, companyId: null }, 'hello');
+    const res = await service.chat(
+      { customerId: 7, bookId: 1, companyId: null },
+      'hello',
+    );
     expect(res.reply.text).toBe(FAILED_REPLY);
   });
 
   it('refuses when the assistant is off', async () => {
     const { service } = setup([], { AI_ASSISTANT: '0' });
     await expect(
-      service.chat({ customerId: 7, companyId: null }, 'hi'),
+      service.chat({ customerId: 7, bookId: 1, companyId: null }, 'hi'),
     ).rejects.toThrow(/not turned on/);
   });
 });
@@ -349,7 +403,10 @@ describe('AssistantTools', () => {
         typeof AssistantTools
       >),
     );
-    const ctx = { scope: { customerId: 1, companyId: null }, messageId: null };
+    const ctx = {
+      scope: { customerId: 1, bookId: 1, companyId: null },
+      messageId: null,
+    };
     expect((await tools.run('drop_database', '{}', ctx)).content).toContain(
       'unknown tool',
     );
@@ -372,12 +429,15 @@ describe('AssistantTools', () => {
     const out = await tools.run(
       'attach_receipt',
       JSON.stringify({ attachmentId: 1, transactionId: 2, understood: true }),
-      { scope: { customerId: 1, companyId: null }, messageId: null },
+      { scope: { customerId: 1, bookId: 1, companyId: null }, messageId: null },
     );
     expect(out.action).toMatchObject({ tool: 'attach_receipt', ok: false });
   });
 
-  const ctx = { scope: { customerId: 1, companyId: null }, messageId: null };
+  const ctx = {
+    scope: { customerId: 1, bookId: 1, companyId: null },
+    messageId: null,
+  };
   const withDeps = (set: (deps: unknown[]) => void) => {
     const deps = Array.from({ length: 11 }, () => ({})) as unknown[];
     set(deps);
@@ -449,11 +509,12 @@ describe('RulesService', () => {
       prisma as unknown as PrismaService,
     ).promptBlock({
       customerId: 7,
+      bookId: 3,
       companyId: 3,
     });
     expect(prisma.customerAiRule.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { customerId: 7, companyId: 3, deletedAt: null },
+        where: { customerId: 7, bookId: 3, companyId: 3, deletedAt: null },
       }),
     );
     expect(prisma.aiRule.findMany).toHaveBeenCalledWith(
@@ -470,6 +531,7 @@ describe('RulesService', () => {
     await expect(
       new RulesService(prisma as unknown as PrismaService).promptBlock({
         customerId: 1,
+        bookId: 1,
         companyId: null,
       }),
     ).resolves.toBe('');
@@ -486,7 +548,17 @@ describe('IntakeAgentService', () => {
       [{ content: 'You spent $120 in March.', toolCalls: [] }],
       env,
     );
-    s.prisma.company.findMany.mockReturnValue(companies);
+    // step12c: the customer's other bookkeeping companies (were businesses before).
+    for (const c of companies) {
+      s.prisma.books.push({
+        id: c.id,
+        customerId: 7,
+        name: c.businessName,
+        companyId: null,
+        homeCurrency: 'CAD',
+        deletedAt: null,
+      });
+    }
     (s.openai.chat as jest.Mock).mockResolvedValue(JSON.stringify({ kind }));
     const agent = new IntakeAgentService(
       s.prisma as unknown as PrismaService,
@@ -528,9 +600,11 @@ describe('IntakeAgentService', () => {
     expect(await agent.agent(7, msg('hi'))).toEqual({
       reply: null,
       fileText: true,
+      bookId: 1,
       companyId: null,
     });
     expect(await agent.route(7, 'SMS', '+1')).toEqual({
+      bookId: 1,
       companyId: null,
       awaitingBook: false,
     });
@@ -542,6 +616,7 @@ describe('IntakeAgentService', () => {
     expect(res).toEqual({
       reply: 'You spent $120 in March.',
       fileText: false,
+      bookId: 1,
       companyId: null,
     });
   });
@@ -556,35 +631,34 @@ describe('IntakeAgentService', () => {
   it('asks which books, then moves the undecided files to the chosen one', async () => {
     const { agent, prisma } = intake([{ id: 3, businessName: 'ABC Inc' }]);
     const first = await agent.agent(7, msg(null, [41]));
-    expect(first.reply).toContain('1 Personal, 2 ABC Inc');
-    expect(first.companyId).toBeNull();
+    expect(first.reply).toContain('1 Company1, 2 ABC Inc');
+    expect(first.bookId).toBe(1);
     expect(await agent.route(7, 'SMS', '+15145550001')).toEqual({
+      bookId: 1,
       companyId: null,
       awaitingBook: true,
     });
 
     const answer = await agent.agent(7, msg('2'));
-    expect(answer.companyId).toBe(3);
+    expect(answer.bookId).toBe(3);
     expect(answer.reply).toContain('ABC Inc');
     const moved = prisma.transactionAttachment.updateMany.mock
       .calls as unknown as Array<
       [{ where: Record<string, unknown>; data: Record<string, unknown> }]
     >;
     const plain = moved.find((c) => !('status' in c[0].data))!;
-    expect(plain[0].data).toEqual({ companyId: 3 });
+    expect(plain[0].data).toEqual({ bookId: 3, companyId: null });
+    // From ANY other book.
     expect(plain[0].where).toMatchObject({
       customerId: 7,
+      bookId: { not: 3 },
       source: 'SMS',
       sourcePhone: '+15145550001',
       transactionId: null,
     });
-    // From ANY other book, the general one included (NULL is not "not 3" in SQL).
-    expect(plain[0].where.OR).toEqual([
-      { companyId: null },
-      { companyId: { not: 3 } },
-    ]);
     expect(await agent.route(7, 'SMS', '+15145550001')).toEqual({
-      companyId: 3,
+      bookId: 3,
+      companyId: null,
       awaitingBook: false,
     });
   });
@@ -600,10 +674,11 @@ describe('IntakeAgentService', () => {
       7,
       msg('can you switch to the abc account please'),
     );
-    expect(res.companyId).toBe(3);
+    expect(res.bookId).toBe(3);
     expect(res.reply).toContain('ABC Inc');
     expect(await agent.route(7, 'SMS', '+15145550001')).toEqual({
-      companyId: 3,
+      bookId: 3,
+      companyId: null,
       awaitingBook: false,
     });
   });
@@ -612,7 +687,7 @@ describe('IntakeAgentService', () => {
     const { agent } = intake([{ id: 3, businessName: 'ABC Inc' }]);
     const res = await agent.agent(7, msg('what did I spend in March?'));
     expect(res.reply).toContain('You spent $120 in March.');
-    expect(res.reply).toContain('1 Personal, 2 ABC Inc');
+    expect(res.reply).toContain('1 Company1, 2 ABC Inc');
   });
 
   it('reads the files first, answers the words sent with them, and sends it itself', async () => {

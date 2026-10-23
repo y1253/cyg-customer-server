@@ -8,7 +8,7 @@ import {
 
 const NOW = new Date('2026-10-22T18:00:00Z');
 const names = (id: number | null) =>
-  id === null ? 'Personal books' : `Biz ${id}`;
+  id === 1 ? 'Company1' : `Biz ${id}`;
 
 function row(over: Partial<HistoryRow> = {}): HistoryRow {
   return {
@@ -17,7 +17,7 @@ function row(over: Partial<HistoryRow> = {}): HistoryRow {
     role: 'USER',
     text: 'Can you send me the lease and the September report?',
     createdAt: new Date('2026-10-22T15:12:00Z'),
-    companyId: null,
+    bookId: 1,
     actions: null,
     files: [],
     ...over,
@@ -47,7 +47,7 @@ describe('otherChannelsBlock (step12b)', () => {
           files: [{ attachmentId: 44, filename: 'lease.pdf', removed: false }],
         }),
       ],
-      { now: NOW, currentCompanyId: null, bookName: names },
+      { now: NOW, currentBookId: 1, bookName: names },
     )!;
     const lines = block.split('\n').slice(1);
     expect(lines).toHaveLength(2);
@@ -63,7 +63,7 @@ describe('otherChannelsBlock (step12b)', () => {
   it('tags another book and drops what is too old', () => {
     const block = otherChannelsBlock(
       [
-        row({ companyId: 7 }),
+        row({ bookId: 7 }),
         row({
           id: 3,
           createdAt: new Date(
@@ -71,7 +71,7 @@ describe('otherChannelsBlock (step12b)', () => {
           ),
         }),
       ],
-      { now: NOW, currentCompanyId: null, bookName: names },
+      { now: NOW, currentBookId: 1, bookName: names },
     )!;
     expect(block.split('\n')).toHaveLength(2);
     expect(block).toContain('· Biz 7]');
@@ -87,7 +87,7 @@ describe('otherChannelsBlock (step12b)', () => {
     );
     const block = otherChannelsBlock(many, {
       now: NOW,
-      currentCompanyId: null,
+      currentBookId: 1,
       bookName: names,
     })!;
     const lines = block.split('\n').slice(1);
@@ -101,7 +101,7 @@ describe('otherChannelsBlock (step12b)', () => {
     expect(
       otherChannelsBlock([], {
         now: NOW,
-        currentCompanyId: null,
+        currentBookId: 1,
         bookName: names,
       }),
     ).toBeNull();
@@ -127,7 +127,7 @@ describe('searchHit / linksOf (step12b)', () => {
     ];
     expect(linksOf(actions)).toEqual([{ type: 'statement', statementId: 9 }]);
     const hit = searchHit(
-      row({ role: 'ASSISTANT', actions, companyId: 7 }),
+      row({ role: 'ASSISTANT', actions, bookId: 7 }),
       names,
     );
     expect(hit).toMatchObject({

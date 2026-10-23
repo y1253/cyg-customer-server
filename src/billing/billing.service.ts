@@ -8,6 +8,7 @@ import {
 import { PaymentStatus, Prisma, type PromoCode } from '@prisma/client';
 import Stripe from 'stripe';
 import { BookkeepingService } from '../bookkeeping/bookkeeping.service';
+import { legacyBook } from '../bookkeeping/books';
 import { bookLabel, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { readPricing } from './pricing';
@@ -51,16 +52,10 @@ export type CheckoutView =
 /** Tags every PaymentIntent this server makes, so the webhook ignores anything else. */
 const PURPOSE = 'generate';
 
-/**
- * The book a PaymentIntent paid for, from its metadata. Intents created before step8
- * carry no `companyId`, which reads as the general book — what they were for.
- */
-function scopeOfIntent(intent: Stripe.PaymentIntent): BookScope {
-  const companyId = Number(intent.metadata.companyId);
-  return {
-    customerId: Number(intent.metadata.customerId),
-    companyId: Number.isInteger(companyId) && companyId > 0 ? companyId : null,
-  };
+/** A positive id from PaymentIntent metadata, else null. */
+function metaId(raw: string | undefined): number | null {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /**
@@ -157,13 +152,14 @@ export class BillingService {
       allowed_payment_method_types: ['card'],
       // Saves the card on the Stripe Customer for the next Generate.
       setup_future_usage: 'off_session',
-      receipt_email: customer.email,
+      receipt_email: customer.email ?? undefined,
       description: `CYG Finance bookkeeping — Generate (${waiting} statement${waiting === 1 ? '' : 's'})`,
       metadata: {
         purpose: PURPOSE,
         customerId: String(customerId),
-        // Which book this Generate reads ('' = the general one). Validated by
-        // BookScopeGuard at checkout; `recordAndGenerate` reads it back from Stripe.
+        // Which book this Generate reads (step12c `bookId`). Validated by BookScopeGuard
+        // at checkout; `recordAndGenerate` reads it back from Stripe.
+        bookId: String(scope.bookId),
         companyId: scope.companyId === null ? '' : String(scope.companyId),
         listPriceCents: String(pricing.generatePriceCents),
         promoCodeId: promo ? String(promo.id) : '',
@@ -203,7 +199,7 @@ export class BillingService {
     const intent = await this.retrieveIntent(paymentIntentId);
     if (
       intent.metadata.customerId !== String(scope.customerId) ||
-      scopeOfIntent(intent).companyId !== scope.companyId
+      (await this.scopeOfIntent(intent)).bookId !== scope.bookId
     )
       throw new NotFoundException('Payment not found');
     if (intent.status !== 'succeeded')
@@ -240,7 +236,7 @@ export class BillingService {
     paymentIntentId: string,
   ): Promise<GenerateResult> {
     const intent = await this.retrieveIntent(paymentIntentId);
-    const scope = scopeOfIntent(intent);
+    const scope = await this.scopeOfIntent(intent);
     const charge =
       typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
     const card = charge?.payment_method_details?.card ?? null;
@@ -357,9 +353,20 @@ export class BillingService {
   }
 
   /** The Stripe Customer for this account, created on the first paid Generate. */
+  /**
+   * The book a PaymentIntent paid for, from its metadata: `bookId` (step12c); before that
+   * `companyId` ('' = the general book, now the customer's default book).
+   */
+  private scopeOfIntent(intent: Stripe.PaymentIntent): Promise<BookScope> {
+    return legacyBook(this.prisma, Number(intent.metadata.customerId), {
+      bookId: metaId(intent.metadata.bookId),
+      companyId: metaId(intent.metadata.companyId),
+    });
+  }
+
   private async ensureStripeCustomer(
     customerId: number,
-  ): Promise<{ stripeCustomerId: string; email: string }> {
+  ): Promise<{ stripeCustomerId: string; email: string | null }> {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
     });
@@ -371,7 +378,8 @@ export class BillingService {
       };
 
     const created = await this.stripeClient.stripe.customers.create({
-      email: customer.email,
+      // step12c: an account opened by phone may have no email.
+      email: customer.email ?? undefined,
       name: customer.name,
       phone: customer.phone ?? undefined,
       metadata: { customerId: String(customerId) },

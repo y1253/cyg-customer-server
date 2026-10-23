@@ -149,6 +149,10 @@ export class CommunicationsService {
               },
               orderBy: { startedAt: 'desc' },
               take,
+              include: {
+                contact: { select: { name: true } },
+                customer: { select: { name: true } },
+              },
             })
           ).map((c) => ({ ...toCallView(c), startedAt: c.startedAt }))
         : [];

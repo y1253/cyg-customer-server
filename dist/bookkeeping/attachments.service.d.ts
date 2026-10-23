@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config';
 import { AttachmentKind, AttachmentStatus } from '@prisma/client';
 import type { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
@@ -46,13 +47,15 @@ export interface IntakeView {
     phone: string | null;
     phoneSaved: boolean;
     email: string | null;
+    voice: boolean;
 }
 export declare class AttachmentsService {
     private readonly prisma;
     private readonly storage;
     private readonly openai;
     private readonly processor;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService);
+    private readonly config?;
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined);
     upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null): Promise<AttachmentView[]>;
     intake(scope: BookScope): Promise<IntakeView>;
     list(scope: BookScope): Promise<AttachmentView[]>;

@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { CustomerAuthType, type Customer } from '@prisma/client';
+import { CustomerAuthType, CustomerCreatedWith, type Customer } from '@prisma/client';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ChangePasswordDto } from './dto/change-password.dto';
@@ -15,7 +15,7 @@ import type { VerifySignupDto } from './dto/verify-signup.dto';
 export declare const CUSTOMER_TOKEN_TYPE = "customer";
 export interface CustomerJwtPayload {
     sub: number;
-    email: string;
+    email: string | null;
     name: string;
     typ: typeof CUSTOMER_TOKEN_TYPE;
     iat?: number;
@@ -23,8 +23,9 @@ export interface CustomerJwtPayload {
 export interface PublicCustomer {
     id: number;
     name: string;
-    email: string;
+    email: string | null;
     authType: CustomerAuthType;
+    createdWith: CustomerCreatedWith | null;
     hasPassword: boolean;
     avatarUrl: string | null;
     phone: string | null;
@@ -59,6 +60,7 @@ export declare class CustomerAuthService {
     private readonly hits;
     private readonly pending;
     private readonly resets;
+    private readonly emailCodes;
     private googleClient;
     private readonly codeMails;
     constructor(prisma: PrismaService, jwt: JwtService, config: ConfigService, mail: MailService);
@@ -76,6 +78,8 @@ export declare class CustomerAuthService {
     resetPassword(dto: ResetPasswordDto, ip: string): Promise<AuthResult>;
     changePassword(customerId: number, dto: ChangePasswordDto, ip: string): Promise<AuthResult>;
     sendPasswordCode(customerId: number, ip: string): Promise<SignupStarted>;
+    sendEmailCode(customerId: number, rawEmail: string, ip: string): Promise<SignupStarted>;
+    verifyEmail(customerId: number, rawEmail: string, code: string, ip: string): Promise<PublicCustomer>;
     private issuePasswordCode;
     private checkPasswordCode;
     private passwordData;
@@ -85,8 +89,10 @@ export declare class CustomerAuthService {
     me(id: number): Promise<PublicCustomer>;
     updateMe(id: number, dto: UpdateMeDto): Promise<PublicCustomer>;
     verifyGoogleCredential(credential: string): Promise<GoogleIdentity>;
+    phoneTaken(phoneE164: string, exceptId?: number): Promise<boolean>;
+    issueFor(customer: Customer): Promise<AuthResult>;
     private issue;
     private sign;
-    private throttle;
-    private note;
+    throttle(ip: string): void;
+    note(ip: string): void;
 }

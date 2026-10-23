@@ -7,6 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { firmReach } from '../messaging/reach';
 import type { AiConversation, AiMessage, Prisma } from '@prisma/client';
 import { withAiUsage } from '../ai/ai-usage.context';
 import { OpenAiClient, type AgentMessage } from '../ai/openai.client';
@@ -15,7 +16,7 @@ import {
   AttachmentsService,
   type AttachmentView,
 } from '../bookkeeping/attachments.service';
-import { scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AssistantTools,
@@ -451,10 +452,7 @@ export class AssistantService {
       files?: unknown[];
     } = {},
   ): Promise<ChatResult> {
-    const scope: BookScope = {
-      customerId: conversation.customerId,
-      companyId: conversation.companyId,
-    };
+    const scope: BookScope = scopeOf(conversation);
     const history = await this.prisma.aiMessage.findMany({
       where: { conversationId: conversation.id },
       orderBy: { id: 'desc' },
@@ -514,8 +512,7 @@ export class AssistantService {
   ): Promise<LoopResult> {
     return withAiUsage(
       {
-        customerId: scope.customerId,
-        companyId: scope.companyId,
+        ...scope,
         feature: 'ASSISTANT',
       },
       () =>
@@ -642,8 +639,7 @@ export class AssistantService {
   ): Promise<string | null> {
     return withAiUsage(
       {
-        customerId: scope.customerId,
-        companyId: scope.companyId,
+        ...scope,
         feature: 'SCHEDULE',
       },
       async () => {
@@ -655,6 +651,9 @@ export class AssistantService {
               bookLabel: await this.bookLabel(scope),
               rules: await this.rules.promptBlock(scope),
               preferredContact: await this.preferredContact(scope.customerId),
+              reach: await firmReach(this.prisma, this.config).catch(
+                () => null,
+              ),
             },
             await this.instructions?.assistant(),
           );
@@ -687,10 +686,7 @@ export class AssistantService {
     conversation: AiConversation,
     extra: { attachment?: unknown; files?: unknown[]; note?: string } = {},
   ): Promise<string> {
-    const scope: BookScope = {
-      customerId: conversation.customerId,
-      companyId: conversation.companyId,
-    };
+    const scope: BookScope = scopeOf(conversation);
     const prompt = systemPrompt(
       {
         channel: conversation.channel as Channel,
@@ -698,6 +694,8 @@ export class AssistantService {
         bookLabel: await this.bookLabel(scope),
         rules: await this.rules.promptBlock(scope),
         preferredContact: await this.preferredContact(scope.customerId),
+        reach: await firmReach(this.prisma, this.config).catch(() => null),
+        nameUnknown: await this.nameUnknown(scope.customerId),
         attachment: extra.attachment,
         files: extra.files,
       },
@@ -739,6 +737,14 @@ export class AssistantService {
   }
 
   /** How the customer likes to be reached (step12) — a hint only, so a failed read is no hint. */
+  /** step12c: an account opened by text has no name until the AI asks. */
+  private async nameUnknown(customerId: number): Promise<boolean> {
+    const c = await this.prisma.customer
+      .findUnique({ where: { id: customerId }, select: { name: true } })
+      .catch(() => null);
+    return !!c && !c.name.trim();
+  }
+
   private async preferredContact(customerId: number): Promise<string | null> {
     try {
       const c = await this.prisma.customer.findUnique({
@@ -751,13 +757,16 @@ export class AssistantService {
     }
   }
 
+  /** step12c: the book (bookkeeping company) this chat works on, by name. */
   private async bookLabel(scope: BookScope): Promise<string> {
-    if (scope.companyId === null) return 'their personal / general books';
-    const company = await this.prisma.company.findFirst({
-      where: { id: scope.companyId },
-      select: { businessName: true },
+    const book = await this.prisma.book.findUnique({
+      where: { id: scope.bookId },
+      select: { name: true },
     });
-    return `the books of their business "${company?.businessName ?? 'this business'}"`;
+    const name = book?.name ?? 'this company';
+    return scope.companyId === null
+      ? `the books of their company "${name}"`
+      : `the books of their registered business "${name}"`;
   }
 
   async save(
@@ -777,6 +786,7 @@ export class AssistantService {
         data: {
           conversationId: conversation.id,
           customerId: conversation.customerId,
+          bookId: conversation.bookId,
           companyId: conversation.companyId,
           channel: conversation.channel,
           role,
@@ -823,6 +833,7 @@ export class AssistantService {
           messageId: row.id,
           attachmentId,
           customerId: row.customerId,
+          bookId: row.bookId,
           companyId: row.companyId,
           role,
         })),

@@ -16,3 +16,8 @@ export declare class IntakeAgentDto extends IntakeRouteDto {
     deliverable?: boolean;
     replyFrom?: string | null;
 }
+export declare class ContactReplyDto {
+    channel: 'SMS' | 'WHATSAPP' | 'CALL';
+    phone: string;
+    text?: string | null;
+}

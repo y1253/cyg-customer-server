@@ -12,12 +12,14 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IntakeController = exports.AttachmentChatController = exports.AssistantController = exports.AssistantConfigController = void 0;
+exports.IntakeController = exports.ContactReplyController = exports.AttachmentChatController = exports.AssistantController = exports.AssistantConfigController = void 0;
 const common_1 = require("@nestjs/common");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const book_scope_guard_1 = require("../bookkeeping/book-scope.guard");
 const assistant_service_1 = require("./assistant.service");
 const assistant_dto_1 = require("./dto/assistant.dto");
+const intake_system_guard_1 = require("../customer-auth/intake-system.guard");
+const contact_relay_service_1 = require("./contact-relay.service");
 const intake_agent_guard_1 = require("./intake-agent.guard");
 const intake_agent_service_1 = require("./intake-agent.service");
 const rules_service_1 = require("./rules.service");
@@ -158,6 +160,29 @@ exports.AttachmentChatController = AttachmentChatController = __decorate([
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard, book_scope_guard_1.BookScopeGuard),
     __metadata("design:paramtypes", [assistant_service_1.AssistantService])
 ], AttachmentChatController);
+let ContactReplyController = class ContactReplyController {
+    relay;
+    constructor(relay) {
+        this.relay = relay;
+    }
+    contactReply(dto) {
+        return this.relay.relay(dto);
+    }
+};
+exports.ContactReplyController = ContactReplyController;
+__decorate([
+    (0, common_1.Post)('contact-reply'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [assistant_dto_1.ContactReplyDto]),
+    __metadata("design:returntype", Promise)
+], ContactReplyController.prototype, "contactReply", null);
+exports.ContactReplyController = ContactReplyController = __decorate([
+    (0, common_1.Controller)('intake-system'),
+    (0, common_1.UseGuards)(intake_system_guard_1.IntakeSystemGuard),
+    __metadata("design:paramtypes", [contact_relay_service_1.ContactRelayService])
+], ContactReplyController);
 let IntakeController = class IntakeController {
     intake;
     constructor(intake) {

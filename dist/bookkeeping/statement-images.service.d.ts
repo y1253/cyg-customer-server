@@ -11,7 +11,7 @@ export declare class StatementImagesService {
     private readonly attachments;
     private readonly logger;
     constructor(prisma: PrismaService, storage: ObjectStorageService, attachments: AttachmentProcessorService);
-    harvest(statement: Pick<BankStatement, 'id' | 'customerId' | 'companyId' | 'filename' | 'accountName' | 'bankName'> & {
+    harvest(statement: Pick<BankStatement, 'id' | 'customerId' | 'bookId' | 'companyId' | 'filename' | 'accountName' | 'bankName'> & {
         periodStart: Date | null;
         periodEnd: Date | null;
     }, pdf: Buffer, pages: readonly ImagePage[]): Promise<void>;

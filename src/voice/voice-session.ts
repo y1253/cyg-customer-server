@@ -7,6 +7,7 @@ import type { AgentAction, AssistantTools } from '../assistant/assistant-tools';
 import { toolsFor } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
 import { bookOptions } from '../assistant/book-switch';
+import { scopeOf } from '../bookkeeping/scope';
 import { fillLinks, type LinkBook } from '../assistant/links.util';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -19,6 +20,7 @@ import {
   muLawStereoWav,
   languageName,
   realtimeSession,
+  thirdPartyInstructions,
   type VoiceTokenClaims,
 } from './voice.util';
 
@@ -226,10 +228,19 @@ export class VoiceSession {
     this.openai = this.deps.connect
       ? this.deps.connect(url, headers)
       : new WebSocket(url, { headers });
-    const note = await this.callNote(customerName);
-    const instructions = await this.deps.assistant.promptFor(conversation, {
-      note,
-    });
+    // step12c: a call to someone else for the customer knows only the message.
+    const thirdParty = claims.purpose === 'THIRD_PARTY';
+    const instructions = thirdParty
+      ? thirdPartyInstructions({
+          customerName,
+          personName: claims.contactName ?? null,
+          message: claims.script ?? '',
+          language: languageName(this.settings!.language),
+          maxMinutes: this.settings!.maxMinutes,
+        })
+      : await this.deps.assistant.promptFor(conversation, {
+          note: await this.callNote(customerName),
+        });
 
     this.openai.on('open', () => {
       this.sendOpenAi(
@@ -237,7 +248,7 @@ export class VoiceSession {
           model,
           instructions,
           voice: this.settings!.voice,
-          tools: toolsFor('VOICE'),
+          tools: thirdParty ? [] : toolsFor('VOICE'),
         }),
       );
       for (const p of this.early.splice(0)) {
@@ -289,6 +300,12 @@ export class VoiceSession {
   private opening(customerName: string, claims: VoiceTokenClaims): string {
     const first = customerName.trim().split(/\s+/)[0] || 'there';
     const lang = languageName(this.settings!.language);
+    if (claims.purpose === 'THIRD_PARTY') {
+      return (
+        `In ${lang}: say hello${claims.contactName ? ` to ${claims.contactName}` : ''}, that you are ` +
+        `CYG Finance's AI assistant calling for ${customerName.trim() || 'a client'}, and pass on the message.`
+      );
+    }
     if (claims.dir === 'OUTBOUND' && claims.script) {
       return (
         `In ${lang}: greet ${first} briefly as CYG Finance's assistant, then pass on this message ` +
@@ -403,7 +420,12 @@ export class VoiceSession {
     const c = this.conversation;
     if (!c || !usage) return;
     this.deps.usage?.recordFor(
-      { customerId: c.customerId, companyId: c.companyId, feature: 'VOICE' },
+      {
+        customerId: c.customerId,
+        bookId: c.bookId,
+        companyId: c.companyId,
+        feature: 'VOICE',
+      },
       model,
       kind,
       usage,
@@ -417,10 +439,7 @@ export class VoiceSession {
     const name = typeof ev.name === 'string' ? ev.name : '';
     const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
     const conversation = await this.freshConversation();
-    const scope = {
-      customerId: conversation.customerId,
-      companyId: conversation.companyId,
-    };
+    const scope = scopeOf(conversation);
     const outcome = await withAiUsage({ ...scope, feature: 'VOICE' }, () =>
       this.deps.tools.run(name, args, {
         scope,

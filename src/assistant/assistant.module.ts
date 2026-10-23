@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
+import { AiContactsModule } from '../ai-contacts/ai-contacts.module';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
@@ -8,8 +9,10 @@ import {
   AssistantConfigController,
   AssistantController,
   AttachmentChatController,
+  ContactReplyController,
   IntakeController,
 } from './assistant.controller';
+import { ContactRelayService } from './contact-relay.service';
 import { AssistantService } from './assistant.service';
 import { AssistantTools } from './assistant-tools';
 import { CommunicationsHistory } from './communications-history.service';
@@ -27,11 +30,17 @@ import { StrongAiService } from './strong-ai.service';
  * (sending on another channel).
  */
 @Module({
-  imports: [BookkeepingModule, CustomerAuthModule, MessagingModule],
+  imports: [
+    AiContactsModule,
+    BookkeepingModule,
+    CustomerAuthModule,
+    MessagingModule,
+  ],
   controllers: [
     AssistantConfigController,
     AssistantController,
     AttachmentChatController,
+    ContactReplyController,
     IntakeController,
   ],
   providers: [
@@ -39,6 +48,7 @@ import { StrongAiService } from './strong-ai.service';
     AssistantTools,
     AiSchedulesStore,
     CommunicationsHistory,
+    ContactRelayService,
     CustomerOutbox,
     IntakeAgentGuard,
     IntakeAgentService,

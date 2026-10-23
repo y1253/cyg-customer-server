@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { AttachmentKind, type AiConversation } from '@prisma/client';
 import { OpenAiClient } from '../ai/openai.client';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
+import { ensureDefaultBook } from '../bookkeeping/books';
+import { scopeOf } from '../bookkeeping/scope';
 import {
   CustomerMessenger,
   type SendOutcome,
@@ -27,15 +29,24 @@ import {
 /** EMAIL = the customer inbox (step12): `peer` is the sender's address. */
 export type IntakeChannel = 'SMS' | 'WHATSAPP' | 'EMAIL';
 
-export interface IntakeRoute {
+/** step12c: a book — `companyId` is set only for a registered business's own book. */
+export interface BookRef {
+  bookId: number;
   companyId: number | null;
+}
+
+/** The book half of a conversation, book option or scope. */
+function ref(b: BookRef): BookRef {
+  return { bookId: b.bookId, companyId: b.companyId };
+}
+
+export interface IntakeRoute extends BookRef {
   awaitingBook: boolean;
 }
 
-export interface IntakeReply {
+export interface IntakeReply extends BookRef {
   reply: string | null;
   fileText: boolean;
-  companyId: number | null;
   /**
    * step11b: true = this server sends the answer itself (`CustomerMessenger`), now or once
    * the files are read — the caller must send NOTHING.
@@ -59,10 +70,9 @@ export interface IntakeInput {
 }
 
 /** What one turn decided: an answer now, and/or one that needs the files read first. */
-interface Turn {
+interface Turn extends BookRef {
   reply: string | null;
   fileText: boolean;
-  companyId: number | null;
   /** Work that may take a while (reading files, the assistant's tools): its answer. */
   later?: (budgetMs: number) => Promise<string | null>;
 }
@@ -133,8 +143,10 @@ export class IntakeAgentService {
     peer: string,
     text?: string | null,
   ): Promise<IntakeRoute> {
-    if (!this.assistant.enabled)
-      return { companyId: null, awaitingBook: false };
+    if (!this.assistant.enabled) {
+      const def = await ensureDefaultBook(this.prisma, customerId);
+      return { ...ref(def), awaitingBook: false };
+    }
     const options = await bookOptions(this.prisma, customerId);
     let conversation = await this.find(customerId, channel, peer);
     if (conversation)
@@ -149,9 +161,9 @@ export class IntakeAgentService {
       }
     }
     if (conversation?.bookChosen) {
-      return { companyId: conversation.companyId, awaitingBook: false };
+      return { ...ref(conversation), awaitingBook: false };
     }
-    return { companyId: null, awaitingBook: options.length > 1 };
+    return { ...ref(options[0]), awaitingBook: options.length > 1 };
   }
 
   async agent(customerId: number, input: IntakeInput): Promise<IntakeReply> {
@@ -235,8 +247,10 @@ export class IntakeAgentService {
   }
 
   private async turn(customerId: number, input: IntakeInput): Promise<Turn> {
-    if (!this.assistant.enabled)
-      return { reply: null, fileText: true, companyId: null };
+    if (!this.assistant.enabled) {
+      const def = await ensureDefaultBook(this.prisma, customerId);
+      return { reply: null, fileText: true, ...ref(def) };
+    }
     const text = input.text?.trim() || null;
     const files = input.attachmentIds.filter(
       (n) => Number.isInteger(n) && n > 0,
@@ -248,7 +262,7 @@ export class IntakeAgentService {
       (await this.prisma.aiConversation.create({
         data: {
           customerId,
-          companyId: null,
+          ...ref(options[0]),
           channel: input.channel,
           peer: input.peer,
         },
@@ -267,7 +281,7 @@ export class IntakeAgentService {
           this.prisma,
           conversation,
           input.peer,
-          choice.companyId,
+          choice,
         );
         if (reread) this.processor?.processSoon();
         switched = `Done — this chat is now for ${choice.name}.${moved ? ` I moved ${moved} file${moved === 1 ? '' : 's'} there.` : ''}`;
@@ -275,7 +289,7 @@ export class IntakeAgentService {
           const reply = `${switched} Send receipts or ask me anything about those books.`;
           await this.assistant.save(conversation, 'USER', text);
           await this.assistant.save(conversation, 'ASSISTANT', reply);
-          return { reply, fileText: false, companyId: choice.companyId };
+          return { reply, fileText: false, ...ref(choice) };
         }
       } else if (found.length > 1) {
         const reply = whichBookQuestion(found, options);
@@ -286,7 +300,7 @@ export class IntakeAgentService {
         return {
           reply,
           fileText: false,
-          companyId: conversation.bookChosen ? conversation.companyId : null,
+          ...ref(conversation.bookChosen ? conversation : options[0]),
         };
       }
     }
@@ -296,9 +310,9 @@ export class IntakeAgentService {
       return this.undecided(conversation, options, text, files);
     }
 
-    const companyId = conversation.bookChosen ? conversation.companyId : null;
+    const book = ref(conversation.bookChosen ? conversation : options[0]);
     const bookName = multi
-      ? (options.find((o) => o.companyId === companyId)?.name ?? null)
+      ? (options.find((o) => o.bookId === book.bookId)?.name ?? null)
       : null;
 
     // 3. Files: read first, then the assistant says what each one is and answers the words.
@@ -312,17 +326,17 @@ export class IntakeAgentService {
           { attachmentIds: files },
         );
         await this.assistant.save(conversation, 'ASSISTANT', reply);
-        return { reply, fileText: false, companyId };
+        return { reply, fileText: false, ...book };
       }
       const current = conversation;
       return {
         reply: null,
         fileText: false,
-        companyId,
+        ...book,
         later: async (budget) => {
           await this.processor!.waitUntilRead(files, budget);
           const all = await this.processor!.family(files);
-          const scope = { customerId, companyId: current.companyId };
+          const scope = scopeOf(current);
           // step12: a voice note is listened to first — its words are the message.
           const { words, files: context } = await this.assistant.filesMessage(
             scope,
@@ -338,20 +352,20 @@ export class IntakeAgentService {
         },
       };
     }
-    if (!text) return { reply: null, fileText: false, companyId };
+    if (!text) return { reply: null, fileText: false, ...book };
 
     // 4. A text: a receipt note to file, or a message for the assistant.
     if (await this.isReceiptNote(text, conversation)) {
       const reply = `Got it — I'll file that${bookName ? ` in ${bookName}` : ''}.`;
       await this.assistant.save(conversation, 'USER', text);
       await this.assistant.save(conversation, 'ASSISTANT', reply);
-      return { reply, fileText: true, companyId };
+      return { reply, fileText: true, ...book };
     }
     const current = conversation;
     return {
       reply: null,
       fileText: false,
-      companyId,
+      ...book,
       later: async () =>
         (await this.assistant.respond(current, text)).reply.text,
     };
@@ -369,6 +383,7 @@ export class IntakeAgentService {
     files: number[],
   ): Promise<Turn> {
     const question = bookQuestion(options);
+    const def = ref(options[0]);
     const note =
       !files.length && !!text && (await this.isReceiptNote(text, conversation));
     const ask = async (reply: string) => {
@@ -380,12 +395,12 @@ export class IntakeAgentService {
       return {
         reply: null,
         fileText: false,
-        companyId: null,
+        ...def,
         later: async (budget) => {
           await processor.waitUntilRead(files, budget);
           const all = await processor.family(files);
           const { words, files: context } = await this.assistant.filesMessage(
-            { customerId: conversation.customerId, companyId: null },
+            { customerId: conversation.customerId, ...def },
             text,
             all,
             files.length,
@@ -405,7 +420,7 @@ ${question}`;
       return {
         reply: null,
         fileText: false,
-        companyId: null,
+        ...def,
         later: async () => {
           const answer = await this.assistant.respond(conversation, text);
           await ask(question);
@@ -421,7 +436,7 @@ ${question}`;
       { attachmentIds: files },
     );
     await ask(reply);
-    return { reply, fileText: note, companyId: null };
+    return { reply, fileText: note, ...def };
   }
 
   /** Every file is a voice note (`kind AUDIO`) — read them before answering. */
@@ -458,21 +473,20 @@ ${question}`;
     }
   }
 
-  /** A chosen business that was since deleted (or turned into a draft) is no choice. */
+  /**
+   * A book that is no longer one of the choices (deleted, or a business's book — hidden since
+   * step12c) is no choice: back to the default book, undecided.
+   */
   private async stillValid(
     conversation: AiConversation,
     options: BookOption[],
   ): Promise<AiConversation> {
-    if (
-      !conversation.bookChosen ||
-      conversation.companyId === null ||
-      options.some((o) => o.companyId === conversation.companyId)
-    ) {
+    if (options.some((o) => o.bookId === conversation.bookId)) {
       return conversation;
     }
     return this.prisma.aiConversation.update({
       where: { id: conversation.id },
-      data: { bookChosen: false, companyId: null },
+      data: { bookChosen: false, ...ref(options[0]) },
     });
   }
 
@@ -495,8 +509,7 @@ ${question}`;
     try {
       const reply = await withAiUsage(
         {
-          customerId: conversation.customerId,
-          companyId: conversation.companyId,
+          ...scopeOf(conversation),
           feature: 'INTAKE',
         },
         () =>

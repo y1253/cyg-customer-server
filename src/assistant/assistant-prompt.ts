@@ -3,6 +3,7 @@
  * channel style and the book choice are tested without OpenAI.
  */
 
+import { reachWords, type FirmReach } from '../messaging/reach';
 import {
   fillPlaceholders,
   NO_TEXTS,
@@ -67,9 +68,13 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'When they ask you to send something somewhere else ("email me the docs", "text me ' +
     'that link"), get fresh links with get_link and use send_message — it only ever goes ' +
     'to their own email / phone. When they ask you to call them, use call_me (now) or ' +
-    'create_schedule with channel CALL (a later time, or every week). You only ever call ' +
-    'or message the customer themselves, never anyone else. Confirm in words what you sent ' +
-    'or when you will call.',
+    'create_schedule with channel CALL (a later time, or every week). When they ask you to ' +
+    'call or text SOMEONE ELSE ("call 514… and tell him…", "text John that…"), use ' +
+    'call_person / text_person: look the person up with list_contacts first; for a new ' +
+    "number ask their name and whether to save them (save_contact) — a saved contact's " +
+    'reply reaches the customer. Before calling or texting anyone else, repeat who and what ' +
+    "back and get a yes. Never tell anyone else anything about the customer's books. " +
+    'Confirm in words what you sent or when you will call.',
   'channel.BOT':
     'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.',
   'channel.SMS':
@@ -134,6 +139,10 @@ export interface PromptInput {
   rules: string;
   /** EMAIL | WHATSAPP | SMS — how the customer prefers to be contacted (step12). */
   preferredContact?: string | null;
+  /** step12c: how customers can reach us right now — only these are ever offered. */
+  reach?: FirmReach | null;
+  /** step12c: the account was opened by text and has no name yet. */
+  nameUnknown?: boolean;
   /** Set for the "Ask AI" chat about one unfiled attachment. */
   attachment?: unknown;
   /**
@@ -177,6 +186,20 @@ export function systemPrompt(
   push(block('core.answers'));
   push(block('core.issues'));
   push(block('core.channels'));
+  // step12c: data the code adds (live), so the AI never offers a channel that is off.
+  if (p.reach) {
+    const ways = reachWords(p.reach);
+    lines.push(
+      ways
+        ? `How customers reach us right now: ${ways}. Offer only these${p.reach.voice ? '' : ' — calling our number does not reach you at the moment'}${p.reach.email ? '' : ', and there is no email inbox'}.`
+        : 'Customers can reach us only on the website right now.',
+    );
+  }
+  if (p.nameUnknown) {
+    lines.push(
+      "You don't know the customer's name yet (they opened their account by text). Ask for it once, early and briefly, and save it with update_my_profile.",
+    );
+  }
   for (const extra of texts.extras) push(fillPlaceholders(extra, values));
   push(block(`channel.${p.channel}`));
   if (p.preferredContact && CONTACT_LABEL[p.preferredContact]) {
@@ -193,7 +216,8 @@ export function systemPrompt(
 }
 
 export interface BookOption {
-  /** null = the customer's personal / general book. */
+  /** step12c: the `Book`. The first option is the customer's default book ("Company1"). */
+  bookId: number;
   companyId: number | null;
   name: string;
 }
@@ -272,7 +296,8 @@ export function bookCandidates(
       t,
     )
   ) {
-    const o = options.find((x) => x.companyId === null);
+    // step12c: "personal" / "general" = the default (first) book.
+    const o = options[0];
     return o ? [o] : [];
   }
   const key = bookKey(t);

@@ -23,6 +23,7 @@ const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
 const report_pdf_1 = require("./report-pdf");
 const reports_service_1 = require("./reports.service");
+const books_1 = require("./books");
 exports.FILE_LINK_TOKEN_TYPE = 'file-link';
 exports.FILE_LINK_TTL_DAYS = 7;
 function contentDisposition(filename) {
@@ -62,7 +63,7 @@ let FileLinkService = class FileLinkService {
         const claims = {
             typ: exports.FILE_LINK_TOKEN_TYPE,
             sub: scope.customerId,
-            c: scope.companyId,
+            b: scope.bookId,
             k: target.kind,
             ...(target.id ? { i: target.id } : {}),
             ...(target.from ? { f: target.from } : {}),
@@ -85,7 +86,10 @@ let FileLinkService = class FileLinkService {
         if (p.typ !== exports.FILE_LINK_TOKEN_TYPE || typeof p.sub !== 'number') {
             throw new common_1.NotFoundException('This link is not valid');
         }
-        const scope = await this.liveScope(p.sub, p.c ?? null);
+        const scope = await this.liveScope(p.sub, {
+            bookId: p.b ?? null,
+            companyId: p.c ?? null,
+        });
         switch (p.k) {
             case 'statement': {
                 const f = await this.bookkeeping.file(scope, p.i ?? 0);
@@ -130,43 +134,22 @@ let FileLinkService = class FileLinkService {
         }
         throw new common_1.NotFoundException('This link is not valid');
     }
-    async liveScope(customerId, companyId) {
+    async liveScope(customerId, ref) {
         const customer = await this.prisma.customer.findFirst({
             where: { id: customerId, deletedAt: null },
             select: { id: true },
         });
         if (!customer)
             throw new common_1.NotFoundException('This link is not valid');
-        if (companyId !== null) {
-            const company = await this.prisma.company.findFirst({
-                where: {
-                    id: companyId,
-                    customerId,
-                    isDraft: false,
-                    isInternal: false,
-                    deletedAt: null,
-                },
-                select: { id: true },
-            });
-            if (!company)
-                throw new common_1.NotFoundException('This link is not valid');
+        try {
+            return await (0, books_1.legacyBook)(this.prisma, customerId, ref);
         }
-        return { customerId, companyId };
+        catch {
+            throw new common_1.NotFoundException('This link is not valid');
+        }
     }
     async ownerName(scope) {
-        if (scope.companyId !== null) {
-            const c = await this.prisma.company.findUnique({
-                where: { id: scope.companyId },
-                select: { businessName: true },
-            });
-            if (c)
-                return c.businessName;
-        }
-        const me = await this.prisma.customer.findUnique({
-            where: { id: scope.customerId },
-            select: { name: true },
-        });
-        return me?.name ?? 'Your books';
+        return (0, books_1.bookOwnerName)(this.prisma, scope);
     }
 };
 exports.FileLinkService = FileLinkService;

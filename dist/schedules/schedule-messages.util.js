@@ -35,6 +35,7 @@ const esc = (s) => s
     .replace(/"/g, '&quot;');
 function accountStatusMessage(input) {
     const lines = statusLines(input.status);
+    const reply = `Reply to this email, text us${input.canCall ? ', call us' : ''}, or ask the assistant on the website and we’ll help you sort them out.`;
     const hi = `Hi ${input.firstName || 'there'},`;
     if (input.sms) {
         const text = [
@@ -53,14 +54,14 @@ function accountStatusMessage(input) {
         '',
         ...lines.map((l) => `• ${l}`),
         '',
-        'Reply to this email, text us, or ask the assistant on the website and we’ll help you sort them out.',
+        reply,
         `Open your books: ${input.link}`,
         '',
         '— CYG Finance',
     ].join('\n');
     const html = `<p>${esc(hi)}</p><p>Here is this week's account status for <b>${esc(input.book)}</b>:</p><ul>${lines
         .map((l) => `<li>${esc(l)}</li>`)
-        .join('')}</ul><p>Reply to this email, text us, or ask the assistant on the website and we’ll help you sort them out.</p><p><a href="${esc(input.link)}">Open your books</a></p><p>— CYG Finance</p>`;
+        .join('')}</ul><p>${esc(reply)}</p><p><a href="${esc(input.link)}">Open your books</a></p><p>— CYG Finance</p>`;
     return { subject, text, html };
 }
 const MONEY = (n) => n.toLocaleString('en-US', {

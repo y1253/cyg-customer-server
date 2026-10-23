@@ -20,7 +20,7 @@ import { UNCATEGORIZED } from '../bookkeeping/chart-of-accounts';
 import { FileLinkService } from '../bookkeeping/file-links';
 import { reportPdf } from '../bookkeeping/report-pdf';
 import { ReportsService } from '../bookkeeping/reports.service';
-import { scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { TaxService } from '../bookkeeping/tax.service';
 import { MailService } from '../mail/mail.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
@@ -280,10 +280,7 @@ export class SchedulesService implements OnModuleInit {
     /** NO_CALL = a call was just missed: text or email instead (step12). */
     mode: 'NORMAL' | 'NO_CALL' = 'NORMAL',
   ): Promise<BookScheduleRun> {
-    const scope: BookScope = {
-      customerId: s.customerId,
-      companyId: s.companyId,
-    };
+    const scope: BookScope = scopeOf(s);
     const record = (data: {
       channel: string;
       ok: boolean;
@@ -433,6 +430,7 @@ export class SchedulesService implements OnModuleInit {
           status,
           link: this.dashboardLink(scope),
           sms,
+          canCall: await this.voice.canCall(),
         }),
         attachments: [],
       };
@@ -569,7 +567,6 @@ export class SchedulesService implements OnModuleInit {
     scope: BookScope,
     type: BookScheduleType,
   ): Promise<BookSchedule> {
-    // NULL companyId keys are distinct in MySQL: find-then-create, never upsert.
     const found = await this.prisma.bookSchedule.findFirst({
       where: { ...scopeWhere(scope), type },
       orderBy: { id: 'asc' },
@@ -671,30 +668,30 @@ export class SchedulesService implements OnModuleInit {
       select: { name: true, email: true },
     });
     if (!customer) return null;
-    if (scope.companyId === null) {
-      return {
-        customerName: customer.name,
-        email: customer.email,
-        book: 'your personal books',
-      };
-    }
-    const company = await this.prisma.company.findFirst({
-      where: {
-        id: scope.companyId,
-        customerId: scope.customerId,
-        isDraft: false,
-        isInternal: false,
-        deletedAt: null,
-      },
-      select: { businessName: true },
+    // step12c: a book is a `Book` row (a bookkeeping company, or a business's own book).
+    const book = await this.prisma.book.findFirst({
+      where: { id: scope.bookId, customerId: scope.customerId, deletedAt: null },
+      select: { name: true },
     });
-    return company
-      ? {
-          customerName: customer.name,
-          email: customer.email,
-          book: company.businessName,
-        }
-      : null;
+    if (!book) return null;
+    if (scope.companyId !== null) {
+      const company = await this.prisma.company.findFirst({
+        where: {
+          id: scope.companyId,
+          customerId: scope.customerId,
+          isDraft: false,
+          isInternal: false,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!company) return null;
+    }
+    return {
+      customerName: customer.name,
+      email: customer.email,
+      book: book.name,
+    };
   }
 
   /** Where the customer opens this book on the website. */
@@ -703,7 +700,7 @@ export class SchedulesService implements OnModuleInit {
       this.config.get<string>('PUBLIC_BASE_URL')?.trim().replace(/\/+$/, '') ||
       'https://cygfinance.com';
     return scope.companyId === null
-      ? `${base}/dashboard/bookkeeping`
+      ? `${base}/dashboard/bookkeeping?book=${scope.bookId}`
       : `${base}/dashboard/businesses/${scope.companyId}`;
   }
 
@@ -726,6 +723,7 @@ export class SchedulesService implements OnModuleInit {
         (await this.prisma.aiConversation.create({
           data: {
             customerId: scope.customerId,
+            bookId: scope.bookId,
             companyId: scope.companyId,
             channel: 'SMS',
             peer: phone,

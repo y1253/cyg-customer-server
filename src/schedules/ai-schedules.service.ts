@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { AiSchedule, AiScheduleRun } from '@prisma/client';
 import { AssistantService } from '../assistant/assistant.service';
-import type { BookScope } from '../bookkeeping/scope';
+import { scopeOf, type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { answerHtml } from '../mail/answer-html';
 import { PrismaService } from '../prisma/prisma.service';
@@ -174,10 +174,7 @@ export class AiSchedulesService implements OnModuleInit {
     /** NO_CALL = a call was just missed / not placed: text or email instead (step12b). */
     mode: 'NORMAL' | 'NO_CALL' = 'NORMAL',
   ): Promise<AiScheduleRun> {
-    const scope: BookScope = {
-      customerId: s.customerId,
-      companyId: s.companyId,
-    };
+    const scope: BookScope = scopeOf(s);
     const record = (data: {
       channel: string;
       ok: boolean;

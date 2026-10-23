@@ -9,6 +9,7 @@ const ws_1 = __importDefault(require("ws"));
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const assistant_tools_1 = require("../assistant/assistant-tools");
 const book_switch_1 = require("../assistant/book-switch");
+const scope_1 = require("../bookkeeping/scope");
 const links_util_1 = require("../assistant/links.util");
 const voice_util_1 = require("./voice.util");
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
@@ -135,16 +136,24 @@ class VoiceSession {
         this.openai = this.deps.connect
             ? this.deps.connect(url, headers)
             : new ws_1.default(url, { headers });
-        const note = await this.callNote(customerName);
-        const instructions = await this.deps.assistant.promptFor(conversation, {
-            note,
-        });
+        const thirdParty = claims.purpose === 'THIRD_PARTY';
+        const instructions = thirdParty
+            ? (0, voice_util_1.thirdPartyInstructions)({
+                customerName,
+                personName: claims.contactName ?? null,
+                message: claims.script ?? '',
+                language: (0, voice_util_1.languageName)(this.settings.language),
+                maxMinutes: this.settings.maxMinutes,
+            })
+            : await this.deps.assistant.promptFor(conversation, {
+                note: await this.callNote(customerName),
+            });
         this.openai.on('open', () => {
             this.sendOpenAi((0, voice_util_1.realtimeSession)({
                 model,
                 instructions,
                 voice: this.settings.voice,
-                tools: (0, assistant_tools_1.toolsFor)('VOICE'),
+                tools: thirdParty ? [] : (0, assistant_tools_1.toolsFor)('VOICE'),
             }));
             for (const p of this.early.splice(0)) {
                 this.sendOpenAi({ type: 'input_audio_buffer.append', audio: p });
@@ -185,6 +194,10 @@ class VoiceSession {
     opening(customerName, claims) {
         const first = customerName.trim().split(/\s+/)[0] || 'there';
         const lang = (0, voice_util_1.languageName)(this.settings.language);
+        if (claims.purpose === 'THIRD_PARTY') {
+            return (`In ${lang}: say hello${claims.contactName ? ` to ${claims.contactName}` : ''}, that you are ` +
+                `CYG Finance's AI assistant calling for ${customerName.trim() || 'a client'}, and pass on the message.`);
+        }
         if (claims.dir === 'OUTBOUND' && claims.script) {
             return (`In ${lang}: greet ${first} briefly as CYG Finance's assistant, then pass on this message ` +
                 `in your own words, as you would say it on the phone (never read it out like a quote): ` +
@@ -281,17 +294,19 @@ class VoiceSession {
         const c = this.conversation;
         if (!c || !usage)
             return;
-        this.deps.usage?.recordFor({ customerId: c.customerId, companyId: c.companyId, feature: 'VOICE' }, model, kind, usage, 0);
+        this.deps.usage?.recordFor({
+            customerId: c.customerId,
+            bookId: c.bookId,
+            companyId: c.companyId,
+            feature: 'VOICE',
+        }, model, kind, usage, 0);
     }
     async runTool(ev) {
         const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
         const name = typeof ev.name === 'string' ? ev.name : '';
         const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
         const conversation = await this.freshConversation();
-        const scope = {
-            customerId: conversation.customerId,
-            companyId: conversation.companyId,
-        };
+        const scope = (0, scope_1.scopeOf)(conversation);
         const outcome = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'VOICE' }, () => this.deps.tools.run(name, args, {
             scope,
             messageId: this.lastUserMessageId,
