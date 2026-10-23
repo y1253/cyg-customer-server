@@ -40,6 +40,7 @@ const communications_history_service_1 = require("./communications-history.servi
 const customer_outbox_service_1 = require("./customer-outbox.service");
 const ai_contacts_service_1 = require("../ai-contacts/ai-contacts.service");
 const phone_number_util_1 = require("../customer-auth/phone-number.util");
+const feature_requests_store_1 = require("../feature-requests/feature-requests.store");
 function textsToOthersPerDay() {
     const n = Number(process.env.AI_TEXTS_TO_OTHERS_PER_DAY);
     return Number.isFinite(n) && n >= 0 ? n : 10;
@@ -398,6 +399,20 @@ const REPORT_ISSUE_TOOL = {
         transactionIds: { type: 'array', items: int },
     }, ['complaint', 'whatWentWrong']),
 };
+const REQUEST_FEATURE_TOOL = {
+    name: 'request_feature',
+    description: 'The customer asks for something none of your tools can do and the app does not offer yet. Logs it for the team; the customer can follow it under "My requests". NOT for a mistake we made (report_ai_issue) or something you or the website can already do.',
+    parameters: obj({
+        request: {
+            type: 'string',
+            description: 'What the customer asked for, in their own words',
+        },
+        summary: {
+            type: 'string',
+            description: 'A short title for it (under 12 words)',
+        },
+    }, ['request', 'summary']),
+};
 const PEOPLE_TOOLS = [
     LIST_CONTACTS_TOOL,
     SAVE_CONTACT_TOOL,
@@ -410,11 +425,13 @@ exports.ASSISTANT_TOOLS = [
     ...WRITE_TOOLS,
     ...PEOPLE_TOOLS,
     REPORT_ISSUE_TOOL,
+    REQUEST_FEATURE_TOOL,
 ];
 exports.WRITE_TOOL_NAMES = new Set([
     ...WRITE_TOOLS.map((t) => t.name),
     ...PEOPLE_TOOLS.filter((t) => t !== LIST_CONTACTS_TOOL).map((t) => t.name),
     REPORT_ISSUE_TOOL.name,
+    REQUEST_FEATURE_TOOL.name,
     SWITCH_BOOK_TOOL.name,
     SEND_TEXT_TOOL.name,
     SEND_MESSAGE_TOOL.name,
@@ -817,6 +834,24 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                         summary: outcome.summary,
                     },
                 };
+            }
+            case 'request_feature': {
+                const request = s(a.request);
+                if (!request)
+                    throw new Error('say what the customer asked for');
+                const saved = await (0, feature_requests_store_1.saveFeatureRequest)(this.prisma, {
+                    scope,
+                    conversationId: ctx.conversation?.id ?? null,
+                    channel: ctx.conversation?.channel ?? 'BOT',
+                    messageId: ctx.messageId,
+                    request,
+                    summary: s(a.summary) ?? request,
+                });
+                return done(`Saved your request: ${saved.summary}`, {
+                    ok: true,
+                    requestId: saved.id,
+                    result: 'Tell the customer we noted it, the team will look at it, and they can follow it under "My requests" on the website. Do not promise it will be built.',
+                });
             }
             case 'send_text': {
                 const raw = s(a.text);

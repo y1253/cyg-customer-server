@@ -21,6 +21,7 @@ const bookkeeping_module_1 = require("./bookkeeping/bookkeeping.module");
 const comm_usage_module_1 = require("./comm-usage/comm-usage.module");
 const contact_module_1 = require("./contact/contact.module");
 const customer_auth_module_1 = require("./customer-auth/customer-auth.module");
+const feature_requests_module_1 = require("./feature-requests/feature-requests.module");
 const mail_module_1 = require("./mail/mail.module");
 const prisma_module_1 = require("./prisma/prisma.module");
 const schedules_module_1 = require("./schedules/schedules.module");
@@ -47,6 +48,7 @@ exports.AppModule = AppModule = __decorate([
             assistant_module_1.AssistantModule,
             bank_feeds_module_1.BankFeedsModule,
             schedules_module_1.SchedulesModule,
+            feature_requests_module_1.FeatureRequestsModule,
             voice_module_1.VoiceModule,
         ],
         controllers: [app_controller_1.AppController],

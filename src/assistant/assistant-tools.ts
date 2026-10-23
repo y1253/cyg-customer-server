@@ -39,6 +39,7 @@ import { CommunicationsHistory } from './communications-history.service';
 import { CustomerOutbox, type OutboxChannel } from './customer-outbox.service';
 import { AiContactsService } from '../ai-contacts/ai-contacts.service';
 import { toE164 } from '../customer-auth/phone-number.util';
+import { saveFeatureRequest } from '../feature-requests/feature-requests.store';
 
 /** step12c: texts the AI may send to other people per customer per day. */
 function textsToOthersPerDay(): number {
@@ -592,6 +593,29 @@ const REPORT_ISSUE_TOOL: ToolDefinition = {
   ),
 };
 
+/**
+ * step12e: the customer asks for something the app cannot do yet — logged as a
+ * `FeatureRequest` that staff see in the internal app and the customer under "My requests".
+ */
+const REQUEST_FEATURE_TOOL: ToolDefinition = {
+  name: 'request_feature',
+  description:
+    'The customer asks for something none of your tools can do and the app does not offer yet. Logs it for the team; the customer can follow it under "My requests". NOT for a mistake we made (report_ai_issue) or something you or the website can already do.',
+  parameters: obj(
+    {
+      request: {
+        type: 'string',
+        description: 'What the customer asked for, in their own words',
+      },
+      summary: {
+        type: 'string',
+        description: 'A short title for it (under 12 words)',
+      },
+    },
+    ['request', 'summary'],
+  ),
+};
+
 /** step12c: contacts, the customer's own name, and reaching other people — every channel. */
 const PEOPLE_TOOLS: ToolDefinition[] = [
   LIST_CONTACTS_TOOL,
@@ -606,11 +630,13 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
   ...WRITE_TOOLS,
   ...PEOPLE_TOOLS,
   REPORT_ISSUE_TOOL,
+  REQUEST_FEATURE_TOOL,
 ];
 export const WRITE_TOOL_NAMES = new Set([
   ...WRITE_TOOLS.map((t) => t.name),
   ...PEOPLE_TOOLS.filter((t) => t !== LIST_CONTACTS_TOOL).map((t) => t.name),
   REPORT_ISSUE_TOOL.name,
+  REQUEST_FEATURE_TOOL.name,
   SWITCH_BOOK_TOOL.name,
   SEND_TEXT_TOOL.name,
   SEND_MESSAGE_TOOL.name,
@@ -1074,6 +1100,24 @@ export class AssistantTools {
             summary: outcome.summary,
           },
         };
+      }
+      case 'request_feature': {
+        const request = s(a.request);
+        if (!request) throw new Error('say what the customer asked for');
+        const saved = await saveFeatureRequest(this.prisma, {
+          scope,
+          conversationId: ctx.conversation?.id ?? null,
+          channel: ctx.conversation?.channel ?? 'BOT',
+          messageId: ctx.messageId,
+          request,
+          summary: s(a.summary) ?? request,
+        });
+        return done(`Saved your request: ${saved.summary}`, {
+          ok: true,
+          requestId: saved.id,
+          result:
+            'Tell the customer we noted it, the team will look at it, and they can follow it under "My requests" on the website. Do not promise it will be built.',
+        });
       }
       case 'send_text': {
         const raw = s(a.text);

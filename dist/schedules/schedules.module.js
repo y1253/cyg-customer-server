@@ -30,6 +30,7 @@ exports.SchedulesModule = SchedulesModule = __decorate([
         ],
         controllers: [schedules_controller_1.SchedulesController],
         providers: [schedules_service_1.SchedulesService, ai_schedules_service_1.AiSchedulesService],
+        exports: [schedules_service_1.SchedulesService],
     })
 ], SchedulesModule);
 //# sourceMappingURL=schedules.module.js.map

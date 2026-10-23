@@ -26,6 +26,7 @@ const TITLES: Record<string, string> = {
   'core.safety': 'Safety (staff only)',
   'core.answers': 'Answering',
   'core.issues': 'When the customer says we got it wrong',
+  'core.requests': "When the customer asks for something we can't do yet",
   'core.channels': 'Every channel: history, sending elsewhere, calls',
   contact: 'Preferred contact method',
   ask_ai: '"Ask AI" about one unfiled file',

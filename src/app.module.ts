@@ -12,6 +12,7 @@ import { BookkeepingModule } from './bookkeeping/bookkeeping.module';
 import { CommUsageModule } from './comm-usage/comm-usage.module';
 import { ContactModule } from './contact/contact.module';
 import { CustomerAuthModule } from './customer-auth/customer-auth.module';
+import { FeatureRequestsModule } from './feature-requests/feature-requests.module';
 import { MailModule } from './mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SchedulesModule } from './schedules/schedules.module';
@@ -35,6 +36,7 @@ import { StorageModule } from './storage/storage.module';
     AssistantModule,
     BankFeedsModule,
     SchedulesModule,
+    FeatureRequestsModule,
     VoiceModule,
   ],
   controllers: [AppController],

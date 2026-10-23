@@ -61,6 +61,7 @@ describe('systemPrompt from instruction rows', () => {
       systemPrompt(SMS_INPUT, {
         byKey: {
           'core.issues': '',
+          'core.requests': '',
           'core.channels': '',
           'core.answers': oldAnswers,
         },
@@ -71,6 +72,10 @@ describe('systemPrompt from instruction rows', () => {
 
   it('tells the agent about report_ai_issue by default', () => {
     expect(systemPrompt(SMS_INPUT)).toContain('report_ai_issue');
+  });
+
+  it('tells the agent about request_feature by default (step12e)', () => {
+    expect(systemPrompt(SMS_INPUT)).toContain('request_feature');
   });
 
   it('tells the agent how to re-read a statement and to give a tool failure its real reason', () => {

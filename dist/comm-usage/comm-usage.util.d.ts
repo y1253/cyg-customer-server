@@ -1,6 +1,6 @@
 export type CommChannel = 'SMS' | 'WHATSAPP';
 export type CommDirection = 'IN' | 'OUT';
-export type CommPurpose = 'ASSISTANT_REPLY' | 'SEND_MESSAGE' | 'SEND_TEXT' | 'TEXT_PERSON' | 'LOGIN_CODE' | 'SCHEDULE' | 'AI_SCHEDULE' | 'SIGNUP_OFFER' | 'CONTACT_RELAY' | 'INTAKE' | 'STRONG_AI' | 'OTHER';
+export type CommPurpose = 'ASSISTANT_REPLY' | 'SEND_MESSAGE' | 'SEND_TEXT' | 'TEXT_PERSON' | 'LOGIN_CODE' | 'SCHEDULE' | 'AI_SCHEDULE' | 'SIGNUP_OFFER' | 'CONTACT_RELAY' | 'INTAKE' | 'STRONG_AI' | 'FEATURE_DONE' | 'OTHER';
 export interface CommPrices {
     smsOutPerSegment: number | null;
     smsInPerSegment: number | null;

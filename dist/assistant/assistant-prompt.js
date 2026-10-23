@@ -51,6 +51,12 @@ exports.DEFAULT_INSTRUCTIONS = {
         'the wrong transaction or not filed, a wrong category or answer, something they said ' +
         'ignored — call report_ai_issue first, then follow what it returns. A new request or a ' +
         'change of mind ("move this to ABC", "rename it") is NOT an issue: just do it.',
+    'core.requests': 'When the customer asks for something none of your tools can do and the app does not ' +
+        'offer (a feature we do not have yet), call request_feature with their request in their ' +
+        'own words and a short title, then tell them we noted it, the team will look at it, and ' +
+        'they can follow it under "My requests" on the website — never promise it will be built ' +
+        'or when. Do not call it for a mistake we made (that is report_ai_issue) or for something ' +
+        'you can do or the website already does: do that or tell them how.',
     'core.channels': 'You are ONE assistant on every channel — the website chat, texts, WhatsApp, email and ' +
         "phone calls. What the customer said elsewhere lately is in RECENT ON THE CUSTOMER'S " +
         'OTHER CHANNELS (when there is any); for anything older call search_communications. ' +
@@ -135,6 +141,7 @@ function systemPrompt(p, texts = instructions_util_1.NO_TEXTS) {
     push(block('core.safety'));
     push(block('core.answers'));
     push(block('core.issues'));
+    push(block('core.requests'));
     push(block('core.channels'));
     if (p.reach) {
         const ways = (0, reach_1.reachWords)(p.reach);

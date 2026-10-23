@@ -61,6 +61,13 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'the wrong transaction or not filed, a wrong category or answer, something they said ' +
     'ignored — call report_ai_issue first, then follow what it returns. A new request or a ' +
     'change of mind ("move this to ABC", "rename it") is NOT an issue: just do it.',
+  'core.requests':
+    'When the customer asks for something none of your tools can do and the app does not ' +
+    'offer (a feature we do not have yet), call request_feature with their request in their ' +
+    'own words and a short title, then tell them we noted it, the team will look at it, and ' +
+    'they can follow it under "My requests" on the website — never promise it will be built ' +
+    'or when. Do not call it for a mistake we made (that is report_ai_issue) or for something ' +
+    'you can do or the website already does: do that or tell them how.',
   'core.channels':
     'You are ONE assistant on every channel — the website chat, texts, WhatsApp, email and ' +
     "phone calls. What the customer said elsewhere lately is in RECENT ON THE CUSTOMER'S " +
@@ -185,6 +192,7 @@ export function systemPrompt(
   push(block('core.safety'));
   push(block('core.answers'));
   push(block('core.issues'));
+  push(block('core.requests'));
   push(block('core.channels'));
   // step12c: data the code adds (live), so the AI never offers a channel that is off.
   if (p.reach) {

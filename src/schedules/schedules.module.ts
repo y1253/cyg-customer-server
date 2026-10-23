@@ -23,5 +23,7 @@ import { SchedulesService } from './schedules.service';
   ],
   controllers: [SchedulesController],
   providers: [SchedulesService, AiSchedulesService],
+  // step12e: feature requests reuse its delivery / email / logText.
+  exports: [SchedulesService],
 })
 export class SchedulesModule {}

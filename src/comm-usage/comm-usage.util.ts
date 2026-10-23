@@ -19,6 +19,7 @@ export type CommPurpose =
   | 'CONTACT_RELAY'
   | 'INTAKE'
   | 'STRONG_AI'
+  | 'FEATURE_DONE'
   | 'OTHER';
 
 /** A provider's list prices in USD (null = unknown). */
