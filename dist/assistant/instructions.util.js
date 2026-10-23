@@ -30,6 +30,7 @@ exports.FIXED_ASSISTANT_KEYS = [
     'core.safety',
     'core.answers',
     'core.issues',
+    'core.channels',
     'channel.BOT',
     'channel.SMS',
     'channel.WHATSAPP',

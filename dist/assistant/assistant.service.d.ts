@@ -7,6 +7,7 @@ import { type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssistantTools, type AgentAction } from './assistant-tools';
 import { type Channel } from './assistant-prompt';
+import { CommunicationsHistory } from './communications-history.service';
 import { InstructionsService } from './instructions.service';
 import { RulesService } from './rules.service';
 export interface MessageFileView {
@@ -41,6 +42,7 @@ export interface ChatResult {
 }
 export declare const MAX_TOOL_ROUNDS = 6;
 export declare const HISTORY = 20;
+export declare const VOICE_HISTORY = 10;
 export declare const FAILED_REPLY = "Sorry \u2014 I couldn't answer that right now. Please try again in a minute.";
 export declare const CHAT_READ_WAIT_MS = 75000;
 export declare function fileContext(a: AttachmentView): {
@@ -71,8 +73,9 @@ export declare class AssistantService {
     private readonly attachments;
     private readonly processor;
     private readonly instructions?;
+    private readonly history?;
     private readonly logger;
-    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService, processor: AttachmentProcessorService, instructions?: InstructionsService | undefined);
+    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, tools: AssistantTools, rules: RulesService, attachments: AttachmentsService, processor: AttachmentProcessorService, instructions?: InstructionsService | undefined, history?: CommunicationsHistory | undefined);
     get enabled(): boolean;
     assertEnabled(): void;
     private model;
@@ -101,7 +104,7 @@ export declare class AssistantService {
     private run;
     private runChat;
     private loop;
-    runTask(scope: BookScope, task: string, channel: 'SMS' | 'EMAIL'): Promise<string | null>;
+    runTask(scope: BookScope, task: string, channel: 'SMS' | 'EMAIL' | 'VOICE'): Promise<string | null>;
     promptFor(conversation: AiConversation, extra?: {
         attachment?: unknown;
         files?: unknown[];

@@ -17,19 +17,31 @@ const next_run_util_1 = require("./next-run.util");
 exports.AI_SCHEDULE_CHANNELS = [
     'EMAIL',
     'SMS',
+    'CALL',
 ];
 exports.MAX_AI_SCHEDULES = 20;
 const aiRuleOf = (s) => ({
-    frequency: s.frequency === 'DAILY' || s.frequency === 'MONTHLY'
+    frequency: s.frequency === 'DAILY' ||
+        s.frequency === 'MONTHLY' ||
+        s.frequency === 'ONCE'
         ? s.frequency
         : 'WEEKLY',
     weekday: s.weekday,
     monthDay: s.monthDay,
     time: s.time,
     timezone: s.timezone,
+    date: s.runDate,
 });
 exports.aiRuleOf = aiRuleOf;
-const isChannel = (c) => c === 'EMAIL' || c === 'SMS';
+const ruleData = (r) => ({
+    frequency: r.frequency,
+    weekday: r.weekday,
+    monthDay: r.monthDay,
+    time: r.time,
+    timezone: r.timezone,
+    runDate: r.date ?? null,
+});
+const isChannel = (c) => c === 'EMAIL' || c === 'SMS' || c === 'CALL';
 let AiSchedulesStore = class AiSchedulesStore {
     prisma;
     constructor(prisma) {
@@ -68,6 +80,7 @@ let AiSchedulesStore = class AiSchedulesStore {
             weekday: input.weekday ?? null,
             monthDay: input.monthDay ?? null,
             time: input.time ?? '09:00',
+            date: input.date ?? null,
             timezone: input.timezone
                 ? (0, next_run_util_1.safeZone)(input.timezone)
                 : await this.bookZone(scope),
@@ -78,12 +91,12 @@ let AiSchedulesStore = class AiSchedulesStore {
                 ...(0, scope_1.scopeWhere)(scope),
                 title: title.slice(0, 120),
                 task: task.slice(0, 4000),
-                ...rule,
+                ...ruleData(rule),
                 channel: this.channel(input.channel),
                 active,
                 createdBy: meta.createdBy,
                 conversationId: meta.conversationId ?? null,
-                nextRunAt: active ? (0, next_run_util_1.nextRun)(rule, new Date()) : null,
+                nextRunAt: active ? this.firstRun(rule) : null,
             },
         });
     }
@@ -102,12 +115,12 @@ let AiSchedulesStore = class AiSchedulesStore {
             data: {
                 title: title.slice(0, 120),
                 task: task.slice(0, 4000),
-                ...rule,
+                ...ruleData(rule),
                 channel: input.channel !== undefined
                     ? this.channel(input.channel)
                     : row.channel,
                 active,
-                nextRunAt: active ? (0, next_run_util_1.nextRun)(rule, new Date()) : null,
+                nextRunAt: active ? this.firstRun(rule) : null,
             },
         });
     }
@@ -121,6 +134,13 @@ let AiSchedulesStore = class AiSchedulesStore {
     describe(s) {
         return (0, next_run_util_1.describeRule)((0, exports.aiRuleOf)(s));
     }
+    firstRun(rule) {
+        const at = (0, next_run_util_1.nextRun)(rule, new Date());
+        if (!at && rule.frequency === 'ONCE') {
+            throw new common_1.BadRequestException('That date and time has already passed — choose a later one');
+        }
+        return at;
+    }
     rule(base, input) {
         const rule = {
             frequency: input.frequency ?? base.frequency,
@@ -128,13 +148,24 @@ let AiSchedulesStore = class AiSchedulesStore {
             monthDay: input.monthDay !== undefined ? input.monthDay : base.monthDay,
             time: input.time?.trim() ?? base.time,
             timezone: input.timezone ? (0, next_run_util_1.safeZone)(input.timezone) : base.timezone,
+            date: input.date !== undefined ? input.date : (base.date ?? null),
         };
         if (!next_run_util_1.AI_FREQUENCIES.includes(rule.frequency)) {
-            throw new common_1.BadRequestException('Repeat must be DAILY, WEEKLY or MONTHLY');
+            throw new common_1.BadRequestException('Repeat must be DAILY, WEEKLY, MONTHLY or ONCE');
         }
         if (!(0, next_run_util_1.parseTime)(rule.time)) {
             throw new common_1.BadRequestException('Choose a time like 06:00 (24 h)');
         }
+        if (rule.frequency === 'ONCE') {
+            if (!(0, next_run_util_1.parseDate)(rule.date)) {
+                throw new common_1.BadRequestException('Choose the day, like 2026-10-28');
+            }
+            rule.date = rule.date.trim();
+            rule.weekday = null;
+            rule.monthDay = null;
+            return rule;
+        }
+        rule.date = null;
         if (rule.frequency === 'DAILY') {
             rule.weekday = null;
             rule.monthDay = null;
@@ -157,7 +188,7 @@ let AiSchedulesStore = class AiSchedulesStore {
         if (c === null || c === undefined || c === '')
             return null;
         if (!isChannel(c)) {
-            throw new common_1.BadRequestException('Send by EMAIL or SMS (or leave it empty)');
+            throw new common_1.BadRequestException('Send by EMAIL, SMS or CALL (or leave it empty)');
         }
         return c;
     }

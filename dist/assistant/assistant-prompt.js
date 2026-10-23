@@ -50,6 +50,15 @@ exports.DEFAULT_INSTRUCTIONS = {
         'the wrong transaction or not filed, a wrong category or answer, something they said ' +
         'ignored — call report_ai_issue first, then follow what it returns. A new request or a ' +
         'change of mind ("move this to ABC", "rename it") is NOT an issue: just do it.',
+    'core.channels': 'You are ONE assistant on every channel — the website chat, texts, WhatsApp, email and ' +
+        "phone calls. What the customer said elsewhere lately is in RECENT ON THE CUSTOMER'S " +
+        'OTHER CHANNELS (when there is any); for anything older call search_communications. ' +
+        'When they ask you to send something somewhere else ("email me the docs", "text me ' +
+        'that link"), get fresh links with get_link and use send_message — it only ever goes ' +
+        'to their own email / phone. When they ask you to call them, use call_me (now) or ' +
+        'create_schedule with channel CALL (a later time, or every week). You only ever call ' +
+        'or message the customer themselves, never anyone else. Confirm in words what you sent ' +
+        'or when you will call.',
     'channel.BOT': 'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.',
     'channel.SMS': 'You are answering by TEXT MESSAGE, like a person texting: plain text only, no markdown, at most about 600 characters. Summarise lists (count, total, the top 3).',
     'channel.WHATSAPP': 'You are answering on WhatsApp, like a person chatting: short and plain (no tables or headings; *bold* is fine), at most about 800 characters. Summarise long lists.',
@@ -121,6 +130,7 @@ function systemPrompt(p, texts = instructions_util_1.NO_TEXTS) {
     push(block('core.safety'));
     push(block('core.answers'));
     push(block('core.issues'));
+    push(block('core.channels'));
     for (const extra of texts.extras)
         push((0, instructions_util_1.fillPlaceholders)(extra, values));
     push(block(`channel.${p.channel}`));

@@ -7,13 +7,17 @@
  * turned into an instant by asking `Intl` what the zone's offset is at that moment.
  */
 
-/** DAILY (step12) is only for the schedules the AI makes; the two built-ins stay weekly/monthly. */
-export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+/**
+ * DAILY (step12) and ONCE (step12b: "call me tomorrow at 3pm") are only for the schedules
+ * the AI makes; the two built-ins stay weekly/monthly.
+ */
+export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'ONCE';
 export const FREQUENCIES: readonly Frequency[] = ['WEEKLY', 'MONTHLY'];
 export const AI_FREQUENCIES: readonly Frequency[] = [
   'DAILY',
   'WEEKLY',
   'MONTHLY',
+  'ONCE',
 ];
 
 export interface ScheduleRule {
@@ -26,6 +30,19 @@ export interface ScheduleRule {
   time: string;
   /** IANA zone, e.g. "America/Toronto". */
   timezone: string;
+  /** ONCE: the day, "YYYY-MM-DD" in `timezone`. */
+  date?: string | null;
+}
+
+/** "2026-10-28" → [2026, 10, 28] for a real calendar day; anything else → null. */
+export function parseDate(
+  date: string | null | undefined,
+): [number, number, number] | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date?.trim() ?? '');
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (mo < 1 || mo > 12 || d < 1 || d > daysIn(y, mo)) return null;
+  return [y, mo, d];
 }
 
 export const DEFAULT_TIMEZONE = 'America/Toronto';
@@ -110,6 +127,12 @@ export function nextRun(rule: ScheduleRule, after: Date): Date | null {
   const hm = parseTime(rule.time);
   if (!hm) return null;
   const tz = safeZone(rule.timezone);
+  if (rule.frequency === 'ONCE') {
+    const ymd = parseDate(rule.date);
+    if (!ymd) return null;
+    const at = zonedInstant(ymd[0], ymd[1], ymd[2], hm[0], hm[1], tz);
+    return at.getTime() > after.getTime() ? at : null;
+  }
   const start = wallClock(after, tz);
   // Walk local calendar days from today: at most ~2 months for a monthly rule.
   for (let i = 0; i <= 70; i++) {
@@ -177,6 +200,20 @@ export function describeRule(rule: ScheduleRule): string {
       })
     : rule.time;
   if (rule.frequency === 'DAILY') return `Every day at ${time}`;
+  if (rule.frequency === 'ONCE') {
+    const ymd = parseDate(rule.date);
+    if (!ymd) return `Once at ${time}`;
+    const day = new Date(
+      Date.UTC(ymd[0], ymd[1] - 1, ymd[2]),
+    ).toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+    return `Once, on ${day} at ${time}`;
+  }
   if (rule.frequency === 'WEEKLY') {
     return `Every ${WEEKDAY_NAMES[rule.weekday ?? 1]} at ${time}`;
   }

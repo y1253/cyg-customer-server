@@ -60,6 +60,16 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'the wrong transaction or not filed, a wrong category or answer, something they said ' +
     'ignored — call report_ai_issue first, then follow what it returns. A new request or a ' +
     'change of mind ("move this to ABC", "rename it") is NOT an issue: just do it.',
+  'core.channels':
+    'You are ONE assistant on every channel — the website chat, texts, WhatsApp, email and ' +
+    "phone calls. What the customer said elsewhere lately is in RECENT ON THE CUSTOMER'S " +
+    'OTHER CHANNELS (when there is any); for anything older call search_communications. ' +
+    'When they ask you to send something somewhere else ("email me the docs", "text me ' +
+    'that link"), get fresh links with get_link and use send_message — it only ever goes ' +
+    'to their own email / phone. When they ask you to call them, use call_me (now) or ' +
+    'create_schedule with channel CALL (a later time, or every week). You only ever call ' +
+    'or message the customer themselves, never anyone else. Confirm in words what you sent ' +
+    'or when you will call.',
   'channel.BOT':
     'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.',
   'channel.SMS':
@@ -166,6 +176,7 @@ export function systemPrompt(
   push(block('core.safety'));
   push(block('core.answers'));
   push(block('core.issues'));
+  push(block('core.channels'));
   for (const extra of texts.extras) push(fillPlaceholders(extra, values));
   push(block(`channel.${p.channel}`));
   if (p.preferredContact && CONTACT_LABEL[p.preferredContact]) {

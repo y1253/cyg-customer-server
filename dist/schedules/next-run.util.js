@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_TIMEZONE = exports.AI_FREQUENCIES = exports.FREQUENCIES = void 0;
+exports.parseDate = parseDate;
 exports.safeZone = safeZone;
 exports.parseTime = parseTime;
 exports.wallClock = wallClock;
@@ -13,7 +14,17 @@ exports.AI_FREQUENCIES = [
     'DAILY',
     'WEEKLY',
     'MONTHLY',
+    'ONCE',
 ];
+function parseDate(date) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date?.trim() ?? '');
+    if (!m)
+        return null;
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (mo < 1 || mo > 12 || d < 1 || d > daysIn(y, mo))
+        return null;
+    return [y, mo, d];
+}
 exports.DEFAULT_TIMEZONE = 'America/Toronto';
 function safeZone(tz) {
     try {
@@ -74,6 +85,13 @@ function nextRun(rule, after) {
     if (!hm)
         return null;
     const tz = safeZone(rule.timezone);
+    if (rule.frequency === 'ONCE') {
+        const ymd = parseDate(rule.date);
+        if (!ymd)
+            return null;
+        const at = zonedInstant(ymd[0], ymd[1], ymd[2], hm[0], hm[1], tz);
+        return at.getTime() > after.getTime() ? at : null;
+    }
     const start = wallClock(after, tz);
     for (let i = 0; i <= 70; i++) {
         const day = new Date(Date.UTC(start.y, start.m - 1, start.d + i));
@@ -134,6 +152,19 @@ function describeRule(rule) {
         : rule.time;
     if (rule.frequency === 'DAILY')
         return `Every day at ${time}`;
+    if (rule.frequency === 'ONCE') {
+        const ymd = parseDate(rule.date);
+        if (!ymd)
+            return `Once at ${time}`;
+        const day = new Date(Date.UTC(ymd[0], ymd[1] - 1, ymd[2])).toLocaleDateString('en-US', {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            timeZone: 'UTC',
+        });
+        return `Once, on ${day} at ${time}`;
+    }
     if (rule.frequency === 'WEEKLY') {
         return `Every ${WEEKDAY_NAMES[rule.weekday ?? 1]} at ${time}`;
     }

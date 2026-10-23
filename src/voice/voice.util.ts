@@ -51,7 +51,13 @@ export const languageName = (id: string | null | undefined): string =>
 /** The claim on a call's stream token (minted by the internal API or our own dialer). */
 export const VOICE_TOKEN_TYPE = 'voice-call';
 
-export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT';
+/** step12b: AI_SCHEDULE = an AI schedule with channel CALL; REQUESTED = "call me now". */
+export type CallPurpose =
+  | 'INBOUND'
+  | 'ACCOUNT_STATUS'
+  | 'FINANCIAL_REPORT'
+  | 'AI_SCHEDULE'
+  | 'REQUESTED';
 
 export interface VoiceTokenClaims {
   typ: string;

@@ -15,36 +15,53 @@ const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const assistant_service_1 = require("../assistant/assistant.service");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
+const answer_html_1 = require("../mail/answer-html");
 const prisma_service_1 = require("../prisma/prisma.service");
+const voice_calls_service_1 = require("../voice/voice-calls.service");
+const voice_util_1 = require("../voice/voice.util");
 const ai_schedules_store_1 = require("./ai-schedules.store");
 const next_run_util_1 = require("./next-run.util");
 const schedules_service_1 = require("./schedules.service");
 const BATCH = 10;
-function escapeHtml(text) {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-function answerHtml(text) {
-    const body = escapeHtml(text).replace(/https?:\/\/[^\s<]+/g, (url) => `<a href="${url}">${url}</a>`);
-    return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap">${body}</div>`;
-}
 let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
     prisma;
     store;
     schedules;
     assistant;
     messenger;
+    voice;
     logger = new common_1.Logger(AiSchedulesService_1.name);
     ticking = false;
-    constructor(prisma, store, schedules, assistant, messenger) {
+    constructor(prisma, store, schedules, assistant, messenger, voice) {
         this.prisma = prisma;
         this.store = store;
         this.schedules = schedules;
         this.assistant = assistant;
         this.messenger = messenger;
+        this.voice = voice;
+    }
+    onModuleInit() {
+        this.voice.outboundMissed$.subscribe(({ aiRunId, status }) => {
+            if (!aiRunId)
+                return;
+            void this.callMissed(aiRunId, status).catch((err) => this.logger.error(`ai schedule run #${aiRunId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`));
+        });
+    }
+    async callMissed(runId, status) {
+        const run = await this.prisma.aiScheduleRun.findUnique({
+            where: { id: runId },
+            include: { schedule: true },
+        });
+        if (!run || run.channel !== 'CALL')
+            return;
+        await this.prisma.aiScheduleRun.update({
+            where: { id: run.id },
+            data: {
+                ok: false,
+                error: `The call was not answered (${status}), so it was sent again another way.`,
+            },
+        });
+        await this.run(run.schedule, run.manual, 'NO_CALL');
     }
     async list(scope) {
         const rows = await this.store.list(scope);
@@ -75,7 +92,11 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
             for (const s of due) {
                 const claimed = await this.prisma.aiSchedule.updateMany({
                     where: { id: s.id, active: true, nextRunAt: s.nextRunAt },
-                    data: { nextRunAt: (0, next_run_util_1.nextRun)((0, ai_schedules_store_1.aiRuleOf)(s), now), lastRunAt: now },
+                    data: {
+                        nextRunAt: (0, next_run_util_1.nextRun)((0, ai_schedules_store_1.aiRuleOf)(s), now),
+                        lastRunAt: now,
+                        ...(s.frequency === 'ONCE' ? { active: false } : {}),
+                    },
                 });
                 if (!claimed.count)
                     continue;
@@ -89,7 +110,7 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
             this.ticking = false;
         }
     }
-    async run(s, manual) {
+    async run(s, manual, mode = 'NORMAL') {
         const scope = {
             customerId: s.customerId,
             companyId: s.companyId,
@@ -104,7 +125,7 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
                 error: data.error?.slice(0, 512) ?? null,
             },
         });
-        if (manual) {
+        if (manual && mode === 'NORMAL') {
             await this.prisma.aiSchedule.update({
                 where: { id: s.id },
                 data: { lastRunAt: new Date() },
@@ -122,13 +143,46 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
                 error: 'This book no longer exists.',
             });
         }
-        const delivery = await this.delivery(s);
+        const delivery = await this.delivery(s, mode === 'NO_CALL');
         if (!delivery.channel || !delivery.to) {
             return record({
                 channel: 'NONE',
                 ok: false,
                 error: 'No email address or phone number to send to.',
             });
+        }
+        if (delivery.channel === 'CALL') {
+            if (await this.voice.overCallLimit(s.customerId)) {
+                return this.run(s, manual, 'NO_CALL');
+            }
+            const said = await this.assistant.runTask(scope, s.task, 'VOICE');
+            if (!said) {
+                return record({
+                    channel: 'CALL',
+                    ok: false,
+                    error: 'The AI could not prepare the message this time.',
+                });
+            }
+            const script = (0, voice_util_1.spokenScript)(said);
+            const row = await record({ channel: 'CALL', ok: true, text: script });
+            const placed = await this.voice.callCustomer({
+                scope,
+                peer: delivery.to,
+                purpose: 'AI_SCHEDULE',
+                aiScheduleRunId: row.id,
+                script,
+            });
+            if ('error' in placed) {
+                await this.prisma.aiScheduleRun.update({
+                    where: { id: row.id },
+                    data: {
+                        ok: false,
+                        error: `The call could not be placed: ${placed.error}`.slice(0, 512),
+                    },
+                });
+                return this.run(s, manual, 'NO_CALL');
+            }
+            return row;
         }
         const text = await this.assistant.runTask(scope, s.task, delivery.channel);
         if (!text) {
@@ -176,11 +230,11 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
         return this.schedules.email(to, {
             subject: title,
             text,
-            html: answerHtml(text),
+            html: (0, answer_html_1.answerHtml)(text),
             attachments: [],
         });
     }
-    async delivery(s) {
+    async delivery(s, noCall = false) {
         const c = await this.prisma.customer.findUnique({
             where: { id: s.customerId },
             select: { email: true, phoneE164: true },
@@ -188,18 +242,26 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
         if (!c)
             return { channel: null, to: null };
         const canText = Boolean(c.phoneE164) && this.messenger.smsConfigured;
-        if (s.channel === 'SMS' && canText) {
+        if (s.channel === 'CALL' &&
+            !noCall &&
+            c.phoneE164 &&
+            (await this.voice.canCall())) {
+            return { channel: 'CALL', to: c.phoneE164 };
+        }
+        if ((s.channel === 'SMS' || s.channel === 'CALL') && canText) {
             return { channel: 'SMS', to: c.phoneE164 };
         }
-        if (s.channel === 'EMAIL' || s.channel === 'SMS') {
+        if (s.channel === 'EMAIL' || s.channel === 'SMS' || s.channel === 'CALL') {
             return c.email
                 ? { channel: 'EMAIL', to: c.email }
                 : canText
                     ? { channel: 'SMS', to: c.phoneE164 }
                     : { channel: null, to: null };
         }
-        const preferred = await this.schedules.delivery(s.customerId, true);
-        return preferred.channel === 'SMS' || preferred.channel === 'EMAIL'
+        const preferred = await this.schedules.delivery(s.customerId, noCall);
+        return preferred.channel === 'SMS' ||
+            preferred.channel === 'EMAIL' ||
+            preferred.channel === 'CALL'
             ? { channel: preferred.channel, to: preferred.to }
             : { channel: null, to: null };
     }
@@ -219,8 +281,11 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
             monthDay: s.monthDay,
             time: s.time,
             timezone: s.timezone,
+            runDate: s.runDate,
             description: this.store.describe(s),
-            channel: s.channel === 'EMAIL' || s.channel === 'SMS' ? s.channel : null,
+            channel: s.channel === 'EMAIL' || s.channel === 'SMS' || s.channel === 'CALL'
+                ? s.channel
+                : null,
             active: s.active,
             createdBy: s.createdBy === 'CUSTOMER' ? 'CUSTOMER' : 'AI',
             nextRunAt: s.nextRunAt?.toISOString() ?? null,
@@ -251,6 +316,7 @@ exports.AiSchedulesService = AiSchedulesService = AiSchedulesService_1 = __decor
         ai_schedules_store_1.AiSchedulesStore,
         schedules_service_1.SchedulesService,
         assistant_service_1.AssistantService,
-        customer_messenger_service_1.CustomerMessenger])
+        customer_messenger_service_1.CustomerMessenger,
+        voice_calls_service_1.VoiceCallsService])
 ], AiSchedulesService);
 //# sourceMappingURL=ai-schedules.service.js.map

@@ -16,10 +16,13 @@ import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { RulesService } from './rules.service';
 import { AiSchedulesStore } from '../schedules/ai-schedules.store';
 import { type LinkBook } from './links.util';
+import { CommunicationsHistory } from './communications-history.service';
+import { CustomerOutbox } from './customer-outbox.service';
 export interface AgentAction {
     tool: string;
     ok: boolean;
     summary: string;
+    ref?: Record<string, unknown>;
 }
 export interface ToolOutcome {
     content: string;
@@ -39,6 +42,13 @@ export interface IssueOutcome {
     ok: boolean;
 }
 export type IssueHandler = (ctx: ToolContext, report: IssueReport) => Promise<IssueOutcome>;
+export type CallHandler = (ctx: ToolContext, about: string) => Promise<{
+    ok: true;
+    summary: string;
+} | {
+    ok: false;
+    error: string;
+}>;
 export interface ToolContext {
     scope: BookScope;
     messageId: number | null;
@@ -64,10 +74,14 @@ export declare class AssistantTools {
     private readonly links;
     private readonly messenger?;
     private readonly aiSchedules?;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined);
+    private readonly history?;
+    private readonly outbox?;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined);
     private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;
+    private callHandler;
+    setCallHandler(handler: CallHandler): void;
     private schedulesStore;
     private schedulesList;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;

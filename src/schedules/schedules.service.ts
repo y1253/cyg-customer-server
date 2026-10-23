@@ -150,6 +150,7 @@ export class SchedulesService implements OnModuleInit {
    */
   onModuleInit(): void {
     this.voice.outboundMissed$.subscribe(({ runId, status }) => {
+      if (!runId) return; // an AI schedule's call — `AiSchedulesService` handles it
       void this.callMissed(runId, status).catch((err: unknown) =>
         this.logger.error(
           `schedule run #${runId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`,

@@ -1,10 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { AiSchedule, AiScheduleRun } from '@prisma/client';
 import { AssistantService } from '../assistant/assistant.service';
 import type { BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
+import { answerHtml } from '../mail/answer-html';
 import { PrismaService } from '../prisma/prisma.service';
+import { VoiceCallsService } from '../voice/voice-calls.service';
+import { spokenScript } from '../voice/voice.util';
 import {
   AiSchedulesStore,
   aiRuleOf,
@@ -23,6 +26,8 @@ export interface AiScheduleView {
   monthDay: number | null;
   time: string;
   timezone: string;
+  /** ONCE: "YYYY-MM-DD". */
+  runDate: string | null;
   /** "Every day at 6:00 AM". */
   description: string;
   /** The channel the customer picked; null = their preferred contact. */
@@ -39,36 +44,23 @@ export interface AiScheduleView {
 
 const BATCH = 10;
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/** The answer as a simple HTML email: line breaks kept, links clickable. */
-function answerHtml(text: string): string {
-  const body = escapeHtml(text).replace(
-    /https?:\/\/[^\s<]+/g,
-    (url) => `<a href="${url}">${url}</a>`,
-  );
-  return `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap">${body}</div>`;
-}
-
 /**
  * step12: sends the schedules the customer asked the AI for (`AiSchedule`). Each time one
  * fires, the assistant answers its `task` with READ tools only (`AssistantService.runTask`,
  * cost filed as SCHEDULE) and the answer goes out by text or email — the channel the
- * customer asked for, else their preferred contact (a "Phone call" preference gets a text:
- * a free-form answer is not read out on a call). Delivery reuses the built-in schedules'
+ * customer asked for, else their preferred contact. Delivery reuses the built-in schedules'
  * helpers (`SchedulesService`), so the email / text / fallback rules are the same.
+ *
+ * step12b: channel CALL (or a "Phone call" preference) = the AI phones them and SAYS the
+ * answer (`runTask(..., 'VOICE')` → `spokenScript`, purpose AI_SCHEDULE). Unanswered, not
+ * placed, or over the day's call limit → sent again by text, else email. A ONCE schedule
+ * turns itself off when it has run.
  *
  * A minute cron claims due rows (conditional update on `nextRunAt`) before anything is
  * sent, so one tick never sends twice — the `SchedulesService.tick` pattern.
  */
 @Injectable()
-export class AiSchedulesService {
+export class AiSchedulesService implements OnModuleInit {
   private readonly logger = new Logger(AiSchedulesService.name);
   private ticking = false;
 
@@ -78,7 +70,36 @@ export class AiSchedulesService {
     private readonly schedules: SchedulesService,
     private readonly assistant: AssistantService,
     private readonly messenger: CustomerMessenger,
+    private readonly voice: VoiceCallsService,
   ) {}
+
+  /** step12b: an AI schedule's call nobody answered is sent again by text / email. */
+  onModuleInit(): void {
+    this.voice.outboundMissed$.subscribe(({ aiRunId, status }) => {
+      if (!aiRunId) return;
+      void this.callMissed(aiRunId, status).catch((err: unknown) =>
+        this.logger.error(
+          `ai schedule run #${aiRunId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    });
+  }
+
+  private async callMissed(runId: number, status: string): Promise<void> {
+    const run = await this.prisma.aiScheduleRun.findUnique({
+      where: { id: runId },
+      include: { schedule: true },
+    });
+    if (!run || run.channel !== 'CALL') return;
+    await this.prisma.aiScheduleRun.update({
+      where: { id: run.id },
+      data: {
+        ok: false,
+        error: `The call was not answered (${status}), so it was sent again another way.`,
+      },
+    });
+    await this.run(run.schedule, run.manual, 'NO_CALL');
+  }
 
   // ---- the Schedules tab -------------------------------------------------------------
 
@@ -122,7 +143,12 @@ export class AiSchedulesService {
       for (const s of due) {
         const claimed = await this.prisma.aiSchedule.updateMany({
           where: { id: s.id, active: true, nextRunAt: s.nextRunAt },
-          data: { nextRunAt: nextRun(aiRuleOf(s), now), lastRunAt: now },
+          // A ONCE schedule has no next time: it turns itself off.
+          data: {
+            nextRunAt: nextRun(aiRuleOf(s), now),
+            lastRunAt: now,
+            ...(s.frequency === 'ONCE' ? { active: false } : {}),
+          },
         });
         if (!claimed.count) continue;
         await this.run(s, false).catch((err: unknown) =>
@@ -142,7 +168,12 @@ export class AiSchedulesService {
 
   // ---- one send ------------------------------------------------------------------------
 
-  private async run(s: AiSchedule, manual: boolean): Promise<AiScheduleRun> {
+  private async run(
+    s: AiSchedule,
+    manual: boolean,
+    /** NO_CALL = a call was just missed / not placed: text or email instead (step12b). */
+    mode: 'NORMAL' | 'NO_CALL' = 'NORMAL',
+  ): Promise<AiScheduleRun> {
     const scope: BookScope = {
       customerId: s.customerId,
       companyId: s.companyId,
@@ -163,7 +194,7 @@ export class AiSchedulesService {
           error: data.error?.slice(0, 512) ?? null,
         },
       });
-    if (manual) {
+    if (manual && mode === 'NORMAL') {
       await this.prisma.aiSchedule.update({
         where: { id: s.id },
         data: { lastRunAt: new Date() },
@@ -182,13 +213,52 @@ export class AiSchedulesService {
         error: 'This book no longer exists.',
       });
     }
-    const delivery = await this.delivery(s);
+    const delivery = await this.delivery(s, mode === 'NO_CALL');
     if (!delivery.channel || !delivery.to) {
       return record({
         channel: 'NONE',
         ok: false,
         error: 'No email address or phone number to send to.',
       });
+    }
+
+    if (delivery.channel === 'CALL') {
+      if (await this.voice.overCallLimit(s.customerId)) {
+        return this.run(s, manual, 'NO_CALL');
+      }
+      const said = await this.assistant.runTask(scope, s.task, 'VOICE');
+      if (!said) {
+        return record({
+          channel: 'CALL',
+          ok: false,
+          error: 'The AI could not prepare the message this time.',
+        });
+      }
+      const script = spokenScript(said);
+      // The run is written first: the call carries its id, and SignalWire's report of a
+      // missed call finds it (`callMissed`).
+      const row = await record({ channel: 'CALL', ok: true, text: script });
+      const placed = await this.voice.callCustomer({
+        scope,
+        peer: delivery.to,
+        purpose: 'AI_SCHEDULE',
+        aiScheduleRunId: row.id,
+        script,
+      });
+      if ('error' in placed) {
+        await this.prisma.aiScheduleRun.update({
+          where: { id: row.id },
+          data: {
+            ok: false,
+            error: `The call could not be placed: ${placed.error}`.slice(
+              0,
+              512,
+            ),
+          },
+        });
+        return this.run(s, manual, 'NO_CALL');
+      }
+      return row;
     }
 
     const text = await this.assistant.runTask(scope, s.task, delivery.channel);
@@ -246,27 +316,40 @@ export class AiSchedulesService {
 
   /**
    * Where this schedule goes now: the channel the customer asked for when it can be used,
-   * else their preferred contact (never a call — see the class comment).
+   * else their preferred contact. `noCall` = a call just failed: the text / email fallback.
    */
-  private async delivery(s: AiSchedule): Promise<AiScheduleView['delivery']> {
+  private async delivery(
+    s: AiSchedule,
+    noCall = false,
+  ): Promise<AiScheduleView['delivery']> {
     const c = await this.prisma.customer.findUnique({
       where: { id: s.customerId },
       select: { email: true, phoneE164: true },
     });
     if (!c) return { channel: null, to: null };
     const canText = Boolean(c.phoneE164) && this.messenger.smsConfigured;
-    if (s.channel === 'SMS' && canText) {
+    if (
+      s.channel === 'CALL' &&
+      !noCall &&
+      c.phoneE164 &&
+      (await this.voice.canCall())
+    ) {
+      return { channel: 'CALL', to: c.phoneE164 };
+    }
+    if ((s.channel === 'SMS' || s.channel === 'CALL') && canText) {
       return { channel: 'SMS', to: c.phoneE164 };
     }
-    if (s.channel === 'EMAIL' || s.channel === 'SMS') {
+    if (s.channel === 'EMAIL' || s.channel === 'SMS' || s.channel === 'CALL') {
       return c.email
         ? { channel: 'EMAIL', to: c.email }
         : canText
           ? { channel: 'SMS', to: c.phoneE164 }
           : { channel: null, to: null };
     }
-    const preferred = await this.schedules.delivery(s.customerId, true);
-    return preferred.channel === 'SMS' || preferred.channel === 'EMAIL'
+    const preferred = await this.schedules.delivery(s.customerId, noCall);
+    return preferred.channel === 'SMS' ||
+      preferred.channel === 'EMAIL' ||
+      preferred.channel === 'CALL'
       ? { channel: preferred.channel, to: preferred.to }
       : { channel: null, to: null };
   }
@@ -287,8 +370,12 @@ export class AiSchedulesService {
       monthDay: s.monthDay,
       time: s.time,
       timezone: s.timezone,
+      runDate: s.runDate,
       description: this.store.describe(s),
-      channel: s.channel === 'EMAIL' || s.channel === 'SMS' ? s.channel : null,
+      channel:
+        s.channel === 'EMAIL' || s.channel === 'SMS' || s.channel === 'CALL'
+          ? s.channel
+          : null,
       active: s.active,
       createdBy: s.createdBy === 'CUSTOMER' ? 'CUSTOMER' : 'AI',
       nextRunAt: s.nextRunAt?.toISOString() ?? null,

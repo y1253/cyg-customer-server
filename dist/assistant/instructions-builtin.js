@@ -10,6 +10,7 @@ const TITLES = {
     'core.safety': 'Safety (staff only)',
     'core.answers': 'Answering',
     'core.issues': 'When the customer says we got it wrong',
+    'core.channels': 'Every channel: history, sending elsewhere, calls',
     contact: 'Preferred contact method',
     ask_ai: '"Ask AI" about one unfiled file',
     files: 'Files the customer just sent',

@@ -35,12 +35,16 @@ import {
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
 import { addLink, fillLinks, type LinkBook } from './links.util';
+import { CommunicationsHistory } from './communications-history.service';
+import { CustomerOutbox, type OutboxChannel } from './customer-outbox.service';
 
 /** One thing the agent did, shown under its answer and kept in `AiMessage.actions`. */
 export interface AgentAction {
   tool: string;
   ok: boolean;
   summary: string;
+  /** step12b: get_link's arguments, so a later answer on any channel can make it again. */
+  ref?: Record<string, unknown>;
 }
 
 /** What running one tool gave: the JSON for the model, and (writes only) the action. */
@@ -74,6 +78,12 @@ export type IssueHandler = (
   ctx: ToolContext,
   report: IssueReport,
 ) => Promise<IssueOutcome>;
+
+/** step12b: places a "call me now" call (`VoiceCallsService`, which depends on this class). */
+export type CallHandler = (
+  ctx: ToolContext,
+  about: string,
+) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
 
 export interface ToolContext {
   scope: BookScope;
@@ -214,6 +224,25 @@ export const READ_TOOLS: ToolDefinition[] = [
       'The messages this book sends the customer on a schedule: the two built-ins (account status, financial report — set in the Schedules tab) and the ones made with create_schedule (id, title, task, when, channel, active, next run).',
     parameters: obj({}),
   },
+  {
+    name: 'search_communications',
+    description:
+      'Look up what this customer and you said or sent on ANY channel — website chat, texts, WhatsApp, email, phone calls (transcripts) — in any of their books. Use when they refer to an earlier conversation (“the docs I told you about on the phone”, “what you emailed me last week”) and it is not in the RECENT ON THE CUSTOMER’S OTHER CHANNELS block. Each hit has its files (attachment ids) and linksSent (get_link arguments to make the same link again). channel VOICE also lists the calls.',
+    parameters: obj({
+      channel: {
+        type: 'string',
+        enum: ['BOT', 'SMS', 'WHATSAPP', 'EMAIL', 'VOICE'],
+        description: 'BOT = website chat, VOICE = phone calls',
+      },
+      query: {
+        type: 'string',
+        description: 'Word(s) to find in the messages — short, e.g. "lease"',
+      },
+      from: day,
+      to: day,
+      limit: { type: 'integer', minimum: 1, maximum: 30 },
+    }),
+  },
 ];
 
 /**
@@ -330,7 +359,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'create_schedule',
     description:
-      'The customer asks for something sent to them REPEATEDLY ("text me my financial report every day at 6am", "email me unmatched receipts every Friday"). Saves a schedule in this book; each time it fires, an assistant answers `task` with the read tools and sends the answer. Ask first when the time or day is missing. time = "HH:mm" 24 h in their time zone. channel: SMS for "text me", EMAIL for "email me", omit for their preferred contact. Confirm back what you saved in words (e.g. "every day at 6:00 AM by text").',
+      'The customer asks for something sent to them REPEATEDLY ("text me my financial report every day at 6am", "email me unmatched receipts every Friday") or ONCE LATER ("call me tomorrow at 3pm about my taxes", "remind me on the 30th"). Saves a schedule in this book; each time it fires, an assistant answers `task` with the read tools and sends the answer — with channel CALL it phones them and says it. Ask first when the time or day is missing. time = "HH:mm" 24 h in their time zone; ONCE needs date (YYYY-MM-DD, worked out from today). channel: SMS for "text me", EMAIL for "email me", CALL for "call me", omit for their preferred contact. For "call me now" use call_me instead. Confirm back what you saved in words (e.g. "every day at 6:00 AM by text").',
     parameters: obj(
       {
         title: {
@@ -342,7 +371,11 @@ const WRITE_TOOLS: ToolDefinition[] = [
           description:
             'What to look up and send each time, as an instruction, e.g. "Summarise income, expenses and net for this month so far, with a link to the report"',
         },
-        frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+        frequency: {
+          type: 'string',
+          enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'ONCE'],
+        },
+        date: { type: 'string', description: 'ONCE only: YYYY-MM-DD' },
         weekday: {
           type: 'integer',
           minimum: 0,
@@ -356,7 +389,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
           description: 'MONTHLY only: 1–28, or 0 = the last day',
         },
         time: { type: 'string', description: 'HH:mm, 24 h' },
-        channel: { type: 'string', enum: ['SMS', 'EMAIL'] },
+        channel: { type: 'string', enum: ['SMS', 'EMAIL', 'CALL'] },
       },
       ['title', 'task', 'frequency', 'time'],
     ),
@@ -370,11 +403,18 @@ const WRITE_TOOLS: ToolDefinition[] = [
         scheduleId: int,
         title: str,
         task: str,
-        frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+        frequency: {
+          type: 'string',
+          enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'ONCE'],
+        },
+        date: { type: 'string', description: 'ONCE only: YYYY-MM-DD' },
         weekday: { type: 'integer', minimum: 0, maximum: 6 },
         monthDay: { type: 'integer', minimum: 0, maximum: 28 },
         time: { type: 'string', description: 'HH:mm, 24 h' },
-        channel: { type: 'string', enum: ['SMS', 'EMAIL', 'PREFERRED'] },
+        channel: {
+          type: 'string',
+          enum: ['SMS', 'EMAIL', 'CALL', 'PREFERRED'],
+        },
         active: { type: 'boolean' },
       },
       ['scheduleId'],
@@ -413,6 +453,41 @@ const SEND_TEXT_TOOL: ToolDefinition = {
 };
 
 /**
+ * step12b: send something to the customer on another channel than this one ("email me
+ * that", "text me the link") — always to their OWN phone / email (`CustomerOutbox`).
+ */
+const SEND_MESSAGE_TOOL: ToolDefinition = {
+  name: 'send_message',
+  description:
+    'Send the customer a message on a channel OTHER than this conversation — EMAIL (“email me the docs”), SMS (“text me the link”) or WHATSAPP — always to their own email / phone on the account. Put links from get_link in the text. To answer in this conversation, just reply instead. Tell them where you sent it; if it fails, say so and offer another channel.',
+  parameters: obj(
+    {
+      channel: { type: 'string', enum: ['EMAIL', 'SMS', 'WHATSAPP'] },
+      text: str,
+      subject: { type: 'string', description: 'EMAIL only: a short subject' },
+    },
+    ['channel', 'text'],
+  ),
+};
+
+/** step12b: "call me" — the AI phones the customer's own number now (`CallHandler`). */
+const CALL_ME_TOOL: ToolDefinition = {
+  name: 'call_me',
+  description:
+    'Phone the customer NOW on their own number, when they ask you to call them ("call me", "can you call me about this"). The call is the same assistant by voice; about = what to talk about, in a sentence (it opens the call). For a call at a later time use create_schedule with channel CALL. Only ever the customer — never anyone else.',
+  parameters: obj(
+    {
+      about: {
+        type: 'string',
+        description:
+          'What they want to talk about, e.g. "the three receipts that did not match"',
+      },
+    },
+    ['about'],
+  ),
+};
+
+/**
  * step12: the customer says WE got something wrong — the conversation goes to the strong AI
  * (`StrongAiService`), which may fix our instructions; its answer tells this agent how to go on.
  */
@@ -447,17 +522,31 @@ export const WRITE_TOOL_NAMES = new Set([
   REPORT_ISSUE_TOOL.name,
   SWITCH_BOOK_TOOL.name,
   SEND_TEXT_TOOL.name,
+  SEND_MESSAGE_TOOL.name,
+  CALL_ME_TOOL.name,
 ]);
 
 /**
  * The tools offered on a channel: the phone / email threads may also switch book; a phone
- * call (VOICE) may also text the customer.
+ * call (VOICE) may also text the customer. step12b: every channel may send on another
+ * channel (send_message) and — except a call itself — phone the customer (call_me).
  */
 export function toolsFor(channel: Channel): ToolDefinition[] {
-  if (channel === 'BOT') return ASSISTANT_TOOLS;
+  if (channel === 'BOT')
+    return [...ASSISTANT_TOOLS, SEND_MESSAGE_TOOL, CALL_ME_TOOL];
   if (channel === 'VOICE')
-    return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
-  return [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+    return [
+      ...ASSISTANT_TOOLS,
+      SWITCH_BOOK_TOOL,
+      SEND_TEXT_TOOL,
+      SEND_MESSAGE_TOOL,
+    ];
+  return [
+    ...ASSISTANT_TOOLS,
+    SWITCH_BOOK_TOOL,
+    SEND_MESSAGE_TOOL,
+    CALL_ME_TOOL,
+  ];
 }
 /**
  * Tools whose FAILURE is shown under the answer ("AI did:") and kept for the strong AI: every
@@ -466,7 +555,13 @@ export function toolsFor(channel: Channel): ToolDefinition[] {
  */
 const SHOWN_ON_FAILURE = new Set([...WRITE_TOOL_NAMES, 'get_link']);
 const ALL_TOOL_NAMES = new Set(
-  [...ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name),
+  [
+    ...ASSISTANT_TOOLS,
+    SWITCH_BOOK_TOOL,
+    SEND_TEXT_TOOL,
+    SEND_MESSAGE_TOOL,
+    CALL_ME_TOOL,
+  ].map((t) => t.name),
 );
 
 type Args = Record<string, unknown>;
@@ -494,10 +589,24 @@ const scheduleInput = (a: Args): AiScheduleInput => {
   if (typeof a.weekday === 'number') out.weekday = a.weekday;
   if (typeof a.monthDay === 'number') out.monthDay = a.monthDay;
   if (typeof a.time === 'string') out.time = a.time;
-  if (a.channel === 'SMS' || a.channel === 'EMAIL') out.channel = a.channel;
+  if (typeof a.date === 'string') out.date = a.date;
+  if (a.frequency === 'ONCE') out.frequency = 'ONCE';
+  if (a.channel === 'SMS' || a.channel === 'EMAIL' || a.channel === 'CALL')
+    out.channel = a.channel;
   if (a.channel === 'PREFERRED') out.channel = null;
   if (typeof a.active === 'boolean') out.active = a.active;
   return out;
+};
+/** "the financial report 2026-09-01 – 2026-09-30" — what a get_link pointed at. */
+const linkLabel = (ref: Record<string, unknown>): string => {
+  const v = (x: unknown, none: string) =>
+    typeof x === 'string' || typeof x === 'number' ? String(x) : none;
+  const period =
+    ref.from || ref.to ? ` ${v(ref.from, '…')} – ${v(ref.to, '…')}` : '';
+  if (ref.type === 'statement') return `statement #${v(ref.statementId, '?')}`;
+  if (ref.type === 'attachment') return `file #${v(ref.attachmentId, '?')}`;
+  if (ref.type === 'report') return `the financial report${period}`;
+  return `the ledger (${v(ref.format, 'pdf')})${period}`;
 };
 const json = (v: unknown) => {
   const text = JSON.stringify(v);
@@ -529,6 +638,9 @@ export class AssistantTools {
     private readonly messenger?: CustomerMessenger,
     /** step12: the schedules the customer asks for (absent in old specs). */
     @Optional() private readonly aiSchedules?: AiSchedulesStore,
+    /** step12b: every channel's history, and sending on another channel. */
+    @Optional() private readonly history?: CommunicationsHistory,
+    @Optional() private readonly outbox?: CustomerOutbox,
   ) {}
 
   private readonly logger = new Logger(AssistantTools.name);
@@ -538,6 +650,13 @@ export class AssistantTools {
 
   setIssueHandler(handler: IssueHandler): void {
     this.issueHandler = handler;
+  }
+
+  /** step12b: set by `VoiceCallsService` (it depends on this class). */
+  private callHandler: CallHandler | null = null;
+
+  setCallHandler(handler: CallHandler): void {
+    this.callHandler = handler;
   }
 
   private schedulesStore(): AiSchedulesStore {
@@ -749,6 +868,20 @@ export class AssistantTools {
           to: s(a.to),
           format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
         });
+        // step12b: kept on the answer, so "resend that" on any channel can make it again.
+        const ref: Record<string, unknown> = { type };
+        if (type === 'statement') ref.statementId = id(a.statementId);
+        if (type === 'attachment') ref.attachmentId = id(a.attachmentId);
+        if (s(a.from)) ref.from = s(a.from);
+        if (s(a.to)) ref.to = s(a.to);
+        if (type === 'ledger')
+          ref.format = a.format === 'xlsx' ? 'xlsx' : 'pdf';
+        const shared: AgentAction = {
+          tool: 'get_link',
+          ok: true,
+          summary: `Shared a link to ${linkLabel(ref)}`,
+          ref,
+        };
         if (ctx.links) {
           return {
             content: json({
@@ -756,6 +889,7 @@ export class AssistantTools {
               expiresInDays: 7,
               note: 'Write this placeholder exactly where the link goes; it is replaced with the real link when your answer is sent. Never write a link yourself.',
             }),
+            action: shared,
             ...(type === 'attachment'
               ? { attachmentId: id(a.attachmentId) }
               : {}),
@@ -763,6 +897,7 @@ export class AssistantTools {
         }
         return {
           content: json({ url, expiresInDays: 7 }),
+          action: shared,
           ...(type === 'attachment'
             ? { attachmentId: id(a.attachmentId) }
             : {}),
@@ -813,6 +948,53 @@ export class AssistantTools {
         if (outcome !== 'sent')
           throw new Error(`the text was not sent (${outcome})`);
         return done('Texted the customer', { ok: true });
+      }
+      case 'send_message': {
+        const channel = a.channel;
+        if (channel !== 'EMAIL' && channel !== 'SMS' && channel !== 'WHATSAPP')
+          throw new Error('channel must be EMAIL, SMS or WHATSAPP');
+        const raw = s(a.text);
+        if (!raw) throw new Error('nothing to send');
+        if (!this.outbox) throw new Error('sending is not available');
+        const sent = await this.outbox.send(
+          scope,
+          channel as OutboxChannel,
+          fillLinks(raw, ctx.links),
+          s(a.subject),
+        );
+        if (!sent.ok) throw new Error(sent.error);
+        const how =
+          channel === 'EMAIL'
+            ? `Emailed ${sent.to}`
+            : channel === 'SMS'
+              ? 'Texted the customer'
+              : 'WhatsApped the customer';
+        return done(how, { ok: true, sentTo: sent.to });
+      }
+      case 'call_me': {
+        const about = s(a.about);
+        if (!about) throw new Error('say what the call is about');
+        if (!this.callHandler) throw new Error('phone calls are not available');
+        const placed = await this.callHandler(ctx, about.slice(0, 500));
+        if (!placed.ok) throw new Error(placed.error);
+        return done(placed.summary, {
+          ok: true,
+          note: 'Their phone rings in a few seconds. Tell them to pick up — keep this reply short.',
+        });
+      }
+      case 'search_communications': {
+        if (!this.history) throw new Error('history is not available');
+        return {
+          content: json(
+            await this.history.search(scope.customerId, {
+              channel: s(a.channel),
+              query: s(a.query),
+              from: s(a.from),
+              to: s(a.to),
+              limit: n(a.limit),
+            }),
+          ),
+        };
       }
 
       case 'attach_receipt': {

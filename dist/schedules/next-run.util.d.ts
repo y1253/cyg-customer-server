@@ -1,4 +1,4 @@
-export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+export type Frequency = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'ONCE';
 export declare const FREQUENCIES: readonly Frequency[];
 export declare const AI_FREQUENCIES: readonly Frequency[];
 export interface ScheduleRule {
@@ -7,7 +7,9 @@ export interface ScheduleRule {
     monthDay: number | null;
     time: string;
     timezone: string;
+    date?: string | null;
 }
+export declare function parseDate(date: string | null | undefined): [number, number, number] | null;
 export declare const DEFAULT_TIMEZONE = "America/Toronto";
 export declare function safeZone(tz: string | null | undefined): string;
 export declare function parseTime(time: string): [number, number] | null;

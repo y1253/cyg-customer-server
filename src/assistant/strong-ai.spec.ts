@@ -59,7 +59,11 @@ describe('systemPrompt from instruction rows', () => {
       .join('\n');
     expect(
       systemPrompt(SMS_INPUT, {
-        byKey: { 'core.issues': '', 'core.answers': oldAnswers },
+        byKey: {
+          'core.issues': '',
+          'core.channels': '',
+          'core.answers': oldAnswers,
+        },
         extras: [],
       }),
     ).toBe(LEGACY_SMS_PROMPT);

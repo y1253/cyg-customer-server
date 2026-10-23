@@ -25,6 +25,7 @@ import {
   type ToolContext,
 } from './assistant-tools';
 import { systemPrompt, type Channel } from './assistant-prompt';
+import { CommunicationsHistory } from './communications-history.service';
 import { InstructionsService } from './instructions.service';
 import { fillLinks, type LinkBook } from './links.util';
 import { RulesService } from './rules.service';
@@ -73,6 +74,8 @@ export interface ChatResult {
 export const MAX_TOOL_ROUNDS = 6;
 /** Earlier messages the model sees. */
 export const HISTORY = 20;
+/** step12b: earlier turns of the same phone line a call starts with. */
+export const VOICE_HISTORY = 10;
 export const FAILED_REPLY =
   "Sorry — I couldn't answer that right now. Please try again in a minute.";
 /** How long a web chat waits for the files it carries to be read before answering. */
@@ -164,6 +167,8 @@ export class AssistantService {
     private readonly attachments: AttachmentsService,
     private readonly processor: AttachmentProcessorService,
     @Optional() private readonly instructions?: InstructionsService,
+    /** step12b: what the customer said on their other channels (absent in old specs). */
+    @Optional() private readonly history?: CommunicationsHistory,
   ) {}
 
   get enabled(): boolean {
@@ -632,7 +637,8 @@ export class AssistantService {
   runTask(
     scope: BookScope,
     task: string,
-    channel: 'SMS' | 'EMAIL',
+    /** step12b: VOICE = written to be said on a call (an AI schedule with channel CALL). */
+    channel: 'SMS' | 'EMAIL' | 'VOICE',
   ): Promise<string | null> {
     return withAiUsage(
       {
@@ -698,7 +704,24 @@ export class AssistantService {
       // step12: the blocks as the strong AI / staff last left them (`AiInstruction`).
       await this.instructions?.assistant(),
     );
-    return extra.note ? `${prompt}\n\n${extra.note}` : prompt;
+    const parts = [prompt];
+    // step12b: one agent on every channel — it sees what was said on the others.
+    const elsewhere = await this.history?.otherChannels(conversation);
+    if (elsewhere) parts.push(elsewhere);
+    // A phone call carries no chat history of its own: give it this line's earlier calls.
+    if (conversation.channel === 'VOICE') {
+      const earlier = await this.history?.recentTurns(
+        conversation.id,
+        VOICE_HISTORY,
+      );
+      if (earlier) {
+        parts.push(
+          `EARLIER CALLS ON THIS PHONE LINE (oldest first):\n${earlier}`,
+        );
+      }
+    }
+    if (extra.note) parts.push(extra.note);
+    return parts.join('\n\n');
   }
 
   /** Today's customer messages are over the daily limit (step12: checked before a call). */

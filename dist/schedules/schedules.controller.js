@@ -79,6 +79,7 @@ class UpdateAiScheduleDto {
     monthDay;
     time;
     timezone;
+    date;
     channel;
 }
 exports.UpdateAiScheduleDto = UpdateAiScheduleDto;
@@ -133,6 +134,12 @@ __decorate([
     (0, class_validator_1.MaxLength)(64),
     __metadata("design:type", String)
 ], UpdateAiScheduleDto.prototype, "timezone", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.ValidateIf)((_, v) => v !== null),
+    (0, class_validator_1.Matches)(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, { message: 'Choose a day' }),
+    __metadata("design:type", Object)
+], UpdateAiScheduleDto.prototype, "date", void 0);
 __decorate([
     (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.ValidateIf)((_, v) => v !== null),

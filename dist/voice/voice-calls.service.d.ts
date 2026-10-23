@@ -1,6 +1,8 @@
+import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiCall, AiConversation } from '@prisma/client';
 import { Subject } from 'rxjs';
+import { AssistantTools, type ToolContext } from '../assistant/assistant-tools';
 import { type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,7 +16,8 @@ export interface VoiceSettings {
     language: string;
 }
 export interface OutboundMissed {
-    runId: number;
+    runId: number | null;
+    aiRunId: number | null;
     status: string;
 }
 export interface CallView {
@@ -26,15 +29,25 @@ export interface CallView {
     durationSec: number | null;
     hasRecording: boolean;
 }
-export declare class VoiceCallsService {
+export declare class VoiceCallsService implements OnModuleInit {
     private readonly prisma;
     private readonly config;
     private readonly signalwire;
     private readonly storage;
+    private readonly tools?;
     private readonly logger;
     private readonly jwt;
     readonly outboundMissed$: Subject<OutboundMissed>;
-    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService);
+    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined);
+    onModuleInit(): void;
+    callMeNow(ctx: ToolContext, about: string): Promise<{
+        ok: true;
+        summary: string;
+    } | {
+        ok: false;
+        error: string;
+    }>;
+    overCallLimit(customerId: number): Promise<boolean>;
     settings(): Promise<VoiceSettings>;
     canCall(): Promise<boolean>;
     private base;
@@ -53,7 +66,8 @@ export declare class VoiceCallsService {
         scope: BookScope;
         peer: string;
         purpose: CallPurpose;
-        runId: number;
+        runId?: number | null;
+        aiScheduleRunId?: number | null;
         script: string;
     }): Promise<{
         callSid: string;

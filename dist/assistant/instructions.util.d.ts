@@ -2,7 +2,7 @@ export declare const INSTRUCTION_TARGETS: readonly ["ASSISTANT", "ATTACHMENT_REA
 export type InstructionTarget = (typeof INSTRUCTION_TARGETS)[number];
 export declare const isInstructionTarget: (t: unknown) => t is InstructionTarget;
 export declare const TARGET_DESCRIPTIONS: Record<InstructionTarget, string>;
-export declare const FIXED_ASSISTANT_KEYS: readonly ["core", "core.safety", "core.answers", "core.issues", "channel.BOT", "channel.SMS", "channel.WHATSAPP", "channel.EMAIL", "channel.VOICE", "contact", "ask_ai", "files"];
+export declare const FIXED_ASSISTANT_KEYS: readonly ["core", "core.safety", "core.answers", "core.issues", "core.channels", "channel.BOT", "channel.SMS", "channel.WHATSAPP", "channel.EMAIL", "channel.VOICE", "contact", "ask_ai", "files"];
 export type FixedAssistantKey = (typeof FIXED_ASSISTANT_KEYS)[number];
 export declare const isFixedKey: (k: string) => k is FixedAssistantKey;
 export declare const LOCKED_KEYS: readonly string[];

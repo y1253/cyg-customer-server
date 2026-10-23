@@ -104,6 +104,25 @@ describe('nextRun (step11b schedules)', () => {
     expect(describeRule(daily)).toBe('Every day at 6:00 AM');
   });
 
+  it('fires a ONCE rule on its day only, never again (step12b)', () => {
+    const once: ScheduleRule = {
+      frequency: 'ONCE',
+      weekday: null,
+      monthDay: null,
+      time: '15:00',
+      timezone: TZ,
+      date: '2026-10-28',
+    };
+    // Wed 2026-10-28 15:00 EDT = 19:00 UTC
+    expect(nextRun(once, new Date('2026-10-22T13:00:00Z'))?.toISOString()).toBe(
+      '2026-10-28T19:00:00.000Z',
+    );
+    expect(nextRun(once, new Date('2026-10-28T19:00:00Z'))).toBeNull();
+    expect(nextRun({ ...once, date: '2026-02-30' }, new Date(0))).toBeNull();
+    expect(nextRun({ ...once, date: null }, new Date(0))).toBeNull();
+    expect(describeRule(once)).toBe('Once, on Wed, Oct 28, 2026 at 3:00 PM');
+  });
+
   it('describes a rule in words', () => {
     expect(describeRule(weekly(1, '14:00'))).toBe('Every Monday at 2:00 PM');
     expect(describeRule(monthly(0, '09:00'))).toBe(

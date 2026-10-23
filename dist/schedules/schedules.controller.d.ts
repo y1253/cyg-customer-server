@@ -20,6 +20,7 @@ export declare class UpdateAiScheduleDto {
     monthDay?: number | null;
     time?: string;
     timezone?: string;
+    date?: string | null;
     channel?: AiScheduleChannel | null;
 }
 export declare class SchedulesController {

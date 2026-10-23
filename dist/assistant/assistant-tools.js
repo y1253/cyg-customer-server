@@ -36,6 +36,8 @@ const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const rules_util_1 = require("./rules.util");
 const transaction_filter_util_1 = require("./transaction-filter.util");
 const links_util_1 = require("./links.util");
+const communications_history_service_1 = require("./communications-history.service");
+const customer_outbox_service_1 = require("./customer-outbox.service");
 const MAX_RESULT_CHARS = 12_000;
 exports.NOT_UNDERSTOOD_WARNING = "Filed where you said, but I couldn't see why it matches — please double-check.";
 const str = { type: 'string' };
@@ -139,6 +141,24 @@ exports.READ_TOOLS = [
         description: 'The messages this book sends the customer on a schedule: the two built-ins (account status, financial report — set in the Schedules tab) and the ones made with create_schedule (id, title, task, when, channel, active, next run).',
         parameters: obj({}),
     },
+    {
+        name: 'search_communications',
+        description: 'Look up what this customer and you said or sent on ANY channel — website chat, texts, WhatsApp, email, phone calls (transcripts) — in any of their books. Use when they refer to an earlier conversation (“the docs I told you about on the phone”, “what you emailed me last week”) and it is not in the RECENT ON THE CUSTOMER’S OTHER CHANNELS block. Each hit has its files (attachment ids) and linksSent (get_link arguments to make the same link again). channel VOICE also lists the calls.',
+        parameters: obj({
+            channel: {
+                type: 'string',
+                enum: ['BOT', 'SMS', 'WHATSAPP', 'EMAIL', 'VOICE'],
+                description: 'BOT = website chat, VOICE = phone calls',
+            },
+            query: {
+                type: 'string',
+                description: 'Word(s) to find in the messages — short, e.g. "lease"',
+            },
+            from: day,
+            to: day,
+            limit: { type: 'integer', minimum: 1, maximum: 30 },
+        }),
+    },
 ];
 const SWITCH_BOOK_TOOL = {
     name: 'switch_book',
@@ -225,7 +245,7 @@ const WRITE_TOOLS = [
     },
     {
         name: 'create_schedule',
-        description: 'The customer asks for something sent to them REPEATEDLY ("text me my financial report every day at 6am", "email me unmatched receipts every Friday"). Saves a schedule in this book; each time it fires, an assistant answers `task` with the read tools and sends the answer. Ask first when the time or day is missing. time = "HH:mm" 24 h in their time zone. channel: SMS for "text me", EMAIL for "email me", omit for their preferred contact. Confirm back what you saved in words (e.g. "every day at 6:00 AM by text").',
+        description: 'The customer asks for something sent to them REPEATEDLY ("text me my financial report every day at 6am", "email me unmatched receipts every Friday") or ONCE LATER ("call me tomorrow at 3pm about my taxes", "remind me on the 30th"). Saves a schedule in this book; each time it fires, an assistant answers `task` with the read tools and sends the answer — with channel CALL it phones them and says it. Ask first when the time or day is missing. time = "HH:mm" 24 h in their time zone; ONCE needs date (YYYY-MM-DD, worked out from today). channel: SMS for "text me", EMAIL for "email me", CALL for "call me", omit for their preferred contact. For "call me now" use call_me instead. Confirm back what you saved in words (e.g. "every day at 6:00 AM by text").',
         parameters: obj({
             title: {
                 type: 'string',
@@ -235,7 +255,11 @@ const WRITE_TOOLS = [
                 type: 'string',
                 description: 'What to look up and send each time, as an instruction, e.g. "Summarise income, expenses and net for this month so far, with a link to the report"',
             },
-            frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+            frequency: {
+                type: 'string',
+                enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'ONCE'],
+            },
+            date: { type: 'string', description: 'ONCE only: YYYY-MM-DD' },
             weekday: {
                 type: 'integer',
                 minimum: 0,
@@ -249,7 +273,7 @@ const WRITE_TOOLS = [
                 description: 'MONTHLY only: 1–28, or 0 = the last day',
             },
             time: { type: 'string', description: 'HH:mm, 24 h' },
-            channel: { type: 'string', enum: ['SMS', 'EMAIL'] },
+            channel: { type: 'string', enum: ['SMS', 'EMAIL', 'CALL'] },
         }, ['title', 'task', 'frequency', 'time']),
     },
     {
@@ -259,11 +283,18 @@ const WRITE_TOOLS = [
             scheduleId: int,
             title: str,
             task: str,
-            frequency: { type: 'string', enum: ['DAILY', 'WEEKLY', 'MONTHLY'] },
+            frequency: {
+                type: 'string',
+                enum: ['DAILY', 'WEEKLY', 'MONTHLY', 'ONCE'],
+            },
+            date: { type: 'string', description: 'ONCE only: YYYY-MM-DD' },
             weekday: { type: 'integer', minimum: 0, maximum: 6 },
             monthDay: { type: 'integer', minimum: 0, maximum: 28 },
             time: { type: 'string', description: 'HH:mm, 24 h' },
-            channel: { type: 'string', enum: ['SMS', 'EMAIL', 'PREFERRED'] },
+            channel: {
+                type: 'string',
+                enum: ['SMS', 'EMAIL', 'CALL', 'PREFERRED'],
+            },
             active: { type: 'boolean' },
         }, ['scheduleId']),
     },
@@ -286,6 +317,25 @@ const SEND_TEXT_TOOL = {
     name: 'send_text',
     description: 'Text the customer (the phone they are calling from) — a link from get_link, a list, or details too long to say. Tell them you sent it.',
     parameters: obj({ text: str }, ['text']),
+};
+const SEND_MESSAGE_TOOL = {
+    name: 'send_message',
+    description: 'Send the customer a message on a channel OTHER than this conversation — EMAIL (“email me the docs”), SMS (“text me the link”) or WHATSAPP — always to their own email / phone on the account. Put links from get_link in the text. To answer in this conversation, just reply instead. Tell them where you sent it; if it fails, say so and offer another channel.',
+    parameters: obj({
+        channel: { type: 'string', enum: ['EMAIL', 'SMS', 'WHATSAPP'] },
+        text: str,
+        subject: { type: 'string', description: 'EMAIL only: a short subject' },
+    }, ['channel', 'text']),
+};
+const CALL_ME_TOOL = {
+    name: 'call_me',
+    description: 'Phone the customer NOW on their own number, when they ask you to call them ("call me", "can you call me about this"). The call is the same assistant by voice; about = what to talk about, in a sentence (it opens the call). For a call at a later time use create_schedule with channel CALL. Only ever the customer — never anyone else.',
+    parameters: obj({
+        about: {
+            type: 'string',
+            description: 'What they want to talk about, e.g. "the three receipts that did not match"',
+        },
+    }, ['about']),
 };
 const REPORT_ISSUE_TOOL = {
     name: 'report_ai_issue',
@@ -313,16 +363,34 @@ exports.WRITE_TOOL_NAMES = new Set([
     REPORT_ISSUE_TOOL.name,
     SWITCH_BOOK_TOOL.name,
     SEND_TEXT_TOOL.name,
+    SEND_MESSAGE_TOOL.name,
+    CALL_ME_TOOL.name,
 ]);
 function toolsFor(channel) {
     if (channel === 'BOT')
-        return exports.ASSISTANT_TOOLS;
+        return [...exports.ASSISTANT_TOOLS, SEND_MESSAGE_TOOL, CALL_ME_TOOL];
     if (channel === 'VOICE')
-        return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL];
-    return [...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL];
+        return [
+            ...exports.ASSISTANT_TOOLS,
+            SWITCH_BOOK_TOOL,
+            SEND_TEXT_TOOL,
+            SEND_MESSAGE_TOOL,
+        ];
+    return [
+        ...exports.ASSISTANT_TOOLS,
+        SWITCH_BOOK_TOOL,
+        SEND_MESSAGE_TOOL,
+        CALL_ME_TOOL,
+    ];
 }
 const SHOWN_ON_FAILURE = new Set([...exports.WRITE_TOOL_NAMES, 'get_link']);
-const ALL_TOOL_NAMES = new Set([...exports.ASSISTANT_TOOLS, SWITCH_BOOK_TOOL, SEND_TEXT_TOOL].map((t) => t.name));
+const ALL_TOOL_NAMES = new Set([
+    ...exports.ASSISTANT_TOOLS,
+    SWITCH_BOOK_TOOL,
+    SEND_TEXT_TOOL,
+    SEND_MESSAGE_TOOL,
+    CALL_ME_TOOL,
+].map((t) => t.name));
 const s = (v) => typeof v === 'string' && v.trim() ? v.trim() : null;
 const n = (v) => typeof v === 'number' && Number.isFinite(v) ? v : null;
 const id = (v) => {
@@ -347,13 +415,28 @@ const scheduleInput = (a) => {
         out.monthDay = a.monthDay;
     if (typeof a.time === 'string')
         out.time = a.time;
-    if (a.channel === 'SMS' || a.channel === 'EMAIL')
+    if (typeof a.date === 'string')
+        out.date = a.date;
+    if (a.frequency === 'ONCE')
+        out.frequency = 'ONCE';
+    if (a.channel === 'SMS' || a.channel === 'EMAIL' || a.channel === 'CALL')
         out.channel = a.channel;
     if (a.channel === 'PREFERRED')
         out.channel = null;
     if (typeof a.active === 'boolean')
         out.active = a.active;
     return out;
+};
+const linkLabel = (ref) => {
+    const v = (x, none) => typeof x === 'string' || typeof x === 'number' ? String(x) : none;
+    const period = ref.from || ref.to ? ` ${v(ref.from, '…')} – ${v(ref.to, '…')}` : '';
+    if (ref.type === 'statement')
+        return `statement #${v(ref.statementId, '?')}`;
+    if (ref.type === 'attachment')
+        return `file #${v(ref.attachmentId, '?')}`;
+    if (ref.type === 'report')
+        return `the financial report${period}`;
+    return `the ledger (${v(ref.format, 'pdf')})${period}`;
 };
 const json = (v) => {
     const text = JSON.stringify(v);
@@ -375,7 +458,9 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
     links;
     messenger;
     aiSchedules;
-    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links, messenger, aiSchedules) {
+    history;
+    outbox;
+    constructor(prisma, bookkeeping, reports, tax, accounts, attachments, processor, names, splits, rules, links, messenger, aiSchedules, history, outbox) {
         this.prisma = prisma;
         this.bookkeeping = bookkeeping;
         this.reports = reports;
@@ -389,11 +474,17 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
         this.links = links;
         this.messenger = messenger;
         this.aiSchedules = aiSchedules;
+        this.history = history;
+        this.outbox = outbox;
     }
     logger = new common_1.Logger(AssistantTools_1.name);
     issueHandler = null;
     setIssueHandler(handler) {
         this.issueHandler = handler;
+    }
+    callHandler = null;
+    setCallHandler(handler) {
+        this.callHandler = handler;
     }
     schedulesStore() {
         if (!this.aiSchedules)
@@ -568,6 +659,23 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     to: s(a.to),
                     format: a.format === 'xlsx' ? 'xlsx' : 'pdf',
                 });
+                const ref = { type };
+                if (type === 'statement')
+                    ref.statementId = id(a.statementId);
+                if (type === 'attachment')
+                    ref.attachmentId = id(a.attachmentId);
+                if (s(a.from))
+                    ref.from = s(a.from);
+                if (s(a.to))
+                    ref.to = s(a.to);
+                if (type === 'ledger')
+                    ref.format = a.format === 'xlsx' ? 'xlsx' : 'pdf';
+                const shared = {
+                    tool: 'get_link',
+                    ok: true,
+                    summary: `Shared a link to ${linkLabel(ref)}`,
+                    ref,
+                };
                 if (ctx.links) {
                     return {
                         content: json({
@@ -575,6 +683,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                             expiresInDays: 7,
                             note: 'Write this placeholder exactly where the link goes; it is replaced with the real link when your answer is sent. Never write a link yourself.',
                         }),
+                        action: shared,
                         ...(type === 'attachment'
                             ? { attachmentId: id(a.attachmentId) }
                             : {}),
@@ -582,6 +691,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 }
                 return {
                     content: json({ url, expiresInDays: 7 }),
+                    action: shared,
                     ...(type === 'attachment'
                         ? { attachmentId: id(a.attachmentId) }
                         : {}),
@@ -631,6 +741,52 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 if (outcome !== 'sent')
                     throw new Error(`the text was not sent (${outcome})`);
                 return done('Texted the customer', { ok: true });
+            }
+            case 'send_message': {
+                const channel = a.channel;
+                if (channel !== 'EMAIL' && channel !== 'SMS' && channel !== 'WHATSAPP')
+                    throw new Error('channel must be EMAIL, SMS or WHATSAPP');
+                const raw = s(a.text);
+                if (!raw)
+                    throw new Error('nothing to send');
+                if (!this.outbox)
+                    throw new Error('sending is not available');
+                const sent = await this.outbox.send(scope, channel, (0, links_util_1.fillLinks)(raw, ctx.links), s(a.subject));
+                if (!sent.ok)
+                    throw new Error(sent.error);
+                const how = channel === 'EMAIL'
+                    ? `Emailed ${sent.to}`
+                    : channel === 'SMS'
+                        ? 'Texted the customer'
+                        : 'WhatsApped the customer';
+                return done(how, { ok: true, sentTo: sent.to });
+            }
+            case 'call_me': {
+                const about = s(a.about);
+                if (!about)
+                    throw new Error('say what the call is about');
+                if (!this.callHandler)
+                    throw new Error('phone calls are not available');
+                const placed = await this.callHandler(ctx, about.slice(0, 500));
+                if (!placed.ok)
+                    throw new Error(placed.error);
+                return done(placed.summary, {
+                    ok: true,
+                    note: 'Their phone rings in a few seconds. Tell them to pick up — keep this reply short.',
+                });
+            }
+            case 'search_communications': {
+                if (!this.history)
+                    throw new Error('history is not available');
+                return {
+                    content: json(await this.history.search(scope.customerId, {
+                        channel: s(a.channel),
+                        query: s(a.query),
+                        from: s(a.from),
+                        to: s(a.to),
+                        limit: n(a.limit),
+                    })),
+                };
             }
             case 'attach_receipt': {
                 const view = await this.attachments.setTransaction(scope, id(a.attachmentId), id(a.transactionId));
@@ -825,6 +981,8 @@ exports.AssistantTools = AssistantTools;
 exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(12, (0, common_1.Optional)()),
+    __param(13, (0, common_1.Optional)()),
+    __param(14, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         bookkeeping_service_1.BookkeepingService,
         reports_service_1.ReportsService,
@@ -837,6 +995,8 @@ exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
         rules_service_1.RulesService,
         file_links_1.FileLinkService,
         customer_messenger_service_1.CustomerMessenger,
-        ai_schedules_store_1.AiSchedulesStore])
+        ai_schedules_store_1.AiSchedulesStore,
+        communications_history_service_1.CommunicationsHistory,
+        customer_outbox_service_1.CustomerOutbox])
 ], AssistantTools);
 //# sourceMappingURL=assistant-tools.js.map

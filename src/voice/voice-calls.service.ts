@@ -1,8 +1,15 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { AiCall, AiConversation } from '@prisma/client';
 import { Subject } from 'rxjs';
+import { AssistantTools, type ToolContext } from '../assistant/assistant-tools';
 import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { asE164 } from '../messaging/messaging.util';
@@ -29,11 +36,18 @@ export interface VoiceSettings {
   language: string;
 }
 
-/** An outbound schedule call that never reached the customer (they get a text / email instead). */
+/**
+ * An outbound schedule call that never reached the customer (they get a text / email
+ * instead): a built-in schedule's run (`runId`) or, step12b, an AI schedule's (`aiRunId`).
+ */
 export interface OutboundMissed {
-  runId: number;
+  runId: number | null;
+  aiRunId: number | null;
   status: string;
 }
+
+/** step12b: the most calls the AI places to one customer a day ("call me" + AI schedules). */
+const DEFAULT_AI_CALLS_PER_DAY = 5;
 
 /** What the Communication tab shows for one call. */
 export interface CallView {
@@ -55,7 +69,7 @@ const RING_SECONDS = 30;
  * recordings (proxied from SignalWire, or the bridge's own WAV in R2).
  */
 @Injectable()
-export class VoiceCallsService {
+export class VoiceCallsService implements OnModuleInit {
   private readonly logger = new Logger(VoiceCallsService.name);
   private readonly jwt: JwtService;
   /** A schedule call that ended without the customer — `SchedulesService` falls back. */
@@ -66,10 +80,83 @@ export class VoiceCallsService {
     private readonly config: ConfigService,
     private readonly signalwire: SignalWireClient,
     private readonly storage: ObjectStorageService,
+    /** step12b: the assistant's call_me tool is answered here (absent in old specs). */
+    @Optional() private readonly tools?: AssistantTools,
   ) {
     this.jwt = new JwtService({
       secret: config.getOrThrow<string>('CUSTOMER_JWT_SECRET'),
     });
+  }
+
+  onModuleInit(): void {
+    this.tools?.setCallHandler((ctx, about) => this.callMeNow(ctx, about));
+  }
+
+  /**
+   * step12b: the assistant's `call_me` — phones the customer's OWN number (never one the
+   * model names) a few seconds after the reply, so the text answer arrives first.
+   */
+  async callMeNow(
+    ctx: ToolContext,
+    about: string,
+  ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: ctx.scope.customerId, deletedAt: null },
+      select: { phoneE164: true },
+    });
+    if (!customer?.phoneE164) {
+      return {
+        ok: false,
+        error:
+          'There is no phone number on the account — they can add one on the Account page.',
+      };
+    }
+    if (!(await this.canCall()))
+      return { ok: false, error: 'Phone calls are not set up right now.' };
+    if (await this.overCallLimit(ctx.scope.customerId)) {
+      return {
+        ok: false,
+        error:
+          "Today's limit of calls from the assistant is reached — try again tomorrow.",
+      };
+    }
+    const scope = ctx.scope;
+    const peer = customer.phoneE164;
+    setTimeout(() => {
+      void this.callCustomer({
+        scope,
+        peer,
+        purpose: 'REQUESTED',
+        script: `They asked you to call them about: ${about}. Start with that.`,
+      }).then((r) => {
+        if ('error' in r)
+          this.logger.warn(
+            `call_me for customer ${scope.customerId} not placed: ${r.error}`,
+          );
+      });
+    }, 4000);
+    return {
+      ok: true,
+      summary: `Calling the customer at the number ending ${peer.slice(-4)}`,
+    };
+  }
+
+  /** The AI already phoned this customer the most times allowed today (UTC day). */
+  async overCallLimit(customerId: number): Promise<boolean> {
+    const max = Number(this.config.get<string>('AI_CALLS_PER_DAY'));
+    const limit =
+      Number.isFinite(max) && max >= 0 ? max : DEFAULT_AI_CALLS_PER_DAY;
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    const count = await this.prisma.aiCall.count({
+      where: {
+        customerId,
+        direction: 'OUTBOUND',
+        purpose: { in: ['REQUESTED', 'AI_SCHEDULE'] },
+        startedAt: { gte: since },
+      },
+    });
+    return count >= limit;
   }
 
   // ---- settings & config ---------------------------------------------------------------
@@ -280,7 +367,10 @@ export class VoiceCallsService {
     scope: BookScope;
     peer: string;
     purpose: CallPurpose;
-    runId: number;
+    /** A built-in schedule's run (`BookScheduleRun`). */
+    runId?: number | null;
+    /** step12b: an AI schedule's run (`AiScheduleRun`). */
+    aiScheduleRunId?: number | null;
     script: string;
   }): Promise<{ callSid: string } | { error: string }> {
     const to = asE164(input.peer);
@@ -300,7 +390,7 @@ export class VoiceCallsService {
       dir: 'OUTBOUND',
       purpose: input.purpose,
       companyId: input.scope.companyId,
-      runId: input.runId,
+      runId: input.runId ?? null,
       script: input.script.slice(0, 1500),
     };
     try {
@@ -329,7 +419,8 @@ export class VoiceCallsService {
           peer: to,
           fromNumber: from.phoneNumber,
           purpose: input.purpose,
-          scheduleRunId: input.runId,
+          scheduleRunId: input.runId ?? null,
+          aiScheduleRunId: input.aiScheduleRunId ?? null,
           status: 'RINGING',
         },
       });
@@ -369,10 +460,11 @@ export class VoiceCallsService {
       terminal &&
       !call.answeredAt &&
       (status === 'NO_ANSWER' || status === 'FAILED') &&
-      call.scheduleRunId
+      (call.scheduleRunId || call.aiScheduleRunId)
     ) {
       this.outboundMissed$.next({
         runId: call.scheduleRunId,
+        aiRunId: call.aiScheduleRunId,
         status: rawStatus,
       });
     }

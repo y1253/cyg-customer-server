@@ -16,6 +16,8 @@ const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const assistant_controller_1 = require("./assistant.controller");
 const assistant_service_1 = require("./assistant.service");
 const assistant_tools_1 = require("./assistant-tools");
+const communications_history_service_1 = require("./communications-history.service");
+const customer_outbox_service_1 = require("./customer-outbox.service");
 const intake_agent_guard_1 = require("./intake-agent.guard");
 const intake_agent_service_1 = require("./intake-agent.service");
 const strong_ai_service_1 = require("./strong-ai.service");
@@ -35,12 +37,20 @@ exports.AssistantModule = AssistantModule = __decorate([
             assistant_service_1.AssistantService,
             assistant_tools_1.AssistantTools,
             ai_schedules_store_1.AiSchedulesStore,
+            communications_history_service_1.CommunicationsHistory,
+            customer_outbox_service_1.CustomerOutbox,
             intake_agent_guard_1.IntakeAgentGuard,
             intake_agent_service_1.IntakeAgentService,
             openai_client_1.OpenAiClient,
             strong_ai_service_1.StrongAiService,
         ],
-        exports: [assistant_service_1.AssistantService, assistant_tools_1.AssistantTools, ai_schedules_store_1.AiSchedulesStore],
+        exports: [
+            assistant_service_1.AssistantService,
+            assistant_tools_1.AssistantTools,
+            ai_schedules_store_1.AiSchedulesStore,
+            communications_history_service_1.CommunicationsHistory,
+            customer_outbox_service_1.CustomerOutbox,
+        ],
     })
 ], AssistantModule);
 //# sourceMappingURL=assistant.module.js.map

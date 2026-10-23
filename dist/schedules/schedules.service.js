@@ -77,6 +77,8 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
     }
     onModuleInit() {
         this.voice.outboundMissed$.subscribe(({ runId, status }) => {
+            if (!runId)
+                return;
             void this.callMissed(runId, status).catch((err) => this.logger.error(`schedule run #${runId} fallback FAILED: ${err instanceof Error ? err.message : String(err)}`));
         });
     }

@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var VoiceCallsService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceCallsService = void 0;
@@ -16,29 +19,88 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
 const rxjs_1 = require("rxjs");
+const assistant_tools_1 = require("../assistant/assistant-tools");
 const scope_1 = require("../bookkeeping/scope");
 const signalwire_client_1 = require("../messaging/signalwire.client");
 const messaging_util_1 = require("../messaging/messaging.util");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const voice_util_1 = require("./voice.util");
+const DEFAULT_AI_CALLS_PER_DAY = 5;
 const RING_SECONDS = 30;
 let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     prisma;
     config;
     signalwire;
     storage;
+    tools;
     logger = new common_1.Logger(VoiceCallsService_1.name);
     jwt;
     outboundMissed$ = new rxjs_1.Subject();
-    constructor(prisma, config, signalwire, storage) {
+    constructor(prisma, config, signalwire, storage, tools) {
         this.prisma = prisma;
         this.config = config;
         this.signalwire = signalwire;
         this.storage = storage;
+        this.tools = tools;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
+    }
+    onModuleInit() {
+        this.tools?.setCallHandler((ctx, about) => this.callMeNow(ctx, about));
+    }
+    async callMeNow(ctx, about) {
+        const customer = await this.prisma.customer.findFirst({
+            where: { id: ctx.scope.customerId, deletedAt: null },
+            select: { phoneE164: true },
+        });
+        if (!customer?.phoneE164) {
+            return {
+                ok: false,
+                error: 'There is no phone number on the account — they can add one on the Account page.',
+            };
+        }
+        if (!(await this.canCall()))
+            return { ok: false, error: 'Phone calls are not set up right now.' };
+        if (await this.overCallLimit(ctx.scope.customerId)) {
+            return {
+                ok: false,
+                error: "Today's limit of calls from the assistant is reached — try again tomorrow.",
+            };
+        }
+        const scope = ctx.scope;
+        const peer = customer.phoneE164;
+        setTimeout(() => {
+            void this.callCustomer({
+                scope,
+                peer,
+                purpose: 'REQUESTED',
+                script: `They asked you to call them about: ${about}. Start with that.`,
+            }).then((r) => {
+                if ('error' in r)
+                    this.logger.warn(`call_me for customer ${scope.customerId} not placed: ${r.error}`);
+            });
+        }, 4000);
+        return {
+            ok: true,
+            summary: `Calling the customer at the number ending ${peer.slice(-4)}`,
+        };
+    }
+    async overCallLimit(customerId) {
+        const max = Number(this.config.get('AI_CALLS_PER_DAY'));
+        const limit = Number.isFinite(max) && max >= 0 ? max : DEFAULT_AI_CALLS_PER_DAY;
+        const since = new Date();
+        since.setUTCHours(0, 0, 0, 0);
+        const count = await this.prisma.aiCall.count({
+            where: {
+                customerId,
+                direction: 'OUTBOUND',
+                purpose: { in: ['REQUESTED', 'AI_SCHEDULE'] },
+                startedAt: { gte: since },
+            },
+        });
+        return count >= limit;
     }
     async settings() {
         const row = await this.prisma.customerVoiceSettings
@@ -211,7 +273,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             dir: 'OUTBOUND',
             purpose: input.purpose,
             companyId: input.scope.companyId,
-            runId: input.runId,
+            runId: input.runId ?? null,
             script: input.script.slice(0, 1500),
         };
         try {
@@ -239,7 +301,8 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                     peer: to,
                     fromNumber: from.phoneNumber,
                     purpose: input.purpose,
-                    scheduleRunId: input.runId,
+                    scheduleRunId: input.runId ?? null,
+                    aiScheduleRunId: input.aiScheduleRunId ?? null,
                     status: 'RINGING',
                 },
             });
@@ -269,9 +332,10 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         if (terminal &&
             !call.answeredAt &&
             (status === 'NO_ANSWER' || status === 'FAILED') &&
-            call.scheduleRunId) {
+            (call.scheduleRunId || call.aiScheduleRunId)) {
             this.outboundMissed$.next({
                 runId: call.scheduleRunId,
+                aiRunId: call.aiScheduleRunId,
                 status: rawStatus,
             });
         }
@@ -324,10 +388,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
 exports.VoiceCallsService = VoiceCallsService;
 exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         signalwire_client_1.SignalWireClient,
-        object_storage_service_1.ObjectStorageService])
+        object_storage_service_1.ObjectStorageService,
+        assistant_tools_1.AssistantTools])
 ], VoiceCallsService);
 function toCallView(c) {
     return {

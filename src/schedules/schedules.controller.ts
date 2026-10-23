@@ -119,7 +119,13 @@ export class UpdateAiScheduleDto {
   @MaxLength(64)
   timezone?: string;
 
-  /** EMAIL | SMS; null = the customer's preferred contact. */
+  /** ONCE (step12b): the day, YYYY-MM-DD. */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Matches(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, { message: 'Choose a day' })
+  date?: string | null;
+
+  /** EMAIL | SMS | CALL (step12b); null = the customer's preferred contact. */
   @IsOptional()
   @ValidateIf((_, v) => v !== null)
   @IsIn(AI_SCHEDULE_CHANNELS)

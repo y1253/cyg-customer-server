@@ -2,7 +2,7 @@ import type { AiSchedule } from '@prisma/client';
 import { type BookScope } from '../bookkeeping/scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { type Frequency, type ScheduleRule } from './next-run.util';
-export type AiScheduleChannel = 'EMAIL' | 'SMS';
+export type AiScheduleChannel = 'EMAIL' | 'SMS' | 'CALL';
 export declare const AI_SCHEDULE_CHANNELS: readonly AiScheduleChannel[];
 export interface AiScheduleInput {
     title?: string;
@@ -12,6 +12,7 @@ export interface AiScheduleInput {
     monthDay?: number | null;
     time?: string;
     timezone?: string;
+    date?: string | null;
     channel?: AiScheduleChannel | null;
     active?: boolean;
 }
@@ -29,6 +30,7 @@ export declare class AiSchedulesStore {
     update(scope: BookScope, id: number, input: AiScheduleInput): Promise<AiSchedule>;
     remove(scope: BookScope, id: number): Promise<AiSchedule>;
     describe(s: AiSchedule): string;
+    private firstRun;
     private rule;
     private channel;
     private bookZone;

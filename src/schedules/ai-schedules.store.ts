@@ -11,17 +11,22 @@ import {
   DEFAULT_TIMEZONE,
   describeRule,
   nextRun,
+  parseDate,
   parseTime,
   safeZone,
   type Frequency,
   type ScheduleRule,
 } from './next-run.util';
 
-/** How an AI schedule is sent: a fixed channel, or (null) the customer's preferred one. */
-export type AiScheduleChannel = 'EMAIL' | 'SMS';
+/**
+ * How an AI schedule is sent: a fixed channel, or (null) the customer's preferred one.
+ * CALL (step12b) = the AI phones them and says it.
+ */
+export type AiScheduleChannel = 'EMAIL' | 'SMS' | 'CALL';
 export const AI_SCHEDULE_CHANNELS: readonly AiScheduleChannel[] = [
   'EMAIL',
   'SMS',
+  'CALL',
 ];
 
 export interface AiScheduleInput {
@@ -32,6 +37,8 @@ export interface AiScheduleInput {
   monthDay?: number | null;
   time?: string;
   timezone?: string;
+  /** ONCE: "YYYY-MM-DD". */
+  date?: string | null;
   channel?: AiScheduleChannel | null;
   active?: boolean;
 }
@@ -41,17 +48,30 @@ export const MAX_AI_SCHEDULES = 20;
 
 export const aiRuleOf = (s: AiSchedule): ScheduleRule => ({
   frequency:
-    s.frequency === 'DAILY' || s.frequency === 'MONTHLY'
+    s.frequency === 'DAILY' ||
+    s.frequency === 'MONTHLY' ||
+    s.frequency === 'ONCE'
       ? s.frequency
       : 'WEEKLY',
   weekday: s.weekday,
   monthDay: s.monthDay,
   time: s.time,
   timezone: s.timezone,
+  date: s.runDate,
+});
+
+/** A checked rule → the row's columns. */
+const ruleData = (r: ScheduleRule) => ({
+  frequency: r.frequency,
+  weekday: r.weekday,
+  monthDay: r.monthDay,
+  time: r.time,
+  timezone: r.timezone,
+  runDate: r.date ?? null,
 });
 
 const isChannel = (c: unknown): c is AiScheduleChannel =>
-  c === 'EMAIL' || c === 'SMS';
+  c === 'EMAIL' || c === 'SMS' || c === 'CALL';
 
 /**
  * step12: the schedules a customer asks the AI for (`AiSchedule`) — the book-scoped rows
@@ -106,6 +126,7 @@ export class AiSchedulesStore {
         weekday: input.weekday ?? null,
         monthDay: input.monthDay ?? null,
         time: input.time ?? '09:00',
+        date: input.date ?? null,
         timezone: input.timezone
           ? safeZone(input.timezone)
           : await this.bookZone(scope),
@@ -118,12 +139,12 @@ export class AiSchedulesStore {
         ...scopeWhere(scope),
         title: title.slice(0, 120),
         task: task.slice(0, 4000),
-        ...rule,
+        ...ruleData(rule),
         channel: this.channel(input.channel),
         active,
         createdBy: meta.createdBy,
         conversationId: meta.conversationId ?? null,
-        nextRunAt: active ? nextRun(rule, new Date()) : null,
+        nextRunAt: active ? this.firstRun(rule) : null,
       },
     });
   }
@@ -146,13 +167,13 @@ export class AiSchedulesStore {
       data: {
         title: title.slice(0, 120),
         task: task.slice(0, 4000),
-        ...rule,
+        ...ruleData(rule),
         channel:
           input.channel !== undefined
             ? this.channel(input.channel)
             : row.channel,
         active,
-        nextRunAt: active ? nextRun(rule, new Date()) : null,
+        nextRunAt: active ? this.firstRun(rule) : null,
       },
     });
   }
@@ -170,6 +191,17 @@ export class AiSchedulesStore {
     return describeRule(aiRuleOf(s));
   }
 
+  /** When an active rule first runs; a ONCE time already gone is a customer-readable 400. */
+  private firstRun(rule: ScheduleRule): Date | null {
+    const at = nextRun(rule, new Date());
+    if (!at && rule.frequency === 'ONCE') {
+      throw new BadRequestException(
+        'That date and time has already passed — choose a later one',
+      );
+    }
+    return at;
+  }
+
   /** `base` with the input's changes, checked; throws a customer-readable 400. */
   private rule(base: ScheduleRule, input: AiScheduleInput): ScheduleRule {
     const rule: ScheduleRule = {
@@ -178,13 +210,26 @@ export class AiSchedulesStore {
       monthDay: input.monthDay !== undefined ? input.monthDay : base.monthDay,
       time: input.time?.trim() ?? base.time,
       timezone: input.timezone ? safeZone(input.timezone) : base.timezone,
+      date: input.date !== undefined ? input.date : (base.date ?? null),
     };
     if (!AI_FREQUENCIES.includes(rule.frequency)) {
-      throw new BadRequestException('Repeat must be DAILY, WEEKLY or MONTHLY');
+      throw new BadRequestException(
+        'Repeat must be DAILY, WEEKLY, MONTHLY or ONCE',
+      );
     }
     if (!parseTime(rule.time)) {
       throw new BadRequestException('Choose a time like 06:00 (24 h)');
     }
+    if (rule.frequency === 'ONCE') {
+      if (!parseDate(rule.date)) {
+        throw new BadRequestException('Choose the day, like 2026-10-28');
+      }
+      rule.date = rule.date!.trim();
+      rule.weekday = null;
+      rule.monthDay = null;
+      return rule;
+    }
+    rule.date = null;
     if (rule.frequency === 'DAILY') {
       rule.weekday = null;
       rule.monthDay = null;
@@ -209,7 +254,9 @@ export class AiSchedulesStore {
   private channel(c: unknown): AiScheduleChannel | null {
     if (c === null || c === undefined || c === '') return null;
     if (!isChannel(c)) {
-      throw new BadRequestException('Send by EMAIL or SMS (or leave it empty)');
+      throw new BadRequestException(
+        'Send by EMAIL, SMS or CALL (or leave it empty)',
+      );
     }
     return c;
   }
