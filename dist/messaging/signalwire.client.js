@@ -123,6 +123,20 @@ let SignalWireClient = SignalWireClient_1 = class SignalWireClient {
             return null;
         }
     }
+    async billed(kind, sid) {
+        try {
+            const d = await this.request(`billed ${kind} ${sid}`, `/${kind}/${encodeURIComponent(sid)}`, { method: 'GET' });
+            return {
+                price: d.price ?? null,
+                segments: num(d.num_segments),
+                durationSec: num(d.duration),
+                status: str(d.status),
+            };
+        }
+        catch {
+            return null;
+        }
+    }
     async listRecordings(callSid) {
         try {
             const d = await this.request(`listRecordings ${callSid}`, '/Recordings', {

@@ -88,6 +88,7 @@ let PhoneAuthService = PhoneAuthService_1 = class PhoneAuthService {
             channel: 'SMS',
             to: phone,
             body: `${code} is your CYG Finance login code. It expires in ${customer_auth_service_1.SIGNUP_CODE_TTL_MS / 60_000} minutes. Don't share it with anyone.`,
+            meta: { customerId: entry.customerId, purpose: 'LOGIN_CODE' },
         });
         if (outcome === 'opted-out') {
             throw new common_1.BadRequestException('This number texted STOP to us, so we cannot text it a code. Text START to our number, then try again.');

@@ -214,6 +214,7 @@ export class IntakeAgentService {
       to: input.peer,
       body,
       from: input.replyFrom,
+      meta: { customerId, purpose: 'ASSISTANT_REPLY' },
     });
     if (outcome === 'opted-out') {
       await this.mark(customerId, input.channel, input.peer, NOT_DELIVERED);

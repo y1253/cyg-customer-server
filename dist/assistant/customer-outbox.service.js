@@ -36,7 +36,7 @@ let CustomerOutbox = CustomerOutbox_1 = class CustomerOutbox {
         this.messenger = messenger;
         this.mail = mail;
     }
-    async send(scope, channel, text, subject) {
+    async send(scope, channel, text, subject, purpose) {
         const body = text.trim();
         if (!body)
             return { ok: false, error: 'There was nothing to send.' };
@@ -76,7 +76,12 @@ let CustomerOutbox = CustomerOutbox_1 = class CustomerOutbox {
             : c.phoneE164;
         if (!to)
             return { ok: false, error: 'There is no phone number on the account.' };
-        const outcome = await this.messenger.send({ channel, to, body });
+        const outcome = await this.messenger.send({
+            channel,
+            to,
+            body,
+            meta: { ...scope, purpose: purpose ?? 'SEND_MESSAGE' },
+        });
         if (outcome !== 'sent') {
             return {
                 ok: false,

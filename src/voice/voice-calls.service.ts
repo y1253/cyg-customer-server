@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { AiCall, AiConversation } from '@prisma/client';
+import { CommUsageService } from '../comm-usage/comm-usage.service';
 import { Subject } from 'rxjs';
 import {
   AssistantTools,
@@ -113,6 +114,8 @@ export class VoiceCallsService implements OnModuleInit {
     @Optional() private readonly tools?: AssistantTools,
     /** step12c: how a call_person call went is sent back to the customer. */
     @Optional() private readonly outbox?: CustomerOutbox,
+    /** step12d: each call's length and cost (`CommCall`). */
+    @Optional() private readonly usage?: CommUsageService,
   ) {
     this.jwt = new JwtService({
       secret: config.getOrThrow<string>('CUSTOMER_JWT_SECRET'),
@@ -476,7 +479,7 @@ export class VoiceCallsService implements OnModuleInit {
         },
       });
     }
-    return this.prisma.aiCall.create({
+    const call = await this.prisma.aiCall.create({
       data: {
         customerId: claims.sub,
         bookId: conversation.bookId,
@@ -492,6 +495,24 @@ export class VoiceCallsService implements OnModuleInit {
         status: 'IN_PROGRESS',
         answeredAt: new Date(),
       },
+    });
+    this.recordStart(call);
+    return call;
+  }
+
+  /** step12d: the call's cost row (`CommCall`), next to its `AiCall`. */
+  private recordStart(call: AiCall): void {
+    const inbound = call.direction === 'INBOUND';
+    this.usage?.callStarted({
+      customerId: call.customerId,
+      bookId: call.bookId,
+      companyId: call.companyId,
+      aiCallId: call.id,
+      callSid: call.callSid,
+      direction: inbound ? 'IN' : 'OUT',
+      purpose: call.purpose,
+      from: inbound ? call.peer : call.fromNumber,
+      to: inbound ? call.fromNumber : call.peer,
     });
   }
 
@@ -520,15 +541,24 @@ export class VoiceCallsService implements OnModuleInit {
     }
     const end = new Date();
     const from = call.answeredAt ?? call.startedAt;
+    const durationSec = Math.max(
+      0,
+      Math.round((end.getTime() - from.getTime()) / 1000),
+    );
+    // SignalWire records an outbound call (`Record=true`) and an inbound one it accepted
+    // the recording of; the bridge's own WAV fallback costs nothing there.
+    this.usage?.callEnded(callSid, {
+      durationSec,
+      recorded:
+        call.direction === 'OUTBOUND' ||
+        !!(extra.recordingSid ?? call.recordingSid),
+    });
     await this.prisma.aiCall.update({
       where: { id: call.id },
       data: {
         status: call.status === 'IN_PROGRESS' ? 'COMPLETED' : call.status,
         endedAt: end,
-        durationSec: Math.max(
-          0,
-          Math.round((end.getTime() - from.getTime()) / 1000),
-        ),
+        durationSec,
         ...(extra.recordingSid ? { recordingSid: extra.recordingSid } : {}),
         ...(recordingKey ? { recordingKey } : {}),
         ...(extra.error ? { error: extra.error.slice(0, 512) } : {}),
@@ -601,7 +631,7 @@ export class VoiceCallsService implements OnModuleInit {
         ...claims,
         typ: VOICE_TOKEN_TYPE,
       });
-      await this.prisma.aiCall.create({
+      const call = await this.prisma.aiCall.create({
         data: {
           customerId: input.scope.customerId,
           bookId: input.scope.bookId,
@@ -618,6 +648,7 @@ export class VoiceCallsService implements OnModuleInit {
           status: 'RINGING',
         },
       });
+      this.recordStart(call);
       return { callSid };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -638,6 +669,12 @@ export class VoiceCallsService implements OnModuleInit {
     const status = callStatusOf(rawStatus);
     const terminal =
       status === 'COMPLETED' || status === 'NO_ANSWER' || status === 'FAILED';
+    if (terminal && durationSec !== null) {
+      this.usage?.callEnded(callSid, {
+        durationSec,
+        recorded: call.direction === 'OUTBOUND' || !!call.recordingSid,
+      });
+    }
     // A call that was answered stays COMPLETED; the stream's end writes the details.
     const next = call.answeredAt && terminal ? 'COMPLETED' : status;
     await this.prisma.aiCall.update({

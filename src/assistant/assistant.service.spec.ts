@@ -708,6 +708,7 @@ describe('IntakeAgentService', () => {
       to: '+15145550001',
       body: 'You spent $120 in March.',
       from: '+15145559999',
+      meta: { customerId: 7, purpose: 'ASSISTANT_REPLY' },
     });
   });
 

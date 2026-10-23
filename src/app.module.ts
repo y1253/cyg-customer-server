@@ -9,6 +9,7 @@ import { AssistantModule } from './assistant/assistant.module';
 import { BankFeedsModule } from './bank-feeds/bank-feeds.module';
 import { BillingModule } from './billing/billing.module';
 import { BookkeepingModule } from './bookkeeping/bookkeeping.module';
+import { CommUsageModule } from './comm-usage/comm-usage.module';
 import { ContactModule } from './contact/contact.module';
 import { CustomerAuthModule } from './customer-auth/customer-auth.module';
 import { MailModule } from './mail/mail.module';
@@ -23,6 +24,7 @@ import { StorageModule } from './storage/storage.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     AiUsageModule,
+    CommUsageModule,
     StorageModule,
     MailModule,
     ContactModule,

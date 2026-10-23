@@ -14,7 +14,7 @@ import {
   type AttachmentKind,
   type BankStatement,
 } from '@prisma/client';
-import type { Readable } from 'stream';
+import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { readPricing } from '../billing/pricing';
 import { PrismaService } from '../prisma/prisma.service';
@@ -31,6 +31,7 @@ import {
   startsByAccount,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
+import { statementPdf } from './statement-pdf';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
@@ -507,6 +508,10 @@ export class BookkeepingService {
     id: number,
   ): Promise<{ stream: Readable; filename: string; size: number }> {
     const f = await this.fileInfo(scope, id);
+    if (f.generated) {
+      const buf = await this.feedStatementPdf(scope, await this.owned(scope, id));
+      return { stream: Readable.from(buf), filename: f.filename, size: buf.length };
+    }
     return {
       stream: await this.storage.getStream(f.storageKey),
       filename: f.filename,
@@ -514,23 +519,88 @@ export class BookkeepingService {
     };
   }
 
-  /** The statement's PDF exists — checked without opening it (the assistant's links). */
+  /**
+   * The statement's PDF exists — checked without opening it (the assistant's links).
+   * A bank-feed month (step11) has no stored file: its PDF is built on open (step12d),
+   * so it answers `generated` with no size.
+   */
   async fileInfo(
     scope: BookScope,
     id: number,
-  ): Promise<{ storageKey: string; filename: string; size: number }> {
+  ): Promise<{
+    storageKey: string;
+    filename: string;
+    size: number;
+    generated: boolean;
+  }> {
     const s = await this.owned(scope, id);
-    // A bank-feed month (step11) was built from transactions; there is no file.
+    if (!s.storageKey && s.source === 'PLAID') {
+      return {
+        storageKey: '',
+        filename: `${statementLabel(s).replace(/[\\/:*?"<>|]/g, '-')}.pdf`,
+        size: 0,
+        generated: true,
+      };
+    }
     if (!s.storageKey)
-      throw new NotFoundException(
-        'This statement came from the bank feed, so there is no PDF of it',
-      );
+      throw new NotFoundException('There is no PDF of this statement');
     const info = await this.storage.head(s.storageKey);
     if (!info)
       throw new NotFoundException(
         'The original PDF of this statement is no longer stored',
       );
-    return { storageKey: s.storageKey, filename: s.filename, size: info.size };
+    return {
+      storageKey: s.storageKey,
+      filename: s.filename,
+      size: info.size,
+      generated: false,
+    };
+  }
+
+  /** step12d: a bank-feed month as a statement-like PDF, from its own parent rows. */
+  private async feedStatementPdf(
+    scope: BookScope,
+    s: BankStatement,
+  ): Promise<Buffer> {
+    const [rows, book, currencies] = await Promise.all([
+      this.prisma.bankTransaction.findMany({
+        where: { ...scopeWhere(scope), statementId: s.id, splitOfId: null },
+        orderBy: [{ position: 'asc' }, { id: 'asc' }],
+        select: {
+          postingDate: true,
+          pendingDate: true,
+          name: true,
+          description: true,
+          amount: true,
+        },
+      }),
+      this.prisma.book.findUnique({
+        where: { id: scope.bookId },
+        select: { name: true },
+      }),
+      accountCurrencies(this.prisma, scope),
+    ]);
+    const num = (v: unknown) =>
+      v === null || v === undefined ? null : Number(v);
+    return statementPdf({
+      title: statementLabel(s),
+      bankName: s.bankName,
+      accountName: s.accountName,
+      owner: book?.name ?? '',
+      periodStart: s.periodStart,
+      periodEnd: s.periodEnd,
+      currency: effectiveCurrency(s, currencies),
+      creditCard: s.accountKind === 'CREDIT_CARD',
+      opening: num(s.openingBalance),
+      closing: num(s.closingBalance),
+      rows: rows.map((r) => ({
+        postingDate: r.postingDate,
+        pendingDate: r.pendingDate,
+        name: r.name,
+        description: r.description,
+        amount: Number(r.amount),
+      })),
+    });
   }
 
   async retry(scope: BookScope, id: number): Promise<StatementView> {

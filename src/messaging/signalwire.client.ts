@@ -173,6 +173,36 @@ export class SignalWireClient {
     }
   }
 
+  /**
+   * step12d: what SignalWire billed for a message or call — `price` (negative, a string;
+   * null while not yet rated) and, for a message, `num_segments`. Null on any error.
+   */
+  async billed(
+    kind: 'Messages' | 'Calls',
+    sid: string,
+  ): Promise<{
+    price: unknown;
+    segments: number | null;
+    durationSec: number | null;
+    status: string | null;
+  } | null> {
+    try {
+      const d = await this.request(
+        `billed ${kind} ${sid}`,
+        `/${kind}/${encodeURIComponent(sid)}`,
+        { method: 'GET' },
+      );
+      return {
+        price: d.price ?? null,
+        segments: num(d.num_segments),
+        durationSec: num(d.duration),
+        status: str(d.status),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async listRecordings(callSid: string): Promise<SwRecording[]> {
     try {
       const d = await this.request(`listRecordings ${callSid}`, '/Recordings', {

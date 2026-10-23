@@ -90,7 +90,7 @@ export class FileLinkService {
   /** A link to one file of this book. Checks the file is the book's before signing. */
   async link(scope: BookScope, target: FileLinkTarget): Promise<string> {
     if (target.kind === 'statement') {
-      await this.bookkeeping.fileInfo(scope, target.id ?? 0); // 404 / "came from the bank feed"
+      await this.bookkeeping.fileInfo(scope, target.id ?? 0); // 404 when the PDF is gone (a bank-feed month's is generated)
     } else if (target.kind === 'attachment') {
       await this.attachments.get(scope, target.id ?? 0);
     }

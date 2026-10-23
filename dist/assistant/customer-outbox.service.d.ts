@@ -1,4 +1,5 @@
 import type { BookScope } from '../bookkeeping/scope';
+import type { CommPurpose } from '../comm-usage/comm-usage.util';
 import { MailService } from '../mail/mail.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,7 +18,7 @@ export declare class CustomerOutbox {
     private readonly mail;
     private readonly logger;
     constructor(prisma: PrismaService, messenger: CustomerMessenger, mail: MailService);
-    send(scope: BookScope, channel: OutboxChannel, text: string, subject?: string | null): Promise<OutboxResult>;
+    send(scope: BookScope, channel: OutboxChannel, text: string, subject?: string | null, purpose?: CommPurpose): Promise<OutboxResult>;
     private lastPeer;
     private log;
 }

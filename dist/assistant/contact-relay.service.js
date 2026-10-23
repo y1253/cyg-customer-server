@@ -68,7 +68,7 @@ let ContactRelayService = ContactRelayService_1 = class ContactRelayService {
         ];
         const scope = await (0, books_1.ensureDefaultBook)(this.prisma, c.id);
         for (const channel of [...new Set(order)]) {
-            const sent = await this.outbox.send(scope, channel, text);
+            const sent = await this.outbox.send(scope, channel, text, null, 'CONTACT_RELAY');
             if (sent.ok) {
                 this.logger.log(`contact #${contact.id} ${input.channel} relayed to customer #${c.id} by ${channel}`);
                 return { handled: true, customerName: c.name.trim() || 'our client' };

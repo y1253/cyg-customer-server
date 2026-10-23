@@ -195,6 +195,7 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
                 channel: 'SMS',
                 to: delivery.to,
                 body: text,
+                meta: { ...scope, purpose: 'AI_SCHEDULE' },
             });
             if (outcome === 'sent') {
                 await this.schedules.logText(scope, delivery.to, text);

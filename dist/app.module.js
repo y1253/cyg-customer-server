@@ -18,6 +18,7 @@ const assistant_module_1 = require("./assistant/assistant.module");
 const bank_feeds_module_1 = require("./bank-feeds/bank-feeds.module");
 const billing_module_1 = require("./billing/billing.module");
 const bookkeeping_module_1 = require("./bookkeeping/bookkeeping.module");
+const comm_usage_module_1 = require("./comm-usage/comm-usage.module");
 const contact_module_1 = require("./contact/contact.module");
 const customer_auth_module_1 = require("./customer-auth/customer-auth.module");
 const mail_module_1 = require("./mail/mail.module");
@@ -35,6 +36,7 @@ exports.AppModule = AppModule = __decorate([
             schedule_1.ScheduleModule.forRoot(),
             prisma_module_1.PrismaModule,
             ai_usage_module_1.AiUsageModule,
+            comm_usage_module_1.CommUsageModule,
             storage_module_1.StorageModule,
             mail_module_1.MailModule,
             contact_module_1.ContactModule,

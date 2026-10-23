@@ -18,6 +18,7 @@ exports.toCallView = toCallView;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
+const comm_usage_service_1 = require("../comm-usage/comm-usage.service");
 const rxjs_1 = require("rxjs");
 const assistant_tools_1 = require("../assistant/assistant-tools");
 const customer_outbox_service_1 = require("../assistant/customer-outbox.service");
@@ -37,17 +38,19 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     storage;
     tools;
     outbox;
+    usage;
     logger = new common_1.Logger(VoiceCallsService_1.name);
     jwt;
     outboundMissed$ = new rxjs_1.Subject();
     personCalls = new Map();
-    constructor(prisma, config, signalwire, storage, tools, outbox) {
+    constructor(prisma, config, signalwire, storage, tools, outbox, usage) {
         this.prisma = prisma;
         this.config = config;
         this.signalwire = signalwire;
         this.storage = storage;
         this.tools = tools;
         this.outbox = outbox;
+        this.usage = usage;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
@@ -332,7 +335,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 },
             });
         }
-        return this.prisma.aiCall.create({
+        const call = await this.prisma.aiCall.create({
             data: {
                 customerId: claims.sub,
                 bookId: conversation.bookId,
@@ -348,6 +351,22 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 status: 'IN_PROGRESS',
                 answeredAt: new Date(),
             },
+        });
+        this.recordStart(call);
+        return call;
+    }
+    recordStart(call) {
+        const inbound = call.direction === 'INBOUND';
+        this.usage?.callStarted({
+            customerId: call.customerId,
+            bookId: call.bookId,
+            companyId: call.companyId,
+            aiCallId: call.id,
+            callSid: call.callSid,
+            direction: inbound ? 'IN' : 'OUT',
+            purpose: call.purpose,
+            from: inbound ? call.peer : call.fromNumber,
+            to: inbound ? call.fromNumber : call.peer,
         });
     }
     async ended(callSid, extra) {
@@ -366,12 +385,18 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }
         const end = new Date();
         const from = call.answeredAt ?? call.startedAt;
+        const durationSec = Math.max(0, Math.round((end.getTime() - from.getTime()) / 1000));
+        this.usage?.callEnded(callSid, {
+            durationSec,
+            recorded: call.direction === 'OUTBOUND' ||
+                !!(extra.recordingSid ?? call.recordingSid),
+        });
         await this.prisma.aiCall.update({
             where: { id: call.id },
             data: {
                 status: call.status === 'IN_PROGRESS' ? 'COMPLETED' : call.status,
                 endedAt: end,
-                durationSec: Math.max(0, Math.round((end.getTime() - from.getTime()) / 1000)),
+                durationSec,
                 ...(extra.recordingSid ? { recordingSid: extra.recordingSid } : {}),
                 ...(recordingKey ? { recordingKey } : {}),
                 ...(extra.error ? { error: extra.error.slice(0, 512) } : {}),
@@ -429,7 +454,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 ...claims,
                 typ: voice_util_1.VOICE_TOKEN_TYPE,
             });
-            await this.prisma.aiCall.create({
+            const call = await this.prisma.aiCall.create({
                 data: {
                     customerId: input.scope.customerId,
                     bookId: input.scope.bookId,
@@ -446,6 +471,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                     status: 'RINGING',
                 },
             });
+            this.recordStart(call);
             return { callSid };
         }
         catch (err) {
@@ -458,6 +484,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             return;
         const status = (0, voice_util_1.callStatusOf)(rawStatus);
         const terminal = status === 'COMPLETED' || status === 'NO_ANSWER' || status === 'FAILED';
+        if (terminal && durationSec !== null) {
+            this.usage?.callEnded(callSid, {
+                durationSec,
+                recorded: call.direction === 'OUTBOUND' || !!call.recordingSid,
+            });
+        }
         const next = call.answeredAt && terminal ? 'COMPLETED' : status;
         await this.prisma.aiCall.update({
             where: { id: call.id },
@@ -537,12 +569,14 @@ exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
     __param(5, (0, common_1.Optional)()),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         signalwire_client_1.SignalWireClient,
         object_storage_service_1.ObjectStorageService,
         assistant_tools_1.AssistantTools,
-        customer_outbox_service_1.CustomerOutbox])
+        customer_outbox_service_1.CustomerOutbox,
+        comm_usage_service_1.CommUsageService])
 ], VoiceCallsService);
 function toCallView(c) {
     const inbound = c.direction === 'INBOUND';

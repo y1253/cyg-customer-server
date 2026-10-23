@@ -1,5 +1,5 @@
 import { StatementStatus, type AttachmentKind } from '@prisma/client';
-import type { Readable } from 'stream';
+import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
@@ -90,7 +90,9 @@ export declare class BookkeepingService {
         storageKey: string;
         filename: string;
         size: number;
+        generated: boolean;
     }>;
+    private feedStatementPdf;
     retry(scope: BookScope, id: number): Promise<StatementView>;
     remove(scope: BookScope, id: number): Promise<void>;
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;

@@ -15,6 +15,7 @@ const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
+const stream_1 = require("stream");
 const openai_client_1 = require("../ai/openai.client");
 const pricing_1 = require("../billing/pricing");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -22,6 +23,7 @@ const object_storage_service_1 = require("../storage/object-storage.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
 const statement_label_1 = require("./statement-label");
+const statement_pdf_1 = require("./statement-pdf");
 const statement_processor_service_1 = require("./statement-processor.service");
 const statement_images_service_1 = require("./statement-images.service");
 const tax_service_1 = require("./tax.service");
@@ -320,6 +322,10 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     }
     async file(scope, id) {
         const f = await this.fileInfo(scope, id);
+        if (f.generated) {
+            const buf = await this.feedStatementPdf(scope, await this.owned(scope, id));
+            return { stream: stream_1.Readable.from(buf), filename: f.filename, size: buf.length };
+        }
         return {
             stream: await this.storage.getStream(f.storageKey),
             filename: f.filename,
@@ -328,12 +334,65 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     }
     async fileInfo(scope, id) {
         const s = await this.owned(scope, id);
+        if (!s.storageKey && s.source === 'PLAID') {
+            return {
+                storageKey: '',
+                filename: `${(0, statement_label_1.statementLabel)(s).replace(/[\\/:*?"<>|]/g, '-')}.pdf`,
+                size: 0,
+                generated: true,
+            };
+        }
         if (!s.storageKey)
-            throw new common_1.NotFoundException('This statement came from the bank feed, so there is no PDF of it');
+            throw new common_1.NotFoundException('There is no PDF of this statement');
         const info = await this.storage.head(s.storageKey);
         if (!info)
             throw new common_1.NotFoundException('The original PDF of this statement is no longer stored');
-        return { storageKey: s.storageKey, filename: s.filename, size: info.size };
+        return {
+            storageKey: s.storageKey,
+            filename: s.filename,
+            size: info.size,
+            generated: false,
+        };
+    }
+    async feedStatementPdf(scope, s) {
+        const [rows, book, currencies] = await Promise.all([
+            this.prisma.bankTransaction.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), statementId: s.id, splitOfId: null },
+                orderBy: [{ position: 'asc' }, { id: 'asc' }],
+                select: {
+                    postingDate: true,
+                    pendingDate: true,
+                    name: true,
+                    description: true,
+                    amount: true,
+                },
+            }),
+            this.prisma.book.findUnique({
+                where: { id: scope.bookId },
+                select: { name: true },
+            }),
+            (0, opening_balance_query_1.accountCurrencies)(this.prisma, scope),
+        ]);
+        const num = (v) => v === null || v === undefined ? null : Number(v);
+        return (0, statement_pdf_1.statementPdf)({
+            title: (0, statement_label_1.statementLabel)(s),
+            bankName: s.bankName,
+            accountName: s.accountName,
+            owner: book?.name ?? '',
+            periodStart: s.periodStart,
+            periodEnd: s.periodEnd,
+            currency: (0, opening_balance_query_1.effectiveCurrency)(s, currencies),
+            creditCard: s.accountKind === 'CREDIT_CARD',
+            opening: num(s.openingBalance),
+            closing: num(s.closingBalance),
+            rows: rows.map((r) => ({
+                postingDate: r.postingDate,
+                pendingDate: r.pendingDate,
+                name: r.name,
+                description: r.description,
+                amount: Number(r.amount),
+            })),
+        });
     }
     async retry(scope, id) {
         const s = await this.owned(scope, id);

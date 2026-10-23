@@ -8,21 +8,27 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var CustomerMessenger_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomerMessenger = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const comm_usage_service_1 = require("../comm-usage/comm-usage.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const messaging_util_1 = require("./messaging.util");
 const TIMEOUT_MS = 20_000;
 let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
     prisma;
     config;
+    usage;
     logger = new common_1.Logger(CustomerMessenger_1.name);
-    constructor(prisma, config) {
+    constructor(prisma, config, usage) {
         this.prisma = prisma;
         this.config = config;
+        this.usage = usage;
     }
     env(key) {
         return this.config.get(key)?.trim() || null;
@@ -51,7 +57,19 @@ let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
                 const from = (0, messaging_util_1.asE164)(input.from) ?? (await this.defaultSmsNumber());
                 if (!from)
                     return 'not-configured';
-                await this.sendSms(from, to, input.body);
+                const sent = await this.sendSms(from, to, input.body);
+                this.usage?.recordMessage({
+                    ...input.meta,
+                    purpose: input.meta?.purpose ?? 'OTHER',
+                    channel: 'SMS',
+                    direction: 'OUT',
+                    providerSid: sent.sid,
+                    from,
+                    to,
+                    segments: sent.segments,
+                    body: (0, messaging_util_1.smsForm)(from, to, input.body).Body,
+                    status: sent.status,
+                });
             }
             else {
                 const given = input.from?.trim() || null;
@@ -60,7 +78,16 @@ let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
                     : await this.whatsappIdFor(given);
                 if (!phoneNumberId)
                     return 'not-configured';
-                await this.sendWhatsApp(phoneNumberId, to, input.body);
+                const wamid = await this.sendWhatsApp(phoneNumberId, to, input.body);
+                this.usage?.recordMessage({
+                    ...input.meta,
+                    purpose: input.meta?.purpose ?? 'OTHER',
+                    channel: 'WHATSAPP',
+                    direction: 'OUT',
+                    providerSid: wamid,
+                    from: given?.startsWith('+') ? given : null,
+                    to,
+                });
             }
             return 'sent';
         }
@@ -117,6 +144,13 @@ let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
         if (!res.ok) {
             throw new Error(`SignalWire ${res.status}: ${(await res.text()).slice(0, 300)}`);
         }
+        const data = (await res.json().catch(() => ({})));
+        const segments = Number(data.num_segments);
+        return {
+            sid: typeof data.sid === 'string' ? data.sid : null,
+            segments: Number.isFinite(segments) && segments > 0 ? segments : null,
+            status: typeof data.status === 'string' ? data.status : null,
+        };
     }
     async sendWhatsApp(phoneNumberId, to, body) {
         const version = this.env('WHATSAPP_GRAPH_VERSION') ?? 'v23.0';
@@ -132,13 +166,17 @@ let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
         if (!res.ok) {
             throw new Error(`WhatsApp ${res.status}: ${(await res.text()).slice(0, 300)}`);
         }
+        const data = (await res.json().catch(() => ({})));
+        return data.messages?.[0]?.id ?? null;
     }
 };
 exports.CustomerMessenger = CustomerMessenger;
 exports.CustomerMessenger = CustomerMessenger = CustomerMessenger_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(2, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        comm_usage_service_1.CommUsageService])
 ], CustomerMessenger);
 function mask(phone) {
     return phone.length > 8 ? `${phone.slice(0, 5)}***${phone.slice(-4)}` : '***';

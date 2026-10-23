@@ -1,6 +1,7 @@
 import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiCall, AiConversation } from '@prisma/client';
+import { CommUsageService } from '../comm-usage/comm-usage.service';
 import { Subject } from 'rxjs';
 import { AssistantTools, type PersonTarget, type ToolContext } from '../assistant/assistant-tools';
 import { CustomerOutbox } from '../assistant/customer-outbox.service';
@@ -43,11 +44,12 @@ export declare class VoiceCallsService implements OnModuleInit {
     private readonly storage;
     private readonly tools?;
     private readonly outbox?;
+    private readonly usage?;
     private readonly logger;
     private readonly jwt;
     readonly outboundMissed$: Subject<OutboundMissed>;
     private readonly personCalls;
-    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined);
+    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined, usage?: CommUsageService | undefined);
     onModuleInit(): void;
     callMeNow(ctx: ToolContext, about: string): Promise<{
         ok: true;
@@ -75,6 +77,7 @@ export declare class VoiceCallsService implements OnModuleInit {
     verify(token: string | null | undefined): VoiceTokenClaims | null;
     conversationFor(claims: VoiceTokenClaims): Promise<AiConversation>;
     started(claims: VoiceTokenClaims, conversation: AiConversation, callSid: string): Promise<AiCall>;
+    private recordStart;
     ended(callSid: string, extra: {
         recordingSid?: string | null;
         wav?: Buffer | null;

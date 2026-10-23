@@ -8,6 +8,8 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessagingModule = void 0;
 const common_1 = require("@nestjs/common");
+const openai_client_1 = require("../ai/openai.client");
+const comm_prices_service_1 = require("../comm-usage/comm-prices.service");
 const customer_messenger_service_1 = require("./customer-messenger.service");
 const signalwire_client_1 = require("./signalwire.client");
 let MessagingModule = class MessagingModule {
@@ -15,7 +17,12 @@ let MessagingModule = class MessagingModule {
 exports.MessagingModule = MessagingModule;
 exports.MessagingModule = MessagingModule = __decorate([
     (0, common_1.Module)({
-        providers: [customer_messenger_service_1.CustomerMessenger, signalwire_client_1.SignalWireClient],
+        providers: [
+            customer_messenger_service_1.CustomerMessenger,
+            signalwire_client_1.SignalWireClient,
+            openai_client_1.OpenAiClient,
+            comm_prices_service_1.CommPricesService,
+        ],
         exports: [customer_messenger_service_1.CustomerMessenger, signalwire_client_1.SignalWireClient],
     })
 ], MessagingModule);

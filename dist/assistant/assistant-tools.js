@@ -830,6 +830,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     channel: 'SMS',
                     to: peer,
                     body,
+                    meta: { ...scope, purpose: 'SEND_TEXT' },
                 });
                 if (outcome !== 'sent')
                     throw new Error(`the text was not sent (${outcome})`);
@@ -926,6 +927,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     channel: 'SMS',
                     to: who.phone,
                     body: `From ${from} (sent by CYG Finance's assistant): ${(0, links_util_1.fillLinks)(message, ctx.links)}`,
+                    meta: { ...scope, purpose: 'TEXT_PERSON' },
                 });
                 if (outcome !== 'sent')
                     throw new Error(`the text was not sent (${outcome})`);

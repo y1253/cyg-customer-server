@@ -29,6 +29,12 @@ export declare class SignalWireClient {
     }): Promise<string>;
     startRecording(callSid: string): Promise<string | null>;
     getCall(callSid: string): Promise<SwCallInfo | null>;
+    billed(kind: 'Messages' | 'Calls', sid: string): Promise<{
+        price: unknown;
+        segments: number | null;
+        durationSec: number | null;
+        status: string | null;
+    } | null>;
     listRecordings(callSid: string): Promise<SwRecording[]>;
     fetchRecording(sid: string): Promise<Buffer>;
     hangup(callSid: string): Promise<void>;

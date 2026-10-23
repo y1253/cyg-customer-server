@@ -1,10 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  CommUsageService,
+  type CommWho,
+} from '../comm-usage/comm-usage.service';
+import type { CommPurpose } from '../comm-usage/comm-usage.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { asE164, smsForm, whatsappTextPayload } from './messaging.util';
 
 export type MessageChannel = 'SMS' | 'WHATSAPP';
 export type SendOutcome = 'sent' | 'opted-out' | 'failed' | 'not-configured';
+
+/** step12d: who a send is for and why — recorded with its cost (`CommMessage`). */
+export type SendMeta = CommWho & { purpose: CommPurpose };
 
 const TIMEOUT_MS = 20_000;
 
@@ -29,6 +37,7 @@ export class CustomerMessenger {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    @Optional() private readonly usage?: CommUsageService,
   ) {}
 
   private env(key: string): string | null {
@@ -60,6 +69,8 @@ export class CustomerMessenger {
     to: string;
     body: string;
     from?: string | null;
+    /** step12d: recorded with the message's cost; absent = OTHER, no customer. */
+    meta?: SendMeta;
   }): Promise<SendOutcome> {
     const to = asE164(input.to);
     if (!to || !input.body.trim()) return 'failed';
@@ -69,7 +80,19 @@ export class CustomerMessenger {
         if (await this.optedOut(to)) return 'opted-out';
         const from = asE164(input.from) ?? (await this.defaultSmsNumber());
         if (!from) return 'not-configured';
-        await this.sendSms(from, to, input.body);
+        const sent = await this.sendSms(from, to, input.body);
+        this.usage?.recordMessage({
+          ...input.meta,
+          purpose: input.meta?.purpose ?? 'OTHER',
+          channel: 'SMS',
+          direction: 'OUT',
+          providerSid: sent.sid,
+          from,
+          to,
+          segments: sent.segments,
+          body: smsForm(from, to, input.body).Body,
+          status: sent.status,
+        });
       } else {
         const given = input.from?.trim() || null;
         const phoneNumberId =
@@ -77,7 +100,16 @@ export class CustomerMessenger {
             ? given
             : await this.whatsappIdFor(given);
         if (!phoneNumberId) return 'not-configured';
-        await this.sendWhatsApp(phoneNumberId, to, input.body);
+        const wamid = await this.sendWhatsApp(phoneNumberId, to, input.body);
+        this.usage?.recordMessage({
+          ...input.meta,
+          purpose: input.meta?.purpose ?? 'OTHER',
+          channel: 'WHATSAPP',
+          direction: 'OUT',
+          providerSid: wamid,
+          from: given?.startsWith('+') ? given : null,
+          to,
+        });
       }
       return 'sent';
     } catch (err) {
@@ -123,7 +155,16 @@ export class CustomerMessenger {
     return n?.whatsappPhoneNumberId ?? null;
   }
 
-  private async sendSms(from: string, to: string, body: string): Promise<void> {
+  /** The message's sid, segments and status from SignalWire's reply (null when absent). */
+  private async sendSms(
+    from: string,
+    to: string,
+    body: string,
+  ): Promise<{
+    sid: string | null;
+    segments: number | null;
+    status: string | null;
+  }> {
     const space = this.env('SIGNALWIRE_SPACE_URL')!
       .replace(/^https?:\/\//, '')
       .replace(/\/+$/, '');
@@ -149,13 +190,23 @@ export class CustomerMessenger {
         `SignalWire ${res.status}: ${(await res.text()).slice(0, 300)}`,
       );
     }
+    const data = (await res.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const segments = Number(data.num_segments);
+    return {
+      sid: typeof data.sid === 'string' ? data.sid : null,
+      segments: Number.isFinite(segments) && segments > 0 ? segments : null,
+      status: typeof data.status === 'string' ? data.status : null,
+    };
   }
 
   private async sendWhatsApp(
     phoneNumberId: string,
     to: string,
     body: string,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const version = this.env('WHATSAPP_GRAPH_VERSION') ?? 'v23.0';
     const res = await fetch(
       `https://graph.facebook.com/${version}/${phoneNumberId}/messages`,
@@ -174,6 +225,10 @@ export class CustomerMessenger {
         `WhatsApp ${res.status}: ${(await res.text()).slice(0, 300)}`,
       );
     }
+    const data = (await res.json().catch(() => ({}))) as {
+      messages?: Array<{ id?: string }>;
+    };
+    return data.messages?.[0]?.id ?? null;
   }
 }
 

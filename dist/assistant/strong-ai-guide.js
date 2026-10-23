@@ -46,6 +46,7 @@ Attachments: receipts, invoices, cheques, deposit slips, voice notes, letters (A
 
 Bank feeds (BANK_FEED_CATEGORIZER)
 - Plaid transactions become one statement per account and month. New rows go through the customer's rules and the firm memories first; only rows still nameless or Uncategorized go to the BANK_FEED_CATEGORIZER AI.
+- A bank-feed month has no uploaded file, but it still opens as a PDF: the server builds a statement-like PDF from its rows (account, period, opening / closing balance, every row with its running balance) on every open, so "View statement PDF", the file links and get_link all work for it.
 
 The regular assistant (ASSISTANT)
 - One agent on every channel: the website chat (BOT), "Ask AI" on one unfiled attachment, text messages (SMS), WhatsApp, email to the customer inbox (EMAIL), and phone calls (VOICE). Its system prompt is built from the ASSISTANT instruction blocks: core, core.safety (locked), core.answers, core.issues, core.channels (one agent on every channel: history, send_message, calls), extra.* blocks, then channel.<CHANNEL> (style and length for that channel), contact, ask_ai (the "Ask AI" chat), files (files just sent). The data the code adds (today, the book, the file) and the learned rules come after, then RECENT ON THE CUSTOMER'S OTHER CHANNELS (code-built: up to 12 messages from the last 72 hours of the customer's OTHER conversations, any book, with their files and what was done) and, on a phone call, EARLIER CALLS ON THIS PHONE LINE (the last 10 turns).

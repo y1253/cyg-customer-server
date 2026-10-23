@@ -366,6 +366,7 @@ export class SchedulesService implements OnModuleInit {
         channel: 'SMS',
         to: delivery.to,
         body: first.text,
+        meta: { ...scope, purpose: 'SCHEDULE' },
       });
       if (outcome === 'sent') {
         await this.logText(scope, delivery.to, first.text);

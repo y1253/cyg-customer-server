@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { BookScope } from '../bookkeeping/scope';
+import type { CommPurpose } from '../comm-usage/comm-usage.util';
 import { answerHtml } from '../mail/answer-html';
 import { MailService } from '../mail/mail.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
@@ -48,6 +49,8 @@ export class CustomerOutbox {
     channel: OutboxChannel,
     text: string,
     subject?: string | null,
+    /** step12d: why, for the text's cost record (default SEND_MESSAGE). */
+    purpose?: CommPurpose,
   ): Promise<OutboxResult> {
     const body = text.trim();
     if (!body) return { ok: false, error: 'There was nothing to send.' };
@@ -92,7 +95,12 @@ export class CustomerOutbox {
         : c.phoneE164;
     if (!to)
       return { ok: false, error: 'There is no phone number on the account.' };
-    const outcome = await this.messenger.send({ channel, to, body });
+    const outcome = await this.messenger.send({
+      channel,
+      to,
+      body,
+      meta: { ...scope, purpose: purpose ?? 'SEND_MESSAGE' },
+    });
     if (outcome !== 'sent') {
       return {
         ok: false,

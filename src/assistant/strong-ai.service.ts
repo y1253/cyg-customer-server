@@ -247,6 +247,12 @@ export class StrongAiService implements OnModuleInit {
         channel: 'SMS',
         to: conversation.peer,
         body,
+        meta: {
+          customerId: conversation.customerId,
+          bookId: conversation.bookId,
+          companyId: conversation.companyId,
+          purpose: 'STRONG_AI',
+        },
       });
       if (outcome === 'sent') {
         await this.assistant.save(conversation, 'ASSISTANT', body);
