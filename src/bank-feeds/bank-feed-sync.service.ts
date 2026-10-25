@@ -700,6 +700,7 @@ export class BankFeedSyncService {
         end: day(u.periodEnd!),
       })),
       startDate: account.startDate ? day(account.startDate) : null,
+      historyDone: item.historyDone,
     });
 
     const existing = await this.prisma.bankStatement.findMany({

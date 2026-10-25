@@ -29,10 +29,32 @@ function nextMonth(month) {
 function overlaps(a, b) {
     return a.start <= b.end && a.end >= b.start;
 }
+function uncovered(plans, input) {
+    const covered = input.covered ?? [];
+    return plans.filter((p) => !covered.some((c) => overlaps({ start: p.periodStart, end: p.periodEnd }, c)));
+}
+function emptyMonths(input) {
+    if (!input.historyDone)
+        return [];
+    const from = input.startDate && input.startDate <= input.today
+        ? input.startDate
+        : `${monthOf(input.today)}-01`;
+    const plans = [];
+    for (let m = monthOf(from); m <= monthOf(input.today); m = nextMonth(m)) {
+        plans.push({
+            periodStart: m === monthOf(from) ? from : `${m}-01`,
+            periodEnd: m === monthOf(input.today) ? input.today : lastDayOf(m),
+            openingCents: input.currentCents,
+            closingCents: input.currentCents,
+            txnIds: [],
+        });
+    }
+    return plans;
+}
 function planMonths(input) {
     const txns = [...input.txns].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
     if (!txns.length)
-        return [];
+        return uncovered(emptyMonths(input), input);
     const lastDate = txns[txns.length - 1].date > input.today
         ? txns[txns.length - 1].date
         : input.today;
@@ -66,8 +88,7 @@ function planMonths(input) {
     const kept = input.startDate
         ? fromStartDate(plans, txns, input.kind, input.startDate)
         : plans;
-    const covered = input.covered ?? [];
-    return kept.filter((p) => !covered.some((c) => overlaps({ start: p.periodStart, end: p.periodEnd }, c)));
+    return uncovered(kept, input);
 }
 function fromStartDate(plans, txns, kind, start) {
     const dateOf = new Map(txns.map((t) => [t.id, t]));
@@ -123,11 +144,12 @@ function bankDelayNote(institutionName, updates, health) {
     }
     return `Plaid couldn't get your transactions from ${bank} yet. We keep trying every few minutes.`;
 }
-exports.REFRESH_WINDOWS_UTC = { ins_42: [4, 11] };
+exports.REFRESH_WINDOWS_UTC = {};
 exports.AUTO_REFRESH_EVERY_MS = 60 * 60 * 1000;
 exports.MANUAL_REFRESH_EVERY_MS = 5 * 60 * 1000;
 function shouldRequestRefresh(p) {
-    const window = p.institutionId ? exports.REFRESH_WINDOWS_UTC[p.institutionId] : null;
+    const windows = p.windows ?? exports.REFRESH_WINDOWS_UTC;
+    const window = p.institutionId ? windows[p.institutionId] : null;
     if (window) {
         const hour = p.now.getUTCHours();
         if (hour < window[0] || hour >= window[1])
@@ -141,8 +163,8 @@ function shouldRequestRefresh(p) {
     }
     return 'ok';
 }
-function refreshWindowNote(institutionName, institutionId, now = new Date()) {
-    const window = institutionId ? exports.REFRESH_WINDOWS_UTC[institutionId] : null;
+function refreshWindowNote(institutionName, institutionId, now = new Date(), windows = exports.REFRESH_WINDOWS_UTC) {
+    const window = institutionId ? windows[institutionId] : null;
     if (!window)
         return null;
     const at = (h) => {

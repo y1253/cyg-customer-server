@@ -123,7 +123,7 @@ describe('planMonths', () => {
     ).toBe(true);
   });
 
-  it('makes nothing for an account with no transactions', () => {
+  it('makes nothing for an account with no transactions while history loads', () => {
     expect(
       planMonths({
         kind: 'BANK',
@@ -132,6 +132,51 @@ describe('planMonths', () => {
         txns: [],
       }),
     ).toEqual([]);
+  });
+
+  describe('an account with no transactions once history is done', () => {
+    const empty = {
+      kind: 'BANK' as const,
+      currentCents: 42,
+      today: '2026-10-25',
+      txns: [],
+      historyDone: true,
+    };
+    it('files this month, flat at today’s balance, so its folder shows', () => {
+      expect(planMonths(empty)).toEqual([
+        {
+          periodStart: '2026-10-01',
+          periodEnd: '2026-10-25',
+          openingCents: 42,
+          closingCents: 42,
+          txnIds: [],
+        },
+      ]);
+    });
+    it('files flat months from an earlier start date', () => {
+      const plans = planMonths({ ...empty, startDate: '2026-08-15' });
+      expect(plans.map((p) => [p.periodStart, p.periodEnd])).toEqual([
+        ['2026-08-15', '2026-08-31'],
+        ['2026-09-01', '2026-09-30'],
+        ['2026-10-01', '2026-10-25'],
+      ]);
+      expect(
+        plans.every((p) => p.openingCents === 42 && p.closingCents === 42),
+      ).toBe(true);
+    });
+    it('a start date later this month starts that day', () => {
+      expect(
+        planMonths({ ...empty, startDate: '2026-10-10' })[0].periodStart,
+      ).toBe('2026-10-10');
+    });
+    it('leaves out a month an upload covers', () => {
+      const plans = planMonths({
+        ...empty,
+        startDate: '2026-09-01',
+        covered: [{ start: '2026-09-01', end: '2026-09-30' }],
+      });
+      expect(plans.map((p) => p.periodStart)).toEqual(['2026-10-01']);
+    });
   });
 
   it('orders by date then id, whatever order they arrive in', () => {
@@ -251,8 +296,9 @@ describe('shouldRequestRefresh', () => {
     institutionId: 'ins_42',
     failedWithoutSuccess: true,
     manual: false,
+    windows: { ins_42: [4, 11] as const },
   };
-  it('asks only inside TD’s 4–11 UTC window', () => {
+  it('asks only inside a bank’s window', () => {
     expect(
       shouldRequestRefresh({ ...base, now: at('2026-10-22T03:59:00Z') }),
     ).toBe('outside-window');
@@ -334,6 +380,7 @@ describe('refreshWindowNote', () => {
         'TD Canada Trust',
         'ins_42',
         new Date('2026-10-22T15:00:00Z'),
+        { ins_42: [4, 11] },
       ),
     ).toBe(
       "TD Canada Trust only lets Plaid collect transactions between 12:00 AM and 7:00 AM Eastern time. We'll ask it again then, automatically.",
@@ -341,5 +388,17 @@ describe('refreshWindowNote', () => {
   });
   it('is null for a bank with no window', () => {
     expect(refreshWindowNote('RBC', 'ins_3')).toBeNull();
+  });
+  it('TD has no window (its history arrived at 00:38Z on 2026-10-24)', () => {
+    expect(refreshWindowNote('TD Canada Trust', 'ins_42')).toBeNull();
+    expect(
+      shouldRequestRefresh({
+        now: new Date('2026-10-22T15:00:00Z'),
+        lastRefreshAt: null,
+        institutionId: 'ins_42',
+        failedWithoutSuccess: false,
+        manual: true,
+      }),
+    ).toBe('ok');
   });
 });

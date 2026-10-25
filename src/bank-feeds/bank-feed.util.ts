@@ -50,6 +50,13 @@ export interface PlanInput {
    * walk still counts every transaction, so the balances stay right).
    */
   startDate?: string | null;
+  /**
+   * Plaid has delivered the whole history. An account with NO transactions then still gets
+   * flat months (opening = closing = today's balance) from the start date — or this month —
+   * to today, so its folder shows up (2026-10-25: a BMO chequing with no activity never got
+   * one). While history is still loading, an empty feed files nothing.
+   */
+  historyDone?: boolean;
 }
 
 /** Plaid's amount (+ = money out, a decimal) → our cents (+ = money in). */
@@ -80,12 +87,49 @@ function overlaps(
   return a.start <= b.end && a.end >= b.start;
 }
 
-/** The feed's month statements, oldest first. No transactions → no statements. */
+/** Plans that overlap no uploaded statement (uploads win). */
+function uncovered(plans: MonthPlan[], input: PlanInput): MonthPlan[] {
+  const covered = input.covered ?? [];
+  return plans.filter(
+    (p) =>
+      !covered.some((c) =>
+        overlaps({ start: p.periodStart, end: p.periodEnd }, c),
+      ),
+  );
+}
+
+/**
+ * An account with no transactions once history is in: flat months from the start date (or
+ * this month's 1st) to today.
+ */
+function emptyMonths(input: PlanInput): MonthPlan[] {
+  if (!input.historyDone) return [];
+  const from =
+    input.startDate && input.startDate <= input.today
+      ? input.startDate
+      : `${monthOf(input.today)}-01`;
+  const plans: MonthPlan[] = [];
+  for (let m = monthOf(from); m <= monthOf(input.today); m = nextMonth(m)) {
+    plans.push({
+      periodStart: m === monthOf(from) ? from : `${m}-01`,
+      periodEnd: m === monthOf(input.today) ? input.today : lastDayOf(m),
+      openingCents: input.currentCents,
+      closingCents: input.currentCents,
+      txnIds: [],
+    });
+  }
+  return plans;
+}
+
+/**
+ * The feed's month statements, oldest first. No transactions → nothing while history is
+ * loading, flat months once it is done (`emptyMonths`).
+ */
 export function planMonths(input: PlanInput): MonthPlan[] {
   const txns = [...input.txns].sort(
     (a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id),
   );
-  if (!txns.length) return [];
+  if (!txns.length) return uncovered(emptyMonths(input), input);
 
   const lastDate =
     txns[txns.length - 1].date > input.today
@@ -124,14 +168,7 @@ export function planMonths(input: PlanInput): MonthPlan[] {
   const kept = input.startDate
     ? fromStartDate(plans, txns, input.kind, input.startDate)
     : plans;
-
-  const covered = input.covered ?? [];
-  return kept.filter(
-    (p) =>
-      !covered.some((c) =>
-        overlaps({ start: p.periodStart, end: p.periodEnd }, c),
-      ),
-  );
+  return uncovered(kept, input);
 }
 
 /** The plans from `start` on; the month it falls in is cut at that day. */
@@ -239,12 +276,17 @@ export function bankDelayNote(
 
 /**
  * Hours (UTC, [from, to)) a bank lets Plaid collect transactions, by Plaid institution id.
- * A `/transactions/refresh` outside them is wasted. TD (`ins_42`): Plaid's own standing
- * incident since 2021 — "only allows Transaction updates daily between 4am-11am UTC".
+ * A `/transactions/refresh` outside them is wasted.
+ *
+ * Empty on purpose (2026-10-25): TD (`ins_42`) used to be [4, 11] after Plaid's standing
+ * incident ("only allows Transaction updates daily between 4am-11am UTC"), but TD's history
+ * for item #5 arrived at 00:38Z — the window was wrong, and it stopped "Refresh now" from
+ * asking Plaid at all for 17 hours a day. Add a bank only on evidence from our own items.
  */
-export const REFRESH_WINDOWS_UTC: Readonly<
+export type RefreshWindows = Readonly<
   Record<string, readonly [number, number]>
-> = { ins_42: [4, 11] };
+>;
+export const REFRESH_WINDOWS_UTC: RefreshWindows = {};
 
 /** An automatic refresh of a stuck connection is asked for at most this often. */
 export const AUTO_REFRESH_EVERY_MS = 60 * 60 * 1000;
@@ -269,8 +311,10 @@ export function shouldRequestRefresh(p: {
   institutionId: string | null;
   failedWithoutSuccess: boolean;
   manual: boolean;
+  windows?: RefreshWindows;
 }): RefreshDecision {
-  const window = p.institutionId ? REFRESH_WINDOWS_UTC[p.institutionId] : null;
+  const windows = p.windows ?? REFRESH_WINDOWS_UTC;
+  const window = p.institutionId ? windows[p.institutionId] : null;
   if (window) {
     const hour = p.now.getUTCHours();
     if (hour < window[0] || hour >= window[1]) return 'outside-window';
@@ -288,8 +332,9 @@ export function refreshWindowNote(
   institutionName: string | null,
   institutionId: string | null,
   now: Date = new Date(),
+  windows: RefreshWindows = REFRESH_WINDOWS_UTC,
 ): string | null {
-  const window = institutionId ? REFRESH_WINDOWS_UTC[institutionId] : null;
+  const window = institutionId ? windows[institutionId] : null;
   if (!window) return null;
   const at = (h: number) => {
     const d = new Date(now);
