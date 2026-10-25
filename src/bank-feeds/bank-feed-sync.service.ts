@@ -9,6 +9,7 @@ import {
   type PlaidItem,
   type PlaidTransaction,
 } from '@prisma/client';
+import { CustomerOutbox } from '../assistant/customer-outbox.service';
 import { RulesService } from '../assistant/rules.service';
 import { canonicalAccountName } from '../bookkeeping/account-identity.util';
 import { UNCATEGORIZED } from '../bookkeeping/chart-of-accounts';
@@ -20,6 +21,7 @@ import {
 import { NameMemoryService } from '../bookkeeping/name-memory.service';
 import { resolveRow } from '../bookkeeping/name-memory.util';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   bankDelayNote,
@@ -44,6 +46,12 @@ import {
   type PlaidAccountData,
   type PlaidTransactionData,
 } from './plaid.client';
+import {
+  ALERT_EMAIL_SUBJECT,
+  alertChannel,
+  alertText,
+  recentEnough,
+} from './transaction-alert.util';
 
 /** Plaid error codes that mean the customer must sign in to their bank again (update mode). */
 const LOGIN_CODES = new Set([
@@ -109,6 +117,8 @@ export class BankFeedSyncService {
     private readonly config: ConfigService,
     private readonly names: NameMemoryService,
     private readonly categorizer: BankRowCategorizer,
+    private readonly outbox: CustomerOutbox,
+    private readonly messenger: CustomerMessenger,
     @Optional() private readonly rules?: RulesService,
   ) {}
 
@@ -207,7 +217,10 @@ export class BankFeedSyncService {
 
       const { added, modified, removed, cursor, updateStatus } =
         await this.fetchChanges(accessToken, item.cursor);
-      await this.saveTransactions(byPlaidId, added, modified, removed);
+      // Transaction alerts: only rows new to a connection whose history was already in
+      // (the initial / historical batches never message the customer).
+      const live = item.historyDone && Boolean(item.setupAt);
+      await this.saveTransactions(byPlaidId, added, modified, removed, live);
       // Plaid has nothing yet: ask it why, so the card can say so instead of spinning —
       // and, when its own tries at the bank failed, ask it to go again (step12).
       let note: string | null = null;
@@ -260,7 +273,129 @@ export class BankFeedSyncService {
       await this.rebuildItem(item.id);
     } catch (err) {
       this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
+      return; // DUE alerts wait for a rebuild that worked (else they look "not filed").
     }
+    try {
+      await this.sendAlerts(item);
+    } catch (err) {
+      this.logger.warn(`alert of item #${item.id} failed: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Transaction alerts (2026-10-25): ONE message for the item's new rows (`alert` DUE), each
+   * with the category it was filed under, on the customer's preferred contact only
+   * (`alertChannel`). Runs after the rebuild, so a DUE row with no ledger row is never
+   * filed (unshared account, before the start date, a month an upload covers) → SKIPPED.
+   * Rows are claimed (DUE → SENT) before the send, so a re-run never sends twice.
+   */
+  private async sendAlerts(item: PlaidItem): Promise<void> {
+    const due = await this.prisma.plaidTransaction.findMany({
+      where: { alert: 'DUE', account: { plaidItemId: item.id } },
+      select: { id: true, transactionId: true },
+    });
+    if (!due.length) return;
+    const skip = async (ids: number[], why: string) => {
+      if (!ids.length) return;
+      await this.prisma.plaidTransaction.updateMany({
+        where: { id: { in: ids }, alert: 'DUE' },
+        data: { alert: 'SKIPPED' },
+      });
+      this.logger.log(
+        `item #${item.id} alert: ${ids.length} transaction(s) SKIPPED (${why})`,
+      );
+    };
+
+    const ledger = await this.prisma.bankTransaction.findMany({
+      where: {
+        externalId: { in: due.map((d) => d.transactionId) },
+        splitOfId: null,
+      },
+      select: {
+        externalId: true,
+        postingDate: true,
+        name: true,
+        description: true,
+        amount: true,
+        offsetAccount: true,
+        statement: { select: { accountName: true } },
+      },
+    });
+    const filed = new Set(ledger.map((r) => r.externalId));
+    await skip(
+      due.filter((d) => !filed.has(d.transactionId)).map((d) => d.id),
+      'not filed',
+    );
+    const ids = due.filter((d) => filed.has(d.transactionId)).map((d) => d.id);
+    if (!ids.length) return;
+
+    const scope = scopeOf(item);
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: scope.customerId, deletedAt: null },
+      select: {
+        email: true,
+        phoneE164: true,
+        preferredContact: true,
+        transactionAlerts: true,
+      },
+    });
+    if (!customer) return skip(ids, 'customer gone');
+    if (!customer.transactionAlerts) return skip(ids, 'alerts off');
+    const channel = alertChannel({
+      preferred: customer.preferredContact,
+      phone: customer.phoneE164,
+      email: customer.email,
+      smsConfigured: this.messenger.smsConfigured,
+    });
+    if (!channel) {
+      return skip(
+        ids,
+        `no way to reach them by ${customer.preferredContact ?? 'text or email'}`,
+      );
+    }
+    const books = await this.prisma.book.findMany({
+      where: { customerId: scope.customerId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    const text = alertText({
+      book:
+        books.length > 1
+          ? (books.find((b) => b.id === scope.bookId)?.name ?? null)
+          : null,
+      rows: ledger.map((r) => ({
+        account: r.statement.accountName ?? item.institutionName ?? 'Bank',
+        date: r.postingDate ? day(r.postingDate) : isoDay(),
+        label: r.name?.trim() || r.description,
+        amount: Number(r.amount),
+        category: r.offsetAccount,
+      })),
+    });
+
+    const { count } = await this.prisma.plaidTransaction.updateMany({
+      where: { id: { in: ids }, alert: 'DUE' },
+      data: { alert: 'SENT' },
+    });
+    if (!count) return;
+    const sent = await this.outbox.send(
+      scope,
+      channel,
+      text,
+      ALERT_EMAIL_SUBJECT,
+      'BANK_ALERT',
+    );
+    if (!sent.ok) {
+      await this.prisma.plaidTransaction.updateMany({
+        where: { id: { in: ids } },
+        data: { alert: 'SKIPPED' },
+      });
+      this.logger.warn(
+        `item #${item.id} alert: ${ids.length} transaction(s) NOT sent by ${channel}: ${sent.error}`,
+      );
+      return;
+    }
+    this.logger.log(
+      `item #${item.id} alert: ${ids.length} transaction(s) by ${channel}`,
+    );
   }
 
   /**
@@ -577,7 +712,10 @@ export class BankFeedSyncService {
     added: readonly PlaidTransactionData[],
     modified: readonly PlaidTransactionData[],
     removed: readonly string[],
+    /** The connection's history was already in: a fresh posted recent row is alert DUE. */
+    live = false,
   ): Promise<void> {
+    const today = isoDay();
     const rows = [...added, ...modified].filter((t) =>
       accounts.has(t.account_id),
     );
@@ -613,6 +751,8 @@ export class BankFeedSyncService {
           data: fresh.map((t) => ({
             transactionId: t.transaction_id,
             ...dataOf(t),
+            alert:
+              live && !t.pending && recentEnough(t.date, today) ? 'DUE' : null,
           })),
           skipDuplicates: true,
         });

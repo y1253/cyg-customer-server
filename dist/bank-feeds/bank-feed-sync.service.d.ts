@@ -1,7 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import { type PlaidAccount, type PlaidItem } from '@prisma/client';
+import { CustomerOutbox } from '../assistant/customer-outbox.service';
 import { RulesService } from '../assistant/rules.service';
 import { NameMemoryService } from '../bookkeeping/name-memory.service';
+import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BankRowCategorizer } from './bank-row-categorizer';
 import { PlaidClient, type PlaidAccountData } from './plaid.client';
@@ -12,6 +14,8 @@ export declare class BankFeedSyncService {
     private readonly config;
     private readonly names;
     private readonly categorizer;
+    private readonly outbox;
+    private readonly messenger;
     private readonly rules?;
     private readonly logger;
     private readonly running;
@@ -19,7 +23,7 @@ export declare class BankFeedSyncService {
     private readonly lastRefreshAt;
     private readonly noteLoggedOn;
     private refreshUnsupportedLogged;
-    constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, rules?: RulesService | undefined);
+    constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, outbox: CustomerOutbox, messenger: CustomerMessenger, rules?: RulesService | undefined);
     private get key();
     syncSoon(itemId: number): void;
     sync(itemId: number): Promise<void>;
@@ -28,6 +32,7 @@ export declare class BankFeedSyncService {
     syncAll(): Promise<void>;
     rebuildAll(): Promise<void>;
     private runSync;
+    private sendAlerts;
     refreshNow(itemId: number): Promise<string | null>;
     private requestRefresh;
     private logNote;

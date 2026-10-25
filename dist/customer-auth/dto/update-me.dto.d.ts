@@ -4,4 +4,5 @@ export declare class UpdateMeDto {
     name?: string;
     phone?: string | null;
     preferredContact?: ContactMethod | null;
+    transactionAlerts?: boolean;
 }

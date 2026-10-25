@@ -18,6 +18,7 @@ class UpdateMeDto {
     name;
     phone;
     preferredContact;
+    transactionAlerts;
 }
 exports.UpdateMeDto = UpdateMeDto;
 __decorate([
@@ -44,4 +45,9 @@ __decorate([
     }),
     __metadata("design:type", Object)
 ], UpdateMeDto.prototype, "preferredContact", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], UpdateMeDto.prototype, "transactionAlerts", void 0);
 //# sourceMappingURL=update-me.dto.js.map

@@ -70,6 +70,8 @@ export interface PublicCustomer {
   phone: string | null;
   /** EMAIL | WHATSAPP | SMS, or null when not chosen (step12). */
   preferredContact: string | null;
+  /** 2026-10-25: message them each new bank-feed transaction (default on). */
+  transactionAlerts: boolean;
   createdAt: Date;
 }
 
@@ -165,6 +167,7 @@ export function toPublicCustomer(c: Customer): PublicCustomer {
     avatarUrl: c.avatarUrl,
     phone: c.phone,
     preferredContact: c.preferredContact,
+    transactionAlerts: c.transactionAlerts,
     createdAt: c.createdAt,
   };
 }
@@ -771,6 +774,7 @@ export class CustomerAuthService {
       phone?: string | null;
       phoneE164?: string | null;
       preferredContact?: string | null;
+      transactionAlerts?: boolean;
     } = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.phone !== undefined) {
@@ -793,6 +797,9 @@ export class CustomerAuthService {
     }
     if (dto.preferredContact !== undefined) {
       data.preferredContact = dto.preferredContact;
+    }
+    if (dto.transactionAlerts !== undefined) {
+      data.transactionAlerts = dto.transactionAlerts;
     }
     // Text / WhatsApp need a phone to reach — the one saved now, or the one on file.
     const current = await this.prisma.customer.findUnique({ where: { id } });

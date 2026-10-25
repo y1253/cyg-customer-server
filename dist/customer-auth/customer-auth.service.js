@@ -52,6 +52,7 @@ function toPublicCustomer(c) {
         avatarUrl: c.avatarUrl,
         phone: c.phone,
         preferredContact: c.preferredContact,
+        transactionAlerts: c.transactionAlerts,
         createdAt: c.createdAt,
     };
 }
@@ -502,6 +503,9 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
         }
         if (dto.preferredContact !== undefined) {
             data.preferredContact = dto.preferredContact;
+        }
+        if (dto.transactionAlerts !== undefined) {
+            data.transactionAlerts = dto.transactionAlerts;
         }
         const current = await this.prisma.customer.findUnique({ where: { id } });
         const method = dto.preferredContact !== undefined

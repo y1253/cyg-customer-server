@@ -30,6 +30,7 @@ export interface PublicCustomer {
     avatarUrl: string | null;
     phone: string | null;
     preferredContact: string | null;
+    transactionAlerts: boolean;
     createdAt: Date;
 }
 export interface AuthResult {

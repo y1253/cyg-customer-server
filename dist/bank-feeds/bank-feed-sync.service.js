@@ -19,6 +19,7 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
+const customer_outbox_service_1 = require("../assistant/customer-outbox.service");
 const rules_service_1 = require("../assistant/rules.service");
 const account_identity_util_1 = require("../bookkeeping/account-identity.util");
 const chart_of_accounts_1 = require("../bookkeeping/chart-of-accounts");
@@ -26,11 +27,13 @@ const ledger_util_1 = require("../bookkeeping/ledger.util");
 const name_memory_service_1 = require("../bookkeeping/name-memory.service");
 const name_memory_util_1 = require("../bookkeeping/name-memory.util");
 const scope_1 = require("../bookkeeping/scope");
+const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const bank_feed_util_1 = require("./bank-feed.util");
 const bank_row_categorizer_1 = require("./bank-row-categorizer");
 const crypto_util_1 = require("./crypto.util");
 const plaid_client_1 = require("./plaid.client");
+const transaction_alert_util_1 = require("./transaction-alert.util");
 const LOGIN_CODES = new Set([
     'ITEM_LOGIN_REQUIRED',
     'PENDING_EXPIRATION',
@@ -53,6 +56,8 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     config;
     names;
     categorizer;
+    outbox;
+    messenger;
     rules;
     logger = new common_1.Logger(BankFeedSyncService_1.name);
     running = new Map();
@@ -60,12 +65,14 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     lastRefreshAt = new Map();
     noteLoggedOn = new Map();
     refreshUnsupportedLogged = false;
-    constructor(prisma, plaid, config, names, categorizer, rules) {
+    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules) {
         this.prisma = prisma;
         this.plaid = plaid;
         this.config = config;
         this.names = names;
         this.categorizer = categorizer;
+        this.outbox = outbox;
+        this.messenger = messenger;
         this.rules = rules;
     }
     get key() {
@@ -144,7 +151,8 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             const { accounts } = await this.plaid.call('/accounts/get', { access_token: accessToken });
             const byPlaidId = await this.saveAccounts(item, accounts);
             const { added, modified, removed, cursor, updateStatus } = await this.fetchChanges(accessToken, item.cursor);
-            await this.saveTransactions(byPlaidId, added, modified, removed);
+            const live = item.historyDone && Boolean(item.setupAt);
+            await this.saveTransactions(byPlaidId, added, modified, removed, live);
             let note = null;
             if (!item.historyDone && updateStatus === 'NOT_READY') {
                 const bank = await this.bankStatus(item, accessToken);
@@ -188,7 +196,106 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         }
         catch (err) {
             this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
+            return;
         }
+        try {
+            await this.sendAlerts(item);
+        }
+        catch (err) {
+            this.logger.warn(`alert of item #${item.id} failed: ${String(err)}`);
+        }
+    }
+    async sendAlerts(item) {
+        const due = await this.prisma.plaidTransaction.findMany({
+            where: { alert: 'DUE', account: { plaidItemId: item.id } },
+            select: { id: true, transactionId: true },
+        });
+        if (!due.length)
+            return;
+        const skip = async (ids, why) => {
+            if (!ids.length)
+                return;
+            await this.prisma.plaidTransaction.updateMany({
+                where: { id: { in: ids }, alert: 'DUE' },
+                data: { alert: 'SKIPPED' },
+            });
+            this.logger.log(`item #${item.id} alert: ${ids.length} transaction(s) SKIPPED (${why})`);
+        };
+        const ledger = await this.prisma.bankTransaction.findMany({
+            where: {
+                externalId: { in: due.map((d) => d.transactionId) },
+                splitOfId: null,
+            },
+            select: {
+                externalId: true,
+                postingDate: true,
+                name: true,
+                description: true,
+                amount: true,
+                offsetAccount: true,
+                statement: { select: { accountName: true } },
+            },
+        });
+        const filed = new Set(ledger.map((r) => r.externalId));
+        await skip(due.filter((d) => !filed.has(d.transactionId)).map((d) => d.id), 'not filed');
+        const ids = due.filter((d) => filed.has(d.transactionId)).map((d) => d.id);
+        if (!ids.length)
+            return;
+        const scope = (0, scope_1.scopeOf)(item);
+        const customer = await this.prisma.customer.findFirst({
+            where: { id: scope.customerId, deletedAt: null },
+            select: {
+                email: true,
+                phoneE164: true,
+                preferredContact: true,
+                transactionAlerts: true,
+            },
+        });
+        if (!customer)
+            return skip(ids, 'customer gone');
+        if (!customer.transactionAlerts)
+            return skip(ids, 'alerts off');
+        const channel = (0, transaction_alert_util_1.alertChannel)({
+            preferred: customer.preferredContact,
+            phone: customer.phoneE164,
+            email: customer.email,
+            smsConfigured: this.messenger.smsConfigured,
+        });
+        if (!channel) {
+            return skip(ids, `no way to reach them by ${customer.preferredContact ?? 'text or email'}`);
+        }
+        const books = await this.prisma.book.findMany({
+            where: { customerId: scope.customerId, deletedAt: null },
+            select: { id: true, name: true },
+        });
+        const text = (0, transaction_alert_util_1.alertText)({
+            book: books.length > 1
+                ? (books.find((b) => b.id === scope.bookId)?.name ?? null)
+                : null,
+            rows: ledger.map((r) => ({
+                account: r.statement.accountName ?? item.institutionName ?? 'Bank',
+                date: r.postingDate ? day(r.postingDate) : (0, bank_feed_util_1.isoDay)(),
+                label: r.name?.trim() || r.description,
+                amount: Number(r.amount),
+                category: r.offsetAccount,
+            })),
+        });
+        const { count } = await this.prisma.plaidTransaction.updateMany({
+            where: { id: { in: ids }, alert: 'DUE' },
+            data: { alert: 'SENT' },
+        });
+        if (!count)
+            return;
+        const sent = await this.outbox.send(scope, channel, text, transaction_alert_util_1.ALERT_EMAIL_SUBJECT, 'BANK_ALERT');
+        if (!sent.ok) {
+            await this.prisma.plaidTransaction.updateMany({
+                where: { id: { in: ids } },
+                data: { alert: 'SKIPPED' },
+            });
+            this.logger.warn(`item #${item.id} alert: ${ids.length} transaction(s) NOT sent by ${channel}: ${sent.error}`);
+            return;
+        }
+        this.logger.log(`item #${item.id} alert: ${ids.length} transaction(s) by ${channel}`);
     }
     async refreshNow(itemId) {
         const item = await this.prisma.plaidItem.findUnique({
@@ -413,7 +520,8 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             ...feeds.map((f) => ({ name: f.accountName, kind: f.kind })),
         ];
     }
-    async saveTransactions(accounts, added, modified, removed) {
+    async saveTransactions(accounts, added, modified, removed, live = false) {
+        const today = (0, bank_feed_util_1.isoDay)();
         const rows = [...added, ...modified].filter((t) => accounts.has(t.account_id));
         const dataOf = (t) => ({
             plaidAccountId: accounts.get(t.account_id).id,
@@ -443,6 +551,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                     data: fresh.map((t) => ({
                         transactionId: t.transaction_id,
                         ...dataOf(t),
+                        alert: live && !t.pending && (0, transaction_alert_util_1.recentEnough)(t.date, today) ? 'DUE' : null,
                     })),
                     skipDuplicates: true,
                 });
@@ -749,12 +858,14 @@ __decorate([
 ], BankFeedSyncService.prototype, "rebuildAll", null);
 exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __decorate([
     (0, common_1.Injectable)(),
-    __param(5, (0, common_1.Optional)()),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         plaid_client_1.PlaidClient,
         config_1.ConfigService,
         name_memory_service_1.NameMemoryService,
         bank_row_categorizer_1.BankRowCategorizer,
+        customer_outbox_service_1.CustomerOutbox,
+        customer_messenger_service_1.CustomerMessenger,
         rules_service_1.RulesService])
 ], BankFeedSyncService);
 function sameDay(a, b) {

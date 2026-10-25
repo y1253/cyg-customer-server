@@ -356,8 +356,8 @@ const SAVE_CONTACT_TOOL = {
 };
 const UPDATE_MY_PROFILE_TOOL = {
     name: 'update_my_profile',
-    description: 'Save the customer\'s own name on their account, when they tell you it ("I\'m Sarah Cohen"). Never their email or phone — they change those on the Account page.',
-    parameters: obj({ name: str }, ['name']),
+    description: 'Save the customer\'s own name on their account, when they tell you it ("I\'m Sarah Cohen"), and/or turn their bank transaction alerts (a message with each new bank transaction and its category) off or on ("stop texting me every transaction" → transactionAlerts false). Never their email or phone — they change those on the Account page.',
+    parameters: obj({ name: str, transactionAlerts: { type: 'boolean' } }),
 };
 const PERSON = {
     contactId: {
@@ -933,13 +933,26 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
             }
             case 'update_my_profile': {
                 const name = s(a.name)?.slice(0, 120);
-                if (!name)
-                    throw new Error('say the name to save');
+                const alerts = typeof a.transactionAlerts === 'boolean'
+                    ? a.transactionAlerts
+                    : undefined;
+                if (!name && alerts === undefined)
+                    throw new Error('say the name to save, or transactionAlerts');
                 await this.prisma.customer.update({
                     where: { id: scope.customerId },
-                    data: { name },
+                    data: {
+                        ...(name ? { name } : {}),
+                        ...(alerts !== undefined ? { transactionAlerts: alerts } : {}),
+                    },
                 });
-                return done(`Saved your name as ${name}`);
+                return done([
+                    name ? `Saved your name as ${name}` : null,
+                    alerts === undefined
+                        ? null
+                        : `Transaction alerts are ${alerts ? 'on' : 'off'}`,
+                ]
+                    .filter(Boolean)
+                    .join('. '));
             }
             case 'text_person': {
                 const message = s(a.message);

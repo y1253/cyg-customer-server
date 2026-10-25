@@ -9,8 +9,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BankFeedsModule = void 0;
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
+const assistant_module_1 = require("../assistant/assistant.module");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
+const messaging_module_1 = require("../messaging/messaging.module");
 const bank_feed_sync_service_1 = require("./bank-feed-sync.service");
 const bank_feeds_controller_1 = require("./bank-feeds.controller");
 const bank_feeds_service_1 = require("./bank-feeds.service");
@@ -21,7 +23,12 @@ let BankFeedsModule = class BankFeedsModule {
 exports.BankFeedsModule = BankFeedsModule;
 exports.BankFeedsModule = BankFeedsModule = __decorate([
     (0, common_1.Module)({
-        imports: [customer_auth_module_1.CustomerAuthModule, bookkeeping_module_1.BookkeepingModule],
+        imports: [
+            assistant_module_1.AssistantModule,
+            bookkeeping_module_1.BookkeepingModule,
+            customer_auth_module_1.CustomerAuthModule,
+            messaging_module_1.MessagingModule,
+        ],
         controllers: [bank_feeds_controller_1.BankFeedsController, bank_feeds_controller_1.PlaidWebhookController],
         providers: [
             bank_feed_sync_service_1.BankFeedSyncService,

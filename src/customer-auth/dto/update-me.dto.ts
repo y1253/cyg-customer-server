@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -44,4 +45,9 @@ export class UpdateMeDto {
     message: 'Pick email, WhatsApp, text message or phone call',
   })
   preferredContact?: ContactMethod | null;
+
+  /** 2026-10-25: message them each new bank-feed transaction with its category. */
+  @IsOptional()
+  @IsBoolean()
+  transactionAlerts?: boolean;
 }
