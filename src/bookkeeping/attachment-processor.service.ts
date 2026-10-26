@@ -291,8 +291,8 @@ export class AttachmentProcessorService {
     } else if (reading.documentType === 'BANK_STATEMENT') {
       note =
         row.mimeType === 'application/pdf'
-          ? 'This looks like a bank statement, not a receipt. Ask the assistant to file it as a statement, or upload it on the Statements tab.'
-          : 'This looks like a bank statement. Upload it as a PDF on the Statements tab so its transactions are read.';
+          ? 'This looks like a bank statement, not a receipt. Ask the assistant to file it as a statement, or upload it on the Bank feeds tab.'
+          : 'This looks like a bank statement. Upload it as a PDF on the Bank feeds tab so its transactions are read.';
       status = AttachmentStatus.UNMATCHED;
     } else if (!isPaymentDocument(reading.documentType)) {
       note =

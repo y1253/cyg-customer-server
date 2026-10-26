@@ -1,9 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RT = exports.REALTIME_TRANSCRIBE_MODEL = exports.DEFAULT_REALTIME_MODEL = exports.MuLawTrack = exports.VOICE_TOKEN_TYPE = exports.languageName = exports.isLanguage = exports.DEFAULT_LANGUAGE = exports.LANGUAGES = exports.isVoice = exports.DEFAULT_VOICE = exports.VOICES = void 0;
+exports.RT = exports.REALTIME_TRANSCRIBE_MODEL = exports.DEFAULT_REALTIME_MODEL = exports.MuLawTrack = exports.OPEN_CALL_MAX_MS = exports.TRANSCRIPT_GRACE_MS = exports.VOICE_TOKEN_TYPE = exports.languageName = exports.isLanguage = exports.DEFAULT_LANGUAGE = exports.LANGUAGES = exports.isVoice = exports.DEFAULT_VOICE = exports.VOICES = void 0;
 exports.realtimeTools = realtimeTools;
 exports.connectStreamLaml = connectStreamLaml;
 exports.spokenScript = spokenScript;
+exports.callWindow = callWindow;
+exports.callWindows = callWindows;
+exports.inCallWindow = inCallWindow;
 exports.callStatusOf = callStatusOf;
 exports.muLawStereoWav = muLawStereoWav;
 exports.signalWireSignatureValid = signalWireSignatureValid;
@@ -77,6 +80,34 @@ function spokenScript(text) {
         .replace(/:\./g, ':')
         .replace(/\.\./g, '.')
         .trim();
+}
+exports.TRANSCRIPT_GRACE_MS = 60_000;
+exports.OPEN_CALL_MAX_MS = 2 * 60 * 60 * 1000;
+const TRANSCRIPT_LEAD_MS = 2_000;
+function callWindow(call, nextStartedAt, now = new Date()) {
+    const start = call.startedAt.getTime();
+    const end = call.endedAt?.getTime() ??
+        Math.min(now.getTime(), start + exports.OPEN_CALL_MAX_MS);
+    let to = Math.max(end, start) + exports.TRANSCRIPT_GRACE_MS;
+    if (nextStartedAt && nextStartedAt.getTime() > start) {
+        to = Math.min(to, nextStartedAt.getTime());
+    }
+    return { from: new Date(start - TRANSCRIPT_LEAD_MS), to: new Date(to) };
+}
+function callWindows(calls, now = new Date()) {
+    const sorted = [...calls].sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+    return sorted.map((call, i) => {
+        const next = sorted
+            .slice(i + 1)
+            .find((c) => c.conversationId === call.conversationId);
+        return { call, ...callWindow(call, next?.startedAt ?? null, now) };
+    });
+}
+function inCallWindow(windows, conversationId, at) {
+    const t = at.getTime();
+    return windows.some((w) => w.call.conversationId === conversationId &&
+        t >= w.from.getTime() &&
+        t < w.to.getTime());
 }
 function callStatusOf(s) {
     switch ((s ?? '').toLowerCase()) {

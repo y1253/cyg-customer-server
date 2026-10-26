@@ -1203,7 +1203,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 data: { deletedAt: new Date() },
             }),
         ]);
-        return `Filed ${a.filename} as a bank statement — click Generate on the Statements tab to read it`;
+        return `Filed ${a.filename} as a bank statement — click Generate on the Bank feeds tab to read it`;
     }
 };
 exports.AssistantTools = AssistantTools;

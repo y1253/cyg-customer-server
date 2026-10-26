@@ -43,21 +43,14 @@ const fileOf = (a) => ({
 });
 function buildTimeline(input) {
     const items = [
-        ...(input.calls ?? []).map((c) => ({
-            key: `c:${c.id}`,
-            at: c.startedAt.toISOString(),
-            side: c.direction === 'OUTBOUND' ? 'cyg' : 'customer',
+        ...(input.calls ?? []).map(({ startedAt, ...call }) => ({
+            key: `c:${call.id}`,
+            at: startedAt.toISOString(),
+            side: call.direction === 'OUTBOUND' ? 'cyg' : 'customer',
             kind: 'call',
             text: null,
             files: [],
-            call: {
-                id: c.id,
-                direction: c.direction,
-                purpose: c.purpose,
-                status: c.status,
-                durationSec: c.durationSec,
-                hasRecording: c.hasRecording,
-            },
+            call,
         })),
         ...input.messages.map((m) => {
             const files = idsOf(m.attachmentIds)
@@ -101,12 +94,13 @@ function buildTimeline(input) {
     ];
     return items.sort((a, b) => b.at.localeCompare(a.at) || b.key.localeCompare(a.key));
 }
-function pageOf(items, limit) {
-    const page = items.slice(0, limit);
-    return {
-        items: page,
-        nextBefore: items.length > limit ? page[page.length - 1].at : null,
-    };
+function pageOf(items, limit, cutoff = null) {
+    const known = cutoff ? items.filter((i) => i.at >= cutoff) : items;
+    const page = known.slice(0, limit);
+    if (known.length > limit) {
+        return { items: page, nextBefore: page[page.length - 1].at };
+    }
+    return { items: page, nextBefore: cutoff };
 }
 function previewOf(item) {
     if (!item)

@@ -145,3 +145,36 @@ describe('previewOf / idsOf', () => {
     expect(idsOf(null)).toEqual([]);
   });
 });
+
+describe('pageOf with a cutoff (step12g)', () => {
+  const item = (at: string) => ({
+    key: at,
+    at,
+    side: 'customer' as const,
+    kind: 'message' as const,
+    text: null,
+    files: [],
+  });
+
+  it('stops at the cutoff and continues from it', () => {
+    const items = [
+      '2026-10-26T10:00:00.000Z',
+      '2026-10-26T09:00:00.000Z',
+      '2026-10-26T08:00:00.000Z',
+    ].map(item);
+    expect(pageOf(items, 50, '2026-10-26T09:00:00.000Z')).toEqual({
+      items: items.slice(0, 2),
+      nextBefore: '2026-10-26T09:00:00.000Z',
+    });
+  });
+
+  it('a full page still cuts at the limit', () => {
+    const items = ['2026-10-26T10:00:00.000Z', '2026-10-26T09:00:00.000Z'].map(
+      item,
+    );
+    expect(pageOf(items, 1, '2026-10-26T08:00:00.000Z')).toEqual({
+      items: items.slice(0, 1),
+      nextBefore: '2026-10-26T10:00:00.000Z',
+    });
+  });
+});

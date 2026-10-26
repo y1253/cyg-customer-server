@@ -125,7 +125,7 @@ export interface StartingBalance {
 /**
  * Each account's Starting balance rows, oldest first. ONE is normal (the account's first
  * statement); more than one means the chain broke — a missing statement, or balances that
- * do not carry over — which the Statements tab and the balance sheet flag in red.
+ * do not carry over — which the Bank feeds tab and the balance sheet flag in red.
  */
 export function startsByAccount(
   rows: OpeningRow[],

@@ -17,7 +17,7 @@ import type { Request, Response } from 'express';
 import { Book, BookScopeGuard } from '../bookkeeping/book-scope.guard';
 import type { BookScope } from '../bookkeeping/scope';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
-import { VoiceCallsService } from './voice-calls.service';
+import { VoiceCallsService, type TranscriptLine } from './voice-calls.service';
 import { signalWireSignatureValid } from './voice.util';
 
 /**
@@ -63,7 +63,10 @@ export class VoiceStatusController {
   }
 }
 
-/** `GET /api/bookkeeping/calls/:id/recording` — a call's audio, for this book only. */
+/**
+ * `GET /api/bookkeeping/calls/:id/recording` — a call's audio, for this book only;
+ * `…/:id/transcript` (step12g) — what was said on it.
+ */
 @Controller('bookkeeping/calls')
 @UseGuards(CustomerJwtGuard, BookScopeGuard)
 export class VoiceRecordingController {
@@ -83,5 +86,13 @@ export class VoiceRecordingController {
       'Cache-Control': 'private, no-store',
     });
     return new StreamableFile(r.body);
+  }
+
+  @Get(':id/transcript')
+  transcript(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<{ lines: TranscriptLine[] }> {
+    return this.calls.transcript(scope, id);
   }
 }

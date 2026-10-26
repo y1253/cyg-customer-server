@@ -2,7 +2,7 @@ import { StreamableFile } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import type { BookScope } from '../bookkeeping/scope';
-import { VoiceCallsService } from './voice-calls.service';
+import { VoiceCallsService, type TranscriptLine } from './voice-calls.service';
 export declare class VoiceStatusController {
     private readonly calls;
     private readonly config;
@@ -13,4 +13,7 @@ export declare class VoiceRecordingController {
     private readonly calls;
     constructor(calls: VoiceCallsService);
     recording(scope: BookScope, id: number, res: Response): Promise<StreamableFile>;
+    transcript(scope: BookScope, id: number): Promise<{
+        lines: TranscriptLine[];
+    }>;
 }

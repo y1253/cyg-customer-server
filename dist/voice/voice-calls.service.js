@@ -577,6 +577,41 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }
         throw new common_1.NotFoundException('This call has no recording');
     }
+    async transcript(scope, id) {
+        const call = await this.prisma.aiCall.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope) },
+            select: { conversationId: true, startedAt: true, endedAt: true },
+        });
+        if (!call)
+            throw new common_1.NotFoundException('Call not found');
+        const next = await this.prisma.aiCall.findFirst({
+            where: {
+                conversationId: call.conversationId,
+                startedAt: { gt: call.startedAt },
+            },
+            orderBy: { startedAt: 'asc' },
+            select: { startedAt: true },
+        });
+        const w = (0, voice_util_1.callWindow)(call, next?.startedAt ?? null);
+        const rows = await this.prisma.aiMessage.findMany({
+            where: {
+                conversationId: call.conversationId,
+                channel: 'VOICE',
+                createdAt: { gte: w.from, lt: w.to },
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: 500,
+            select: { id: true, role: true, text: true, createdAt: true },
+        });
+        return {
+            lines: rows.map((m) => ({
+                id: m.id,
+                role: m.role,
+                text: m.text,
+                at: m.createdAt.toISOString(),
+            })),
+        };
+    }
 };
 exports.VoiceCallsService = VoiceCallsService;
 exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate([

@@ -36,6 +36,13 @@ export interface CallView {
     toNumber: string | null;
     withName: string;
     contactName: string | null;
+    hasTranscript?: boolean;
+}
+export interface TranscriptLine {
+    id: number;
+    role: string;
+    text: string;
+    at: string;
 }
 export declare class VoiceCallsService implements OnModuleInit {
     private readonly prisma;
@@ -105,6 +112,9 @@ export declare class VoiceCallsService implements OnModuleInit {
         body: Buffer;
         contentType: string;
         filename: string;
+    }>;
+    transcript(scope: BookScope, id: number): Promise<{
+        lines: TranscriptLine[];
     }>;
 }
 export declare function toCallView(c: AiCall & {

@@ -17,5 +17,7 @@ export declare class CommunicationsService {
     channels(scope: BookScope): Promise<ChannelSummary[]>;
     page(scope: BookScope, channel: CommChannel, before: Date | null, limit?: number): Promise<CommPage>;
     private count;
+    private spansAround;
+    private transcriptCount;
     private referencedIds;
 }

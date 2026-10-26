@@ -137,6 +137,71 @@ export function spokenScript(text: string): string {
     .trim();
 }
 
+/**
+ * step12g: which transcript lines belong to which call. `AiMessage` has no call id — a call's
+ * lines are the VOICE conversation's messages saved between its start and a little after it
+ * ended (the last transcripts arrive after the hang-up), never past the next call's start.
+ */
+export const TRANSCRIPT_GRACE_MS = 60_000;
+/** A call that never recorded its end (a crash) owns at most this long. */
+export const OPEN_CALL_MAX_MS = 2 * 60 * 60 * 1000;
+/** Lines saved just before the `AiCall` row's clock (greeting race) still count. */
+const TRANSCRIPT_LEAD_MS = 2_000;
+
+export interface CallSpan {
+  conversationId: number;
+  startedAt: Date;
+  endedAt: Date | null;
+}
+
+/** `[from, to)` — the instants whose VOICE messages are this call's transcript. */
+export function callWindow(
+  call: CallSpan,
+  nextStartedAt: Date | null,
+  now = new Date(),
+): { from: Date; to: Date } {
+  const start = call.startedAt.getTime();
+  const end =
+    call.endedAt?.getTime() ??
+    Math.min(now.getTime(), start + OPEN_CALL_MAX_MS);
+  let to = Math.max(end, start) + TRANSCRIPT_GRACE_MS;
+  if (nextStartedAt && nextStartedAt.getTime() > start) {
+    to = Math.min(to, nextStartedAt.getTime());
+  }
+  return { from: new Date(start - TRANSCRIPT_LEAD_MS), to: new Date(to) };
+}
+
+/** Every call's window; the next call is looked for among `calls` on the same conversation. */
+export function callWindows<T extends CallSpan>(
+  calls: readonly T[],
+  now = new Date(),
+): Array<{ call: T; from: Date; to: Date }> {
+  const sorted = [...calls].sort(
+    (a, b) => a.startedAt.getTime() - b.startedAt.getTime(),
+  );
+  return sorted.map((call, i) => {
+    const next = sorted
+      .slice(i + 1)
+      .find((c) => c.conversationId === call.conversationId);
+    return { call, ...callWindow(call, next?.startedAt ?? null, now) };
+  });
+}
+
+/** Whether a message of `conversationId` saved at `at` falls inside one of the windows. */
+export function inCallWindow(
+  windows: ReadonlyArray<{ call: CallSpan; from: Date; to: Date }>,
+  conversationId: number,
+  at: Date,
+): boolean {
+  const t = at.getTime();
+  return windows.some(
+    (w) =>
+      w.call.conversationId === conversationId &&
+      t >= w.from.getTime() &&
+      t < w.to.getTime(),
+  );
+}
+
 /** The status SignalWire reported → ours. */
 export function callStatusOf(
   s: string | null | undefined,

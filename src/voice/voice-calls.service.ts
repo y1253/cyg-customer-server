@@ -30,6 +30,7 @@ import {
   DEFAULT_VOICE,
   VOICE_TOKEN_TYPE,
   callStatusOf,
+  callWindow,
   connectStreamLaml,
   isLanguage,
   isVoice,
@@ -78,6 +79,16 @@ export interface CallView {
   withName: string;
   /** step12c: THIRD_PARTY — the call was with this contact, not the customer. */
   contactName: string | null;
+  /** step12g: what was said is saved (the card opens to it). Set by the Communication tab. */
+  hasTranscript?: boolean;
+}
+
+/** step12g: one line of a call's transcript. */
+export interface TranscriptLine {
+  id: number;
+  role: string;
+  text: string;
+  at: string;
 }
 
 /** step12c: a call_person call in flight — who asked, so they hear how it went. */
@@ -782,6 +793,49 @@ export class VoiceCallsService implements OnModuleInit {
       };
     }
     throw new NotFoundException('This call has no recording');
+  }
+
+  /**
+   * step12g: what was said on a call — the VOICE conversation's messages inside the call's
+   * window (`callWindow`), oldest first. Keyed by the conversation, not the book: `switch_book`
+   * can move the conversation mid-call, and the call itself is checked against the book.
+   */
+  async transcript(
+    scope: BookScope,
+    id: number,
+  ): Promise<{ lines: TranscriptLine[] }> {
+    const call = await this.prisma.aiCall.findFirst({
+      where: { id, ...scopeWhere(scope) },
+      select: { conversationId: true, startedAt: true, endedAt: true },
+    });
+    if (!call) throw new NotFoundException('Call not found');
+    const next = await this.prisma.aiCall.findFirst({
+      where: {
+        conversationId: call.conversationId,
+        startedAt: { gt: call.startedAt },
+      },
+      orderBy: { startedAt: 'asc' },
+      select: { startedAt: true },
+    });
+    const w = callWindow(call, next?.startedAt ?? null);
+    const rows = await this.prisma.aiMessage.findMany({
+      where: {
+        conversationId: call.conversationId,
+        channel: 'VOICE',
+        createdAt: { gte: w.from, lt: w.to },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 500,
+      select: { id: true, role: true, text: true, createdAt: true },
+    });
+    return {
+      lines: rows.map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        at: m.createdAt.toISOString(),
+      })),
+    };
   }
 }
 

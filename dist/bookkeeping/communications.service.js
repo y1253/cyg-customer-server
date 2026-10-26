@@ -15,6 +15,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const communications_util_1 = require("./communications.util");
 const scope_1 = require("./scope");
 const voice_calls_service_1 = require("../voice/voice-calls.service");
+const voice_util_1 = require("../voice/voice.util");
 const ATTACHMENT_FIELDS = {
     id: true,
     filename: true,
@@ -66,13 +67,14 @@ let CommunicationsService = class CommunicationsService {
             return (0, communications_util_1.pageOf)((0, communications_util_1.buildTimeline)({ messages: [], files: new Map(), loose, statements }), limit);
         }
         const source = communications_util_1.FILE_SOURCE[channel];
-        const [found, referenced] = await Promise.all([
+        const [fetched, referenced] = await Promise.all([
             this.prisma.aiMessage.findMany({
                 where: { ...book, ...older, channel },
                 orderBy: { createdAt: 'desc' },
                 take,
                 select: {
                     id: true,
+                    conversationId: true,
                     role: true,
                     text: true,
                     warning: true,
@@ -82,6 +84,15 @@ let CommunicationsService = class CommunicationsService {
             }),
             source ? this.referencedIds(scope, channel) : Promise.resolve([]),
         ]);
+        let found = fetched;
+        let cutoff = null;
+        if (channel === 'VOICE' && fetched.length) {
+            const windows = (0, voice_util_1.callWindows)(await this.spansAround(fetched));
+            found = fetched.filter((m) => !(0, voice_util_1.inCallWindow)(windows, m.conversationId, m.createdAt));
+            if (fetched.length === take && found.length < fetched.length) {
+                cutoff = fetched[fetched.length - 1].createdAt.toISOString();
+            }
+        }
         const links = found.length
             ? await this.prisma.aiMessageAttachment.findMany({
                 where: { messageId: { in: found.map((m) => m.id) } },
@@ -112,8 +123,24 @@ let CommunicationsService = class CommunicationsService {
                     contact: { select: { name: true } },
                     customer: { select: { name: true } },
                 },
-            })).map((c) => ({ ...(0, voice_calls_service_1.toCallView)(c), startedAt: c.startedAt }))
+            })).map((c) => ({ ...(0, voice_calls_service_1.toCallView)(c), startedAt: c.startedAt, c }))
             : [];
+        if (calls.length) {
+            const windows = (0, voice_util_1.callWindows)(calls.map((x) => x.c));
+            await Promise.all(windows.map(async (w) => {
+                const line = await this.prisma.aiMessage.findFirst({
+                    where: {
+                        conversationId: w.call.conversationId,
+                        channel: 'VOICE',
+                        createdAt: { gte: w.from, lt: w.to },
+                    },
+                    select: { id: true },
+                });
+                const view = calls.find((x) => x.c === w.call);
+                if (view)
+                    view.hasTranscript = !!line;
+            }));
+        }
         const [carried, loose] = await Promise.all([
             this.prisma.transactionAttachment.findMany({
                 where: {
@@ -142,8 +169,8 @@ let CommunicationsService = class CommunicationsService {
             files: new Map(carried.map((a) => [a.id, shown(a)])),
             loose,
             statements: [],
-            calls,
-        }), limit);
+            calls: calls.map(({ c: _row, ...view }) => view),
+        }), limit, cutoff);
     }
     async count(scope, channel) {
         const book = (0, scope_1.scopeWhere)(scope);
@@ -170,7 +197,42 @@ let CommunicationsService = class CommunicationsService {
                 ? this.prisma.aiCall.count({ where: book })
                 : Promise.resolve(0),
         ]);
-        return messages + files + calls;
+        const transcripts = channel === 'VOICE' ? await this.transcriptCount(scope) : 0;
+        return messages - transcripts + files + calls;
+    }
+    async spansAround(messages) {
+        const times = messages.map((m) => m.createdAt.getTime());
+        const oldest = new Date(Math.min(...times) - voice_util_1.TRANSCRIPT_GRACE_MS);
+        return this.prisma.aiCall.findMany({
+            where: {
+                conversationId: {
+                    in: [...new Set(messages.map((m) => m.conversationId))],
+                },
+                startedAt: { lte: new Date(Math.max(...times) + 5_000) },
+                OR: [{ endedAt: null }, { endedAt: { gte: oldest } }],
+            },
+            select: { conversationId: true, startedAt: true, endedAt: true },
+        });
+    }
+    async transcriptCount(scope) {
+        const calls = await this.prisma.aiCall.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            orderBy: { startedAt: 'desc' },
+            take: 500,
+            select: { conversationId: true, startedAt: true, endedAt: true },
+        });
+        if (!calls.length)
+            return 0;
+        return this.prisma.aiMessage.count({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                channel: 'VOICE',
+                OR: (0, voice_util_1.callWindows)(calls).map((w) => ({
+                    conversationId: w.call.conversationId,
+                    createdAt: { gte: w.from, lt: w.to },
+                })),
+            },
+        });
     }
     async referencedIds(scope, channel) {
         const [rows, links] = await Promise.all([

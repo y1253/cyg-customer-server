@@ -70,6 +70,27 @@ export declare function realtimeTools(defs: readonly ToolDefinition[]): {
 }[];
 export declare function connectStreamLaml(url: string, params: Record<string, string>): string;
 export declare function spokenScript(text: string): string;
+export declare const TRANSCRIPT_GRACE_MS = 60000;
+export declare const OPEN_CALL_MAX_MS: number;
+export interface CallSpan {
+    conversationId: number;
+    startedAt: Date;
+    endedAt: Date | null;
+}
+export declare function callWindow(call: CallSpan, nextStartedAt: Date | null, now?: Date): {
+    from: Date;
+    to: Date;
+};
+export declare function callWindows<T extends CallSpan>(calls: readonly T[], now?: Date): Array<{
+    call: T;
+    from: Date;
+    to: Date;
+}>;
+export declare function inCallWindow(windows: ReadonlyArray<{
+    call: CallSpan;
+    from: Date;
+    to: Date;
+}>, conversationId: number, at: Date): boolean;
 export declare function callStatusOf(s: string | null | undefined): 'RINGING' | 'IN_PROGRESS' | 'COMPLETED' | 'NO_ANSWER' | 'FAILED';
 export declare class MuLawTrack {
     private chunks;

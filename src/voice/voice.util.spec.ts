@@ -1,5 +1,8 @@
 import {
   MuLawTrack,
+  callWindow,
+  callWindows,
+  inCallWindow,
   languageName,
   callStatusOf,
   connectStreamLaml,
@@ -99,5 +102,52 @@ describe('voice util (step12)', () => {
     expect(signalWireSignatureValid(url, params, sig, 'other')).toBe(false);
     expect(signalWireSignatureValid(url, params, sig, null)).toBe(false);
     expect(signalWireSignatureValid(url, params, null, 'k')).toBe(false);
+  });
+});
+
+describe('call transcript windows (step12g)', () => {
+  const at = (s: string) => new Date(`2026-10-26T${s}Z`);
+  const call = (start: string, end: string | null, conversationId = 1) => ({
+    conversationId,
+    startedAt: at(start),
+    endedAt: end ? at(end) : null,
+  });
+
+  it('runs from the start to a minute after the hang-up', () => {
+    const w = callWindow(call('10:00:00', '10:05:00'), null);
+    expect(w.from).toEqual(at('09:59:58'));
+    expect(w.to).toEqual(at('10:06:00'));
+  });
+
+  it('never reaches into the next call', () => {
+    const w = callWindow(call('10:00:00', '10:05:00'), at('10:05:30'));
+    expect(w.to).toEqual(at('10:05:30'));
+  });
+
+  it('a live call runs to now; one that never ended stops after two hours', () => {
+    expect(callWindow(call('10:00:00', null), null, at('10:03:00')).to).toEqual(
+      at('10:04:00'),
+    );
+    expect(callWindow(call('10:00:00', null), null, at('18:00:00')).to).toEqual(
+      at('12:01:00'),
+    );
+  });
+
+  it('caps each call by the next one on the SAME conversation only', () => {
+    const ws = callWindows([
+      call('10:05:20', '10:08:00', 2),
+      call('10:00:00', '10:05:00', 1),
+      call('10:05:10', '10:07:00', 1),
+    ]);
+    expect(ws.map((w) => w.to)).toEqual([
+      at('10:05:10'),
+      at('10:08:00'),
+      at('10:09:00'),
+    ]);
+    expect(inCallWindow(ws, 1, at('10:05:05'))).toBe(true);
+    expect(inCallWindow(ws, 1, at('10:07:30'))).toBe(true);
+    expect(inCallWindow(ws, 1, at('10:08:30'))).toBe(false);
+    expect(inCallWindow(ws, 1, at('10:20:00'))).toBe(false);
+    expect(inCallWindow(ws, 3, at('10:01:00'))).toBe(false);
   });
 });

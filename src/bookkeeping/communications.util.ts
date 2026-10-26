@@ -48,7 +48,10 @@ export interface CommFile {
   status: string;
 }
 
-/** step12: one AI phone call on the VOICE channel (its words are the messages around it). */
+/**
+ * step12: one AI phone call on the VOICE channel. step12g: its words are no longer bubbles
+ * around it — the card opens to its recording and transcript (`GET calls/:id/transcript`).
+ */
 export interface CommCall {
   id: number;
   /** INBOUND = they called us; OUTBOUND = the AI called them (a scheduled message). */
@@ -58,6 +61,15 @@ export interface CommCall {
   status: string;
   durationSec: number | null;
   hasRecording: boolean;
+  /** step12c: the two ends, when it was answered / ended, who it was with. */
+  answeredAt?: string | null;
+  endedAt?: string | null;
+  fromNumber?: string | null;
+  toNumber?: string | null;
+  withName?: string;
+  contactName?: string | null;
+  /** step12g: what was said is saved. */
+  hasTranscript?: boolean;
 }
 
 export interface CommItem {
@@ -140,21 +152,14 @@ export function buildTimeline(input: {
 }): CommItem[] {
   const items: CommItem[] = [
     ...(input.calls ?? []).map(
-      (c): CommItem => ({
-        key: `c:${c.id}`,
-        at: c.startedAt.toISOString(),
-        side: c.direction === 'OUTBOUND' ? 'cyg' : 'customer',
+      ({ startedAt, ...call }): CommItem => ({
+        key: `c:${call.id}`,
+        at: startedAt.toISOString(),
+        side: call.direction === 'OUTBOUND' ? 'cyg' : 'customer',
         kind: 'call',
         text: null,
         files: [],
-        call: {
-          id: c.id,
-          direction: c.direction,
-          purpose: c.purpose,
-          status: c.status,
-          durationSec: c.durationSec,
-          hasRecording: c.hasRecording,
-        },
+        call,
       }),
     ),
     ...input.messages.map((m): CommItem => {
@@ -206,16 +211,23 @@ export function buildTimeline(input: {
   );
 }
 
-/** The first `limit` items, and the cursor for the page after them (null = no more). */
+/**
+ * The first `limit` items, and the cursor for the page after them (null = no more).
+ * step12g: `cutoff` = a source was full but some of its rows were left out (a call's
+ * transcript lines) — nothing older than its oldest fetched row is known to be complete, so
+ * the page stops there and the next one starts there.
+ */
 export function pageOf(
   items: CommItem[],
   limit: number,
+  cutoff: string | null = null,
 ): { items: CommItem[]; nextBefore: string | null } {
-  const page = items.slice(0, limit);
-  return {
-    items: page,
-    nextBefore: items.length > limit ? page[page.length - 1].at : null,
-  };
+  const known = cutoff ? items.filter((i) => i.at >= cutoff) : items;
+  const page = known.slice(0, limit);
+  if (known.length > limit) {
+    return { items: page, nextBefore: page[page.length - 1].at };
+  }
+  return { items: page, nextBefore: cutoff };
 }
 
 /** The preview line on the channel list. */

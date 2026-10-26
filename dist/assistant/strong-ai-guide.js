@@ -25,8 +25,8 @@ Customers and books
 - The customer's CONTACTS: people the assistant called or texted for them (saved with their name when the customer agrees), listed on the Contacts tab. A contact's reply within 72 h is passed to the customer.
 - The ledger is double entry built from bank / credit-card statements: each bank row gets a payee NAME and a CATEGORY (the offset account from a fixed chart of accounts, or the customer's own categories). Money out is negative.
 
-Statements (STATEMENT_READER)
-- The customer uploads statement PDFs (or connects a bank with Plaid) and clicks Generate. An AI reads every row page by page (bank, account, period, opening / closing balance, each row's date, description, amount, running balance).
+Statements (STATEMENT_READER) — the "Bank feeds" tab of the Bookkeeping page
+- The customer uploads statement PDFs (or connects a bank with Plaid) on the Bank feeds tab and clicks Generate. An AI reads every row page by page (bank, account, period, opening / closing balance, each row's date, description, amount, running balance).
 - The code then checks the reading against the bank's own printed figures (totals, opening + net = closing, the running-balance chain), repairs signs from the running balance and totals, and re-reads suspect pages. Still off = NEEDS_REVIEW. Only DONE statements reach the ledger.
 - Starting-balance rows are computed, not stored; statements chain per account.
 

@@ -13,6 +13,12 @@ import {
 } from './communications.util';
 import { scopeWhere, type BookScope } from './scope';
 import { toCallView } from '../voice/voice-calls.service';
+import {
+  TRANSCRIPT_GRACE_MS,
+  callWindows,
+  inCallWindow,
+  type CallSpan,
+} from '../voice/voice.util';
 
 export interface ChannelSummary {
   channel: CommChannel;
@@ -102,13 +108,14 @@ export class CommunicationsService {
     }
 
     const source = FILE_SOURCE[channel];
-    const [found, referenced] = await Promise.all([
+    const [fetched, referenced] = await Promise.all([
       this.prisma.aiMessage.findMany({
         where: { ...book, ...older, channel },
         orderBy: { createdAt: 'desc' },
         take,
         select: {
           id: true,
+          conversationId: true,
           role: true,
           text: true,
           warning: true,
@@ -118,6 +125,18 @@ export class CommunicationsService {
       }),
       source ? this.referencedIds(scope, channel) : Promise.resolve([]),
     ]);
+    // step12g: a call's transcript lines live in its card, not as bubbles around it.
+    let found = fetched;
+    let cutoff: string | null = null;
+    if (channel === 'VOICE' && fetched.length) {
+      const windows = callWindows(await this.spansAround(fetched));
+      found = fetched.filter(
+        (m) => !inCallWindow(windows, m.conversationId, m.createdAt),
+      );
+      if (fetched.length === take && found.length < fetched.length) {
+        cutoff = fetched[fetched.length - 1].createdAt.toISOString();
+      }
+    }
     // step11b: every file a message is LINKED to (sent with it, the "Ask AI" file it is
     // about, one the assistant changed) — `AiMessageAttachment`, plus the old JSON column.
     const links = found.length
@@ -154,8 +173,25 @@ export class CommunicationsService {
                 customer: { select: { name: true } },
               },
             })
-          ).map((c) => ({ ...toCallView(c), startedAt: c.startedAt }))
+          ).map((c) => ({ ...toCallView(c), startedAt: c.startedAt, c }))
         : [];
+    if (calls.length) {
+      const windows = callWindows(calls.map((x) => x.c));
+      await Promise.all(
+        windows.map(async (w) => {
+          const line = await this.prisma.aiMessage.findFirst({
+            where: {
+              conversationId: w.call.conversationId,
+              channel: 'VOICE',
+              createdAt: { gte: w.from, lt: w.to },
+            },
+            select: { id: true },
+          });
+          const view = calls.find((x) => x.c === w.call);
+          if (view) view.hasTranscript = !!line;
+        }),
+      );
+    }
     const [carried, loose] = await Promise.all([
       // A message keeps showing its files, deleted or not (it was sent / it was about them).
       this.prisma.transactionAttachment.findMany({
@@ -186,9 +222,10 @@ export class CommunicationsService {
         files: new Map(carried.map((a) => [a.id, shown(a)])),
         loose,
         statements: [],
-        calls,
+        calls: calls.map(({ c: _row, ...view }) => view),
       }),
       limit,
+      cutoff,
     );
   }
 
@@ -217,7 +254,51 @@ export class CommunicationsService {
         ? this.prisma.aiCall.count({ where: book })
         : Promise.resolve(0),
     ]);
-    return messages + files + calls;
+    const transcripts =
+      channel === 'VOICE' ? await this.transcriptCount(scope) : 0;
+    return messages - transcripts + files + calls;
+  }
+
+  /**
+   * step12g: the calls whose transcript window can hold one of these VOICE messages (the
+   * page's own calls and the ones on a neighbouring page alike).
+   */
+  private async spansAround(
+    messages: Array<{ conversationId: number; createdAt: Date }>,
+  ): Promise<CallSpan[]> {
+    const times = messages.map((m) => m.createdAt.getTime());
+    const oldest = new Date(Math.min(...times) - TRANSCRIPT_GRACE_MS);
+    return this.prisma.aiCall.findMany({
+      where: {
+        conversationId: {
+          in: [...new Set(messages.map((m) => m.conversationId))],
+        },
+        startedAt: { lte: new Date(Math.max(...times) + 5_000) },
+        OR: [{ endedAt: null }, { endedAt: { gte: oldest } }],
+      },
+      select: { conversationId: true, startedAt: true, endedAt: true },
+    });
+  }
+
+  /** step12g: the book's VOICE messages that are a call's transcript (not counted twice). */
+  private async transcriptCount(scope: BookScope): Promise<number> {
+    const calls = await this.prisma.aiCall.findMany({
+      where: scopeWhere(scope),
+      orderBy: { startedAt: 'desc' },
+      take: 500,
+      select: { conversationId: true, startedAt: true, endedAt: true },
+    });
+    if (!calls.length) return 0;
+    return this.prisma.aiMessage.count({
+      where: {
+        ...scopeWhere(scope),
+        channel: 'VOICE',
+        OR: callWindows(calls).map((w) => ({
+          conversationId: w.call.conversationId,
+          createdAt: { gte: w.from, lt: w.to },
+        })),
+      },
+    });
   }
 
   /** Every file a message of this channel already shows — so it is not listed twice. */

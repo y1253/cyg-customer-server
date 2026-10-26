@@ -17,6 +17,13 @@ export interface CommCall {
     status: string;
     durationSec: number | null;
     hasRecording: boolean;
+    answeredAt?: string | null;
+    endedAt?: string | null;
+    fromNumber?: string | null;
+    toNumber?: string | null;
+    withName?: string;
+    contactName?: string | null;
+    hasTranscript?: boolean;
 }
 export interface CommItem {
     key: string;
@@ -61,7 +68,7 @@ export declare function buildTimeline(input: {
     statements: StatementIn[];
     calls?: CallIn[];
 }): CommItem[];
-export declare function pageOf(items: CommItem[], limit: number): {
+export declare function pageOf(items: CommItem[], limit: number, cutoff?: string | null): {
     items: CommItem[];
     nextBefore: string | null;
 };

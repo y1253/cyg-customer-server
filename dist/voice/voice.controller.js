@@ -70,6 +70,9 @@ let VoiceRecordingController = class VoiceRecordingController {
         });
         return new common_1.StreamableFile(r.body);
     }
+    transcript(scope, id) {
+        return this.calls.transcript(scope, id);
+    }
 };
 exports.VoiceRecordingController = VoiceRecordingController;
 __decorate([
@@ -81,6 +84,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, Object]),
     __metadata("design:returntype", Promise)
 ], VoiceRecordingController.prototype, "recording", null);
+__decorate([
+    (0, common_1.Get)(':id/transcript'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], VoiceRecordingController.prototype, "transcript", null);
 exports.VoiceRecordingController = VoiceRecordingController = __decorate([
     (0, common_1.Controller)('bookkeeping/calls'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard, book_scope_guard_1.BookScopeGuard),
