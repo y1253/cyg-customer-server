@@ -1,4 +1,4 @@
-export declare const INSTRUCTION_TARGETS: readonly ["ASSISTANT", "ATTACHMENT_READER", "MATCHER", "STATEMENT_READER", "PRODUCT_CATEGORIZER", "BANK_FEED_CATEGORIZER"];
+export declare const INSTRUCTION_TARGETS: readonly ["ASSISTANT", "ATTACHMENT_READER", "MATCHER", "STATEMENT_READER", "PRODUCT_CATEGORIZER", "BANK_FEED_CATEGORIZER", "SALES"];
 export type InstructionTarget = (typeof INSTRUCTION_TARGETS)[number];
 export declare const isInstructionTarget: (t: unknown) => t is InstructionTarget;
 export declare const TARGET_DESCRIPTIONS: Record<InstructionTarget, string>;
@@ -26,4 +26,9 @@ export interface InstructionRowLike {
 }
 export declare function assistantTexts(rows: readonly InstructionRowLike[]): AssistantTexts;
 export declare function extrasBlock(rows: readonly InstructionRowLike[], target: InstructionTarget): string;
+export declare const SALES_PITCH_KEY = "sales.pitch";
+export declare function salesTexts(rows: readonly InstructionRowLike[]): {
+    pitch: string | null;
+    extras: string;
+};
 export declare function fillPlaceholders(text: string, values: Record<string, string>): string;

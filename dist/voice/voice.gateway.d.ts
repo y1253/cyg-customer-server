@@ -6,6 +6,7 @@ import { AssistantTools } from '../assistant/assistant-tools';
 import { AssistantService } from '../assistant/assistant.service';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SalesService } from '../sales/sales.service';
 import { VoiceCallsService } from './voice-calls.service';
 export declare const VOICE_WS_PATH = "/api/voice/stream";
 export declare class VoiceGateway implements OnModuleDestroy {
@@ -16,9 +17,10 @@ export declare class VoiceGateway implements OnModuleDestroy {
     private readonly tools;
     private readonly signalwire;
     private readonly usage;
+    private readonly sales;
     private readonly logger;
     private readonly wss;
-    constructor(prisma: PrismaService, config: ConfigService, calls: VoiceCallsService, assistant: AssistantService, tools: AssistantTools, signalwire: SignalWireClient, usage: AiUsageService);
+    constructor(prisma: PrismaService, config: ConfigService, calls: VoiceCallsService, assistant: AssistantService, tools: AssistantTools, signalwire: SignalWireClient, usage: AiUsageService, sales: SalesService);
     attach(server: Server): void;
     onModuleDestroy(): void;
 }

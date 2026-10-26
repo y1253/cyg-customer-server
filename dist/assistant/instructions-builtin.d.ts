@@ -5,6 +5,7 @@ export interface BuiltinInstruction {
     isStrong: boolean;
     locked: boolean;
     sortOrder: number;
+    target?: string;
 }
 export declare const BUILTIN_INSTRUCTIONS: BuiltinInstruction[];
 export interface ExistingRow {

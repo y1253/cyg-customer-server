@@ -255,11 +255,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             return null;
         try {
             const c = this.jwt.verify(token);
-            return c.typ === voice_util_1.VOICE_TOKEN_TYPE &&
-                typeof c.sub === 'number' &&
-                (0, messaging_util_1.asE164)(c.peer)
-                ? c
-                : null;
+            if (c.typ !== voice_util_1.VOICE_TOKEN_TYPE || !(0, messaging_util_1.asE164)(c.peer))
+                return null;
+            if (c.purpose === 'PROSPECT') {
+                return c.dir === 'INBOUND' ? { ...c, sub: 0 } : null;
+            }
+            return typeof c.sub === 'number' ? c : null;
         }
         catch {
             return null;
@@ -368,6 +369,19 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             from: inbound ? call.peer : call.fromNumber,
             to: inbound ? call.fromNumber : call.peer,
         });
+    }
+    prospectStarted(callSid, claims) {
+        this.usage?.callStarted({
+            customerId: null,
+            callSid,
+            direction: 'IN',
+            purpose: 'PROSPECT',
+            from: claims.peer,
+            to: claims.to ?? null,
+        });
+    }
+    prospectEnded(callSid, durationSec) {
+        this.usage?.callEnded(callSid, { durationSec, recorded: false });
     }
     async ended(callSid, extra) {
         const call = await this.prisma.aiCall.findUnique({ where: { callSid } });

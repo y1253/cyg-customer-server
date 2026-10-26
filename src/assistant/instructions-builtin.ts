@@ -9,7 +9,12 @@
  * never overwritten.
  */
 import { DEFAULT_INSTRUCTIONS } from './assistant-prompt';
-import { FIXED_ASSISTANT_KEYS, LOCKED_KEYS } from './instructions.util';
+import { SALES_PITCH_DEFAULT } from '../sales/sales-prompt';
+import {
+  FIXED_ASSISTANT_KEYS,
+  LOCKED_KEYS,
+  SALES_PITCH_KEY,
+} from './instructions.util';
 import { STRONG_INSTRUCTIONS } from './strong-ai-guide';
 
 export interface BuiltinInstruction {
@@ -19,6 +24,8 @@ export interface BuiltinInstruction {
   isStrong: boolean;
   locked: boolean;
   sortOrder: number;
+  /** Absent = ASSISTANT. */
+  target?: string;
 }
 
 const TITLES: Record<string, string> = {
@@ -43,6 +50,16 @@ export const BUILTIN_INSTRUCTIONS: BuiltinInstruction[] = [
     sortOrder: (i + 1) * 10,
   })),
   ...STRONG_INSTRUCTIONS.map((s) => ({ ...s, isStrong: true, locked: true })),
+  // step12f: the AI salesperson (phones with no account).
+  {
+    key: SALES_PITCH_KEY,
+    title: 'How the salesperson sells',
+    text: SALES_PITCH_DEFAULT,
+    isStrong: false,
+    locked: false,
+    sortOrder: 10,
+    target: 'SALES',
+  },
 ];
 
 export interface ExistingRow {

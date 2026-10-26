@@ -21,6 +21,7 @@ export declare class PhoneAuthService {
     requestCode(rawPhone: string, ip: string): Promise<PhoneCodeSent>;
     verifyCode(rawPhone: string, code: string, ip: string): Promise<AuthResult>;
     signupByPhone(rawPhone: string, createdWith: 'SMS' | 'WHATSAPP' | 'CALL'): Promise<PhoneSignupResult>;
+    private linkProspect;
     private parse;
     private prune;
 }

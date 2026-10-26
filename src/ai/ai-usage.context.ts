@@ -19,6 +19,8 @@ export type AiFeature =
   | 'BANK_ROWS'
   | 'VOICE'
   | 'SCHEDULE'
+  /** step12f: the AI salesperson (phones with no account — no customer). */
+  | 'SALES'
   | 'OTHER';
 
 export interface AiUsageContext {

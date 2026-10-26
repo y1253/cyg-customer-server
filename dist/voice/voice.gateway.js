@@ -19,6 +19,7 @@ const assistant_tools_1 = require("../assistant/assistant-tools");
 const assistant_service_1 = require("../assistant/assistant.service");
 const signalwire_client_1 = require("../messaging/signalwire.client");
 const prisma_service_1 = require("../prisma/prisma.service");
+const sales_service_1 = require("../sales/sales.service");
 const voice_calls_service_1 = require("./voice-calls.service");
 const voice_session_1 = require("./voice-session");
 exports.VOICE_WS_PATH = '/api/voice/stream';
@@ -30,9 +31,10 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
     tools;
     signalwire;
     usage;
+    sales;
     logger = new common_1.Logger(VoiceGateway_1.name);
     wss = new ws_1.WebSocketServer({ noServer: true });
-    constructor(prisma, config, calls, assistant, tools, signalwire, usage) {
+    constructor(prisma, config, calls, assistant, tools, signalwire, usage, sales) {
         this.prisma = prisma;
         this.config = config;
         this.calls = calls;
@@ -40,6 +42,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
         this.tools = tools;
         this.signalwire = signalwire;
         this.usage = usage;
+        this.sales = sales;
     }
     attach(server) {
         server.on('upgrade', (req, socket, head) => {
@@ -54,6 +57,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
                     tools: this.tools,
                     signalwire: this.signalwire,
                     usage: this.usage,
+                    sales: this.sales,
                     openaiKey: this.config.get('OPENAI_API_KEY')?.trim() || null,
                     model: this.config.get('OPENAI_REALTIME_MODEL')?.trim() || null,
                 });
@@ -76,6 +80,7 @@ exports.VoiceGateway = VoiceGateway = VoiceGateway_1 = __decorate([
         assistant_service_1.AssistantService,
         assistant_tools_1.AssistantTools,
         signalwire_client_1.SignalWireClient,
-        ai_usage_service_1.AiUsageService])
+        ai_usage_service_1.AiUsageService,
+        sales_service_1.SalesService])
 ], VoiceGateway);
 //# sourceMappingURL=voice.gateway.js.map

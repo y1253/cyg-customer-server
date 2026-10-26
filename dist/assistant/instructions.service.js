@@ -46,7 +46,7 @@ let InstructionsService = InstructionsService_1 = class InstructionsService {
                 .create({
                 data: {
                     key: b.key,
-                    target: 'ASSISTANT',
+                    target: b.target ?? 'ASSISTANT',
                     title: b.title,
                     text: b.text,
                     isStrong: b.isStrong,
@@ -111,6 +111,9 @@ let InstructionsService = InstructionsService_1 = class InstructionsService {
     }
     async block(target) {
         return (0, instructions_util_1.extrasBlock)(await this.rows(), target);
+    }
+    async sales() {
+        return (0, instructions_util_1.salesTexts)(await this.rows());
     }
     async strong() {
         return (await this.rows()).filter((r) => r.isStrong);

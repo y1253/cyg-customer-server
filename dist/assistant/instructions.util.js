@@ -1,10 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NO_TEXTS = exports.isExtraKey = exports.MAX_INSTRUCTION_CHARS = exports.STRONG_KEYS = exports.LOCKED_KEYS = exports.isFixedKey = exports.FIXED_ASSISTANT_KEYS = exports.TARGET_DESCRIPTIONS = exports.isInstructionTarget = exports.INSTRUCTION_TARGETS = void 0;
+exports.SALES_PITCH_KEY = exports.NO_TEXTS = exports.isExtraKey = exports.MAX_INSTRUCTION_CHARS = exports.STRONG_KEYS = exports.LOCKED_KEYS = exports.isFixedKey = exports.FIXED_ASSISTANT_KEYS = exports.TARGET_DESCRIPTIONS = exports.isInstructionTarget = exports.INSTRUCTION_TARGETS = void 0;
 exports.extraKeyFor = extraKeyFor;
 exports.cleanInstructionText = cleanInstructionText;
 exports.assistantTexts = assistantTexts;
 exports.extrasBlock = extrasBlock;
+exports.salesTexts = salesTexts;
 exports.fillPlaceholders = fillPlaceholders;
 exports.INSTRUCTION_TARGETS = [
     'ASSISTANT',
@@ -13,6 +14,7 @@ exports.INSTRUCTION_TARGETS = [
     'STATEMENT_READER',
     'PRODUCT_CATEGORIZER',
     'BANK_FEED_CATEGORIZER',
+    'SALES',
 ];
 const isInstructionTarget = (t) => typeof t === 'string' &&
     exports.INSTRUCTION_TARGETS.includes(t);
@@ -24,6 +26,7 @@ exports.TARGET_DESCRIPTIONS = {
     STATEMENT_READER: 'the step that reads every row of a bank / credit-card statement PDF',
     PRODUCT_CATEGORIZER: 'the step that picks a category for each item on a receipt',
     BANK_FEED_CATEGORIZER: 'the step that names and categorizes bank-feed (Plaid) rows the rules and memories did not know',
+    SALES: 'the AI salesperson that talks (text, WhatsApp, phone call) to people who have NO account yet and tries to get them to sign up',
 };
 exports.FIXED_ASSISTANT_KEYS = [
     'core',
@@ -87,6 +90,14 @@ function extrasBlock(rows, target) {
     return texts.length
         ? `\n\nAdditional instructions from CYG Finance (follow them):\n${texts.join('\n')}`
         : '';
+}
+exports.SALES_PITCH_KEY = 'sales.pitch';
+function salesTexts(rows) {
+    const pitch = rows.find((r) => !r.isStrong && r.target === 'SALES' && r.key === exports.SALES_PITCH_KEY);
+    return {
+        pitch: pitch?.text.trim() || null,
+        extras: extrasBlock(rows.filter((r) => r.key !== exports.SALES_PITCH_KEY), 'SALES'),
+    };
 }
 function fillPlaceholders(text, values) {
     return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (m, name) => name in values ? values[name] : m);

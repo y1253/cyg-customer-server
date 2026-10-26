@@ -13,6 +13,7 @@ import {
   assistantTexts,
   cleanInstructionText,
   extrasBlock,
+  salesTexts,
   extraKeyFor,
   isExtraKey,
   isFixedKey,
@@ -84,7 +85,7 @@ export class InstructionsService implements OnModuleInit {
         .create({
           data: {
             key: b.key,
-            target: 'ASSISTANT',
+            target: b.target ?? 'ASSISTANT',
             title: b.title,
             text: b.text,
             isStrong: b.isStrong,
@@ -158,6 +159,11 @@ export class InstructionsService implements OnModuleInit {
   /** The extra instructions of another AI step ('' when none). Never throws. */
   async block(target: InstructionTarget): Promise<string> {
     return extrasBlock(await this.rows(), target);
+  }
+
+  /** step12f: the AI salesperson's pitch and extra blocks. */
+  async sales(): Promise<{ pitch: string | null; extras: string }> {
+    return salesTexts(await this.rows());
   }
 
   /** The strong AI's own rows, in order. */

@@ -67,7 +67,7 @@ Learned rules
 - Short sentences (max 200 characters) appended to EVERY AI step of a book: the book's own CustomerAiRule rows (live at once) and firm-wide AiRule rows (PENDING until staff approve them). Topics: MATCHING, CATEGORY, NAMING, GENERAL (GENERAL reaches every step).
 
 Instruction targets (what you can change)
-- ASSISTANT blocks are the regular assistant's whole prompt. For the other targets your blocks are ADDED to that step's built-in prompt (whose output schema is fixed in code): ATTACHMENT_READER, MATCHER, STATEMENT_READER, PRODUCT_CATEGORIZER, BANK_FEED_CATEGORIZER. A change takes effect within a minute for every customer.`;
+- ASSISTANT blocks are the regular assistant's whole prompt. For the other targets your blocks are ADDED to that step's built-in prompt (whose output schema is fixed in code): ATTACHMENT_READER, MATCHER, STATEMENT_READER, PRODUCT_CATEGORIZER, BANK_FEED_CATEGORIZER, SALES (the salesperson for people with no account). A change takes effect within a minute for every customer.`;
 
 export const STRONG_INSTRUCTIONS = [
   {

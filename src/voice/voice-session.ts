@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import type { AiConversation } from '@prisma/client';
+import type { AiConversation, Prospect } from '@prisma/client';
 import WebSocket from 'ws';
 import { withAiUsage } from '../ai/ai-usage.context';
 import type { AiUsageService } from '../ai-usage/ai-usage.service';
@@ -11,6 +11,8 @@ import { scopeOf } from '../bookkeeping/scope';
 import { fillLinks, type LinkBook } from '../assistant/links.util';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { OFFER_SIGNUP_TOOL, salesOpening } from '../sales/sales-prompt';
+import type { SalesService } from '../sales/sales.service';
 import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
 import {
   DEFAULT_REALTIME_MODEL,
@@ -33,6 +35,8 @@ export interface VoiceDeps {
   signalwire: SignalWireClient;
   /** step12: AI cost tracking (absent in the spec). */
   usage?: AiUsageService;
+  /** step12f: the AI salesperson for a PROSPECT call (absent in the spec). */
+  sales?: SalesService;
   openaiKey: string | null;
   model: string | null;
   /** Opens the Realtime socket — injectable so the spec can hand in a fake. */
@@ -77,6 +81,9 @@ export class VoiceSession {
   private callSid: string | null = null;
   private claims: VoiceTokenClaims | null = null;
   private conversation: AiConversation | null = null;
+  /** step12f: a PROSPECT call — the caller has no account; no conversation, no books. */
+  private prospect: Prospect | null = null;
+  private startedAt = 0;
   /** step12: the Realtime model, for cost tracking. */
   private model = DEFAULT_REALTIME_MODEL;
   private settings: VoiceSettings | null = null;
@@ -183,6 +190,7 @@ export class VoiceSession {
       return;
     }
     this.claims = claims;
+    if (claims.purpose === 'PROSPECT') return this.startProspect();
     const customer = await this.deps.prisma.customer.findFirst({
       where: { id: claims.sub, deletedAt: null },
       select: { name: true },
@@ -216,6 +224,46 @@ export class VoiceSession {
     await this.openRealtime(customer.name);
   }
 
+  /**
+   * step12f: a phone with no account called — the AI salesperson. Not recorded, no
+   * `AiCall` (it needs a customer): the transcript is `ProspectMessage` rows and the cost
+   * a `CommCall` with no customer.
+   */
+  private async startProspect(): Promise<void> {
+    const claims = this.claims!;
+    const sales = this.deps.sales;
+    if (!sales) return this.close();
+    this.settings = await this.deps.calls.settings();
+    this.prospect = await sales.touch(claims.peer, 'CALL');
+    this.startedAt = Date.now();
+    this.deps.calls.prospectStarted(this.callSid!, claims);
+    this.logger.log(
+      `call ${this.callSid} INBOUND prospect ${this.prospect.id} connected`,
+    );
+    this.timer = setTimeout(
+      () => void this.hangUp('max length'),
+      this.settings.maxMinutes * 60_000,
+    );
+    const ok =
+      !!this.deps.openaiKey &&
+      (await sales.enabled()) &&
+      sales.takeCall(this.prospect.phoneE164);
+    if (!ok) return this.hangUp('salesperson not available');
+    const model = this.deps.model || DEFAULT_REALTIME_MODEL;
+    this.model = model;
+    const language = languageName(this.settings.language);
+    const instructions = await sales.prompt(this.prospect, 'CALL', {
+      language,
+      maxMinutes: this.settings.maxMinutes,
+    });
+    this.connectRealtime(
+      model,
+      instructions,
+      [OFFER_SIGNUP_TOOL],
+      salesOpening(language),
+    );
+  }
+
   // ---- OpenAI side --------------------------------------------------------------------
 
   private async openRealtime(customerName: string): Promise<void> {
@@ -223,11 +271,6 @@ export class VoiceSession {
     const claims = this.claims!;
     const model = this.deps.model || DEFAULT_REALTIME_MODEL;
     this.model = model;
-    const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
-    const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
-    this.openai = this.deps.connect
-      ? this.deps.connect(url, headers)
-      : new WebSocket(url, { headers });
     // step12c: a call to someone else for the customer knows only the message.
     const thirdParty = claims.purpose === 'THIRD_PARTY';
     const instructions = thirdParty
@@ -241,14 +284,33 @@ export class VoiceSession {
       : await this.deps.assistant.promptFor(conversation, {
           note: await this.callNote(customerName),
         });
+    this.connectRealtime(
+      model,
+      instructions,
+      thirdParty ? [] : toolsFor('VOICE'),
+      this.opening(customerName, claims),
+    );
+  }
 
+  /** Opens the Realtime socket with this prompt and tools; the AI speaks `opening` first. */
+  private connectRealtime(
+    model: string,
+    instructions: string,
+    tools: Parameters<typeof realtimeSession>[0]['tools'],
+    opening: string,
+  ): void {
+    const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
+    const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
+    this.openai = this.deps.connect
+      ? this.deps.connect(url, headers)
+      : new WebSocket(url, { headers });
     this.openai.on('open', () => {
       this.sendOpenAi(
         realtimeSession({
           model,
           instructions,
           voice: this.settings!.voice,
-          tools: thirdParty ? [] : toolsFor('VOICE'),
+          tools,
         }),
       );
       for (const p of this.early.splice(0)) {
@@ -257,7 +319,7 @@ export class VoiceSession {
       // The AI speaks first: the greeting, or the scheduled message.
       this.sendOpenAi({
         type: 'response.create',
-        response: { instructions: this.opening(customerName, claims) },
+        response: { instructions: opening },
       });
     });
     this.openai.on('message', (raw) => {
@@ -370,7 +432,15 @@ export class VoiceSession {
       this.recordUsage(REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
       const said =
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
-      if (said && this.conversation) {
+      if (said && this.prospect) {
+        await this.deps.sales!.save(
+          this.prospect.id,
+          'CALL',
+          'USER',
+          said,
+          this.callSid,
+        );
+      } else if (said && this.conversation) {
         const m = await this.deps.assistant.save(
           this.conversation,
           'USER',
@@ -381,7 +451,15 @@ export class VoiceSession {
     } else if (has(RT.assistantText, type)) {
       const said =
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
-      if (said && this.conversation) await this.saveAssistant(said);
+      if (said && this.prospect) {
+        await this.deps.sales!.save(
+          this.prospect.id,
+          'CALL',
+          'ASSISTANT',
+          said,
+          this.callSid,
+        );
+      } else if (said && this.conversation) await this.saveAssistant(said);
     } else if (has(RT.toolCall, type)) {
       if (!this.spoke) this.fillerWanted = true;
       this.toolsRunning++;
@@ -417,8 +495,19 @@ export class VoiceSession {
     kind: 'realtime' | 'transcribe',
     usage: unknown,
   ): void {
+    if (!usage) return;
+    if (this.prospect) {
+      this.deps.usage?.recordFor(
+        { customerId: null, bookId: null, companyId: null, feature: 'SALES' },
+        model,
+        kind,
+        usage,
+        0,
+      );
+      return;
+    }
     const c = this.conversation;
-    if (!c || !usage) return;
+    if (!c) return;
     this.deps.usage?.recordFor(
       {
         customerId: c.customerId,
@@ -438,6 +527,19 @@ export class VoiceSession {
     const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
     const name = typeof ev.name === 'string' ? ev.name : '';
     const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
+    if (this.prospect) {
+      // step12f: the salesperson's only tool — the one sign-up text, asked for on the call.
+      const output =
+        name === OFFER_SIGNUP_TOOL.name
+          ? await this.deps.sales!.offerOnCall(this.prospect.id, this.claims?.to)
+          : `Unknown tool ${name}.`;
+      this.sendOpenAi({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output },
+      });
+      this.toolOutputsPending = true;
+      return;
+    }
     const conversation = await this.freshConversation();
     const scope = scopeOf(conversation);
     const outcome = await withAiUsage({ ...scope, feature: 'VOICE' }, () =>
@@ -528,6 +630,14 @@ export class VoiceSession {
     if (this.timer) clearTimeout(this.timer);
     this.close();
     if (!this.callSid || !this.claims) return;
+    if (this.prospect) {
+      this.deps.calls.prospectEnded(
+        this.callSid,
+        Math.round((Date.now() - this.startedAt) / 1000),
+      );
+      this.logger.log(`call ${this.callSid} ended`);
+      return;
+    }
     // A call we placed is recorded by SignalWire anyway; an incoming one whose recording
     // could not be started keeps the bridge's own copy.
     const needWav = this.claims.dir === 'INBOUND' && !this.recordingSid;

@@ -218,7 +218,10 @@ export class PhoneAuthService {
       orderBy: { id: 'asc' },
       select: { id: true },
     });
-    if (existing) return { customerId: existing.id, created: false };
+    if (existing) {
+      await this.linkProspect(phone, existing.id);
+      return { customerId: existing.id, created: false };
+    }
     const customer = await this.prisma.customer.create({
       data: {
         name: '',
@@ -232,10 +235,23 @@ export class PhoneAuthService {
       },
     });
     await ensureDefaultBook(this.prisma, customer.id);
+    await this.linkProspect(phone, customer.id);
     this.logger.log(
       `account #${customer.id} opened by ${createdWith} for ${maskPhone(phone)}`,
     );
     return { customerId: customer.id, created: true };
+  }
+
+  /** step12f: the AI salesperson's conversation with this phone now points at its account. */
+  private async linkProspect(phone: string, customerId: number): Promise<void> {
+    try {
+      await this.prisma.prospect.updateMany({
+        where: { phoneE164: phone, customerId: null },
+        data: { customerId, signedUpAt: new Date() },
+      });
+    } catch (err) {
+      this.logger.warn(`prospect link failed: ${String(err)}`);
+    }
   }
 
   private parse(raw: string): string {

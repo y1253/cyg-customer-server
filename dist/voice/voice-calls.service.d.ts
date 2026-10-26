@@ -78,6 +78,8 @@ export declare class VoiceCallsService implements OnModuleInit {
     conversationFor(claims: VoiceTokenClaims): Promise<AiConversation>;
     started(claims: VoiceTokenClaims, conversation: AiConversation, callSid: string): Promise<AiCall>;
     private recordStart;
+    prospectStarted(callSid: string, claims: VoiceTokenClaims): void;
+    prospectEnded(callSid: string, durationSec: number): void;
     ended(callSid: string, extra: {
         recordingSid?: string | null;
         wav?: Buffer | null;

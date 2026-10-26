@@ -3,6 +3,7 @@ import { AssistantModule } from '../assistant/assistant.module';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { SalesModule } from '../sales/sales.module';
 import { VoiceCallsService } from './voice-calls.service';
 import {
   VoiceRecordingController,
@@ -17,6 +18,7 @@ import { VoiceGateway } from './voice.gateway';
     BookkeepingModule,
     CustomerAuthModule,
     MessagingModule,
+    SalesModule,
   ],
   controllers: [VoiceStatusController, VoiceRecordingController],
   providers: [VoiceCallsService, VoiceGateway],

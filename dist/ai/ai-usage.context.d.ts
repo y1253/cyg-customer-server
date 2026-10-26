@@ -1,4 +1,4 @@
-export type AiFeature = 'ASSISTANT' | 'STRONG_AI' | 'INTAKE' | 'STATEMENT' | 'ATTACHMENT' | 'TRANSCRIBE' | 'PRODUCTS' | 'BANK_ROWS' | 'VOICE' | 'SCHEDULE' | 'OTHER';
+export type AiFeature = 'ASSISTANT' | 'STRONG_AI' | 'INTAKE' | 'STATEMENT' | 'ATTACHMENT' | 'TRANSCRIBE' | 'PRODUCTS' | 'BANK_ROWS' | 'VOICE' | 'SCHEDULE' | 'SALES' | 'OTHER';
 export interface AiUsageContext {
     customerId: number | null;
     bookId: number | null;

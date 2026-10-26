@@ -21,6 +21,10 @@ export declare class InstructionsService implements OnModuleInit {
     private rows;
     assistant(): Promise<AssistantTexts>;
     block(target: InstructionTarget): Promise<string>;
+    sales(): Promise<{
+        pitch: string | null;
+        extras: string;
+    }>;
     strong(): Promise<AiInstruction[]>;
     regular(): Promise<AiInstruction[]>;
     history(instructionId: number, take?: number): Promise<{

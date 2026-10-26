@@ -8,6 +8,7 @@ import { AssistantTools } from '../assistant/assistant-tools';
 import { AssistantService } from '../assistant/assistant.service';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SalesService } from '../sales/sales.service';
 import { VoiceCallsService } from './voice-calls.service';
 import { VoiceSession } from './voice-session';
 
@@ -34,6 +35,7 @@ export class VoiceGateway implements OnModuleDestroy {
     private readonly tools: AssistantTools,
     private readonly signalwire: SignalWireClient,
     private readonly usage: AiUsageService,
+    private readonly sales: SalesService,
   ) {}
 
   attach(server: Server): void {
@@ -50,6 +52,7 @@ export class VoiceGateway implements OnModuleDestroy {
             tools: this.tools,
             signalwire: this.signalwire,
             usage: this.usage,
+            sales: this.sales,
             openaiKey:
               this.config.get<string>('OPENAI_API_KEY')?.trim() || null,
             model:

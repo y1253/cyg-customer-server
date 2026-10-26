@@ -25,6 +25,7 @@ const feature_requests_module_1 = require("./feature-requests/feature-requests.m
 const mail_module_1 = require("./mail/mail.module");
 const prisma_module_1 = require("./prisma/prisma.module");
 const schedules_module_1 = require("./schedules/schedules.module");
+const sales_module_1 = require("./sales/sales.module");
 const voice_module_1 = require("./voice/voice.module");
 const storage_module_1 = require("./storage/storage.module");
 let AppModule = class AppModule {
@@ -49,6 +50,7 @@ exports.AppModule = AppModule = __decorate([
             bank_feeds_module_1.BankFeedsModule,
             schedules_module_1.SchedulesModule,
             feature_requests_module_1.FeatureRequestsModule,
+            sales_module_1.SalesModule,
             voice_module_1.VoiceModule,
         ],
         controllers: [app_controller_1.AppController],

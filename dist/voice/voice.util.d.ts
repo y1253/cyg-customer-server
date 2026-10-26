@@ -47,7 +47,7 @@ export declare const DEFAULT_LANGUAGE = "en";
 export declare const isLanguage: (v: unknown) => v is string;
 export declare const languageName: (id: string | null | undefined) => string;
 export declare const VOICE_TOKEN_TYPE = "voice-call";
-export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT' | 'AI_SCHEDULE' | 'REQUESTED' | 'THIRD_PARTY';
+export type CallPurpose = 'INBOUND' | 'ACCOUNT_STATUS' | 'FINANCIAL_REPORT' | 'AI_SCHEDULE' | 'REQUESTED' | 'THIRD_PARTY' | 'PROSPECT';
 export interface VoiceTokenClaims {
     typ: string;
     sub: number;

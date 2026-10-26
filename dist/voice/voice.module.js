@@ -12,6 +12,7 @@ const assistant_module_1 = require("../assistant/assistant.module");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const messaging_module_1 = require("../messaging/messaging.module");
+const sales_module_1 = require("../sales/sales.module");
 const voice_calls_service_1 = require("./voice-calls.service");
 const voice_controller_1 = require("./voice.controller");
 const voice_gateway_1 = require("./voice.gateway");
@@ -25,6 +26,7 @@ exports.VoiceModule = VoiceModule = __decorate([
             bookkeeping_module_1.BookkeepingModule,
             customer_auth_module_1.CustomerAuthModule,
             messaging_module_1.MessagingModule,
+            sales_module_1.SalesModule,
         ],
         controllers: [voice_controller_1.VoiceStatusController, voice_controller_1.VoiceRecordingController],
         providers: [voice_calls_service_1.VoiceCallsService, voice_gateway_1.VoiceGateway],

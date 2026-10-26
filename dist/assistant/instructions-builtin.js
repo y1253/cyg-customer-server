@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BUILTIN_INSTRUCTIONS = void 0;
 exports.planSync = planSync;
 const assistant_prompt_1 = require("./assistant-prompt");
+const sales_prompt_1 = require("../sales/sales-prompt");
 const instructions_util_1 = require("./instructions.util");
 const strong_ai_guide_1 = require("./strong-ai-guide");
 const TITLES = {
@@ -26,6 +27,15 @@ exports.BUILTIN_INSTRUCTIONS = [
         sortOrder: (i + 1) * 10,
     })),
     ...strong_ai_guide_1.STRONG_INSTRUCTIONS.map((s) => ({ ...s, isStrong: true, locked: true })),
+    {
+        key: instructions_util_1.SALES_PITCH_KEY,
+        title: 'How the salesperson sells',
+        text: sales_prompt_1.SALES_PITCH_DEFAULT,
+        isStrong: false,
+        locked: false,
+        sortOrder: 10,
+        target: 'SALES',
+    },
 ];
 function planSync(existing, builtins = exports.BUILTIN_INSTRUCTIONS) {
     const byKey = new Map(existing.map((r) => [r.key, r]));

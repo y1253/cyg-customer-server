@@ -4,6 +4,7 @@ import type { AssistantTools } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { SalesService } from '../sales/sales.service';
 import type { VoiceCallsService } from './voice-calls.service';
 export interface VoiceDeps {
     prisma: PrismaService;
@@ -12,6 +13,7 @@ export interface VoiceDeps {
     tools: AssistantTools;
     signalwire: SignalWireClient;
     usage?: AiUsageService;
+    sales?: SalesService;
     openaiKey: string | null;
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
@@ -25,6 +27,8 @@ export declare class VoiceSession {
     private callSid;
     private claims;
     private conversation;
+    private prospect;
+    private startedAt;
     private model;
     private settings;
     private recordingSid;
@@ -47,7 +51,9 @@ export declare class VoiceSession {
     constructor(ws: WebSocket, deps: VoiceDeps);
     private onSignalWire;
     private start;
+    private startProspect;
     private openRealtime;
+    private connectRealtime;
     private callNote;
     private opening;
     private onOpenAi;

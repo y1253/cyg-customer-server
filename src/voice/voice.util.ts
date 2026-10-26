@@ -59,11 +59,13 @@ export type CallPurpose =
   | 'AI_SCHEDULE'
   | 'REQUESTED'
   /** step12c: the customer asked the AI to call someone else (`call_person`). */
-  | 'THIRD_PARTY';
+  | 'THIRD_PARTY'
+  /** step12f: a phone with NO account called us — the AI salesperson, no customer (`sub` 0). */
+  | 'PROSPECT';
 
 export interface VoiceTokenClaims {
   typ: string;
-  /** The customer. */
+  /** The customer; 0 for a PROSPECT call (the internal API signs none). */
   sub: number;
   /** Their phone, E.164. */
   peer: string;

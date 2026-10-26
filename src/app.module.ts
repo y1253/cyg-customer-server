@@ -16,6 +16,7 @@ import { FeatureRequestsModule } from './feature-requests/feature-requests.modul
 import { MailModule } from './mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SchedulesModule } from './schedules/schedules.module';
+import { SalesModule } from './sales/sales.module';
 import { VoiceModule } from './voice/voice.module';
 import { StorageModule } from './storage/storage.module';
 
@@ -37,6 +38,7 @@ import { StorageModule } from './storage/storage.module';
     BankFeedsModule,
     SchedulesModule,
     FeatureRequestsModule,
+    SalesModule,
     VoiceModule,
   ],
   controllers: [AppController],

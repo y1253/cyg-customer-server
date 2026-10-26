@@ -18,6 +18,7 @@ export const INSTRUCTION_TARGETS = [
   'STATEMENT_READER',
   'PRODUCT_CATEGORIZER',
   'BANK_FEED_CATEGORIZER',
+  'SALES',
 ] as const;
 export type InstructionTarget = (typeof INSTRUCTION_TARGETS)[number];
 
@@ -39,6 +40,8 @@ export const TARGET_DESCRIPTIONS: Record<InstructionTarget, string> = {
     'the step that picks a category for each item on a receipt',
   BANK_FEED_CATEGORIZER:
     'the step that names and categorizes bank-feed (Plaid) rows the rules and memories did not know',
+  SALES:
+    'the AI salesperson that talks (text, WhatsApp, phone call) to people who have NO account yet and tries to get them to sign up',
 };
 
 /** The regular assistant's fixed blocks, in prompt order. */
@@ -142,6 +145,26 @@ export function extrasBlock(
   return texts.length
     ? `\n\nAdditional instructions from CYG Finance (follow them):\n${texts.join('\n')}`
     : '';
+}
+
+/** step12f: the salesperson's editable pitch (target SALES, seeded as a built-in). */
+export const SALES_PITCH_KEY = 'sales.pitch';
+
+/** The SALES rows → the pitch (null = the code's default) and the other blocks. */
+export function salesTexts(rows: readonly InstructionRowLike[]): {
+  pitch: string | null;
+  extras: string;
+} {
+  const pitch = rows.find(
+    (r) => !r.isStrong && r.target === 'SALES' && r.key === SALES_PITCH_KEY,
+  );
+  return {
+    pitch: pitch?.text.trim() || null,
+    extras: extrasBlock(
+      rows.filter((r) => r.key !== SALES_PITCH_KEY),
+      'SALES',
+    ),
+  };
 }
 
 /** Fill `{{name}}` placeholders; an unknown one is left as written. */

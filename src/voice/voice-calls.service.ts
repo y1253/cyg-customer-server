@@ -383,11 +383,12 @@ export class VoiceCallsService implements OnModuleInit {
     if (!token) return null;
     try {
       const c = this.jwt.verify<VoiceTokenClaims>(token);
-      return c.typ === VOICE_TOKEN_TYPE &&
-        typeof c.sub === 'number' &&
-        asE164(c.peer)
-        ? c
-        : null;
+      if (c.typ !== VOICE_TOKEN_TYPE || !asE164(c.peer)) return null;
+      // step12f: a caller with no account — inbound only, and never a customer's id.
+      if (c.purpose === 'PROSPECT') {
+        return c.dir === 'INBOUND' ? { ...c, sub: 0 } : null;
+      }
+      return typeof c.sub === 'number' ? c : null;
     } catch {
       return null;
     }
@@ -514,6 +515,23 @@ export class VoiceCallsService implements OnModuleInit {
       from: inbound ? call.peer : call.fromNumber,
       to: inbound ? call.fromNumber : call.peer,
     });
+  }
+
+  /** step12f: a PROSPECT call (no customer, no `AiCall`) — only its cost row. */
+  prospectStarted(callSid: string, claims: VoiceTokenClaims): void {
+    this.usage?.callStarted({
+      customerId: null,
+      callSid,
+      direction: 'IN',
+      purpose: 'PROSPECT',
+      from: claims.peer,
+      to: claims.to ?? null,
+    });
+  }
+
+  /** step12f: a PROSPECT call ended after `durationSec` (never recorded). */
+  prospectEnded(callSid: string, durationSec: number): void {
+    this.usage?.callEnded(callSid, { durationSec, recorded: false });
   }
 
   /** The stream ended: the call's end, length, and (fallback) the bridge's own recording. */

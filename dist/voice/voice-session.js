@@ -11,6 +11,7 @@ const assistant_tools_1 = require("../assistant/assistant-tools");
 const book_switch_1 = require("../assistant/book-switch");
 const scope_1 = require("../bookkeeping/scope");
 const links_util_1 = require("../assistant/links.util");
+const sales_prompt_1 = require("../sales/sales-prompt");
 const voice_util_1 = require("./voice.util");
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
 function rawText(raw) {
@@ -32,6 +33,8 @@ class VoiceSession {
     callSid = null;
     claims = null;
     conversation = null;
+    prospect = null;
+    startedAt = 0;
     model = voice_util_1.DEFAULT_REALTIME_MODEL;
     settings = null;
     recordingSid = null;
@@ -105,6 +108,8 @@ class VoiceSession {
             return;
         }
         this.claims = claims;
+        if (claims.purpose === 'PROSPECT')
+            return this.startProspect();
         const customer = await this.deps.prisma.customer.findFirst({
             where: { id: claims.sub, deletedAt: null },
             select: { name: true },
@@ -126,16 +131,36 @@ class VoiceSession {
         }
         await this.openRealtime(customer.name);
     }
+    async startProspect() {
+        const claims = this.claims;
+        const sales = this.deps.sales;
+        if (!sales)
+            return this.close();
+        this.settings = await this.deps.calls.settings();
+        this.prospect = await sales.touch(claims.peer, 'CALL');
+        this.startedAt = Date.now();
+        this.deps.calls.prospectStarted(this.callSid, claims);
+        this.logger.log(`call ${this.callSid} INBOUND prospect ${this.prospect.id} connected`);
+        this.timer = setTimeout(() => void this.hangUp('max length'), this.settings.maxMinutes * 60_000);
+        const ok = !!this.deps.openaiKey &&
+            (await sales.enabled()) &&
+            sales.takeCall(this.prospect.phoneE164);
+        if (!ok)
+            return this.hangUp('salesperson not available');
+        const model = this.deps.model || voice_util_1.DEFAULT_REALTIME_MODEL;
+        this.model = model;
+        const language = (0, voice_util_1.languageName)(this.settings.language);
+        const instructions = await sales.prompt(this.prospect, 'CALL', {
+            language,
+            maxMinutes: this.settings.maxMinutes,
+        });
+        this.connectRealtime(model, instructions, [sales_prompt_1.OFFER_SIGNUP_TOOL], (0, sales_prompt_1.salesOpening)(language));
+    }
     async openRealtime(customerName) {
         const conversation = this.conversation;
         const claims = this.claims;
         const model = this.deps.model || voice_util_1.DEFAULT_REALTIME_MODEL;
         this.model = model;
-        const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
-        const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
-        this.openai = this.deps.connect
-            ? this.deps.connect(url, headers)
-            : new ws_1.default(url, { headers });
         const thirdParty = claims.purpose === 'THIRD_PARTY';
         const instructions = thirdParty
             ? (0, voice_util_1.thirdPartyInstructions)({
@@ -148,19 +173,27 @@ class VoiceSession {
             : await this.deps.assistant.promptFor(conversation, {
                 note: await this.callNote(customerName),
             });
+        this.connectRealtime(model, instructions, thirdParty ? [] : (0, assistant_tools_1.toolsFor)('VOICE'), this.opening(customerName, claims));
+    }
+    connectRealtime(model, instructions, tools, opening) {
+        const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
+        const headers = { Authorization: `Bearer ${this.deps.openaiKey}` };
+        this.openai = this.deps.connect
+            ? this.deps.connect(url, headers)
+            : new ws_1.default(url, { headers });
         this.openai.on('open', () => {
             this.sendOpenAi((0, voice_util_1.realtimeSession)({
                 model,
                 instructions,
                 voice: this.settings.voice,
-                tools: thirdParty ? [] : (0, assistant_tools_1.toolsFor)('VOICE'),
+                tools,
             }));
             for (const p of this.early.splice(0)) {
                 this.sendOpenAi({ type: 'input_audio_buffer.append', audio: p });
             }
             this.sendOpenAi({
                 type: 'response.create',
-                response: { instructions: this.opening(customerName, claims) },
+                response: { instructions: opening },
             });
         });
         this.openai.on('message', (raw) => {
@@ -256,14 +289,20 @@ class VoiceSession {
         else if (has(voice_util_1.RT.userText, type)) {
             this.recordUsage(voice_util_1.REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
             const said = typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
-            if (said && this.conversation) {
+            if (said && this.prospect) {
+                await this.deps.sales.save(this.prospect.id, 'CALL', 'USER', said, this.callSid);
+            }
+            else if (said && this.conversation) {
                 const m = await this.deps.assistant.save(this.conversation, 'USER', said);
                 this.lastUserMessageId = m.id;
             }
         }
         else if (has(voice_util_1.RT.assistantText, type)) {
             const said = typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
-            if (said && this.conversation)
+            if (said && this.prospect) {
+                await this.deps.sales.save(this.prospect.id, 'CALL', 'ASSISTANT', said, this.callSid);
+            }
+            else if (said && this.conversation)
                 await this.saveAssistant(said);
         }
         else if (has(voice_util_1.RT.toolCall, type)) {
@@ -291,8 +330,14 @@ class VoiceSession {
         this.sendOpenAi({ type: 'response.create' });
     }
     recordUsage(model, kind, usage) {
+        if (!usage)
+            return;
+        if (this.prospect) {
+            this.deps.usage?.recordFor({ customerId: null, bookId: null, companyId: null, feature: 'SALES' }, model, kind, usage, 0);
+            return;
+        }
         const c = this.conversation;
-        if (!c || !usage)
+        if (!c)
             return;
         this.deps.usage?.recordFor({
             customerId: c.customerId,
@@ -305,6 +350,17 @@ class VoiceSession {
         const callId = typeof ev.call_id === 'string' ? ev.call_id : '';
         const name = typeof ev.name === 'string' ? ev.name : '';
         const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
+        if (this.prospect) {
+            const output = name === sales_prompt_1.OFFER_SIGNUP_TOOL.name
+                ? await this.deps.sales.offerOnCall(this.prospect.id, this.claims?.to)
+                : `Unknown tool ${name}.`;
+            this.sendOpenAi({
+                type: 'conversation.item.create',
+                item: { type: 'function_call_output', call_id: callId, output },
+            });
+            this.toolOutputsPending = true;
+            return;
+        }
         const conversation = await this.freshConversation();
         const scope = (0, scope_1.scopeOf)(conversation);
         const outcome = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'VOICE' }, () => this.deps.tools.run(name, args, {
@@ -382,6 +438,11 @@ class VoiceSession {
         this.close();
         if (!this.callSid || !this.claims)
             return;
+        if (this.prospect) {
+            this.deps.calls.prospectEnded(this.callSid, Math.round((Date.now() - this.startedAt) / 1000));
+            this.logger.log(`call ${this.callSid} ended`);
+            return;
+        }
         const needWav = this.claims.dir === 'INBOUND' && !this.recordingSid;
         const len = Math.max(this.caller.samples, this.ai.samples);
         await this.deps.calls
