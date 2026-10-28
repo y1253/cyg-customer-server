@@ -9,9 +9,11 @@ import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { asE164 } from '../messaging/messaging.util';
 import { firmReach } from '../messaging/reach';
 import { PrismaService } from '../prisma/prisma.service';
+import { liveCalls } from '../voice/live-calls';
 import {
   CALL_SIGNUP_TEXT,
   DailyCounter,
+  MAX_CALL_TEXTS,
   OFFER_SIGNUP_TOOL,
   salesPrompt,
   withSignupLine,
@@ -42,6 +44,8 @@ export class SalesService {
   private readonly perPhone = new DailyCounter();
   private readonly total = new DailyCounter();
   private readonly callsPerPhone = new DailyCounter();
+  /** step12h: `text_caller` texts sent per call (by call sid). */
+  private readonly callTexts = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -193,7 +197,10 @@ export class SalesService {
     const phone = asE164(input.phone);
     if (!phone) return none;
     if (
-      !this.perPhone.take(phone, this.num('SALES_REPLIES_PER_PHONE_PER_DAY', 30))
+      !this.perPhone.take(
+        phone,
+        this.num('SALES_REPLIES_PER_PHONE_PER_DAY', 30),
+      )
     ) {
       return none;
     }
@@ -293,5 +300,83 @@ export class SalesService {
     await this.markOffered(p.id, 'CALL');
     await this.save(p.id, 'CALL', 'ASSISTANT', `[texted] ${CALL_SIGNUP_TEXT}`);
     return 'Texted. Tell them to reply YES to that text and their account opens right away on this number.';
+  }
+
+  /**
+   * step12h `text_caller`: a text to the caller while the call goes on (a link, a question
+   * they can answer by text). From the number they called; at most `MAX_CALL_TEXTS` a call.
+   */
+  async textOnCall(
+    prospectId: number,
+    from: string | null | undefined,
+    callSid: string | null,
+    rawArgs: string,
+  ): Promise<string> {
+    let message = '';
+    try {
+      const args = JSON.parse(rawArgs || '{}') as { message?: unknown };
+      if (typeof args.message === 'string') message = args.message.trim();
+    } catch {
+      // handled below
+    }
+    if (!message) return 'Nothing was sent: the message was empty.';
+    const key = callSid ?? `prospect-${prospectId}`;
+    const sent = this.callTexts.get(key) ?? 0;
+    if (sent >= MAX_CALL_TEXTS) {
+      return 'No more texts on this call — tell them instead.';
+    }
+    const p = await this.prisma.prospect.findUnique({
+      where: { id: prospectId },
+    });
+    if (!p) return 'Could not send the text.';
+    const body = message.slice(0, 600);
+    const outcome = await this.messenger.send({
+      channel: 'SMS',
+      to: p.phoneE164,
+      from: from ?? null,
+      body,
+      meta: { customerId: null, purpose: 'SALES_TEXT' },
+    });
+    if (outcome !== 'sent') {
+      this.logger.warn(`call text for prospect ${p.id}: ${outcome}`);
+      return outcome === 'opted-out'
+        ? 'They opted out of our texts, so nothing can be sent. Say it out loud instead.'
+        : 'The text could not be sent. Say it out loud instead.';
+    }
+    this.callTexts.set(key, sent + 1);
+    if (this.callTexts.size > 500) this.callTexts.clear();
+    await this.save(p.id, 'CALL', 'ASSISTANT', `[texted] ${body}`, callSid);
+    return 'Texted. Tell them you just sent it; anything they text back comes to you on this call.';
+  }
+
+  /**
+   * step12h: a text from a phone with no account (from the INTERNAL API, before it answers
+   * the text itself). When that phone is on a call with the salesperson right now, the text
+   * goes to the call — saved, and handed to the agent to react out loud — and `live` tells
+   * the internal API to send no text reply.
+   */
+  async liveText(input: {
+    phone: string;
+    text: string;
+    /** A note from our side (e.g. "their account is open") rather than their words. */
+    system?: boolean;
+  }): Promise<{ live: boolean }> {
+    const phone = asE164(input.phone);
+    if (!phone) return { live: false };
+    const text = input.text.trim().slice(0, 1500);
+    const note = input.system
+      ? `[Note from CYG Finance, not said by the caller: ${text}]`
+      : `[The caller just texted you, while on this call: "${text}"]`;
+    if (!liveCalls.toProspect(phone, note)) return { live: false };
+    if (!input.system) {
+      const p = await this.prisma.prospect.findUnique({
+        where: { phoneE164: phone },
+      });
+      if (p) await this.save(p.id, 'SMS', 'USER', text);
+    }
+    this.logger.log(
+      `live call text for ${phone.slice(0, -4)}****${input.system ? ' (note)' : ''}`,
+    );
+    return { live: true };
   }
 }

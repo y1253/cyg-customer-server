@@ -29,7 +29,8 @@ export declare class StrongAiService implements OnModuleInit {
     handle(ctx: ToolContext, report: IssueReport): Promise<IssueOutcome>;
     private finishOf;
     private overLimit;
-    private textAfterCall;
+    private afterCallCheck;
+    private textCaller;
     investigate(escalation: AiEscalation, conversation: AiConversation, report: IssueReport): Promise<StrongFinish>;
     private saveVerdict;
     private systemPrompt;

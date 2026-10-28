@@ -19,6 +19,7 @@ export declare class SalesService {
     private readonly perPhone;
     private readonly total;
     private readonly callsPerPhone;
+    private readonly callTexts;
     constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, messenger: CustomerMessenger, instructions?: InstructionsService | undefined);
     private num;
     private model;
@@ -39,4 +40,12 @@ export declare class SalesService {
         text: string;
     }): Promise<SalesReply>;
     offerOnCall(prospectId: number, from: string | null | undefined): Promise<string>;
+    textOnCall(prospectId: number, from: string | null | undefined, callSid: string | null, rawArgs: string): Promise<string>;
+    liveText(input: {
+        phone: string;
+        text: string;
+        system?: boolean;
+    }): Promise<{
+        live: boolean;
+    }>;
 }

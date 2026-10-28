@@ -1,3 +1,5 @@
+import type { Request } from 'express';
+import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import type { BookScope } from '../bookkeeping/scope';
 import { AssistantService, type AssistantMessageView, type ChatResult, type ConversationView } from './assistant.service';
 import { AttachmentChatDto, ChatDto, IntakeAgentDto, IntakeRouteDto, ContactReplyDto } from './dto/assistant.dto';
@@ -9,6 +11,11 @@ export declare class AssistantConfigController {
     constructor(assistant: AssistantService);
     config(): {
         enabled: boolean;
+    };
+    changes(req: Request & {
+        user: CustomerRequestUser;
+    }): {
+        version: string;
     };
 }
 export declare class AssistantController {

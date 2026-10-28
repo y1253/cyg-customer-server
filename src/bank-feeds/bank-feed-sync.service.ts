@@ -52,6 +52,7 @@ import {
   alertText,
   recentEnough,
 } from './transaction-alert.util';
+import { changeFeed } from '../assistant/change-feed';
 
 /** Plaid error codes that mean the customer must sign in to their bank again (update mode). */
 const LOGIN_CODES = new Set([
@@ -271,6 +272,7 @@ export class BankFeedSyncService {
     }
     try {
       await this.rebuildItem(item.id);
+      changeFeed.bump(item.customerId); // step12h: an open page refreshes by itself
     } catch (err) {
       this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);
       return; // DUE alerts wait for a rebuild that worked (else they look "not filed").

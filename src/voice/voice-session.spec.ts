@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import type { VoiceDeps } from './voice-session';
 import { VoiceSession } from './voice-session';
+import { liveCalls } from './live-calls';
 
 /** A socket that records what is sent to it and lets the test push messages in. */
 class FakeSocket extends EventEmitter {
@@ -319,5 +320,49 @@ describe('VoiceSession (step12)', () => {
       await flush();
       expect(openai.sent.at(-1)).toEqual({ type: 'response.create' });
     });
+  });
+
+  // step12h: a note from outside the call (the strong AI's result, a prospect's text).
+  it('hands a live note to the agent only once it is quiet, and forgets the call when it ends', async () => {
+    const { phone, openai } = setup();
+    phone.push({
+      event: 'start',
+      start: {
+        streamSid: 'MZ',
+        callSid: 'CA',
+        customParameters: { token: 'good' },
+      },
+    });
+    await flush();
+    openai.emit('open');
+    await flush();
+    openai.push({ type: 'response.created' });
+    await flush();
+    openai.sent = [];
+
+    expect(liveCalls.toConversation(3, '[Specialist result: redo it]')).toBe(
+      true,
+    );
+    expect(openai.sent).toEqual([]); // the greeting is still being spoken
+
+    openai.push({ type: 'response.done' });
+    await flush();
+    expect(openai.sent).toEqual([
+      {
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: '[Specialist result: redo it]' },
+          ],
+        },
+      },
+      { type: 'response.create' },
+    ]);
+
+    phone.close();
+    await flush();
+    expect(liveCalls.toConversation(3, 'too late')).toBe(false);
   });
 });

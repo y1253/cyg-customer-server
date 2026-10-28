@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DailyCounter = exports.SALES_PITCH_DEFAULT = exports.CALL_SIGNUP_TEXT = exports.SIGNUP_LINE = exports.OFFER_SIGNUP_TOOL = void 0;
+exports.DailyCounter = exports.SALES_PITCH_DEFAULT = exports.CALL_SIGNUP_TEXT = exports.SIGNUP_LINE = exports.MAX_CALL_TEXTS = exports.TEXT_CALLER_TOOL = exports.OFFER_SIGNUP_TOOL = void 0;
 exports.priceWords = priceWords;
 exports.salesPrompt = salesPrompt;
 exports.salesOpening = salesOpening;
@@ -13,6 +13,25 @@ exports.OFFER_SIGNUP_TOOL = {
         'them that line once. Never call it before they agree.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
 };
+exports.TEXT_CALLER_TOOL = {
+    name: 'text_caller',
+    description: 'PHONE CALL ONLY. Texts the caller right now, from the number they called, while you stay on the line: ' +
+        'something to look at (cygfinance.com, our email, a short recap of what you discussed) or a question they ' +
+        'can answer by text (their email, their business name). Their reply comes back to you on this call. ' +
+        'At most 3 per call; never for the sign-up itself (that is offer_signup).',
+    parameters: {
+        type: 'object',
+        properties: {
+            message: {
+                type: 'string',
+                description: 'the text: 1–3 short, friendly sentences',
+            },
+        },
+        required: ['message'],
+        additionalProperties: false,
+    },
+};
+exports.MAX_CALL_TEXTS = 3;
 exports.SIGNUP_LINE = "Reply YES and we'll open your CYG Finance account on this number right away — no forms.";
 exports.CALL_SIGNUP_TEXT = "Thanks for calling CYG Finance! Reply YES to this text and we'll open your account on this number right away — no forms. Then text, WhatsApp or call this number anytime to send receipts and ask about your books.";
 const ABOUT = `About CYG Finance (only claim what is written here):
@@ -24,10 +43,13 @@ const ABOUT = `About CYG Finance (only claim what is written here):
 - Also: separate books for several companies, multi-currency, and the CYG Finance team of real accountants checks the work and is a message away.
 - Office: office@cygfinance.com, 855-CYG-FINA (855-294-3462). Website: cygfinance.com.`;
 exports.SALES_PITCH_DEFAULT = [
-    '- Be warm, short and human. Ask one question at a time about their business (what they do, how they keep their books today, what is painful) and connect the answer to a concrete benefit.',
-    '- Handle doubts honestly. Never invent features, prices, discounts, guarantees or deadlines. If you do not know, say the CYG Finance team will answer once they sign up, or they can email office@cygfinance.com.',
-    '- Ask for the sign-up when it fits. When they agree, call offer_signup.',
-    '- If they say no or not now, accept it politely once — no pressure, no repeating the pitch.',
+    '- Sound like a friendly, upbeat person who loves helping small businesses — not a script. Short sentences, a little warmth, real interest.',
+    '- Early on, ask their name and use it now and then. Thank them for reaching out.',
+    '- Get curious before you pitch. One question at a time: what their business does, how they keep their books today, what eats their time or worries them. Reflect back what you heard, in their own words.',
+    '- Then connect it to ONE concrete benefit that fits what they said ("so instead of a shoebox of receipts, you just text a photo and it is filed"), with a quick example of how it would work for them.',
+    '- Handle doubts warmly and honestly. Never invent features, prices, discounts, guarantees or deadlines. If you do not know, say the CYG Finance team will answer once they sign up, or they can email office@cygfinance.com.',
+    '- Ask for the sign-up when it fits, softly ("want me to set you up right now? it takes ten seconds"). When they agree, call offer_signup.',
+    '- If they say no or not now, accept it kindly once — no pressure, no repeating the pitch — and leave them with a good feeling.',
 ].join('\n');
 function priceWords(p) {
     return `$${(p.generatePriceCents / 100).toFixed(2)} ${p.currency.toUpperCase()}`;
@@ -66,7 +88,10 @@ function salesPrompt(input, texts = { pitch: null, extras: '' }) {
                 'THIS IS A PHONE CALL. Speak naturally in short sentences, no lists, no links read out letter by letter.',
                 `Speak ${input.language ?? 'English'} by default; if the caller speaks or asks for another language, switch at once for the rest of the call.`,
                 `The call ends after ${input.maxMinutes ?? 15} minutes.`,
-                'When they agree to sign up, call offer_signup: it texts them once; then tell them to reply YES to that text and the account opens right away. Signing up happens only by that text.',
+                'Talk like a real person on the phone: react to what they say ("oh nice", "that makes sense"), let them finish, never lecture.',
+                'You can text them while you both stay on the line with text_caller (a link to look at, our email, or a question they can answer by text, such as their email or business name) — say you are doing it ("I just texted you…").',
+                'Anything they text this number during the call comes to you as a note starting with "[The caller just texted you" — react to it right away, out loud, as if you just saw it on your screen.',
+                'When they agree to sign up, call offer_signup: it texts them once; then tell them to reply YES to that text and the account opens right away — stay on the line with them while they do. Signing up happens only by that text.',
             ].join('\n')
             : [
                 '',
@@ -77,8 +102,9 @@ function salesPrompt(input, texts = { pitch: null, extras: '' }) {
     return lines.filter((l) => l !== '').join('\n') + texts.extras;
 }
 function salesOpening(language) {
-    return (`In ${language}: greet the caller warmly as CYG Finance's assistant, say this number is not ` +
-        'linked to an account yet, and ask what kind of business they have and how you can help — one or two short sentences.');
+    return (`In ${language}: greet the caller warmly, with a smile in your voice, as CYG Finance's assistant; ` +
+        'thank them for calling and ask who you have the pleasure of speaking with and what kind of business they run — ' +
+        'one or two short, friendly sentences (no talk about accounts yet).');
 }
 function withSignupLine(reply, offered) {
     if (!offered)

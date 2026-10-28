@@ -26,6 +26,7 @@ import {
 } from './instructions.util';
 import { RulesService } from './rules.service';
 import { STRONG_APP_GUIDE, STRONG_ROLE } from './strong-ai-guide';
+import { liveCalls } from '../voice/live-calls';
 import {
   caseMessage,
   parseFinish,
@@ -127,6 +128,9 @@ export class StrongAiService implements OnModuleInit {
     });
     const conversation = ctx.conversation;
     if (!this.enabled || !conversation) {
+      this.logger.log(
+        `report_ai_issue (conversation ${conversation?.id ?? '-'}): strong AI off, not checked`,
+      );
       return continueAsUsual('Nobody can check this right now.');
     }
     try {
@@ -154,6 +158,9 @@ export class StrongAiService implements OnModuleInit {
           : regularOutcome(this.finishOf(recent));
       }
       if (await this.overLimit()) {
+        this.logger.warn(
+          `report_ai_issue (conversation ${conversation.id}): over STRONG_AI_DAILY_LIMIT, not checked`,
+        );
         return continueAsUsual('Nobody can check this right now.');
       }
       const escalation = await this.prisma.aiEscalation.create({
@@ -179,13 +186,15 @@ export class StrongAiService implements OnModuleInit {
         () => this.investigate(escalation, conversation, report),
       );
 
-      // On a call the caller must never wait in silence: check in the background, and text
-      // them when it is fixed.
+      // On a call the caller must never wait in silence: check in the background, then act
+      // on the result — on the call if it is still going, else by text (step12h).
       if (conversation.channel === 'VOICE') {
-        void run.then((f) => this.textAfterCall(conversation, f));
+        void run.then((f) =>
+          this.afterCallCheck(conversation, escalation.id, f),
+        );
         return {
           instructions:
-            'A specialist is checking this now; it takes a few minutes. Tell the caller we are looking into it and will text them if we find a mistake on our side, then continue as you normally would.',
+            'A specialist is checking this now; it takes a few minutes. Tell the caller we are looking into it — you will get the result during this call if it is still going, otherwise we will text them what we found and fixed. Do not promise anything else; continue as you normally would.',
           summary: 'Problem sent to be checked',
           ok: true,
         };
@@ -232,16 +241,73 @@ export class StrongAiService implements OnModuleInit {
     return count >= this.num('STRONG_AI_DAILY_LIMIT', 20);
   }
 
-  private async textAfterCall(
-    conversation: AiConversation,
+  /**
+   * step12h: the result of a complaint made on a CALL. It used to be texted only when FIXED
+   * and its `redo` was never done (customer 43, 2026-10-27: an UNSURE verdict, and the caller
+   * heard nothing more). Now:
+   * - the call is still going → the result goes to the agent on the call, which redoes the
+   *   work with its tools while the caller listens;
+   * - the call has ended and there is something to redo → the agent does it now (text-channel
+   *   tools) and its answer is texted to them, whatever the verdict;
+   * - nothing to redo → the old "fixed so it will not happen again" text when FIXED.
+   */
+  private async afterCallCheck(
+    first: AiConversation,
+    escalationId: number,
     f: StrongFinish,
   ): Promise<void> {
-    if (f.verdict !== 'FIXED' || !conversation.peer) return;
-    const body =
-      'Thanks for telling us about the problem on your call — we found what went wrong and fixed it so it will not happen again.' +
-      (f.redo
-        ? ' Reply here if anything still needs to be corrected in your books.'
-        : '');
+    const conversation =
+      (await this.prisma.aiConversation
+        .findUnique({ where: { id: first.id } })
+        .catch(() => null)) ?? first;
+    const outcome = regularOutcome(f);
+    const live = liveCalls.toConversation(
+      conversation.id,
+      `[Specialist result for the problem the caller reported — not said by the caller. ${outcome.instructions} Tell the caller now what was found, and if a tool fails, say so plainly.]`,
+    );
+    if (live) {
+      this.logger.log(
+        `escalation ${escalationId}: ${f.verdict} handed to the live call`,
+      );
+      return;
+    }
+    if (f.redo && conversation.peer) {
+      const answer = await this.assistant.followUp(
+        conversation,
+        `Our specialist finished checking the problem the customer reported on their phone call, after the call ended. ${outcome.instructions} Then write them a short text: what was wrong and what you did (or, if a tool failed, that it still needs to be done and that our team was told).`,
+        'SMS',
+      );
+      if (answer) {
+        await this.textCaller(conversation, answer.text, false);
+        this.logger.log(
+          `escalation ${escalationId}: ${f.verdict} — redo done after the call (${answer.actions.filter((a) => a.ok).length} ok / ${answer.actions.length} action(s)), texted`,
+        );
+        return;
+      }
+      this.logger.warn(
+        `escalation ${escalationId}: redo after the call failed (AI), nothing texted`,
+      );
+    }
+    if (f.verdict !== 'FIXED' || !conversation.peer) {
+      this.logger.log(
+        `escalation ${escalationId}: ${f.verdict}, call over, nothing to redo — no text`,
+      );
+      return;
+    }
+    await this.textCaller(
+      conversation,
+      'Thanks for telling us about the problem on your call — we found what went wrong and fixed it so it will not happen again.',
+      true,
+    );
+  }
+
+  /** One SMS to the caller's phone; `save` = log it in the call's thread (followUp already did). */
+  private async textCaller(
+    conversation: AiConversation,
+    body: string,
+    save: boolean,
+  ): Promise<void> {
+    if (!conversation.peer) return;
     try {
       const outcome = await this.messenger.send({
         channel: 'SMS',
@@ -254,7 +320,9 @@ export class StrongAiService implements OnModuleInit {
           purpose: 'STRONG_AI',
         },
       });
-      if (outcome === 'sent') {
+      if (outcome !== 'sent') {
+        this.logger.warn(`after-call text not sent: ${outcome}`);
+      } else if (save) {
         await this.assistant.save(conversation, 'ASSISTANT', body);
       }
     } catch (err) {

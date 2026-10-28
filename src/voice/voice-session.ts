@@ -11,8 +11,13 @@ import { scopeOf } from '../bookkeeping/scope';
 import { fillLinks, type LinkBook } from '../assistant/links.util';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
-import { OFFER_SIGNUP_TOOL, salesOpening } from '../sales/sales-prompt';
+import {
+  OFFER_SIGNUP_TOOL,
+  TEXT_CALLER_TOOL,
+  salesOpening,
+} from '../sales/sales-prompt';
 import type { SalesService } from '../sales/sales.service';
+import { liveCalls, type LiveCall } from './live-calls';
 import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
 import {
   DEFAULT_REALTIME_MODEL,
@@ -74,7 +79,7 @@ const FILLER =
  *
  * Never throws out of a socket handler: a failure ends the call politely and is logged.
  */
-export class VoiceSession {
+export class VoiceSession implements LiveCall {
   private readonly logger = new Logger(VoiceSession.name);
   private openai: WebSocket | null = null;
   private streamSid: string | null = null;
@@ -96,6 +101,10 @@ export class VoiceSession {
   private turnTouched: number[] = [];
   private turnWarning: string | null = null;
   private responding = false;
+  /** A `response.create` was sent and its `response.created` has not come back yet. */
+  private requested = false;
+  /** step12h: notes from outside the call (a text, the strong AI) waiting for a quiet moment. */
+  private readonly notes: string[] = [];
   private toolOutputsPending = false;
   /** The current response has put audio on the line (a tool call after it is not silent). */
   private spoke = false;
@@ -199,6 +208,10 @@ export class VoiceSession {
     this.settings = await this.deps.calls.settings();
     this.conversation = await this.deps.calls.conversationFor(claims);
     await this.deps.calls.started(claims, this.conversation, this.callSid);
+    // step12h: the strong AI's result for a complaint made on this call reaches it live.
+    if (claims.purpose !== 'THIRD_PARTY') {
+      liveCalls.addConversation(this.conversation.id, this);
+    }
     this.logger.log(
       `call ${this.callSid} ${claims.dir} customer ${claims.sub} (${claims.purpose ?? 'INBOUND'}) connected`,
     );
@@ -249,6 +262,8 @@ export class VoiceSession {
       (await sales.enabled()) &&
       sales.takeCall(this.prospect.phoneE164);
     if (!ok) return this.hangUp('salesperson not available');
+    // step12h: a text they send to this number while on the phone reaches this call.
+    liveCalls.addProspect(this.prospect.phoneE164, this);
     const model = this.deps.model || DEFAULT_REALTIME_MODEL;
     this.model = model;
     const language = languageName(this.settings.language);
@@ -259,7 +274,7 @@ export class VoiceSession {
     this.connectRealtime(
       model,
       instructions,
-      [OFFER_SIGNUP_TOOL],
+      [OFFER_SIGNUP_TOOL, TEXT_CALLER_TOOL],
       salesOpening(language),
     );
   }
@@ -317,10 +332,7 @@ export class VoiceSession {
         this.sendOpenAi({ type: 'input_audio_buffer.append', audio: p });
       }
       // The AI speaks first: the greeting, or the scheduled message.
-      this.sendOpenAi({
-        type: 'response.create',
-        response: { instructions: opening },
-      });
+      this.createResponse({ instructions: opening });
     });
     this.openai.on('message', (raw) => {
       void this.onOpenAi(rawText(raw)).catch((err: unknown) => this.fail(err));
@@ -409,6 +421,7 @@ export class VoiceSession {
       if (this.responding) this.sendOpenAi({ type: 'response.cancel' });
     } else if (has(RT.responseCreated, type)) {
       this.responding = true;
+      this.requested = false;
       this.spoke = false;
     } else if (has(RT.responseDone, type)) {
       this.responding = false;
@@ -420,14 +433,12 @@ export class VoiceSession {
       if (this.fillerWanted && this.toolsRunning > 0) {
         // The model went straight to a tool without a word: never leave the caller in silence.
         this.fillerWanted = false;
-        this.sendOpenAi({
-          type: 'response.create',
-          response: { instructions: FILLER, tool_choice: 'none' },
-        });
+        this.createResponse({ instructions: FILLER, tool_choice: 'none' });
         return;
       }
       this.fillerWanted = false;
       this.answerToolsIfReady();
+      this.flushNotes();
     } else if (has(RT.userText, type)) {
       this.recordUsage(REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
       const said =
@@ -471,9 +482,12 @@ export class VoiceSession {
         .finally(() => {
           this.toolsRunning--;
           this.answerToolsIfReady();
+          this.flushNotes();
         });
     } else if (has(RT.error, type)) {
       const err = ev.error as { message?: string } | undefined;
+      // A refused response.create never gets its response.created.
+      if (/active response/i.test(err?.message ?? '')) this.requested = false;
       this.logger.warn(
         `call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`,
       );
@@ -486,7 +500,50 @@ export class VoiceSession {
       return;
     }
     this.toolOutputsPending = false;
-    this.sendOpenAi({ type: 'response.create' });
+    this.createResponse();
+  }
+
+  private createResponse(response?: Obj): void {
+    this.requested = true;
+    this.sendOpenAi({
+      type: 'response.create',
+      ...(response && { response }),
+    });
+  }
+
+  /**
+   * step12h (`LiveCall`): a note from outside the call — a text the caller just sent, the
+   * strong AI's result. Given to the model as a message it answers at once, but never while
+   * it is speaking or waiting on a tool ("Conversation already has an active response").
+   */
+  inject(note: string): void {
+    if (this.closed) return;
+    this.notes.push(note);
+    this.flushNotes();
+  }
+
+  private flushNotes(): void {
+    if (
+      !this.notes.length ||
+      this.responding ||
+      this.requested ||
+      this.toolsRunning > 0 ||
+      this.toolOutputsPending ||
+      this.openai?.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+    this.sendOpenAi({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: this.notes.splice(0).join('\n') },
+        ],
+      },
+    });
+    this.createResponse();
   }
 
   /** step12: one Realtime response's / transcription's usage → this customer's VOICE cost. */
@@ -528,11 +585,21 @@ export class VoiceSession {
     const name = typeof ev.name === 'string' ? ev.name : '';
     const args = typeof ev.arguments === 'string' ? ev.arguments : '{}';
     if (this.prospect) {
-      // step12f: the salesperson's only tool — the one sign-up text, asked for on the call.
+      // step12f: the sign-up text, asked for on the call; step12h: any text to the caller.
       const output =
         name === OFFER_SIGNUP_TOOL.name
-          ? await this.deps.sales!.offerOnCall(this.prospect.id, this.claims?.to)
-          : `Unknown tool ${name}.`;
+          ? await this.deps.sales!.offerOnCall(
+              this.prospect.id,
+              this.claims?.to,
+            )
+          : name === TEXT_CALLER_TOOL.name
+            ? await this.deps.sales!.textOnCall(
+                this.prospect.id,
+                this.claims?.to,
+                this.callSid,
+                args,
+              )
+            : `Unknown tool ${name}.`;
       this.sendOpenAi({
         type: 'conversation.item.create',
         item: { type: 'function_call_output', call_id: callId, output },
@@ -627,6 +694,7 @@ export class VoiceSession {
   private async finish(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    liveCalls.remove(this);
     if (this.timer) clearTimeout(this.timer);
     this.close();
     if (!this.callSid || !this.claims) return;
@@ -637,6 +705,12 @@ export class VoiceSession {
       );
       this.logger.log(`call ${this.callSid} ended`);
       return;
+    }
+    // A tool that ran just before the hang-up is still recorded under the call.
+    if (this.conversation && this.turnActions.length) {
+      await this.saveAssistant('(The call ended here.)').catch((err: unknown) =>
+        this.fail(err),
+      );
     }
     // A call we placed is recorded by SignalWire anyway; an incoming one whose recording
     // could not be started keeps the bridge's own copy.

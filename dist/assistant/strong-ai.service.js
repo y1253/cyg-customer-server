@@ -25,6 +25,7 @@ const instructions_service_1 = require("./instructions.service");
 const instructions_util_1 = require("./instructions.util");
 const rules_service_1 = require("./rules.service");
 const strong_ai_guide_1 = require("./strong-ai-guide");
+const live_calls_1 = require("../voice/live-calls");
 const strong_ai_tools_1 = require("./strong-ai-tools");
 exports.STRONG_MAX_ROUNDS = 12;
 const CASE_MESSAGES = 30;
@@ -94,6 +95,7 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
         });
         const conversation = ctx.conversation;
         if (!this.enabled || !conversation) {
+            this.logger.log(`report_ai_issue (conversation ${conversation?.id ?? '-'}): strong AI off, not checked`);
             return continueAsUsual('Nobody can check this right now.');
         }
         try {
@@ -117,6 +119,7 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
                     : (0, strong_ai_tools_1.regularOutcome)(this.finishOf(recent));
             }
             if (await this.overLimit()) {
+                this.logger.warn(`report_ai_issue (conversation ${conversation.id}): over STRONG_AI_DAILY_LIMIT, not checked`);
                 return continueAsUsual('Nobody can check this right now.');
             }
             const escalation = await this.prisma.aiEscalation.create({
@@ -135,9 +138,9 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
                 feature: 'STRONG_AI',
             }, () => this.investigate(escalation, conversation, report));
             if (conversation.channel === 'VOICE') {
-                void run.then((f) => this.textAfterCall(conversation, f));
+                void run.then((f) => this.afterCallCheck(conversation, escalation.id, f));
                 return {
-                    instructions: 'A specialist is checking this now; it takes a few minutes. Tell the caller we are looking into it and will text them if we find a mistake on our side, then continue as you normally would.',
+                    instructions: 'A specialist is checking this now; it takes a few minutes. Tell the caller we are looking into it — you will get the result during this call if it is still going, otherwise we will text them what we found and fixed. Do not promise anything else; continue as you normally would.',
                     summary: 'Problem sent to be checked',
                     ok: true,
                 };
@@ -177,13 +180,34 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
         });
         return count >= this.num('STRONG_AI_DAILY_LIMIT', 20);
     }
-    async textAfterCall(conversation, f) {
-        if (f.verdict !== 'FIXED' || !conversation.peer)
+    async afterCallCheck(first, escalationId, f) {
+        const conversation = (await this.prisma.aiConversation
+            .findUnique({ where: { id: first.id } })
+            .catch(() => null)) ?? first;
+        const outcome = (0, strong_ai_tools_1.regularOutcome)(f);
+        const live = live_calls_1.liveCalls.toConversation(conversation.id, `[Specialist result for the problem the caller reported — not said by the caller. ${outcome.instructions} Tell the caller now what was found, and if a tool fails, say so plainly.]`);
+        if (live) {
+            this.logger.log(`escalation ${escalationId}: ${f.verdict} handed to the live call`);
             return;
-        const body = 'Thanks for telling us about the problem on your call — we found what went wrong and fixed it so it will not happen again.' +
-            (f.redo
-                ? ' Reply here if anything still needs to be corrected in your books.'
-                : '');
+        }
+        if (f.redo && conversation.peer) {
+            const answer = await this.assistant.followUp(conversation, `Our specialist finished checking the problem the customer reported on their phone call, after the call ended. ${outcome.instructions} Then write them a short text: what was wrong and what you did (or, if a tool failed, that it still needs to be done and that our team was told).`, 'SMS');
+            if (answer) {
+                await this.textCaller(conversation, answer.text, false);
+                this.logger.log(`escalation ${escalationId}: ${f.verdict} — redo done after the call (${answer.actions.filter((a) => a.ok).length} ok / ${answer.actions.length} action(s)), texted`);
+                return;
+            }
+            this.logger.warn(`escalation ${escalationId}: redo after the call failed (AI), nothing texted`);
+        }
+        if (f.verdict !== 'FIXED' || !conversation.peer) {
+            this.logger.log(`escalation ${escalationId}: ${f.verdict}, call over, nothing to redo — no text`);
+            return;
+        }
+        await this.textCaller(conversation, 'Thanks for telling us about the problem on your call — we found what went wrong and fixed it so it will not happen again.', true);
+    }
+    async textCaller(conversation, body, save) {
+        if (!conversation.peer)
+            return;
         try {
             const outcome = await this.messenger.send({
                 channel: 'SMS',
@@ -196,7 +220,10 @@ let StrongAiService = StrongAiService_1 = class StrongAiService {
                     purpose: 'STRONG_AI',
                 },
             });
-            if (outcome === 'sent') {
+            if (outcome !== 'sent') {
+                this.logger.warn(`after-call text not sent: ${outcome}`);
+            }
+            else if (save) {
                 await this.assistant.save(conversation, 'ASSISTANT', body);
             }
         }

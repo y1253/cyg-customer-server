@@ -7,8 +7,11 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import { Book, BookScopeGuard } from '../bookkeeping/book-scope.guard';
 import type { BookScope } from '../bookkeeping/scope';
@@ -34,6 +37,7 @@ import {
   type IntakeRoute,
 } from './intake-agent.service';
 import { RulesService, type CustomerRuleView } from './rules.service';
+import { changeFeed } from './change-feed';
 
 /** Is the assistant on? The website hides it when not. */
 @Controller('assistant')
@@ -44,6 +48,17 @@ export class AssistantConfigController {
   @Get('config')
   config(): { enabled: boolean } {
     return { enabled: this.assistant.enabled };
+  }
+
+  /**
+   * step12h: polled by the open website (every 10 s while visible) — the page refetches
+   * when `version` moves (`change-feed.ts`).
+   */
+  @Get('changes')
+  changes(@Req() req: Request & { user: CustomerRequestUser }): {
+    version: string;
+  } {
+    return { version: changeFeed.version(req.user.customerId) };
   }
 }
 

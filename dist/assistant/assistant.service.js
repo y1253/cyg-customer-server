@@ -32,6 +32,7 @@ const instructions_service_1 = require("./instructions.service");
 const links_util_1 = require("./links.util");
 const rules_service_1 = require("./rules.service");
 const voice_notes_util_1 = require("./voice-notes.util");
+const change_feed_1 = require("./change-feed");
 exports.MAX_TOOL_ROUNDS = 6;
 exports.HISTORY = 20;
 exports.VOICE_HISTORY = 10;
@@ -367,6 +368,52 @@ let AssistantService = AssistantService_1 = class AssistantService {
         }
         return { ...done, text: exports.FAILED_REPLY };
     }
+    followUp(conversation, note, channel) {
+        const scope = (0, scope_1.scopeOf)(conversation);
+        return (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'ASSISTANT' }, async () => {
+            try {
+                const history = await this.prisma.aiMessage.findMany({
+                    where: { conversationId: conversation.id },
+                    orderBy: { id: 'desc' },
+                    take: exports.HISTORY,
+                });
+                const messages = [
+                    { role: 'system', content: await this.promptFor(conversation) },
+                    ...history
+                        .reverse()
+                        .map((m) => m.role === 'USER'
+                        ? { role: 'user', content: m.text }
+                        : { role: 'assistant', content: historyText(m) }),
+                    {
+                        role: 'user',
+                        content: `[From CYG Finance, not the customer: ${note} Your answer is sent to them as a ${channel === 'SMS' ? 'text message' : 'email'} — plain text, short, no phone-call style.]`,
+                    },
+                ];
+                const lastUser = history.find((m) => m.role === 'USER');
+                const out = await this.loop(messages, (0, assistant_tools_1.toolsFor)(channel), {
+                    scope,
+                    messageId: lastUser?.id ?? null,
+                    conversation,
+                    links: new Map(),
+                });
+                if (out.text === exports.FAILED_REPLY)
+                    return null;
+                const current = (await this.prisma.aiConversation.findUnique({
+                    where: { id: conversation.id },
+                })) ?? conversation;
+                await this.save(current, 'ASSISTANT', out.text, {
+                    actions: out.actions,
+                    warning: out.warning,
+                    actedOn: out.touched,
+                });
+                return out;
+            }
+            catch (err) {
+                this.logger.warn(`follow-up for conversation ${conversation.id} failed: ${err instanceof Error ? err.message : err}`);
+                return null;
+            }
+        });
+    }
     async loop(messages, tools, ctx, acc = { text: '', actions: [], warning: null, touched: [] }) {
         const { actions, touched } = acc;
         for (let round = 0; round <= exports.MAX_TOOL_ROUNDS; round++) {
@@ -536,6 +583,8 @@ let AssistantService = AssistantService_1 = class AssistantService {
             }),
         ]);
         await this.link(row, conversation, extra.attachmentIds, extra.actedOn);
+        if (extra.actions?.some((a) => a.ok))
+            change_feed_1.changeFeed.bump(conversation.customerId);
         return row;
     }
     async link(row, conversation, sent = [], acted = []) {

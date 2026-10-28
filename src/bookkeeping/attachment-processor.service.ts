@@ -1,4 +1,5 @@
 import { withAiUsage } from '../ai/ai-usage.context';
+import { changeFeed } from '../assistant/change-feed';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { RulesService } from '../assistant/rules.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -201,6 +202,8 @@ export class AttachmentProcessorService {
         await withAiUsage({ ...scopeOf(row), feature: 'ATTACHMENT' }, () =>
           this.processOne(row),
         );
+        // step12h: an open page of this customer refreshes by itself.
+        changeFeed.bump(row.customerId);
       }
     };
     await Promise.all(

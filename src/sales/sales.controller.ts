@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { IntakeSystemGuard } from '../customer-auth/intake-system.guard';
+import { ProspectLiveDto } from './dto/prospect-live.dto';
 import { ProspectReplyDto } from './dto/prospect-reply.dto';
 import { SalesService, type SalesReply } from './sales.service';
 
@@ -17,5 +18,15 @@ export class SalesController {
   @HttpCode(200)
   prospect(@Body() dto: ProspectReplyDto): Promise<SalesReply> {
     return this.sales.replyToText(dto);
+  }
+
+  /**
+   * step12h: asked FIRST for a text from a phone with no account — `live: true` = that phone
+   * is on a call with the salesperson and the text went to the call (send no text reply).
+   */
+  @Post('prospect-live')
+  @HttpCode(200)
+  prospectLive(@Body() dto: ProspectLiveDto): Promise<{ live: boolean }> {
+    return this.sales.liveText(dto);
   }
 }

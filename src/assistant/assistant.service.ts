@@ -31,6 +31,7 @@ import { InstructionsService } from './instructions.service';
 import { fillLinks, type LinkBook } from './links.util';
 import { RulesService } from './rules.service';
 import { spokenMessage } from './voice-notes.util';
+import { changeFeed } from './change-feed';
 
 /** A file a message carried or is about (step11b) — kept even after the file is deleted. */
 export interface MessageFileView {
@@ -124,7 +125,7 @@ export function toMessageView(m: AiMessage): AssistantMessageView {
   };
 }
 
-interface LoopResult {
+export interface LoopResult {
   text: string;
   actions: AgentAction[];
   warning: string | null;
@@ -576,6 +577,67 @@ export class AssistantService {
     return { ...done, text: FAILED_REPLY };
   }
 
+  /**
+   * step12h: one more answer on a conversation with no new customer message — a note from
+   * our side (the strong AI's result once the call it was asked on has ended). The agent
+   * works with the tools of `channel` and its answer is saved with what it did; the caller
+   * sends it. Null when the AI failed (nothing to send).
+   */
+  followUp(
+    conversation: AiConversation,
+    note: string,
+    channel: 'SMS' | 'EMAIL',
+  ): Promise<LoopResult | null> {
+    const scope: BookScope = scopeOf(conversation);
+    return withAiUsage({ ...scope, feature: 'ASSISTANT' }, async () => {
+      try {
+        const history = await this.prisma.aiMessage.findMany({
+          where: { conversationId: conversation.id },
+          orderBy: { id: 'desc' },
+          take: HISTORY,
+        });
+        const messages: AgentMessage[] = [
+          { role: 'system', content: await this.promptFor(conversation) },
+          ...history
+            .reverse()
+            .map(
+              (m): AgentMessage =>
+                m.role === 'USER'
+                  ? { role: 'user', content: m.text }
+                  : { role: 'assistant', content: historyText(m) },
+            ),
+          {
+            role: 'user',
+            content: `[From CYG Finance, not the customer: ${note} Your answer is sent to them as a ${channel === 'SMS' ? 'text message' : 'email'} — plain text, short, no phone-call style.]`,
+          },
+        ];
+        const lastUser = history.find((m) => m.role === 'USER');
+        const out = await this.loop(messages, toolsFor(channel), {
+          scope,
+          messageId: lastUser?.id ?? null,
+          conversation,
+          links: new Map(),
+        });
+        if (out.text === FAILED_REPLY) return null;
+        const current =
+          (await this.prisma.aiConversation.findUnique({
+            where: { id: conversation.id },
+          })) ?? conversation;
+        await this.save(current, 'ASSISTANT', out.text, {
+          actions: out.actions,
+          warning: out.warning,
+          actedOn: out.touched,
+        });
+        return out;
+      } catch (err) {
+        this.logger.warn(
+          `follow-up for conversation ${conversation.id} failed: ${err instanceof Error ? err.message : err}`,
+        );
+        return null;
+      }
+    });
+  }
+
   /** Model ↔ tools until the model answers (or `MAX_TOOL_ROUNDS`). Throws on an AI outage. */
   private async loop(
     messages: AgentMessage[],
@@ -807,6 +869,9 @@ export class AssistantService {
       }),
     ]);
     await this.link(row, conversation, extra.attachmentIds, extra.actedOn);
+    // step12h: the AI changed something (any channel) — an open page refreshes by itself.
+    if (extra.actions?.some((a) => a.ok))
+      changeFeed.bump(conversation.customerId);
     return row;
   }
 

@@ -46,6 +46,11 @@ exports.DEFAULT_INSTRUCTIONS = {
             'other attachments). If a tool fails, tell the customer the real reason in plain ' +
             'words; never ask them to send a file again that we already have, unless the tool ' +
             'said its original is gone.',
+        'Never say you did, started or fixed something unless its tool returned ok in this ' +
+            'answer; if it failed, say so plainly and what happens next. Never guess an id: look ' +
+            'it up first (list_statements filtered by the account, search_transactions, ' +
+            'list_attachments). Never tell a customer a statement or file does not exist from a ' +
+            'list that was cut — filter it.',
     ].join('\n'),
     'core.issues': 'When the customer says WE got something wrong — a file read wrong, a receipt filed to ' +
         'the wrong transaction or not filed, a wrong category or answer, something they said ' +

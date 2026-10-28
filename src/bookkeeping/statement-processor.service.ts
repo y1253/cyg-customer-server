@@ -1,4 +1,5 @@
 import { withAiUsage } from '../ai/ai-usage.context';
+import { changeFeed } from '../assistant/change-feed';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { StatementStatus, type BankStatement } from '@prisma/client';
@@ -110,6 +111,8 @@ export class StatementProcessorService {
         await withAiUsage({ ...scopeOf(row), feature: 'STATEMENT' }, () =>
           this.processOne(row),
         );
+        // step12h: an open page of this customer refreshes by itself.
+        changeFeed.bump(row.customerId);
       }
     };
     await Promise.all(

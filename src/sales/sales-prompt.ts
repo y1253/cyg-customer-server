@@ -23,6 +23,34 @@ export const OFFER_SIGNUP_TOOL: ToolDefinition = {
   parameters: { type: 'object', properties: {}, additionalProperties: false },
 };
 
+/**
+ * step12h: on a call, text the caller while you keep talking — like a real salesperson ("I
+ * just texted you the link — text me back your email while we talk"). What they text back
+ * reaches the call live (`liveCalls`).
+ */
+export const TEXT_CALLER_TOOL: ToolDefinition = {
+  name: 'text_caller',
+  description:
+    'PHONE CALL ONLY. Texts the caller right now, from the number they called, while you stay on the line: ' +
+    'something to look at (cygfinance.com, our email, a short recap of what you discussed) or a question they ' +
+    'can answer by text (their email, their business name). Their reply comes back to you on this call. ' +
+    'At most 3 per call; never for the sign-up itself (that is offer_signup).',
+  parameters: {
+    type: 'object',
+    properties: {
+      message: {
+        type: 'string',
+        description: 'the text: 1–3 short, friendly sentences',
+      },
+    },
+    required: ['message'],
+    additionalProperties: false,
+  },
+};
+
+/** At most this many `text_caller` texts on one call. */
+export const MAX_CALL_TEXTS = 3;
+
 /** Added to a text answer when `offer_signup` ran — the internal API opens the account on YES. */
 export const SIGNUP_LINE =
   "Reply YES and we'll open your CYG Finance account on this number right away — no forms.";
@@ -47,10 +75,13 @@ const ABOUT = `About CYG Finance (only claim what is written here):
  * rules below stay in code.
  */
 export const SALES_PITCH_DEFAULT = [
-  '- Be warm, short and human. Ask one question at a time about their business (what they do, how they keep their books today, what is painful) and connect the answer to a concrete benefit.',
-  '- Handle doubts honestly. Never invent features, prices, discounts, guarantees or deadlines. If you do not know, say the CYG Finance team will answer once they sign up, or they can email office@cygfinance.com.',
-  '- Ask for the sign-up when it fits. When they agree, call offer_signup.',
-  '- If they say no or not now, accept it politely once — no pressure, no repeating the pitch.',
+  '- Sound like a friendly, upbeat person who loves helping small businesses — not a script. Short sentences, a little warmth, real interest.',
+  '- Early on, ask their name and use it now and then. Thank them for reaching out.',
+  '- Get curious before you pitch. One question at a time: what their business does, how they keep their books today, what eats their time or worries them. Reflect back what you heard, in their own words.',
+  '- Then connect it to ONE concrete benefit that fits what they said ("so instead of a shoebox of receipts, you just text a photo and it is filed"), with a quick example of how it would work for them.',
+  '- Handle doubts warmly and honestly. Never invent features, prices, discounts, guarantees or deadlines. If you do not know, say the CYG Finance team will answer once they sign up, or they can email office@cygfinance.com.',
+  '- Ask for the sign-up when it fits, softly ("want me to set you up right now? it takes ten seconds"). When they agree, call offer_signup.',
+  '- If they say no or not now, accept it kindly once — no pressure, no repeating the pitch — and leave them with a good feeling.',
 ].join('\n');
 
 /** The SALES instruction rows, ready for `salesPrompt`. */
@@ -79,7 +110,8 @@ export function priceWords(p: Pricing): string {
 }
 
 function pricingLine(p: Pricing | null): string {
-  if (!p) return 'Pricing: you do not know it right now — say they can see it on cygfinance.com or ask the team.';
+  if (!p)
+    return 'Pricing: you do not know it right now — say they can see it on cygfinance.com or ask the team.';
   return p.generatePriceCents > 0
     ? `Pricing: opening an account is free. The assistant, receipts and bank feeds are free; generating the books from uploaded statements costs ${priceWords(p)} each time. Never quote any other price or discount.`
     : 'Pricing: opening an account and using it is free right now. Never promise it stays free or quote any price.';
@@ -115,7 +147,10 @@ export function salesPrompt(
           'THIS IS A PHONE CALL. Speak naturally in short sentences, no lists, no links read out letter by letter.',
           `Speak ${input.language ?? 'English'} by default; if the caller speaks or asks for another language, switch at once for the rest of the call.`,
           `The call ends after ${input.maxMinutes ?? 15} minutes.`,
-          'When they agree to sign up, call offer_signup: it texts them once; then tell them to reply YES to that text and the account opens right away. Signing up happens only by that text.',
+          'Talk like a real person on the phone: react to what they say ("oh nice", "that makes sense"), let them finish, never lecture.',
+          'You can text them while you both stay on the line with text_caller (a link to look at, our email, or a question they can answer by text, such as their email or business name) — say you are doing it ("I just texted you…").',
+          'Anything they text this number during the call comes to you as a note starting with "[The caller just texted you" — react to it right away, out loud, as if you just saw it on your screen.',
+          'When they agree to sign up, call offer_signup: it texts them once; then tell them to reply YES to that text and the account opens right away — stay on the line with them while they do. Signing up happens only by that text.',
         ].join('\n')
       : [
           '',
@@ -129,8 +164,9 @@ export function salesPrompt(
 /** The first thing said on a call. */
 export function salesOpening(language: string): string {
   return (
-    `In ${language}: greet the caller warmly as CYG Finance's assistant, say this number is not ` +
-    'linked to an account yet, and ask what kind of business they have and how you can help — one or two short sentences.'
+    `In ${language}: greet the caller warmly, with a smile in your voice, as CYG Finance's assistant; ` +
+    'thank them for calling and ask who you have the pleasure of speaking with and what kind of business they run — ' +
+    'one or two short, friendly sentences (no talk about accounts yet).'
   );
 }
 

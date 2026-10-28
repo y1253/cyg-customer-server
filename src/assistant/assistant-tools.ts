@@ -34,6 +34,7 @@ import {
 } from '../schedules/ai-schedules.store';
 import { RULE_TOPICS } from './rules.util';
 import { filterTransactions, type LedgerRow } from './transaction-filter.util';
+import { listStatements } from './statement-list.util';
 import { addLink, fillLinks, type LinkBook } from './links.util';
 import { CommunicationsHistory } from './communications-history.service';
 import { CustomerOutbox, type OutboxChannel } from './customer-outbox.service';
@@ -146,8 +147,27 @@ export const READ_TOOLS: ToolDefinition[] = [
   {
     name: 'list_statements',
     description:
-      "This book's bank / card statements: account, period, status, row count.",
-    parameters: obj({}),
+      'This book\'s bank / card statements: first ONE line per account (every account, always), then the statements (id, account, period, status, rows), newest period first. Filter by account (words of its name, e.g. "american express 1004"), period or status — never conclude a statement is missing from a cut list; filter by its account instead.',
+    parameters: obj({
+      account: {
+        type: 'string',
+        description: 'account name contains these words',
+      },
+      from: day,
+      to: day,
+      status: {
+        type: 'string',
+        enum: [
+          'UPLOADED',
+          'PENDING',
+          'PROCESSING',
+          'DONE',
+          'NEEDS_REVIEW',
+          'FAILED',
+        ],
+      },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    }),
   },
   {
     name: 'search_transactions',
@@ -916,16 +936,13 @@ export class AssistantTools {
         const list = await this.bookkeeping.list(scope);
         return {
           content: json(
-            list.map((x) => ({
-              id: x.id,
-              label: x.label,
-              status: x.status,
-              account: x.accountName,
-              periodStart: x.periodStart,
-              periodEnd: x.periodEnd,
-              transactions: x.transactionCount,
-              error: x.error,
-            })),
+            listStatements(list, {
+              account: s(a.account),
+              from: s(a.from),
+              to: s(a.to),
+              status: s(a.status),
+              limit: n(a.limit),
+            }),
           ),
         };
       }

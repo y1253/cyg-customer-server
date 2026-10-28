@@ -35,6 +35,7 @@ const rules_service_1 = require("./rules.service");
 const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const rules_util_1 = require("./rules.util");
 const transaction_filter_util_1 = require("./transaction-filter.util");
+const statement_list_util_1 = require("./statement-list.util");
 const links_util_1 = require("./links.util");
 const communications_history_service_1 = require("./communications-history.service");
 const customer_outbox_service_1 = require("./customer-outbox.service");
@@ -60,8 +61,27 @@ const obj = (properties, required = []) => ({
 exports.READ_TOOLS = [
     {
         name: 'list_statements',
-        description: "This book's bank / card statements: account, period, status, row count.",
-        parameters: obj({}),
+        description: 'This book\'s bank / card statements: first ONE line per account (every account, always), then the statements (id, account, period, status, rows), newest period first. Filter by account (words of its name, e.g. "american express 1004"), period or status — never conclude a statement is missing from a cut list; filter by its account instead.',
+        parameters: obj({
+            account: {
+                type: 'string',
+                description: 'account name contains these words',
+            },
+            from: day,
+            to: day,
+            status: {
+                type: 'string',
+                enum: [
+                    'UPLOADED',
+                    'PENDING',
+                    'PROCESSING',
+                    'DONE',
+                    'NEEDS_REVIEW',
+                    'FAILED',
+                ],
+            },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+        }),
     },
     {
         name: 'search_transactions',
@@ -666,16 +686,13 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
             case 'list_statements': {
                 const list = await this.bookkeeping.list(scope);
                 return {
-                    content: json(list.map((x) => ({
-                        id: x.id,
-                        label: x.label,
-                        status: x.status,
-                        account: x.accountName,
-                        periodStart: x.periodStart,
-                        periodEnd: x.periodEnd,
-                        transactions: x.transactionCount,
-                        error: x.error,
-                    }))),
+                    content: json((0, statement_list_util_1.listStatements)(list, {
+                        account: s(a.account),
+                        from: s(a.from),
+                        to: s(a.to),
+                        status: s(a.status),
+                        limit: n(a.limit),
+                    })),
                 };
             }
             case 'search_transactions': {

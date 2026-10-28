@@ -16,6 +16,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
 exports.needsReviewMessage = needsReviewMessage;
 const ai_usage_context_1 = require("../ai/ai-usage.context");
+const change_feed_1 = require("../assistant/change-feed");
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
@@ -105,6 +106,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             while (next < due.length) {
                 const row = due[next++];
                 await (0, ai_usage_context_1.withAiUsage)({ ...(0, scope_1.scopeOf)(row), feature: 'STATEMENT' }, () => this.processOne(row));
+                change_feed_1.changeFeed.bump(row.customerId);
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, due.length) }, worker));

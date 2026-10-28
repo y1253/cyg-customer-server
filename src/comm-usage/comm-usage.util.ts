@@ -16,6 +16,7 @@ export type CommPurpose =
   | 'SCHEDULE'
   | 'AI_SCHEDULE'
   | 'SIGNUP_OFFER'
+  | 'SALES_TEXT'
   | 'CONTACT_RELAY'
   | 'INTAKE'
   | 'STRONG_AI'

@@ -45,6 +45,8 @@ describe('salesPrompt (step12f)', () => {
     expect(p).toContain('Speak French by default');
     expect(p).toContain('ends after 10 minutes');
     expect(p).toContain('it texts them once');
+    expect(p).toContain('text_caller');
+    expect(p).toContain('[The caller just texted you');
   });
 
   it('free pricing never quotes a price', () => {

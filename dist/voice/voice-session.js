@@ -12,6 +12,7 @@ const book_switch_1 = require("../assistant/book-switch");
 const scope_1 = require("../bookkeeping/scope");
 const links_util_1 = require("../assistant/links.util");
 const sales_prompt_1 = require("../sales/sales-prompt");
+const live_calls_1 = require("./live-calls");
 const voice_util_1 = require("./voice.util");
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
 function rawText(raw) {
@@ -44,6 +45,8 @@ class VoiceSession {
     turnTouched = [];
     turnWarning = null;
     responding = false;
+    requested = false;
+    notes = [];
     toolOutputsPending = false;
     spoke = false;
     fillerWanted = false;
@@ -119,6 +122,9 @@ class VoiceSession {
         this.settings = await this.deps.calls.settings();
         this.conversation = await this.deps.calls.conversationFor(claims);
         await this.deps.calls.started(claims, this.conversation, this.callSid);
+        if (claims.purpose !== 'THIRD_PARTY') {
+            live_calls_1.liveCalls.addConversation(this.conversation.id, this);
+        }
         this.logger.log(`call ${this.callSid} ${claims.dir} customer ${claims.sub} (${claims.purpose ?? 'INBOUND'}) connected`);
         if (claims.dir === 'INBOUND') {
             this.recordingSid = await this.deps.signalwire.startRecording(this.callSid);
@@ -147,6 +153,7 @@ class VoiceSession {
             sales.takeCall(this.prospect.phoneE164);
         if (!ok)
             return this.hangUp('salesperson not available');
+        live_calls_1.liveCalls.addProspect(this.prospect.phoneE164, this);
         const model = this.deps.model || voice_util_1.DEFAULT_REALTIME_MODEL;
         this.model = model;
         const language = (0, voice_util_1.languageName)(this.settings.language);
@@ -154,7 +161,7 @@ class VoiceSession {
             language,
             maxMinutes: this.settings.maxMinutes,
         });
-        this.connectRealtime(model, instructions, [sales_prompt_1.OFFER_SIGNUP_TOOL], (0, sales_prompt_1.salesOpening)(language));
+        this.connectRealtime(model, instructions, [sales_prompt_1.OFFER_SIGNUP_TOOL, sales_prompt_1.TEXT_CALLER_TOOL], (0, sales_prompt_1.salesOpening)(language));
     }
     async openRealtime(customerName) {
         const conversation = this.conversation;
@@ -191,10 +198,7 @@ class VoiceSession {
             for (const p of this.early.splice(0)) {
                 this.sendOpenAi({ type: 'input_audio_buffer.append', audio: p });
             }
-            this.sendOpenAi({
-                type: 'response.create',
-                response: { instructions: opening },
-            });
+            this.createResponse({ instructions: opening });
         });
         this.openai.on('message', (raw) => {
             void this.onOpenAi(rawText(raw)).catch((err) => this.fail(err));
@@ -270,6 +274,7 @@ class VoiceSession {
         }
         else if (has(voice_util_1.RT.responseCreated, type)) {
             this.responding = true;
+            this.requested = false;
             this.spoke = false;
         }
         else if (has(voice_util_1.RT.responseDone, type)) {
@@ -277,14 +282,12 @@ class VoiceSession {
             this.recordUsage(this.model, 'realtime', ev.response?.usage);
             if (this.fillerWanted && this.toolsRunning > 0) {
                 this.fillerWanted = false;
-                this.sendOpenAi({
-                    type: 'response.create',
-                    response: { instructions: FILLER, tool_choice: 'none' },
-                });
+                this.createResponse({ instructions: FILLER, tool_choice: 'none' });
                 return;
             }
             this.fillerWanted = false;
             this.answerToolsIfReady();
+            this.flushNotes();
         }
         else if (has(voice_util_1.RT.userText, type)) {
             this.recordUsage(voice_util_1.REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
@@ -315,10 +318,13 @@ class VoiceSession {
                 .finally(() => {
                 this.toolsRunning--;
                 this.answerToolsIfReady();
+                this.flushNotes();
             });
         }
         else if (has(voice_util_1.RT.error, type)) {
             const err = ev.error;
+            if (/active response/i.test(err?.message ?? ''))
+                this.requested = false;
             this.logger.warn(`call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`);
         }
     }
@@ -327,7 +333,41 @@ class VoiceSession {
             return;
         }
         this.toolOutputsPending = false;
-        this.sendOpenAi({ type: 'response.create' });
+        this.createResponse();
+    }
+    createResponse(response) {
+        this.requested = true;
+        this.sendOpenAi({
+            type: 'response.create',
+            ...(response && { response }),
+        });
+    }
+    inject(note) {
+        if (this.closed)
+            return;
+        this.notes.push(note);
+        this.flushNotes();
+    }
+    flushNotes() {
+        if (!this.notes.length ||
+            this.responding ||
+            this.requested ||
+            this.toolsRunning > 0 ||
+            this.toolOutputsPending ||
+            this.openai?.readyState !== ws_1.default.OPEN) {
+            return;
+        }
+        this.sendOpenAi({
+            type: 'conversation.item.create',
+            item: {
+                type: 'message',
+                role: 'user',
+                content: [
+                    { type: 'input_text', text: this.notes.splice(0).join('\n') },
+                ],
+            },
+        });
+        this.createResponse();
     }
     recordUsage(model, kind, usage) {
         if (!usage)
@@ -353,7 +393,9 @@ class VoiceSession {
         if (this.prospect) {
             const output = name === sales_prompt_1.OFFER_SIGNUP_TOOL.name
                 ? await this.deps.sales.offerOnCall(this.prospect.id, this.claims?.to)
-                : `Unknown tool ${name}.`;
+                : name === sales_prompt_1.TEXT_CALLER_TOOL.name
+                    ? await this.deps.sales.textOnCall(this.prospect.id, this.claims?.to, this.callSid, args)
+                    : `Unknown tool ${name}.`;
             this.sendOpenAi({
                 type: 'conversation.item.create',
                 item: { type: 'function_call_output', call_id: callId, output },
@@ -433,6 +475,7 @@ class VoiceSession {
         if (this.closed)
             return;
         this.closed = true;
+        live_calls_1.liveCalls.remove(this);
         if (this.timer)
             clearTimeout(this.timer);
         this.close();
@@ -442,6 +485,9 @@ class VoiceSession {
             this.deps.calls.prospectEnded(this.callSid, Math.round((Date.now() - this.startedAt) / 1000));
             this.logger.log(`call ${this.callSid} ended`);
             return;
+        }
+        if (this.conversation && this.turnActions.length) {
+            await this.saveAssistant('(The call ended here.)').catch((err) => this.fail(err));
         }
         const needWav = this.claims.dir === 'INBOUND' && !this.recordingSid;
         const len = Math.max(this.caller.samples, this.ai.samples);

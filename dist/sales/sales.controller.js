@@ -15,6 +15,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SalesController = void 0;
 const common_1 = require("@nestjs/common");
 const intake_system_guard_1 = require("../customer-auth/intake-system.guard");
+const prospect_live_dto_1 = require("./dto/prospect-live.dto");
 const prospect_reply_dto_1 = require("./dto/prospect-reply.dto");
 const sales_service_1 = require("./sales.service");
 let SalesController = class SalesController {
@@ -24,6 +25,9 @@ let SalesController = class SalesController {
     }
     prospect(dto) {
         return this.sales.replyToText(dto);
+    }
+    prospectLive(dto) {
+        return this.sales.liveText(dto);
     }
 };
 exports.SalesController = SalesController;
@@ -35,6 +39,14 @@ __decorate([
     __metadata("design:paramtypes", [prospect_reply_dto_1.ProspectReplyDto]),
     __metadata("design:returntype", Promise)
 ], SalesController.prototype, "prospect", null);
+__decorate([
+    (0, common_1.Post)('prospect-live'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [prospect_live_dto_1.ProspectLiveDto]),
+    __metadata("design:returntype", Promise)
+], SalesController.prototype, "prospectLive", null);
 exports.SalesController = SalesController = __decorate([
     (0, common_1.Controller)('intake-system'),
     (0, common_1.UseGuards)(intake_system_guard_1.IntakeSystemGuard),

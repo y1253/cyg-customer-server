@@ -64,6 +64,12 @@ export declare function fileContext(a: AttachmentView): {
     note: string | null;
 };
 export declare function toMessageView(m: AiMessage): AssistantMessageView;
+export interface LoopResult {
+    text: string;
+    actions: AgentAction[];
+    warning: string | null;
+    touched: number[];
+}
 export declare class AssistantService {
     private readonly prisma;
     private readonly config;
@@ -103,6 +109,7 @@ export declare class AssistantService {
     }): Promise<ChatResult>;
     private run;
     private runChat;
+    followUp(conversation: AiConversation, note: string, channel: 'SMS' | 'EMAIL'): Promise<LoopResult | null>;
     private loop;
     runTask(scope: BookScope, task: string, channel: 'SMS' | 'EMAIL' | 'VOICE'): Promise<string | null>;
     promptFor(conversation: AiConversation, extra?: {

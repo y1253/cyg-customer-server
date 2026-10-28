@@ -5,6 +5,7 @@ import type { AssistantService } from '../assistant/assistant.service';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { SalesService } from '../sales/sales.service';
+import { type LiveCall } from './live-calls';
 import type { VoiceCallsService } from './voice-calls.service';
 export interface VoiceDeps {
     prisma: PrismaService;
@@ -18,7 +19,7 @@ export interface VoiceDeps {
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
 }
-export declare class VoiceSession {
+export declare class VoiceSession implements LiveCall {
     private readonly ws;
     private readonly deps;
     private readonly logger;
@@ -38,6 +39,8 @@ export declare class VoiceSession {
     private turnTouched;
     private turnWarning;
     private responding;
+    private requested;
+    private readonly notes;
     private toolOutputsPending;
     private spoke;
     private fillerWanted;
@@ -58,6 +61,9 @@ export declare class VoiceSession {
     private opening;
     private onOpenAi;
     private answerToolsIfReady;
+    private createResponse;
+    inject(note: string): void;
+    private flushNotes;
     private recordUsage;
     private runTool;
     private saveAssistant;

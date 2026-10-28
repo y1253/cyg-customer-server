@@ -34,6 +34,7 @@ const bank_row_categorizer_1 = require("./bank-row-categorizer");
 const crypto_util_1 = require("./crypto.util");
 const plaid_client_1 = require("./plaid.client");
 const transaction_alert_util_1 = require("./transaction-alert.util");
+const change_feed_1 = require("../assistant/change-feed");
 const LOGIN_CODES = new Set([
     'ITEM_LOGIN_REQUIRED',
     'PENDING_EXPIRATION',
@@ -193,6 +194,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         }
         try {
             await this.rebuildItem(item.id);
+            change_feed_1.changeFeed.bump(item.customerId);
         }
         catch (err) {
             this.logger.warn(`rebuild of item #${item.id} failed: ${String(err)}`);

@@ -25,6 +25,7 @@ const customer_messenger_service_1 = require("../messaging/customer-messenger.se
 const messaging_util_1 = require("../messaging/messaging.util");
 const reach_1 = require("../messaging/reach");
 const prisma_service_1 = require("../prisma/prisma.service");
+const live_calls_1 = require("../voice/live-calls");
 const sales_prompt_1 = require("./sales-prompt");
 const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
 const HISTORY = 20;
@@ -39,6 +40,7 @@ let SalesService = SalesService_1 = class SalesService {
     perPhone = new sales_prompt_1.DailyCounter();
     total = new sales_prompt_1.DailyCounter();
     callsPerPhone = new sales_prompt_1.DailyCounter();
+    callTexts = new Map();
     constructor(prisma, config, openai, messenger, instructions) {
         this.prisma = prisma;
         this.config = config;
@@ -232,6 +234,67 @@ let SalesService = SalesService_1 = class SalesService {
         await this.markOffered(p.id, 'CALL');
         await this.save(p.id, 'CALL', 'ASSISTANT', `[texted] ${sales_prompt_1.CALL_SIGNUP_TEXT}`);
         return 'Texted. Tell them to reply YES to that text and their account opens right away on this number.';
+    }
+    async textOnCall(prospectId, from, callSid, rawArgs) {
+        let message = '';
+        try {
+            const args = JSON.parse(rawArgs || '{}');
+            if (typeof args.message === 'string')
+                message = args.message.trim();
+        }
+        catch {
+        }
+        if (!message)
+            return 'Nothing was sent: the message was empty.';
+        const key = callSid ?? `prospect-${prospectId}`;
+        const sent = this.callTexts.get(key) ?? 0;
+        if (sent >= sales_prompt_1.MAX_CALL_TEXTS) {
+            return 'No more texts on this call — tell them instead.';
+        }
+        const p = await this.prisma.prospect.findUnique({
+            where: { id: prospectId },
+        });
+        if (!p)
+            return 'Could not send the text.';
+        const body = message.slice(0, 600);
+        const outcome = await this.messenger.send({
+            channel: 'SMS',
+            to: p.phoneE164,
+            from: from ?? null,
+            body,
+            meta: { customerId: null, purpose: 'SALES_TEXT' },
+        });
+        if (outcome !== 'sent') {
+            this.logger.warn(`call text for prospect ${p.id}: ${outcome}`);
+            return outcome === 'opted-out'
+                ? 'They opted out of our texts, so nothing can be sent. Say it out loud instead.'
+                : 'The text could not be sent. Say it out loud instead.';
+        }
+        this.callTexts.set(key, sent + 1);
+        if (this.callTexts.size > 500)
+            this.callTexts.clear();
+        await this.save(p.id, 'CALL', 'ASSISTANT', `[texted] ${body}`, callSid);
+        return 'Texted. Tell them you just sent it; anything they text back comes to you on this call.';
+    }
+    async liveText(input) {
+        const phone = (0, messaging_util_1.asE164)(input.phone);
+        if (!phone)
+            return { live: false };
+        const text = input.text.trim().slice(0, 1500);
+        const note = input.system
+            ? `[Note from CYG Finance, not said by the caller: ${text}]`
+            : `[The caller just texted you, while on this call: "${text}"]`;
+        if (!live_calls_1.liveCalls.toProspect(phone, note))
+            return { live: false };
+        if (!input.system) {
+            const p = await this.prisma.prospect.findUnique({
+                where: { phoneE164: phone },
+            });
+            if (p)
+                await this.save(p.id, 'SMS', 'USER', text);
+        }
+        this.logger.log(`live call text for ${phone.slice(0, -4)}****${input.system ? ' (note)' : ''}`);
+        return { live: true };
     }
 };
 exports.SalesService = SalesService;

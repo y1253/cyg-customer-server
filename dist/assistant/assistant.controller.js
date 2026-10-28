@@ -23,6 +23,7 @@ const contact_relay_service_1 = require("./contact-relay.service");
 const intake_agent_guard_1 = require("./intake-agent.guard");
 const intake_agent_service_1 = require("./intake-agent.service");
 const rules_service_1 = require("./rules.service");
+const change_feed_1 = require("./change-feed");
 let AssistantConfigController = class AssistantConfigController {
     assistant;
     constructor(assistant) {
@@ -30,6 +31,9 @@ let AssistantConfigController = class AssistantConfigController {
     }
     config() {
         return { enabled: this.assistant.enabled };
+    }
+    changes(req) {
+        return { version: change_feed_1.changeFeed.version(req.user.customerId) };
     }
 };
 exports.AssistantConfigController = AssistantConfigController;
@@ -39,6 +43,13 @@ __decorate([
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", Object)
 ], AssistantConfigController.prototype, "config", null);
+__decorate([
+    (0, common_1.Get)('changes'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Object)
+], AssistantConfigController.prototype, "changes", null);
 exports.AssistantConfigController = AssistantConfigController = __decorate([
     (0, common_1.Controller)('assistant'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
