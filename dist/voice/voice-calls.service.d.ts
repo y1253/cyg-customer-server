@@ -9,7 +9,7 @@ import { type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
-import { type CallPurpose, type VoiceTokenClaims } from './voice.util';
+import { type CallPurpose, type PersonCallOutcome, type VoiceTokenClaims } from './voice.util';
 export interface VoiceSettings {
     enabled: boolean;
     voice: string;
@@ -72,6 +72,10 @@ export declare class VoiceCallsService implements OnModuleInit {
         ok: false;
         error: string;
     }>;
+    notePersonOutcome(callSid: string, outcome: {
+        outcome: PersonCallOutcome;
+        reply: string;
+    }): void;
     private reportPersonCall;
     private reportToCustomer;
     overCallLimit(customerId: number): Promise<boolean>;

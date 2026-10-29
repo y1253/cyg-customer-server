@@ -1,5 +1,6 @@
 import {
   describeCheck,
+  perPageBoxes,
   reconcile,
   score,
   type ReconcileRow,
@@ -260,5 +261,31 @@ describe('reconcile: balances that are not a running balance', () => {
     expect(describeCheck(running)).toBe(
       'Running balance breaks on 1 of 2 rows (after the 2024-04-29 row: printed $70.00, the rows add up to $65.00)',
     );
+  });
+});
+
+describe('perPageBoxes', () => {
+  it('BMO: the summary box and "Closing totals" (with counts) are ONE box', () => {
+    // 2026-10-28, Madam recovery: page 1 prints the money only, the last page the money
+    // AND "Number of items processed". Not two boxes that disagree.
+    const summary = { ...NONE, totalDeposits: 6667.88, totalWithdrawals: 6681.79 };
+    const closing = { ...summary, depositCount: 11, withdrawalCount: 26 };
+    expect(perPageBoxes([summary, NONE, closing])).toBe(false);
+  });
+
+  it('TD: pages printing different totals are per-page boxes', () => {
+    const p1 = { ...NONE, totalDeposits: 100, totalWithdrawals: 50 };
+    const p2 = { ...NONE, totalDeposits: 300, totalWithdrawals: 50 };
+    expect(perPageBoxes([p1, p2])).toBe(true);
+  });
+
+  it('differing counts with equal money still disagree', () => {
+    const p1 = { ...NONE, totalDeposits: 100, depositCount: 2 };
+    const p2 = { ...NONE, totalDeposits: 100, depositCount: 3 };
+    expect(perPageBoxes([p1, p2])).toBe(true);
+  });
+
+  it('one box is never per-page', () => {
+    expect(perPageBoxes([{ ...NONE, totalDeposits: 1 }, NONE])).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceSession = void 0;
+exports.statementDoneNote = statementDoneNote;
 const common_1 = require("@nestjs/common");
 const ws_1 = __importDefault(require("ws"));
 const ai_usage_context_1 = require("../ai/ai-usage.context");
@@ -23,6 +24,27 @@ function rawText(raw) {
     return Buffer.from(raw).toString('utf8');
 }
 const has = (list, type) => list.includes(type);
+const END_MARK = 'end_call';
+const END_FALLBACK_MS = 12_000;
+const WATCH_EVERY_MS = 15_000;
+const WATCH_FOR_MS = 20 * 60_000;
+function statementIdOf(args) {
+    try {
+        const v = Number(JSON.parse(args).statementId);
+        return Number.isInteger(v) && v > 0 ? v : null;
+    }
+    catch {
+        return null;
+    }
+}
+function statementDoneNote(statementId, row) {
+    const head = `[System note, not from the caller] The statement you re-read on this call (#${statementId}, "${row.filename}") is finished:`;
+    if (row.status === 'DONE') {
+        return `${head} it was read and now matches the bank's totals — its transactions are in the books. Tell the caller now, briefly.`;
+    }
+    return (`${head} it still could not be read (${row.status}). The reason: ${row.error ?? 'unknown'}. ` +
+        'Tell the caller now, briefly and plainly. Do not promise a review or a timeline you cannot see.');
+}
 const FILLER = 'Say only a few natural words to show you are on it, like "Okay, let me check that for you" ' +
     'or "One sec, let me pull that up" — nothing else, no answer yet.';
 class VoiceSession {
@@ -54,6 +76,9 @@ class VoiceSession {
     toolsRunning = 0;
     closed = false;
     timer = null;
+    ending = false;
+    endMarkSent = false;
+    watched = new Map();
     caller = new voice_util_1.MuLawTrack();
     ai = new voice_util_1.MuLawTrack();
     early = [];
@@ -96,6 +121,10 @@ class VoiceSession {
                 }
                 return;
             }
+            case 'mark':
+                if (this.ending && msg.mark?.name === END_MARK)
+                    this.close();
+                return;
             case 'stop':
                 this.close();
                 return;
@@ -180,7 +209,7 @@ class VoiceSession {
             : await this.deps.assistant.promptFor(conversation, {
                 note: await this.callNote(customerName),
             });
-        this.connectRealtime(model, instructions, thirdParty ? [] : (0, assistant_tools_1.toolsFor)('VOICE'), this.opening(customerName, claims));
+        this.connectRealtime(model, instructions, thirdParty ? [voice_util_1.END_CALL_TOOL] : (0, assistant_tools_1.toolsFor)('VOICE'), this.opening(customerName, claims));
     }
     connectRealtime(model, instructions, tools, opening) {
         const url = `${REALTIME_URL}?model=${encodeURIComponent(model)}`;
@@ -214,9 +243,15 @@ class VoiceSession {
                 ? 'They called our number.'
                 : 'We called them to deliver a scheduled message; after it, answer their questions.',
             `The call ends after ${this.settings.maxMinutes} minutes.`,
-            `Speak ${(0, voice_util_1.languageName)(this.settings.language)} by default. If the caller speaks another ` +
-                'language or asks you to speak one, switch to it at once and keep using it for the rest ' +
-                'of the call, texts you send with send_text included.',
+            `Speak ${(0, voice_util_1.languageName)(this.settings.language)} by default. If the caller asks you to ` +
+                'speak another language, or clearly speaks whole sentences in one, switch to it and keep ' +
+                'using it for the rest of the call, texts you send with send_text included. Never switch ' +
+                'because of a single word or a short, unclear fragment.',
+            'Phone lines are noisy: when what you heard is unclear, only a word or two, or sounds like ' +
+                'noise, say nothing about its content — at most ask once, briefly, to repeat. Never answer a ' +
+                'guess. When you have asked a question, wait for the answer; never fill a silence with more talk.',
+            'Never promise what no tool did: no "staff / a specialist will review it", no "in a few business ' +
+                "days\", no \"I'll let you know\" — unless a tool result or a note on this call says it will happen.",
         ];
         const conversation = this.conversation;
         if (!conversation.bookChosen) {
@@ -269,16 +304,20 @@ class VoiceSession {
         }
         else if (has(voice_util_1.RT.speechStarted, type)) {
             this.sendSignalWire({ event: 'clear', streamSid: this.streamSid });
-            if (this.responding)
-                this.sendOpenAi({ type: 'response.cancel' });
         }
         else if (has(voice_util_1.RT.responseCreated, type)) {
+            if (this.ending) {
+                this.sendOpenAi({ type: 'response.cancel' });
+                return;
+            }
             this.responding = true;
             this.requested = false;
             this.spoke = false;
         }
         else if (has(voice_util_1.RT.responseDone, type)) {
             this.responding = false;
+            if (this.ending)
+                this.sendEndMark();
             this.recordUsage(this.model, 'realtime', ev.response?.usage);
             if (this.fillerWanted && this.toolsRunning > 0) {
                 this.fillerWanted = false;
@@ -328,7 +367,27 @@ class VoiceSession {
             this.logger.warn(`call ${this.callSid}: realtime error: ${err?.message ?? text.slice(0, 200)}`);
         }
     }
+    endCall() {
+        if (this.ending)
+            return;
+        this.ending = true;
+        if (!this.responding)
+            this.sendEndMark();
+        setTimeout(() => this.close(), END_FALLBACK_MS).unref?.();
+    }
+    sendEndMark() {
+        if (this.endMarkSent)
+            return;
+        this.endMarkSent = true;
+        this.sendSignalWire({
+            event: 'mark',
+            streamSid: this.streamSid,
+            mark: { name: END_MARK },
+        });
+    }
     answerToolsIfReady() {
+        if (this.ending)
+            return;
         if (this.responding || this.toolsRunning > 0 || !this.toolOutputsPending) {
             return;
         }
@@ -403,6 +462,23 @@ class VoiceSession {
             this.toolOutputsPending = true;
             return;
         }
+        if (name === voice_util_1.END_CALL_TOOL.name && this.claims?.purpose === 'THIRD_PARTY') {
+            const ended = (0, voice_util_1.parseEndCall)(args);
+            if (ended && this.callSid) {
+                this.deps.calls.notePersonOutcome(this.callSid, ended);
+            }
+            this.logger.log(`call ${this.callSid}: end_call ${ended?.outcome ?? '(bad arguments)'}`);
+            this.sendOpenAi({
+                type: 'conversation.item.create',
+                item: {
+                    type: 'function_call_output',
+                    call_id: callId,
+                    output: 'The call is ending. Say nothing more.',
+                },
+            });
+            this.endCall();
+            return;
+        }
         const conversation = await this.freshConversation();
         const scope = (0, scope_1.scopeOf)(conversation);
         const outcome = await (0, ai_usage_context_1.withAiUsage)({ ...scope, feature: 'VOICE' }, () => this.deps.tools.run(name, args, {
@@ -413,6 +489,9 @@ class VoiceSession {
         }));
         if (outcome.action)
             this.turnActions.push(outcome.action);
+        if (name === 'retry_statement' && outcome.action?.ok) {
+            this.watchStatement(scope, statementIdOf(args));
+        }
         if (outcome.warning)
             this.turnWarning = outcome.warning;
         if (outcome.attachmentId)
@@ -426,6 +505,45 @@ class VoiceSession {
             },
         });
         this.toolOutputsPending = true;
+    }
+    watchStatement(scope, statementId) {
+        if (!statementId || this.closed || this.watched.has(statementId))
+            return;
+        const started = Date.now();
+        const tick = async () => {
+            if (this.closed)
+                return this.unwatch(statementId);
+            const row = await this.deps.prisma.bankStatement.findFirst({
+                where: {
+                    id: statementId,
+                    customerId: scope.customerId,
+                    bookId: scope.bookId,
+                    deletedAt: null,
+                },
+                select: { status: true, error: true, filename: true },
+            });
+            if (!row)
+                return this.unwatch(statementId);
+            if (row.status === 'PENDING' || row.status === 'PROCESSING') {
+                if (Date.now() - started > WATCH_FOR_MS)
+                    this.unwatch(statementId);
+                return;
+            }
+            this.unwatch(statementId);
+            this.inject(statementDoneNote(statementId, row));
+        };
+        this.watched.set(statementId, setInterval(() => {
+            void tick().catch((err) => {
+                this.logger.warn(`call ${this.callSid}: statement #${statementId} watch failed: ${err instanceof Error ? err.message : String(err)}`);
+                this.unwatch(statementId);
+            });
+        }, WATCH_EVERY_MS));
+    }
+    unwatch(statementId) {
+        const t = this.watched.get(statementId);
+        if (t)
+            clearInterval(t);
+        this.watched.delete(statementId);
     }
     async saveAssistant(said) {
         const conversation = await this.freshConversation();
@@ -478,6 +596,8 @@ class VoiceSession {
         live_calls_1.liveCalls.remove(this);
         if (this.timer)
             clearTimeout(this.timer);
+        for (const id of [...this.watched.keys()])
+            this.unwatch(id);
         this.close();
         if (!this.callSid || !this.claims)
             return;

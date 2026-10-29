@@ -2,6 +2,8 @@ import type { ConfigService } from '@nestjs/config';
 import { PDFDocument } from 'pdf-lib';
 import type { ChatRequest, OpenAiClient } from '../ai/openai.client';
 import {
+  dropSpuriousPages,
+  emptyReading,
   EXTRACTION_SCHEMA,
   looksLikeStatement,
   MAX_REREADS,
@@ -215,5 +217,47 @@ describe('the "is this a statement?" gate (2026-10-11 BMO incident)', () => {
       'This file does not look like a bank or credit-card statement.',
     );
     expect(chat).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dropSpuriousPages', () => {
+  const row = (amount: number, balanceAfter: number | null = null) => ({
+    pendingDate: null,
+    postingDate: '2026-02-01',
+    description: 'x',
+    amount,
+    balanceAfter,
+    offsetAccount: 'Uncategorized',
+  });
+  const page = (
+    transactions: ReturnType<typeof row>[],
+    stated: Partial<ReturnType<typeof emptyReading>['stated']> = {},
+  ) => {
+    const p = emptyReading();
+    return {
+      ...p,
+      isBankStatement: true,
+      stated: { ...p.stated, ...stated },
+      transactions,
+    };
+  };
+
+  it('Chase card: the summary line read as a row on page 1 is left out', () => {
+    // 2026-10-28, Madam recovery #292: "Payment, Credits −852.58" on the summary page was
+    // read as a row beside the real payment on page 3 — deposits exactly doubled.
+    const summary = page([row(852.58)], {
+      totalDeposits: 852.58,
+      totalWithdrawals: 1054.04,
+    });
+    const activity = page([row(852.58), row(-976.56), row(-77.48)]);
+    const out = dropSpuriousPages([summary, activity]);
+    expect(out?.pages).toEqual([0]);
+    expect(out?.result.verification.verification).toBe('VERIFIED');
+  });
+
+  it('never drops a page when that is not what makes it add up', () => {
+    const p1 = page([row(10)], { totalDeposits: 25 });
+    const p2 = page([row(10)]);
+    expect(dropSpuriousPages([p1, p2])).toBeNull();
   });
 });

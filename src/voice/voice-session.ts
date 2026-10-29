@@ -7,7 +7,7 @@ import type { AgentAction, AssistantTools } from '../assistant/assistant-tools';
 import { toolsFor } from '../assistant/assistant-tools';
 import type { AssistantService } from '../assistant/assistant.service';
 import { bookOptions } from '../assistant/book-switch';
-import { scopeOf } from '../bookkeeping/scope';
+import { scopeOf, type BookScope } from '../bookkeeping/scope';
 import { fillLinks, type LinkBook } from '../assistant/links.util';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -28,6 +28,8 @@ import {
   languageName,
   realtimeSession,
   thirdPartyInstructions,
+  END_CALL_TOOL,
+  parseEndCall,
   type VoiceTokenClaims,
 } from './voice.util';
 
@@ -60,6 +62,40 @@ function rawText(raw: WebSocket.RawData): string {
 }
 const has = (list: readonly string[], type: string) => list.includes(type);
 
+/** The SignalWire mark placed after the goodbye; the call ends when it is echoed. */
+const END_MARK = 'end_call';
+/** Hang up anyway this long after end_call, if the mark never comes back. */
+const END_FALLBACK_MS = 12_000;
+
+/** How often a statement re-read on a call is checked, and for how long at most. */
+const WATCH_EVERY_MS = 15_000;
+const WATCH_FOR_MS = 20 * 60_000;
+
+/** `retry_statement`'s statementId argument. */
+function statementIdOf(args: string): number | null {
+  try {
+    const v = Number((JSON.parse(args) as { statementId?: unknown }).statementId);
+    return Number.isInteger(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The note the model gets when a statement re-read on this call is finished. Pure. */
+export function statementDoneNote(
+  statementId: number,
+  row: { status: string; error: string | null; filename: string },
+): string {
+  const head = `[System note, not from the caller] The statement you re-read on this call (#${statementId}, "${row.filename}") is finished:`;
+  if (row.status === 'DONE') {
+    return `${head} it was read and now matches the bank's totals — its transactions are in the books. Tell the caller now, briefly.`;
+  }
+  return (
+    `${head} it still could not be read (${row.status}). The reason: ${row.error ?? 'unknown'}. ` +
+    'Tell the caller now, briefly and plainly. Do not promise a review or a timeline you cannot see.'
+  );
+}
+
 /** What the AI says while a tool runs, when it went to the tool without a word. */
 const FILLER =
   'Say only a few natural words to show you are on it, like "Okay, let me check that for you" ' +
@@ -75,7 +111,7 @@ const FILLER =
  *   book (so it can search, file, rename… and `send_text` a link),
  * - every sentence is saved as an `AiMessage` (channel VOICE) — the call is in the same
  *   history as texts and the Assistant tab,
- * - the caller can interrupt (barge-in: SignalWire `clear` + `response.cancel`).
+ * - the caller can interrupt (barge-in: SignalWire `clear`; OpenAI cancels the answer itself).
  *
  * Never throws out of a socket handler: a failure ends the call politely and is logged.
  */
@@ -115,6 +151,11 @@ export class VoiceSession implements LiveCall {
   private toolsRunning = 0;
   private closed = false;
   private timer: NodeJS.Timeout | null = null;
+  /** end_call ran: hang up once the goodbye has played; no new answers meanwhile. */
+  private ending = false;
+  private endMarkSent = false;
+  /** Statements re-read on this call, watched so the AI can say when they are done. */
+  private readonly watched = new Map<number, NodeJS.Timeout>();
   /** Fallback recording when SignalWire would not record: left = caller, right = AI. */
   private readonly caller = new MuLawTrack();
   private readonly ai = new MuLawTrack();
@@ -146,6 +187,7 @@ export class VoiceSession implements LiveCall {
       };
       streamSid?: string;
       media?: { payload?: string; track?: string };
+      mark?: { name?: string };
     };
     try {
       msg = JSON.parse(text) as typeof msg;
@@ -174,6 +216,10 @@ export class VoiceSession implements LiveCall {
         }
         return;
       }
+      case 'mark':
+        // SignalWire plays our audio, then echoes the mark: the goodbye has been heard.
+        if (this.ending && msg.mark?.name === END_MARK) this.close();
+        return;
       case 'stop':
         this.close();
         return;
@@ -302,7 +348,7 @@ export class VoiceSession implements LiveCall {
     this.connectRealtime(
       model,
       instructions,
-      thirdParty ? [] : toolsFor('VOICE'),
+      thirdParty ? [END_CALL_TOOL] : toolsFor('VOICE'),
       this.opening(customerName, claims),
     );
   }
@@ -350,9 +396,17 @@ export class VoiceSession implements LiveCall {
         ? 'They called our number.'
         : 'We called them to deliver a scheduled message; after it, answer their questions.',
       `The call ends after ${this.settings!.maxMinutes} minutes.`,
-      `Speak ${languageName(this.settings!.language)} by default. If the caller speaks another ` +
-        'language or asks you to speak one, switch to it at once and keep using it for the rest ' +
-        'of the call, texts you send with send_text included.',
+      // ⚠️ "Switch at once" switched to Hebrew over a garbled noise transcribed as a foreign
+      // word (2026-10-28): a phone line's noise transcribes as fragments of any language.
+      `Speak ${languageName(this.settings!.language)} by default. If the caller asks you to ` +
+        'speak another language, or clearly speaks whole sentences in one, switch to it and keep ' +
+        'using it for the rest of the call, texts you send with send_text included. Never switch ' +
+        'because of a single word or a short, unclear fragment.',
+      'Phone lines are noisy: when what you heard is unclear, only a word or two, or sounds like ' +
+        'noise, say nothing about its content — at most ask once, briefly, to repeat. Never answer a ' +
+        'guess. When you have asked a question, wait for the answer; never fill a silence with more talk.',
+      'Never promise what no tool did: no "staff / a specialist will review it", no "in a few business ' +
+        "days\", no \"I'll let you know\" — unless a tool result or a note on this call says it will happen.",
     ];
     const conversation = this.conversation!;
     if (!conversation.bookChosen) {
@@ -416,15 +470,22 @@ export class VoiceSession implements LiveCall {
         media: { payload: delta },
       });
     } else if (has(RT.speechStarted, type)) {
-      // Barge-in: stop what is playing on the phone, and the answer being made.
+      // Barge-in: stop what is playing on the phone. OpenAI cancels the answer itself
+      // (`interrupt_response: true`); a second `response.cancel` from here raced it and
+      // logged "Cancellation failed: no active response found" dozens of times a call.
       this.sendSignalWire({ event: 'clear', streamSid: this.streamSid });
-      if (this.responding) this.sendOpenAi({ type: 'response.cancel' });
     } else if (has(RT.responseCreated, type)) {
+      if (this.ending) {
+        // The other end (a voicemail menu, a "Hello?") must not start a new answer.
+        this.sendOpenAi({ type: 'response.cancel' });
+        return;
+      }
       this.responding = true;
       this.requested = false;
       this.spoke = false;
     } else if (has(RT.responseDone, type)) {
       this.responding = false;
+      if (this.ending) this.sendEndMark();
       this.recordUsage(
         this.model,
         'realtime',
@@ -495,7 +556,30 @@ export class VoiceSession implements LiveCall {
   }
 
   /** Every tool result is in and nothing is speaking: the model answers from them. */
+  /**
+   * end_call: let the goodbye play out, then hang up. The audio is sent ahead of playback,
+   * so the end is a SignalWire `mark` placed after it (echoed once played), with a timer in
+   * case the mark never comes back.
+   */
+  private endCall(): void {
+    if (this.ending) return;
+    this.ending = true;
+    if (!this.responding) this.sendEndMark();
+    setTimeout(() => this.close(), END_FALLBACK_MS).unref?.();
+  }
+
+  private sendEndMark(): void {
+    if (this.endMarkSent) return;
+    this.endMarkSent = true;
+    this.sendSignalWire({
+      event: 'mark',
+      streamSid: this.streamSid,
+      mark: { name: END_MARK },
+    });
+  }
+
   private answerToolsIfReady(): void {
+    if (this.ending) return;
     if (this.responding || this.toolsRunning > 0 || !this.toolOutputsPending) {
       return;
     }
@@ -607,6 +691,26 @@ export class VoiceSession implements LiveCall {
       this.toolOutputsPending = true;
       return;
     }
+    if (name === END_CALL_TOOL.name && this.claims?.purpose === 'THIRD_PARTY') {
+      const ended = parseEndCall(args);
+      if (ended && this.callSid) {
+        this.deps.calls.notePersonOutcome(this.callSid, ended);
+      }
+      this.logger.log(
+        `call ${this.callSid}: end_call ${ended?.outcome ?? '(bad arguments)'}`,
+      );
+      this.sendOpenAi({
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: callId,
+          output: 'The call is ending. Say nothing more.',
+        },
+      });
+      // No `toolOutputsPending`: the model must not answer this.
+      this.endCall();
+      return;
+    }
     const conversation = await this.freshConversation();
     const scope = scopeOf(conversation);
     const outcome = await withAiUsage({ ...scope, feature: 'VOICE' }, () =>
@@ -618,6 +722,9 @@ export class VoiceSession implements LiveCall {
       }),
     );
     if (outcome.action) this.turnActions.push(outcome.action);
+    if (name === 'retry_statement' && outcome.action?.ok) {
+      this.watchStatement(scope, statementIdOf(args));
+    }
     if (outcome.warning) this.turnWarning = outcome.warning;
     if (outcome.attachmentId) this.turnTouched.push(outcome.attachmentId);
     this.sendOpenAi({
@@ -629,6 +736,53 @@ export class VoiceSession implements LiveCall {
       },
     });
     this.toolOutputsPending = true;
+  }
+
+  /**
+   * After `retry_statement` the AI used to say "I'll let you know when it's done" and could
+   * not: nothing told it (Madam recovery's call, 2026-10-28 — the caller asked three times).
+   * Now the statement is checked every `WATCH_EVERY_MS` while the call is up, and when it is
+   * read the result is handed to the model as a note (`inject`), which says it out loud.
+   */
+  private watchStatement(scope: BookScope, statementId: number | null): void {
+    if (!statementId || this.closed || this.watched.has(statementId)) return;
+    const started = Date.now();
+    const tick = async (): Promise<void> => {
+      if (this.closed) return this.unwatch(statementId);
+      const row = await this.deps.prisma.bankStatement.findFirst({
+        where: {
+          id: statementId,
+          customerId: scope.customerId,
+          bookId: scope.bookId,
+          deletedAt: null,
+        },
+        select: { status: true, error: true, filename: true },
+      });
+      if (!row) return this.unwatch(statementId);
+      if (row.status === 'PENDING' || row.status === 'PROCESSING') {
+        if (Date.now() - started > WATCH_FOR_MS) this.unwatch(statementId);
+        return;
+      }
+      this.unwatch(statementId);
+      this.inject(statementDoneNote(statementId, row));
+    };
+    this.watched.set(
+      statementId,
+      setInterval(() => {
+        void tick().catch((err: unknown) => {
+          this.logger.warn(
+            `call ${this.callSid}: statement #${statementId} watch failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          this.unwatch(statementId);
+        });
+      }, WATCH_EVERY_MS),
+    );
+  }
+
+  private unwatch(statementId: number): void {
+    const t = this.watched.get(statementId);
+    if (t) clearInterval(t);
+    this.watched.delete(statementId);
   }
 
   /** The AI's sentence, with what it changed while answering. */
@@ -696,6 +850,7 @@ export class VoiceSession implements LiveCall {
     this.closed = true;
     liveCalls.remove(this);
     if (this.timer) clearTimeout(this.timer);
+    for (const id of [...this.watched.keys()]) this.unwatch(id);
     this.close();
     if (!this.callSid || !this.claims) return;
     if (this.prospect) {

@@ -111,6 +111,13 @@ export declare function thirdPartyInstructions(input: {
     language: string;
     maxMinutes: number;
 }): string;
+export declare const END_CALL_TOOL: ToolDefinition;
+export type PersonCallOutcome = 'DELIVERED' | 'VOICEMAIL' | 'DECLINED' | 'WRONG_NUMBER';
+export declare function parseEndCall(args: string): {
+    outcome: PersonCallOutcome;
+    reply: string;
+} | null;
+export declare function isVoicemailPrompt(line: string): boolean;
 export declare function realtimeSession(input: {
     model: string;
     instructions: string;
@@ -131,9 +138,12 @@ export declare function realtimeSession(input: {
                 transcription: {
                     model: string;
                 };
+                noise_reduction: {
+                    type: string;
+                };
                 turn_detection: {
                     type: string;
-                    silence_duration_ms: number;
+                    eagerness: string;
                     create_response: boolean;
                     interrupt_response: boolean;
                 };

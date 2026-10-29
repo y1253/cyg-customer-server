@@ -145,6 +145,12 @@ export declare class StatementExtractor {
     private pool;
     private readChunk;
 }
+export declare function emptyReading(): PageReading;
+export declare function dropSpuriousPages(pages: readonly PageReading[]): {
+    pages: number[];
+    readings: PageReading[];
+    result: ReturnType<typeof assemble>;
+} | null;
 export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
 export declare function closingOf(pages: PageReading[], openingBalance?: number | null): number | null;
 export declare function rereadRound(n: number): {

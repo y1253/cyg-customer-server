@@ -3,6 +3,8 @@ import {
   callWindow,
   callWindows,
   inCallWindow,
+  isVoicemailPrompt,
+  parseEndCall,
   languageName,
   callStatusOf,
   connectStreamLaml,
@@ -149,5 +151,32 @@ describe('call transcript windows (step12g)', () => {
     expect(inCallWindow(ws, 1, at('10:08:30'))).toBe(false);
     expect(inCallWindow(ws, 1, at('10:20:00'))).toBe(false);
     expect(inCallWindow(ws, 3, at('10:01:00'))).toBe(false);
+  });
+});
+
+describe('end_call helpers', () => {
+  it('parseEndCall keeps a known outcome and the reply', () => {
+    expect(parseEndCall('{"outcome":"DELIVERED","reply":" see you "}')).toEqual({
+      outcome: 'DELIVERED',
+      reply: 'see you',
+    });
+    expect(parseEndCall('{"outcome":"HUNG_UP"}')).toBeNull();
+    expect(parseEndCall('nope')).toBeNull();
+  });
+
+  it('isVoicemailPrompt: the menu is not the person', () => {
+    expect(
+      isVoicemailPrompt(
+        'Your message has reached the maximum duration allowed. To confirm, press 9.',
+      ),
+    ).toBe(true);
+    expect(isVoicemailPrompt('After you leave the message, you can modify it by pressing pound.')).toBe(true);
+    expect(isVoicemailPrompt('Tell him I would like to speak with him in person.')).toBe(false);
+  });
+
+  it('calls use semantic VAD with noise reduction', () => {
+    const s = realtimeSession({ model: 'm', instructions: 'i', voice: 'cedar', tools: [] });
+    expect(s.session.audio.input.noise_reduction).toEqual({ type: 'near_field' });
+    expect(s.session.audio.input.turn_detection.type).toBe('semantic_vad');
   });
 });

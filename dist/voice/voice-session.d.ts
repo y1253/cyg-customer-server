@@ -19,6 +19,11 @@ export interface VoiceDeps {
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
 }
+export declare function statementDoneNote(statementId: number, row: {
+    status: string;
+    error: string | null;
+    filename: string;
+}): string;
 export declare class VoiceSession implements LiveCall {
     private readonly ws;
     private readonly deps;
@@ -48,6 +53,9 @@ export declare class VoiceSession implements LiveCall {
     private toolsRunning;
     private closed;
     private timer;
+    private ending;
+    private endMarkSent;
+    private readonly watched;
     private readonly caller;
     private readonly ai;
     private early;
@@ -60,12 +68,16 @@ export declare class VoiceSession implements LiveCall {
     private callNote;
     private opening;
     private onOpenAi;
+    private endCall;
+    private sendEndMark;
     private answerToolsIfReady;
     private createResponse;
     inject(note: string): void;
     private flushNotes;
     private recordUsage;
     private runTool;
+    private watchStatement;
+    private unwatch;
     private saveAssistant;
     private freshConversation;
     private sendOpenAi;

@@ -73,10 +73,25 @@ function verdict(checks) {
 }
 function perPageBoxes(pages) {
     const boxes = pages.filter((f) => f.totalDeposits !== null || f.totalWithdrawals !== null);
-    const key = (f) => [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
-        .map((v) => (v === null ? '' : String(Math.abs(v))))
-        .join('|');
-    return boxes.length >= 2 && new Set(boxes.map(key)).size > 1;
+    const fields = (f) => [
+        f.totalDeposits,
+        f.totalWithdrawals,
+        f.depositCount,
+        f.withdrawalCount,
+    ];
+    const disagree = (a, b) => {
+        const fb = fields(b);
+        return fields(a).some((v, i) => v !== null &&
+            fb[i] !== null &&
+            (0, exports.cents)(Math.abs(v)) !== (0, exports.cents)(Math.abs(fb[i])));
+    };
+    for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+            if (disagree(boxes[i], boxes[j]))
+                return true;
+        }
+    }
+    return false;
 }
 function reconcileStatement(stated, pages) {
     const allRows = pages.flatMap((p) => p.rows);

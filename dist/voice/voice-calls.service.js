@@ -133,6 +133,11 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }, 4000);
         return { ok: true, summary: `Calling ${label} (${person.phone})` };
     }
+    notePersonOutcome(callSid, outcome) {
+        const pending = this.personCalls.get(callSid);
+        if (pending)
+            pending.outcome = outcome;
+    }
     async reportPersonCall(call) {
         const pending = this.personCalls.get(call.callSid);
         if (!pending)
@@ -142,8 +147,21 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             ? `${pending.name} (${pending.phone})`
             : pending.phone;
         let text;
+        const ended = pending.outcome;
         if (!call.answeredAt) {
             text = `I called ${label} but nobody answered, so your message was not delivered. Want me to text them instead, or try again later?`;
+        }
+        else if (ended?.outcome === 'VOICEMAIL') {
+            text = `I called ${label} and got their voicemail, so I left your message there.`;
+        }
+        else if (ended?.outcome === 'WRONG_NUMBER') {
+            text = `I called ${label}, but they said it is the wrong number. Your message was not delivered.`;
+        }
+        else if (ended) {
+            const verb = ended.outcome === 'DECLINED'
+                ? 'tried to give them your message, but they did not want it'
+                : 'gave them your message';
+            text = `I called ${label} and ${verb}.${ended.reply ? ` They said: "${ended.reply}"` : ''}`;
         }
         else {
             const said = await this.prisma.aiMessage.findMany({
@@ -157,7 +175,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             });
             const words = said
                 .map((m) => m.text.trim())
-                .filter(Boolean)
+                .filter((t) => t && !(0, voice_util_1.isVoicemailPrompt)(t))
                 .join(' ')
                 .slice(0, 600);
             text = `I called ${label} and gave them your message.${words ? ` They said: "${words}"` : ''}`;

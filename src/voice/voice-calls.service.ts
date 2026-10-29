@@ -34,7 +34,9 @@ import {
   connectStreamLaml,
   isLanguage,
   isVoice,
+  isVoicemailPrompt,
   type CallPurpose,
+  type PersonCallOutcome,
   type VoiceTokenClaims,
 } from './voice.util';
 
@@ -97,6 +99,8 @@ interface PersonCall {
   originConversationId: number;
   name: string | null;
   phone: string;
+  /** What the AI said when it hung up (`end_call`), if it did. */
+  outcome?: { outcome: PersonCallOutcome; reply: string };
 }
 
 /** The longest a scheduled call may ring before it counts as unanswered. */
@@ -244,6 +248,15 @@ export class VoiceCallsService implements OnModuleInit {
    * step12c: tells the customer how a call_person call went, in the conversation they asked
    * in — on its channel (a website chat just gets the message; a phone call gets a text).
    */
+  /** The AI hung up a call to someone else (`end_call`): how it went, for the report. */
+  notePersonOutcome(
+    callSid: string,
+    outcome: { outcome: PersonCallOutcome; reply: string },
+  ): void {
+    const pending = this.personCalls.get(callSid);
+    if (pending) pending.outcome = outcome;
+  }
+
   private async reportPersonCall(call: AiCall): Promise<void> {
     const pending = this.personCalls.get(call.callSid);
     if (!pending) return;
@@ -252,8 +265,19 @@ export class VoiceCallsService implements OnModuleInit {
       ? `${pending.name} (${pending.phone})`
       : pending.phone;
     let text: string;
+    const ended = pending.outcome;
     if (!call.answeredAt) {
       text = `I called ${label} but nobody answered, so your message was not delivered. Want me to text them instead, or try again later?`;
+    } else if (ended?.outcome === 'VOICEMAIL') {
+      text = `I called ${label} and got their voicemail, so I left your message there.`;
+    } else if (ended?.outcome === 'WRONG_NUMBER') {
+      text = `I called ${label}, but they said it is the wrong number. Your message was not delivered.`;
+    } else if (ended) {
+      const verb =
+        ended.outcome === 'DECLINED'
+          ? 'tried to give them your message, but they did not want it'
+          : 'gave them your message';
+      text = `I called ${label} and ${verb}.${ended.reply ? ` They said: "${ended.reply}"` : ''}`;
     } else {
       const said = await this.prisma.aiMessage.findMany({
         where: {
@@ -264,9 +288,11 @@ export class VoiceCallsService implements OnModuleInit {
         orderBy: { id: 'asc' },
         select: { text: true },
       });
+      // No end_call: everything the other end said — minus a voicemail system's menu,
+      // which used to be quoted back as "They said: … press 9 to confirm …".
       const words = said
         .map((m) => m.text.trim())
-        .filter(Boolean)
+        .filter((t) => t && !isVoicemailPrompt(t))
         .join(' ')
         .slice(0, 600);
       text = `I called ${label} and gave them your message.${words ? ` They said: "${words}"` : ''}`;

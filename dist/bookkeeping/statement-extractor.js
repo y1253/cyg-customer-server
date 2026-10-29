@@ -11,6 +11,8 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var StatementExtractor_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementExtractor = exports.SYSTEM_PROMPT = exports.NAME_RULE = exports.EXTRACTION_SCHEMA = exports.UnreadableStatementError = exports.MAX_REREADS = exports.PAGES_PER_CHUNK = void 0;
+exports.emptyReading = emptyReading;
+exports.dropSpuriousPages = dropSpuriousPages;
 exports.assemble = assemble;
 exports.closingOf = closingOf;
 exports.rereadRound = rereadRound;
@@ -25,6 +27,7 @@ const pdf_lib_1 = require("pdf-lib");
 const openai_client_1 = require("../ai/openai.client");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const pdf_decrypt_1 = require("./pdf-decrypt");
+const page_content_util_1 = require("./page-content.util");
 const reconcile_util_1 = require("./reconcile.util");
 const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
@@ -114,6 +117,7 @@ exports.SYSTEM_PROMPT = [
     'Lines that look identical (same date, description and amount) are SEPARATE transactions — two identical coffees are two purchases. List every one; never de-duplicate.',
     'Count the transaction lines on each page and make sure your list has the same number.',
     'Opening/closing balances, "balance forward" lines, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
+    'Account-summary lines are NOT transactions either: "Previous balance", "Payment, Credits", "Purchases", "Cash advances", "Fees charged", "Interest charged", "New balance", "Closing totals" are totals of the rows listed elsewhere — never list them as rows (but DO copy them into the printed figures below: "Previous balance" is openingBalance, "New balance" closingBalance, the payments/credits total totalDeposits, purchases + fees + interest totalWithdrawals). A page with no table of dated transactions (a summary, terms, a notice, a blank page) has NO transactions: return an empty transaction list, never invent one — its printed figures are still copied.',
     'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions.',
     '',
     'For each transaction:',
@@ -141,7 +145,7 @@ exports.SYSTEM_PROMPT = [
     '',
     'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
     'accountName: the bank name plus the LAST 4 digits of the account number, e.g. "Chase 4362" — never the first digits, never the whole number (null if not on these pages).',
-    'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown).',
+    'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown). Take it from the line labelled as the account or card number ("Account Number", "Account #", "Card ending in", the account heading) — NEVER digits from a barcode, a payment coupon, a scan/OCR line or a reference number. The last 4 digits in accountName come from the same number.',
     'accountKind: "CREDIT_CARD" for a credit-card statement (American Express, Visa, Mastercard — it prints a "New balance" owed, a minimum payment, a credit limit), "BANK" for a chequing/savings account statement, null if these pages do not show which.',
     'currency: the ISO 4217 code of the currency the amounts are in, e.g. "CAD", "USD", "EUR" — from a printed code, an account name like "US$ account", or the currency symbol and the bank country; null if these pages do not show it.',
     'periodStart / periodEnd: the statement period as YYYY-MM-DD (null if not on these pages).',
@@ -169,20 +173,36 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         const pagesPerChunk = opts.pagesPerChunk ?? exports.PAGES_PER_CHUNK;
         const chunks = await splitPdf(pdf, pagesPerChunk);
         const totalPages = chunks.reduce((n, c) => n + c.pages, 0);
+        const contents = pagesPerChunk === 1 && chunks.length > 1 ? await (0, page_content_util_1.pageContents)(pdf) : null;
+        const skipped = contents && contents.length === chunks.length
+            ? (0, page_content_util_1.pagesToSkip)(contents)
+            : new Set();
+        if (skipped.size) {
+            this.logger.log(`"${filename}": skipped page(s) ${[...skipped].map((i) => i + 1).join(',')} — nothing to read`);
+        }
         let calls = 0;
         const read = (i, model, context, hint) => {
             calls++;
             return this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''));
         };
+        const firstRead = async (i, context) => {
+            try {
+                return await read(i, this.model(), context, null);
+            }
+            catch (err) {
+                this.logger.warn(`"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`);
+                return read(i, this.verifyModel(), context, null);
+            }
+        };
         const pages = new Array(chunks.length);
-        pages[0] = await read(0, this.model(), null, null);
+        pages[0] = await firstRead(0, null);
         const context = {
             accountName: pages[0].accountName,
             periodStart: pages[0].periodStart,
             periodEnd: pages[0].periodEnd,
         };
         await this.pool(chunks.map((_, i) => i).slice(1), async (i) => {
-            pages[i] = await read(i, this.model(), context, null);
+            pages[i] = skipped.has(i) ? emptyReading() : await firstRead(i, context);
         });
         if (!pages.some(looksLikeStatement)) {
             this.logger.warn(`"${filename}": page 1 judged not a statement by ${this.model()}; re-reading with ${this.verifyModel()}`);
@@ -196,14 +216,28 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         const maxRereads = opts.maxRereads ?? exports.MAX_REREADS;
         let rereads = 0;
         let stale = 0;
+        const tryDrop = () => {
+            const dropped = dropSpuriousPages(pages);
+            if (!dropped)
+                return false;
+            this.logger.warn(`"${filename}": dropped page(s) ${dropped.pages.map((i) => i + 1).join(',')} — ` +
+                `their rows made it not add up, and without them every printed figure matches`);
+            dropped.pages.forEach((i) => (pages[i] = dropped.readings[i]));
+            result = dropped.result;
+            return true;
+        };
+        if (result.verification.verification === 'MISMATCH')
+            tryDrop();
         while (result.verification.verification === 'MISMATCH' &&
             rereads < maxRereads &&
             stale < MAX_STALE_ROUNDS) {
             const round = rereadRound(rereads);
             rereads++;
             const model = round.verifyModel ? this.verifyModel() : this.model();
-            const suspects = result.verification.suspectPages;
-            const targets = round.allPages || !suspects.length ? chunks.map((_, i) => i) : suspects;
+            const suspects = result.verification.suspectPages.filter((i) => !skipped.has(i));
+            const targets = round.allPages || !suspects.length
+                ? chunks.map((_, i) => i).filter((i) => !skipped.has(i))
+                : suspects;
             const failed = result.verification.checks.filter((c) => !c.ok && !c.skipped);
             this.logger.warn(`"${filename}" does not reconcile (${failed.map(reconcile_util_1.describeCheck).join('; ')}) — ` +
                 `re-read ${rereads}/${maxRereads}: ${model}, page(s) ${targets.map((t) => t + 1).join(',')}`);
@@ -215,7 +249,12 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             ].join('\n');
             const rereadPages = new Map();
             await this.pool(targets, async (i) => {
-                rereadPages.set(i, await read(i, model, i === 0 ? null : context, hint));
+                try {
+                    rereadPages.set(i, await read(i, model, i === 0 ? null : context, hint));
+                }
+                catch (err) {
+                    this.logger.warn(`"${filename}" page ${i + 1}: re-read failed (${errorText(err)}) — keeping the earlier reading`);
+                }
             });
             let improved = false;
             for (const i of [...rereadPages.keys()].sort((a, b) => a - b)) {
@@ -227,6 +266,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                     result = candidate;
                     improved = true;
                 }
+            }
+            if (result.verification.verification === 'MISMATCH' && tryDrop()) {
+                improved = true;
             }
             stale = improved ? 0 : stale + 1;
             await opts.onRound?.(rereads);
@@ -285,6 +327,58 @@ exports.StatementExtractor = StatementExtractor = StatementExtractor_1 = __decor
     __metadata("design:paramtypes", [openai_client_1.OpenAiClient,
         config_1.ConfigService])
 ], StatementExtractor);
+function errorText(err) {
+    return err instanceof Error ? err.message : String(err);
+}
+function emptyReading() {
+    return {
+        isBankStatement: false,
+        hasItemImages: false,
+        accountName: null,
+        accountNumber: null,
+        accountKind: null,
+        currency: null,
+        bankName: null,
+        periodStart: null,
+        periodEnd: null,
+        stated: {
+            openingBalance: null,
+            closingBalance: null,
+            totalDeposits: null,
+            totalWithdrawals: null,
+            depositCount: null,
+            withdrawalCount: null,
+            totalsScope: null,
+        },
+        transactions: [],
+    };
+}
+const MAX_DROP_CANDIDATES = 10;
+function dropSpuriousPages(pages) {
+    const candidates = pages
+        .map((p, i) => (p.transactions.length ? i : -1))
+        .filter((i) => i >= 0);
+    if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES)
+        return null;
+    const subsets = [];
+    for (let mask = 1; mask < 1 << candidates.length; mask++) {
+        subsets.push(candidates.filter((_, b) => mask & (1 << b)));
+    }
+    subsets.sort((a, b) => a.length - b.length);
+    for (const drop of subsets) {
+        const trial = pages.map((p, i) => ({
+            ...p,
+            transactions: drop.includes(i)
+                ? []
+                : p.transactions.map((t) => ({ ...t })),
+        }));
+        const result = assemble(trial);
+        if (result.verification.verification === 'VERIFIED') {
+            return { pages: drop, readings: trial, result };
+        }
+    }
+    return null;
+}
 function assemble(pages) {
     const first = (pick) => {
         for (const p of pages) {

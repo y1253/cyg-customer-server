@@ -194,17 +194,40 @@ export interface PageFigures {
 
 /**
  * Whether each page prints a totals box of its OWN (TD): two or more pages print totals,
- * and they differ. Otherwise the first box printed is the statement's.
+ * and they DISAGREE on a figure both of them print. Otherwise the first box printed is the
+ * statement's.
+ *
+ * ⚠️ A figure only one box prints is not a disagreement. BMO prints the money totals in
+ * page 1's "Summary of account" and again, WITH "Number of items processed", under the
+ * last page's "Closing totals". Comparing the whole key (counts included) read those as two
+ * different boxes and checked each page against the whole statement's total — 9 Madam
+ * recovery statements stuck in NEEDS_REVIEW with every row read right (2026-10-28).
  */
 export function perPageBoxes(pages: readonly StatedFigures[]): boolean {
   const boxes = pages.filter(
     (f) => f.totalDeposits !== null || f.totalWithdrawals !== null,
   );
-  const key = (f: StatedFigures) =>
-    [f.totalDeposits, f.totalWithdrawals, f.depositCount, f.withdrawalCount]
-      .map((v) => (v === null ? '' : String(Math.abs(v))))
-      .join('|');
-  return boxes.length >= 2 && new Set(boxes.map(key)).size > 1;
+  const fields = (f: StatedFigures) => [
+    f.totalDeposits,
+    f.totalWithdrawals,
+    f.depositCount,
+    f.withdrawalCount,
+  ];
+  const disagree = (a: StatedFigures, b: StatedFigures) => {
+    const fb = fields(b);
+    return fields(a).some(
+      (v, i) =>
+        v !== null &&
+        fb[i] !== null &&
+        cents(Math.abs(v)) !== cents(Math.abs(fb[i]!)),
+    );
+  };
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      if (disagree(boxes[i], boxes[j])) return true;
+    }
+  }
+  return false;
 }
 
 /**

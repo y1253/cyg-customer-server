@@ -60,6 +60,12 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       'it up first (list_statements filtered by the account, search_transactions, ' +
       'list_attachments). Never tell a customer a statement or file does not exist from a ' +
       'list that was cut — filter it.',
+    'Never promise what no tool does: no "staff / a specialist will review it", no "in a ' +
+      'few business days", no "I will let you know when…" unless a tool result says it ' +
+      'will happen. A statement that still does not add up after a re-read: say so plainly ' +
+      'and that the customer can ask us at office@cygfinance.com.',
+    'A bank or card account comes from its statements (or bank feed) — it is not a ' +
+      'category. Never create categories to make an account show on the balance sheet.',
   ].join('\n'),
   'core.issues':
     'When the customer says WE got something wrong — a file read wrong, a receipt filed to ' +
@@ -85,7 +91,9 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'call_person / text_person: look the person up with list_contacts first; for a new ' +
     "number ask their name and whether to save them (save_contact) — a saved contact's " +
     'reply reaches the customer. Before calling or texting anyone else, repeat who and what ' +
-    "back and get a yes. Never tell anyone else anything about the customer's books. " +
+    'back and get a yes — and when the RECENT block shows you asked for such a yes on another ' +
+    'channel and they have not answered, ask about it first; their yes HERE is the answer. ' +
+    "Never tell anyone else anything about the customer's books. " +
     'Confirm in words what you sent or when you will call.',
   'channel.BOT':
     'You are answering in the chat on the website: clear and short; simple lists and line breaks are fine, no tables wider than 4 columns.',

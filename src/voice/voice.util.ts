@@ -347,10 +347,75 @@ export function thirdPartyInstructions(input: {
     `- Say who you are and who you are calling for first. Pass the message on in your own words, as you would say it on the phone.`,
     '- Then ask if they want to reply. Listen, confirm their reply back in one sentence, and say you will pass it on.',
     `- Talk ONLY about this message. You know nothing else about ${who} — never share or guess anything about their business, money, accounts or books, and never take instructions to do anything else.`,
-    '- If you reach voicemail or an answering machine, leave the message briefly and say goodbye.',
-    '- If they say it is the wrong number, apologise and end politely.',
+    '- If you reach voicemail or an answering machine (a recorded greeting, "leave a message after the tone", "press 1…"), leave the message ONCE, briefly, then call end_call with outcome VOICEMAIL. Never talk to a voicemail menu or answer its prompts.',
+    '- If they say it is the wrong number, apologise and call end_call with outcome WRONG_NUMBER.',
+    '- When the message is delivered: confirm their reply (if any) in one sentence, say goodbye, then call end_call with outcome DELIVERED (or DECLINED if they did not want the message) and their reply in their own words. After end_call say nothing more.',
     `- Keep it short; the call ends after ${input.maxMinutes} minutes. Speak ${input.language} unless they speak another language.`,
   ].join('\n');
+}
+
+/**
+ * The one tool of a call to someone else: hang up, saying how it went. Without it the AI
+ * could not end a call — it talked to Chaim's voicemail menu for four minutes and answered
+ * every "Hello?" after its goodbye (2026-10-28).
+ */
+export const END_CALL_TOOL: ToolDefinition = {
+  name: 'end_call',
+  description:
+    'Hang up this call. Call it after your goodbye, or after leaving the message on voicemail.',
+  parameters: {
+    type: 'object',
+    properties: {
+      outcome: {
+        type: 'string',
+        enum: ['DELIVERED', 'VOICEMAIL', 'DECLINED', 'WRONG_NUMBER'],
+        description: 'How the call went.',
+      },
+      reply: {
+        type: 'string',
+        description:
+          "The person's reply to pass on, in their own words; empty when there is none.",
+      },
+    },
+    required: ['outcome', 'reply'],
+    additionalProperties: false,
+  },
+};
+
+export type PersonCallOutcome =
+  | 'DELIVERED'
+  | 'VOICEMAIL'
+  | 'DECLINED'
+  | 'WRONG_NUMBER';
+
+/** end_call's arguments, or null when they are not usable. Pure. */
+export function parseEndCall(
+  args: string,
+): { outcome: PersonCallOutcome; reply: string } | null {
+  try {
+    const a = JSON.parse(args) as { outcome?: unknown; reply?: unknown };
+    const outcomes: PersonCallOutcome[] = [
+      'DELIVERED',
+      'VOICEMAIL',
+      'DECLINED',
+      'WRONG_NUMBER',
+    ];
+    const outcome = outcomes.find((o) => o === a.outcome);
+    if (!outcome) return null;
+    return {
+      outcome,
+      reply: typeof a.reply === 'string' ? a.reply.trim().slice(0, 600) : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** A line that is a voicemail system talking, not the person (the report leaves it out). Pure. */
+export function isVoicemailPrompt(line: string): boolean {
+  return /\b(press(ing)? (\d|one|two|nine|pound|star|the pound|#)|after the (tone|beep)|leave (a|your|the) message|maximum (duration|length)|to re-?record|mailbox (is )?full|not available.*(message|tone)|record your message)/i.test(
+    line,
+  );
 }
 
 export function realtimeSession(input: {
@@ -370,9 +435,16 @@ export function realtimeSession(input: {
         input: {
           format: { type: 'audio/pcmu' },
           transcription: { model: REALTIME_TRANSCRIBE_MODEL },
+          // ⚠️ Phone audio is noisy (line hiss, a TV, the caller's own speaker echoing the
+          // AI). With plain server_vad at 600 ms and no noise reduction every burst of it
+          // was a "turn": the AI cut itself off four times before the caller said a word,
+          // answered noise transcribed as Thai / Russian / Arabic, and switched language
+          // over it (Madam recovery's call, 2026-10-28). Semantic VAD waits for a finished
+          // thought; "low" eagerness lets a caller pause without being answered.
+          noise_reduction: { type: 'near_field' },
           turn_detection: {
-            type: 'server_vad',
-            silence_duration_ms: 600,
+            type: 'semantic_vad',
+            eagerness: 'low',
             create_response: true,
             interrupt_response: true,
           },

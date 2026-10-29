@@ -28,7 +28,7 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
 };
 
-function setup(language = 'en') {
+function setup(language = 'en', claims: Record<string, unknown> = {}) {
   const phone = new FakeSocket();
   const openai = new FakeSocket();
   const conversation = {
@@ -55,6 +55,7 @@ function setup(language = 'en') {
               peer: '+15145550001',
               to: '+14385550000',
               dir: 'INBOUND',
+              ...claims,
             }
           : null,
       ),
@@ -68,6 +69,7 @@ function setup(language = 'en') {
       conversationFor: jest.fn(() => conversation),
       started: jest.fn(),
       ended: jest.fn(() => Promise.resolve()),
+      notePersonOutcome: jest.fn(),
     },
     assistant: {
       isOverLimit: jest.fn(() => false),
@@ -173,7 +175,8 @@ describe('VoiceSession (step12)', () => {
       { note: string },
     ];
     expect(extra.note).toContain('Speak French by default');
-    expect(extra.note).toContain('If the caller speaks another language');
+    expect(extra.note).toContain('If the caller asks you to speak another language');
+    expect(extra.note).toContain('Never switch because of a single word');
     const opening = openai.sent.find((e) => e.type === 'response.create') as {
       response: { instructions: string };
     };
@@ -235,7 +238,8 @@ describe('VoiceSession (step12)', () => {
     openai.push({ type: 'input_audio_buffer.speech_started' });
     await flush();
     expect(phone.sent).toContainEqual({ event: 'clear', streamSid: 'MZ' });
-    expect(openai.types()).toContain('response.cancel');
+    // OpenAI cancels the answer itself (interrupt_response) — never a second cancel.
+    expect(openai.types()).not.toContain('response.cancel');
 
     phone.push({ event: 'stop' });
     await flush();
@@ -364,5 +368,65 @@ describe('VoiceSession (step12)', () => {
     phone.close();
     await flush();
     expect(liveCalls.toConversation(3, 'too late')).toBe(false);
+  });
+});
+
+describe('VoiceSession — a call to someone else (end_call)', () => {
+  async function thirdParty() {
+    const t = setup('en', {
+      dir: 'OUTBOUND',
+      purpose: 'THIRD_PARTY',
+      script: 'You can register new companies on cygfinance.com',
+      contactName: 'Chaim',
+    });
+    t.phone.push({
+      event: 'start',
+      start: { streamSid: 'MZ', callSid: 'CA', customParameters: { token: 'good' } },
+    });
+    await flush();
+    t.openai.emit('open');
+    await flush();
+    return t;
+  }
+
+  it('has only the end_call tool, and hangs up once the goodbye has played', async () => {
+    const { phone, openai, deps } = await thirdParty();
+    const update = openai.sent[0] as {
+      session: { tools: Array<{ name: string }>; tool_choice: string };
+    };
+    expect(update.session.tools.map((t) => t.name)).toEqual(['end_call']);
+    expect(update.session.tool_choice).toBe('auto');
+
+    // 2026-10-28: the AI talked to a voicemail menu for four minutes — it could not hang up.
+    openai.push({ type: 'response.created' });
+    openai.push({
+      type: 'response.function_call_arguments.done',
+      call_id: 'c1',
+      name: 'end_call',
+      arguments: '{"outcome":"VOICEMAIL","reply":""}',
+    });
+    await flush();
+    expect(deps.calls.notePersonOutcome).toHaveBeenCalledWith('CA', {
+      outcome: 'VOICEMAIL',
+      reply: '',
+    });
+    // Still speaking: no mark yet, and the call is up.
+    expect(phone.sent.some((e) => e.event === 'mark')).toBe(false);
+    openai.push({ type: 'response.done' });
+    await flush();
+    expect(phone.sent).toContainEqual({
+      event: 'mark',
+      streamSid: 'MZ',
+      mark: { name: 'end_call' },
+    });
+    // The voicemail menu talks on: no new answer is let through.
+    openai.push({ type: 'response.created' });
+    await flush();
+    expect(openai.types().filter((t) => t === 'response.cancel')).toHaveLength(1);
+    expect(phone.readyState).toBe(WebSocket.OPEN);
+    // SignalWire echoes the mark once the goodbye has played → hang up.
+    phone.push({ event: 'mark', streamSid: 'MZ', mark: { name: 'end_call' } });
+    await flush();
+    expect(phone.readyState).toBe(WebSocket.CLOSED);
   });
 });

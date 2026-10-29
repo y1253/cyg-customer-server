@@ -5,6 +5,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import { ACCOUNT_NAMES, UNCATEGORIZED } from './chart-of-accounts';
 import type { ExtractedTransaction } from './ledger.util';
 import { decryptForReading } from './pdf-decrypt';
+import { pageContents, pagesToSkip } from './page-content.util';
 import type { ImagePage } from './pdf-images';
 import {
   describeCheck,
@@ -195,6 +196,7 @@ export const SYSTEM_PROMPT = [
   'Lines that look identical (same date, description and amount) are SEPARATE transactions — two identical coffees are two purchases. List every one; never de-duplicate.',
   'Count the transaction lines on each page and make sure your list has the same number.',
   'Opening/closing balances, "balance forward" lines, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
+  'Account-summary lines are NOT transactions either: "Previous balance", "Payment, Credits", "Purchases", "Cash advances", "Fees charged", "Interest charged", "New balance", "Closing totals" are totals of the rows listed elsewhere — never list them as rows (but DO copy them into the printed figures below: "Previous balance" is openingBalance, "New balance" closingBalance, the payments/credits total totalDeposits, purchases + fees + interest totalWithdrawals). A page with no table of dated transactions (a summary, terms, a notice, a blank page) has NO transactions: return an empty transaction list, never invent one — its printed figures are still copied.',
   'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions.',
   '',
   'For each transaction:',
@@ -222,7 +224,7 @@ export const SYSTEM_PROMPT = [
   '',
   'bankName: the bank name only, e.g. "Chase", "TD Canada Trust", "Desjardins" (null if not on these pages).',
   'accountName: the bank name plus the LAST 4 digits of the account number, e.g. "Chase 4362" — never the first digits, never the whole number (null if not on these pages).',
-  'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown).',
+  'accountNumber: the full account (or card) number exactly as printed, digits only, e.g. "5234496" (null if not on these pages; for a card printed with masked digits, only the digits shown). Take it from the line labelled as the account or card number ("Account Number", "Account #", "Card ending in", the account heading) — NEVER digits from a barcode, a payment coupon, a scan/OCR line or a reference number. The last 4 digits in accountName come from the same number.',
   'accountKind: "CREDIT_CARD" for a credit-card statement (American Express, Visa, Mastercard — it prints a "New balance" owed, a minimum payment, a credit limit), "BANK" for a chequing/savings account statement, null if these pages do not show which.',
   'currency: the ISO 4217 code of the currency the amounts are in, e.g. "CAD", "USD", "EUR" — from a printed code, an account name like "US$ account", or the currency symbol and the bank country; null if these pages do not show it.',
   'periodStart / periodEnd: the statement period as YYYY-MM-DD (null if not on these pages).',
@@ -286,6 +288,19 @@ export class StatementExtractor {
     const pagesPerChunk = opts.pagesPerChunk ?? PAGES_PER_CHUNK;
     const chunks = await splitPdf(pdf, pagesPerChunk);
     const totalPages = chunks.reduce((n, c) => n + c.pages, 0);
+    // Pages with nothing a transaction could be read from (blank, notices, a lone QR code)
+    // are never sent: the model invents rows on them (`page-content.util.ts`).
+    const contents =
+      pagesPerChunk === 1 && chunks.length > 1 ? await pageContents(pdf) : null;
+    const skipped =
+      contents && contents.length === chunks.length
+        ? pagesToSkip(contents)
+        : new Set<number>();
+    if (skipped.size) {
+      this.logger.log(
+        `"${filename}": skipped page(s) ${[...skipped].map((i) => i + 1).join(',')} — nothing to read`,
+      );
+    }
     let calls = 0;
     const read = (
       i: number,
@@ -306,18 +321,34 @@ export class StatementExtractor {
         SYSTEM_PROMPT + (opts.rules ?? ''),
       );
     };
+    // A first read that fails (a reply cut off at the token cap — gpt-4.1 looping on one
+    // page, Madam recovery #327 — a timeout, bad JSON) is retried ONCE on the other model
+    // before the statement fails. It used to fail the whole statement at once, every attempt.
+    const firstRead = async (
+      i: number,
+      context: PageContext | null,
+    ): Promise<PageReading> => {
+      try {
+        return await read(i, this.model(), context, null);
+      } catch (err) {
+        this.logger.warn(
+          `"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`,
+        );
+        return read(i, this.verifyModel(), context, null);
+      }
+    };
 
     // Page 1 first: it carries the account and the period, which later pages often omit
     // — and without the period a "09/01" on page 4 has no year.
     const pages = new Array<PageReading>(chunks.length);
-    pages[0] = await read(0, this.model(), null, null);
+    pages[0] = await firstRead(0, null);
     const context: PageContext = {
       accountName: pages[0].accountName,
       periodStart: pages[0].periodStart,
       periodEnd: pages[0].periodEnd,
     };
     await this.pool(chunks.map((_, i) => i).slice(1), async (i) => {
-      pages[i] = await read(i, this.model(), context, null);
+      pages[i] = skipped.has(i) ? emptyReading() : await firstRead(i, context);
     });
 
     // ⚠️ Never gate on the model's flag alone — see `looksLikeStatement`. And a "no" is
@@ -340,6 +371,21 @@ export class StatementExtractor {
     const maxRereads = opts.maxRereads ?? MAX_REREADS;
     let rereads = 0;
     let stale = 0;
+    // Rows the model put on a page that holds none (a summary line, an invented row) are
+    // found by leaving whole pages out: if the rest then adds up to EVERY printed figure,
+    // that page's rows were not real (`dropSpuriousPages`).
+    const tryDrop = (): boolean => {
+      const dropped = dropSpuriousPages(pages);
+      if (!dropped) return false;
+      this.logger.warn(
+        `"${filename}": dropped page(s) ${dropped.pages.map((i) => i + 1).join(',')} — ` +
+          `their rows made it not add up, and without them every printed figure matches`,
+      );
+      dropped.pages.forEach((i) => (pages[i] = dropped.readings[i]));
+      result = dropped.result;
+      return true;
+    };
+    if (result.verification.verification === 'MISMATCH') tryDrop();
     while (
       result.verification.verification === 'MISMATCH' &&
       rereads < maxRereads &&
@@ -348,9 +394,13 @@ export class StatementExtractor {
       const round = rereadRound(rereads);
       rereads++;
       const model = round.verifyModel ? this.verifyModel() : this.model();
-      const suspects = result.verification.suspectPages;
+      const suspects = result.verification.suspectPages.filter(
+        (i) => !skipped.has(i),
+      );
       const targets =
-        round.allPages || !suspects.length ? chunks.map((_, i) => i) : suspects;
+        round.allPages || !suspects.length
+          ? chunks.map((_, i) => i).filter((i) => !skipped.has(i))
+          : suspects;
       const failed = result.verification.checks.filter(
         (c) => !c.ok && !c.skipped,
       );
@@ -366,10 +416,17 @@ export class StatementExtractor {
       ].join('\n');
       const rereadPages = new Map<number, PageReading>();
       await this.pool(targets, async (i) => {
-        rereadPages.set(
-          i,
-          await read(i, model, i === 0 ? null : context, hint),
-        );
+        // A failed re-read keeps the page's earlier reading: re-reads only ever improve.
+        try {
+          rereadPages.set(
+            i,
+            await read(i, model, i === 0 ? null : context, hint),
+          );
+        } catch (err) {
+          this.logger.warn(
+            `"${filename}" page ${i + 1}: re-read failed (${errorText(err)}) — keeping the earlier reading`,
+          );
+        }
       });
       // Greedy, page by page: keep a re-read only if it makes the statement add up better.
       let improved = false;
@@ -382,6 +439,9 @@ export class StatementExtractor {
           result = candidate;
           improved = true;
         }
+      }
+      if (result.verification.verification === 'MISMATCH' && tryDrop()) {
+        improved = true;
       }
       stale = improved ? 0 : stale + 1;
       await opts.onRound?.(rereads);
@@ -454,6 +514,83 @@ export class StatementExtractor {
     });
     return parseExtraction(reply);
   }
+}
+
+/** An error's message, for a log line. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The reading of a page with nothing on it (`page-content.util.ts`): no call is made. */
+export function emptyReading(): PageReading {
+  return {
+    isBankStatement: false,
+    hasItemImages: false,
+    accountName: null,
+    accountNumber: null,
+    accountKind: null,
+    currency: null,
+    bankName: null,
+    periodStart: null,
+    periodEnd: null,
+    stated: {
+      openingBalance: null,
+      closingBalance: null,
+      totalDeposits: null,
+      totalWithdrawals: null,
+      depositCount: null,
+      withdrawalCount: null,
+      totalsScope: null,
+    },
+    transactions: [],
+  };
+}
+
+/** Pages with rows tried by `dropSpuriousPages` — 2^10 assembles at most, pure arithmetic. */
+const MAX_DROP_CANDIDATES = 10;
+
+/**
+ * The smallest set of pages whose ROWS, left out, makes the statement VERIFIED — every
+ * printed figure matching (totals, counts, opening + net = closing, running balance). Null
+ * when none does.
+ *
+ * Found 2026-10-28 (Madam recovery): the model wrote a Chase card's summary line "Payment,
+ * Credits −$852.58" as a row beside the real one (deposits exactly doubled), and invented
+ * rows on a blank page and a cheque page of BMO statements whose running balance proved
+ * every real row. Re-reading never fixed it. Leaving the page out does, and it is safe: real
+ * rows cannot be removed while BOTH money totals still match to the cent. Only the rows are
+ * left out — the page's printed figures still count.
+ */
+export function dropSpuriousPages(
+  pages: readonly PageReading[],
+): {
+  pages: number[];
+  readings: PageReading[];
+  result: ReturnType<typeof assemble>;
+} | null {
+  const candidates = pages
+    .map((p, i) => (p.transactions.length ? i : -1))
+    .filter((i) => i >= 0);
+  if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES) return null;
+  const subsets: number[][] = [];
+  for (let mask = 1; mask < 1 << candidates.length; mask++) {
+    subsets.push(candidates.filter((_, b) => mask & (1 << b)));
+  }
+  subsets.sort((a, b) => a.length - b.length);
+  for (const drop of subsets) {
+    // `assemble` writes repaired signs / balances onto the rows: work on copies.
+    const trial = pages.map((p, i) => ({
+      ...p,
+      transactions: drop.includes(i)
+        ? []
+        : p.transactions.map((t) => ({ ...t })),
+    }));
+    const result = assemble(trial);
+    if (result.verification.verification === 'VERIFIED') {
+      return { pages: drop, readings: trial, result };
+    }
+  }
+  return null;
 }
 
 /**
