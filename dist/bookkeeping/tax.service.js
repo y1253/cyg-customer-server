@@ -218,11 +218,11 @@ let TaxService = class TaxService {
             }),
             this.prisma.bankTransaction.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), name: { not: null }, statement: DONE },
-                select: { name: true, description: true, offsetAccount: true },
+                select: { ...TOTAL_SELECT, name: true, description: true, offsetAccount: true },
             }),
             this.prisma.bankTransaction.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), name: null, statement: DONE },
-                select: { description: true, offsetAccount: true },
+                select: { ...TOTAL_SELECT, description: true, offsetAccount: true },
             }),
             this.prisma.ledgerNameAgency.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), agency: { deletedAt: null } },
@@ -231,19 +231,32 @@ let TaxService = class TaxService {
             }),
             this.prisma.customerNameRule.findMany({
                 where: (0, scope_1.scopeWhere)(scope),
-                select: { matchType: true, matchKey: true, name: true },
+                select: {
+                    matchType: true,
+                    matchKey: true,
+                    name: true,
+                    category: true,
+                    includeChars: true,
+                },
+                orderBy: { createdAt: 'asc' },
             }),
             this.typeContext(scope),
         ]);
         const descriptionsOf = groupDescriptions(named);
+        const shareOf = rowShares([...named, ...nameless]);
+        const totalOf = new Map();
+        for (const r of named) {
+            const key = r.name.toLowerCase();
+            totalOf.set(key, (totalOf.get(key) ?? 0) + shareOf(r));
+        }
         const agenciesOf = new Map();
         for (const p of picks) {
             const key = (0, tax_util_1.nameTaxKey)(p.name);
             agenciesOf.set(key, [...(agenciesOf.get(key) ?? []), p.agencyId]);
         }
         const ref = (r) => ({
-            matchType: (r.matchType === 'DESCRIPTION'
-                ? 'DESCRIPTION'
+            matchType: (r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+                ? r.matchType
                 : 'NAME'),
             matchKey: r.matchKey,
         });
@@ -252,7 +265,9 @@ let TaxService = class TaxService {
                 (r.matchKey === key || (r.name && (0, name_memory_util_1.nameKey)(r.name) === key)));
             if (byName)
                 return ref(byName);
-            const byDesc = rules.find((r) => r.matchType === 'DESCRIPTION' && r.name && (0, name_memory_util_1.nameKey)(r.name) === key);
+            const byDesc = rules.find((r) => (r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS') &&
+                r.name &&
+                (0, name_memory_util_1.nameKey)(r.name) === key);
             return byDesc ? ref(byDesc) : null;
         };
         const byName = new Map();
@@ -275,6 +290,7 @@ let TaxService = class TaxService {
                 otherCategories: categories.length - 1,
                 type: typeOfCategory(category, ctx),
                 rows: categories.reduce((n, [, c]) => n + c, 0),
+                total: (totalOf.get(key) ?? 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(name)) ?? [],
                 descriptions: descriptionsOf.get(key) ?? [],
                 ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
@@ -290,12 +306,14 @@ let TaxService = class TaxService {
             const entry = byKey.get(key) ?? {
                 sample: t.description,
                 categories: new Map(),
+                cents: 0,
             };
+            entry.cents += shareOf(t);
             entry.categories.set(t.offsetAccount, (entry.categories.get(t.offsetAccount) ?? 0) + 1);
             byKey.set(key, entry);
         }
         const unrecognized = [...byKey.entries()]
-            .map(([key, { sample, categories }]) => {
+            .map(([key, { sample, categories, cents }]) => {
             const sorted = [...categories.entries()].sort((a, b) => b[1] - a[1]);
             const descRule = rules.find((r) => r.matchType === 'DESCRIPTION' && r.matchKey === key);
             return {
@@ -304,6 +322,7 @@ let TaxService = class TaxService {
                 category: sorted[0][0],
                 otherCategories: sorted.length - 1,
                 rows: sorted.reduce((n, [, c]) => n + c, 0),
+                total: cents / 100,
                 rule: descRule ? ref(descRule) : null,
             };
         })
@@ -315,6 +334,7 @@ let TaxService = class TaxService {
                 otherCategories: 0,
                 type: 'OTHER',
                 rows: nameless.length,
+                total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(null)) ?? [],
                 descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
                     description: u.sampleDescription,
@@ -327,7 +347,17 @@ let TaxService = class TaxService {
             });
             names.sort((a, b) => a.name.localeCompare(b.name));
         }
-        return { names, unrecognized };
+        const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
+        const containsRules = rules
+            .filter((r) => r.matchType === 'CONTAINS')
+            .map((r) => ({
+            text: r.includeChars ?? r.matchKey,
+            key: r.matchKey,
+            name: r.name,
+            category: r.category,
+            rows: descriptions.filter((t) => (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
+        }));
+        return { names, unrecognized, containsRules };
     }
     async setNameAgencies(scope, name, agencyIds) {
         const clean = name.trim();
@@ -422,6 +452,19 @@ exports.TaxService = TaxService = __decorate([
         customer_accounts_service_1.CustomerAccountsService])
 ], TaxService);
 const MAX_DESCRIPTIONS = 25;
+const TOTAL_SELECT = { id: true, amount: true, splitOfId: true };
+function rowShares(rows) {
+    const cents = (a) => Math.round(Number(a) * 100);
+    const splitCents = new Map();
+    for (const r of rows) {
+        if (r.splitOfId === null)
+            continue;
+        splitCents.set(r.splitOfId, (splitCents.get(r.splitOfId) ?? 0) + cents(r.amount));
+    }
+    return (r) => r.splitOfId !== null
+        ? cents(r.amount)
+        : cents(r.amount) - (splitCents.get(r.id) ?? 0);
+}
 function groupDescriptions(rows) {
     const byName = new Map();
     for (const r of rows) {

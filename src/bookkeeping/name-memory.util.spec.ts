@@ -1,6 +1,8 @@
 import { OWNERS_LOAN, UNCATEGORIZED } from './chart-of-accounts';
 import {
   bankPayeeName,
+  containsKey,
+  descriptionContains,
   descriptionKey,
   indexRules,
   isOwnersLoanMove,
@@ -474,5 +476,84 @@ describe('one category per name (NameMemory)', () => {
     expect(out.fills).toEqual([
       { nameKey: 'staples', sampleName: 'Staples', category: 'Office Expense' },
     ]);
+  });
+});
+
+describe('CONTAINS rules (step2): every description holding the text', () => {
+  const contains = (text: string, over: Partial<NameRule> = {}): NameRule => ({
+    matchType: 'CONTAINS',
+    matchKey: containsKey(text),
+    includeChars: text,
+    name: null,
+    category: 'Office Expense',
+    ...over,
+  });
+
+  it('matches case-insensitively, digits and symbols included', () => {
+    const out = resolveRow(
+      row({ description: 'POS 0923 Walmart #1234' }),
+      ctx({}, [contains('MART #12')]),
+    );
+    expect(out).toMatchObject({
+      category: 'Office Expense',
+      source: 'customer',
+    });
+    expect(resolveRow(row(), ctx({}, [contains('costco')])).category).toBe(
+      'Supplies',
+    );
+  });
+
+  it('the longest matching text wins', () => {
+    const out = resolveRow(
+      row(),
+      ctx({}, [
+        contains('walmart'),
+        contains('walmart #1234', { category: 'Travel' }),
+      ]),
+    );
+    expect(out.category).toBe('Travel');
+  });
+
+  it('an exact DESCRIPTION rule beats it — it means only that description', () => {
+    const out = resolveRow(
+      row(),
+      ctx({}, [
+        contains('walmart'),
+        {
+          matchType: 'DESCRIPTION',
+          matchKey: KEY,
+          name: null,
+          category: 'Travel',
+        },
+      ]),
+    );
+    expect(out.category).toBe('Travel');
+  });
+
+  it("a name it gives still goes through the customer's NAME rule", () => {
+    const out = resolveRow(
+      row({ name: null }),
+      ctx({}, [
+        contains('walmart', { name: 'Walmart', category: null }),
+        {
+          matchType: 'NAME',
+          matchKey: 'walmart',
+          name: null,
+          category: 'Travel',
+        },
+      ]),
+    );
+    expect(out).toMatchObject({ name: 'Walmart', category: 'Travel' });
+  });
+
+  it('indexRules sorts them longest first and leaves them out of the NAME rules', () => {
+    const { containsRules, nameRules } = indexRules([
+      contains('abc'),
+      contains('abcdef'),
+    ]);
+    expect(containsRules.map((r) => r.matchKey)).toEqual(['abcdef', 'abc']);
+    expect(nameRules.size).toBe(0);
+    expect(descriptionContains('xx ABCDEF', 'abcdef')).toBe(true);
+    expect(descriptionContains('anything', '')).toBe(false);
   });
 });

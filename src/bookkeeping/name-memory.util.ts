@@ -6,11 +6,23 @@ import {
 } from './chart-of-accounts';
 
 /** How a customer rule is matched. */
-export type RuleMatchType = 'NAME' | 'DESCRIPTION';
+export type RuleMatchType = 'NAME' | 'DESCRIPTION' | 'CONTAINS';
 export const RULE_MATCH_TYPES: readonly RuleMatchType[] = [
   'NAME',
   'DESCRIPTION',
+  'CONTAINS',
 ];
+
+/** The shortest text a CONTAINS rule may look for — shorter would catch everything. */
+export const CONTAINS_MIN = 3;
+
+/** The key a CONTAINS rule is stored and matched under: the text, trimmed and lower-cased. */
+export const containsKey = (text: string): string =>
+  text.trim().toLowerCase().slice(0, KEY_MAX);
+
+/** Does this description hold a CONTAINS rule's text (its `matchKey`)? */
+export const descriptionContains = (description: string, key: string): boolean =>
+  !!key && description.toLowerCase().includes(key);
 
 /** The column widths of `DescriptionMemory` / `CustomerNameRule`. */
 const KEY_MAX = 191;
@@ -58,6 +70,8 @@ export interface NameRule {
   matchKey: string;
   name: string | null;
   category: string | null;
+  /** CONTAINS only: the text as the customer typed it. */
+  includeChars?: string | null;
 }
 
 export interface ResolveContext {
@@ -67,6 +81,8 @@ export interface ResolveContext {
   descRules: ReadonlyMap<string, NameRule>;
   /** The customer's NAME rules by lower-cased name. */
   nameRules: ReadonlyMap<string, NameRule>;
+  /** The customer's CONTAINS rules, longest text first (`indexRules`). */
+  containsRules?: readonly NameRule[];
   /** The customer's own categories (`CustomerAccount`) — valid in their rules. */
   customAccounts?: ReadonlySet<string>;
   /** The statement's bank ("TD Canada Trust") — the payee of its own fees and interest. */
@@ -164,7 +180,9 @@ export interface Resolved {
  *    written to the firm memory, which serves every bank;
  * 4. a transfer between the owner's accounts or a credit-card payment: Owner's Loan
  *    (`isOwnersLoanMove`) — never written to the firm memory either;
- * 5. the customer's DESCRIPTION rule — how an unrecognised row is assigned;
+ * 5. the customer's DESCRIPTION rule — how an unrecognised row is assigned — else the
+ *    longest of their CONTAINS rules whose text is in the description (step2: an exact
+ *    description rule means only that description, so it wins);
  * 6. the customer's NAME rule, matched on the name as it stands after 1–5;
  * 7. the name's ONE category (user's rule 2026-10-14: a name never has two categories):
  *    the customer's category for the FINAL name (`nameCategories`), else — unless a rule
@@ -212,7 +230,9 @@ export function resolveRow(
     }
     source = 'customer';
   };
-  if (key) apply(ctx.descRules.get(key));
+  const exact = key ? ctx.descRules.get(key) : undefined;
+  if (exact) apply(exact);
+  else apply(containsRuleFor(row.description, ctx.containsRules));
   if (name) apply(ctx.nameRules.get(nameKey(name)));
 
   // The customer's category for the name the row ends up with wins over everything.
@@ -371,19 +391,36 @@ export function memoryWrites(
   return { creates: [...creates.values()], fills: [...fills.values()] };
 }
 
+/** The CONTAINS rule a description falls under: the longest text it holds (rules sorted so). */
+export function containsRuleFor(
+  description: string,
+  rules: readonly NameRule[] | undefined,
+): NameRule | undefined {
+  return rules?.find((r) => descriptionContains(description, r.matchKey));
+}
+
 /** Index customer rules for `resolveRow`. */
 export function indexRules(rules: readonly NameRule[]): {
   descRules: Map<string, NameRule>;
   nameRules: Map<string, NameRule>;
+  containsRules: NameRule[];
   nameCategories: Map<string, string>;
 } {
   const descRules = new Map<string, NameRule>();
   const nameRules = new Map<string, NameRule>();
+  const containsRules: NameRule[] = [];
   const nameCategories = new Map<string, string>();
   for (const r of rules) {
     if (r.matchType === 'DESCRIPTION') descRules.set(r.matchKey, r);
-    else nameRules.set(r.matchKey, r);
+    else if (r.matchType === 'CONTAINS') {
+      if (r.matchKey) containsRules.push(r);
+    } else nameRules.set(r.matchKey, r);
   }
+  containsRules.sort(
+    (a, b) =>
+      b.matchKey.length - a.matchKey.length ||
+      a.matchKey.localeCompare(b.matchKey),
+  );
   // The customer's category for each FINAL name: a rule keyed on the name itself first,
   // then any rename rule that leads to it.
   for (const r of nameRules.values()) {
@@ -395,5 +432,5 @@ export function indexRules(rules: readonly NameRule[]): {
     if (r.category && !cleanName(r.name))
       nameCategories.set(r.matchKey, r.category);
   }
-  return { descRules, nameRules, nameCategories };
+  return { descRules, nameRules, containsRules, nameCategories };
 }

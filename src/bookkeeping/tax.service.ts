@@ -18,6 +18,7 @@ import {
 } from './chart-of-accounts';
 import { CustomerAccountsService } from './customer-accounts.service';
 import {
+  descriptionContains,
   descriptionKey,
   nameKey,
   type RuleMatchType,
@@ -58,6 +59,8 @@ export interface NameView {
   otherCategories: number;
   type: NameType;
   rows: number;
+  /** What its rows add up to, as the bank moved it (tax included; a split parent counts what is left). */
+  total: number;
   /** The tax agencies that tax this name's rows (none = not taxed, the default). */
   agencyIds: number[];
   /**
@@ -86,12 +89,27 @@ export interface UnrecognizedView {
   category: string;
   otherCategories: number;
   rows: number;
+  /** What its rows add up to (see `NameView.total`). */
+  total: number;
   rule: { matchType: RuleMatchType; matchKey: string } | null;
+}
+
+/** A customer's "description contains …" rule (step2), on the Names tab. */
+export interface ContainsRuleView {
+  /** The text, as typed. */
+  text: string;
+  /** What it is stored under (`matchKey`) — what an edit or a reset sends. */
+  key: string;
+  name: string | null;
+  category: string | null;
+  /** Ledger rows whose description contains it now. */
+  rows: number;
 }
 
 export interface NamesView {
   names: NameView[];
   unrecognized: UnrecognizedView[];
+  containsRules: ContainsRuleView[];
 }
 
 /** One tax line on a row, as the ledger, exports and reports read it. */
@@ -375,11 +393,11 @@ export class TaxService {
       }),
       this.prisma.bankTransaction.findMany({
         where: { ...scopeWhere(scope), name: { not: null }, statement: DONE },
-        select: { name: true, description: true, offsetAccount: true },
+        select: { ...TOTAL_SELECT, name: true, description: true, offsetAccount: true },
       }),
       this.prisma.bankTransaction.findMany({
         where: { ...scopeWhere(scope), name: null, statement: DONE },
-        select: { description: true, offsetAccount: true },
+        select: { ...TOTAL_SELECT, description: true, offsetAccount: true },
       }),
       this.prisma.ledgerNameAgency.findMany({
         where: { ...scopeWhere(scope), agency: { deletedAt: null } },
@@ -388,11 +406,24 @@ export class TaxService {
       }),
       this.prisma.customerNameRule.findMany({
         where: scopeWhere(scope),
-        select: { matchType: true, matchKey: true, name: true },
+        select: {
+          matchType: true,
+          matchKey: true,
+          name: true,
+          category: true,
+          includeChars: true,
+        },
+        orderBy: { createdAt: 'asc' },
       }),
       this.typeContext(scope),
     ]);
     const descriptionsOf = groupDescriptions(named);
+    const shareOf = rowShares([...named, ...nameless]);
+    const totalOf = new Map<string, number>();
+    for (const r of named) {
+      const key = r.name!.toLowerCase();
+      totalOf.set(key, (totalOf.get(key) ?? 0) + shareOf(r));
+    }
     const agenciesOf = new Map<string, number[]>();
     for (const p of picks) {
       const key = nameTaxKey(p.name);
@@ -400,8 +431,8 @@ export class TaxService {
     }
 
     const ref = (r: { matchType: string; matchKey: string }) => ({
-      matchType: (r.matchType === 'DESCRIPTION'
-        ? 'DESCRIPTION'
+      matchType: (r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+        ? r.matchType
         : 'NAME') as RuleMatchType,
       matchKey: r.matchKey,
     });
@@ -416,7 +447,9 @@ export class TaxService {
       if (byName) return ref(byName);
       const byDesc = rules.find(
         (r) =>
-          r.matchType === 'DESCRIPTION' && r.name && nameKey(r.name) === key,
+          (r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS') &&
+          r.name &&
+          nameKey(r.name) === key,
       );
       return byDesc ? ref(byDesc) : null;
     };
@@ -443,6 +476,7 @@ export class TaxService {
           otherCategories: categories.length - 1,
           type: typeOfCategory(category, ctx),
           rows: categories.reduce((n, [, c]) => n + c, 0),
+          total: (totalOf.get(key) ?? 0) / 100,
           agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
           descriptions: descriptionsOf.get(key) ?? [],
           ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
@@ -453,7 +487,7 @@ export class TaxService {
 
     const byKey = new Map<
       string,
-      { sample: string; categories: Map<string, number> }
+      { sample: string; categories: Map<string, number>; cents: number }
     >();
     for (const t of nameless) {
       const key = descriptionKey(t.description);
@@ -461,7 +495,9 @@ export class TaxService {
       const entry = byKey.get(key) ?? {
         sample: t.description,
         categories: new Map<string, number>(),
+        cents: 0,
       };
+      entry.cents += shareOf(t);
       entry.categories.set(
         t.offsetAccount,
         (entry.categories.get(t.offsetAccount) ?? 0) + 1,
@@ -469,7 +505,7 @@ export class TaxService {
       byKey.set(key, entry);
     }
     const unrecognized = [...byKey.entries()]
-      .map(([key, { sample, categories }]): UnrecognizedView => {
+      .map(([key, { sample, categories, cents }]): UnrecognizedView => {
         const sorted = [...categories.entries()].sort((a, b) => b[1] - a[1]);
         const descRule = rules.find(
           (r) => r.matchType === 'DESCRIPTION' && r.matchKey === key,
@@ -480,6 +516,7 @@ export class TaxService {
           category: sorted[0][0],
           otherCategories: sorted.length - 1,
           rows: sorted.reduce((n, [, c]) => n + c, 0),
+          total: cents / 100,
           rule: descRule ? ref(descRule) : null,
         };
       })
@@ -495,6 +532,7 @@ export class TaxService {
         otherCategories: 0,
         type: 'OTHER',
         rows: nameless.length,
+        total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
         agencyIds: agenciesOf.get(nameTaxKey(null)) ?? [],
         descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
           description: u.sampleDescription,
@@ -508,7 +546,22 @@ export class TaxService {
       names.sort((a, b) => a.name.localeCompare(b.name));
     }
 
-    return { names, unrecognized };
+    const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
+    const containsRules = rules
+      .filter((r) => r.matchType === 'CONTAINS')
+      .map(
+        (r): ContainsRuleView => ({
+          text: r.includeChars ?? r.matchKey,
+          key: r.matchKey,
+          name: r.name,
+          category: r.category,
+          rows: descriptions.filter((t) =>
+            descriptionContains(t.description, r.matchKey),
+          ).length,
+        }),
+      );
+
+    return { names, unrecognized, containsRules };
   }
 
   /**
@@ -633,6 +686,31 @@ const MAX_DESCRIPTIONS = 25;
  * Per lower-cased name: its rows grouped by description key, each with one printed
  * description and the category those rows mostly have, most rows first.
  */
+const TOTAL_SELECT = { id: true, amount: true, splitOfId: true } as const;
+
+/**
+ * Each row's own share of the money, in cents: a split its amount, a parent what its splits
+ * leave of the bank amount (`remainderOf`) — so a name's total never counts a split twice.
+ */
+function rowShares(
+  rows: ReadonlyArray<{
+    id: number;
+    amount: Prisma.Decimal | number;
+    splitOfId: number | null;
+  }>,
+): (row: { id: number; amount: Prisma.Decimal | number; splitOfId: number | null }) => number {
+  const cents = (a: Prisma.Decimal | number) => Math.round(Number(a) * 100);
+  const splitCents = new Map<number, number>();
+  for (const r of rows) {
+    if (r.splitOfId === null) continue;
+    splitCents.set(r.splitOfId, (splitCents.get(r.splitOfId) ?? 0) + cents(r.amount));
+  }
+  return (r) =>
+    r.splitOfId !== null
+      ? cents(r.amount)
+      : cents(r.amount) - (splitCents.get(r.id) ?? 0);
+}
+
 function groupDescriptions(
   rows: ReadonlyArray<{
     name: string | null;

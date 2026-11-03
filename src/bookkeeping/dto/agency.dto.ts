@@ -92,10 +92,13 @@ export class SetNameAgenciesDto {
 
 /** `PUT /api/bookkeeping/names/rule` — a customer's own name and/or category. */
 export class SaveNameRuleDto {
-  @IsIn(['NAME', 'DESCRIPTION'])
-  matchType!: 'NAME' | 'DESCRIPTION';
+  @IsIn(['NAME', 'DESCRIPTION', 'CONTAINS'])
+  matchType!: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
 
-  /** The `ruleKey` (NAME) or the description `key` (DESCRIPTION) the Names tab gave. */
+  /**
+   * The `ruleKey` (NAME) or the description `key` (DESCRIPTION) the Names tab gave; for
+   * CONTAINS the text every matching description contains (at least 3 characters).
+   */
   @Transform(trim)
   @IsString()
   @IsNotEmpty()
@@ -127,8 +130,8 @@ export class SaveNameRuleDto {
 
 /** `DELETE /api/bookkeeping/names/rule` — back to the default. */
 export class ResetNameRuleDto {
-  @IsIn(['NAME', 'DESCRIPTION'])
-  matchType!: 'NAME' | 'DESCRIPTION';
+  @IsIn(['NAME', 'DESCRIPTION', 'CONTAINS'])
+  matchType!: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
 
   @Transform(trim)
   @IsString()

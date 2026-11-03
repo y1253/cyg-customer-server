@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isBankCharge = exports.nameKey = exports.RULE_MATCH_TYPES = void 0;
+exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
 exports.bankPayeeName = bankPayeeName;
@@ -9,12 +9,19 @@ exports.resolveRow = resolveRow;
 exports.resolveRows = resolveRows;
 exports.nameMemoryWrites = nameMemoryWrites;
 exports.memoryWrites = memoryWrites;
+exports.containsRuleFor = containsRuleFor;
 exports.indexRules = indexRules;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.RULE_MATCH_TYPES = [
     'NAME',
     'DESCRIPTION',
+    'CONTAINS',
 ];
+exports.CONTAINS_MIN = 3;
+const containsKey = (text) => text.trim().toLowerCase().slice(0, KEY_MAX);
+exports.containsKey = containsKey;
+const descriptionContains = (description, key) => !!key && description.toLowerCase().includes(key);
+exports.descriptionContains = descriptionContains;
 const KEY_MAX = 191;
 const NAME_MAX = 191;
 function descriptionKey(description) {
@@ -110,8 +117,11 @@ function resolveRow(row, ctx) {
         }
         source = 'customer';
     };
-    if (key)
-        apply(ctx.descRules.get(key));
+    const exact = key ? ctx.descRules.get(key) : undefined;
+    if (exact)
+        apply(exact);
+    else
+        apply(containsRuleFor(row.description, ctx.containsRules));
     if (name)
         apply(ctx.nameRules.get((0, exports.nameKey)(name)));
     const own = name ? ctx.nameCategories?.get((0, exports.nameKey)(name)) : undefined;
@@ -216,16 +226,26 @@ function memoryWrites(rows, memory) {
     }
     return { creates: [...creates.values()], fills: [...fills.values()] };
 }
+function containsRuleFor(description, rules) {
+    return rules?.find((r) => (0, exports.descriptionContains)(description, r.matchKey));
+}
 function indexRules(rules) {
     const descRules = new Map();
     const nameRules = new Map();
+    const containsRules = [];
     const nameCategories = new Map();
     for (const r of rules) {
         if (r.matchType === 'DESCRIPTION')
             descRules.set(r.matchKey, r);
+        else if (r.matchType === 'CONTAINS') {
+            if (r.matchKey)
+                containsRules.push(r);
+        }
         else
             nameRules.set(r.matchKey, r);
     }
+    containsRules.sort((a, b) => b.matchKey.length - a.matchKey.length ||
+        a.matchKey.localeCompare(b.matchKey));
     for (const r of nameRules.values()) {
         if (!r.category || !cleanName(r.name))
             continue;
@@ -237,6 +257,6 @@ function indexRules(rules) {
         if (r.category && !cleanName(r.name))
             nameCategories.set(r.matchKey, r.category);
     }
-    return { descRules, nameRules, nameCategories };
+    return { descRules, nameRules, containsRules, nameCategories };
 }
 //# sourceMappingURL=name-memory.util.js.map

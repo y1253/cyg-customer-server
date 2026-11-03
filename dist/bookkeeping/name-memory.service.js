@@ -67,11 +67,19 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async rulesOf(scope) {
         const rows = await this.prisma.customerNameRule.findMany({
             where: (0, scope_1.scopeWhere)(scope),
-            select: { matchType: true, matchKey: true, name: true, category: true },
+            select: {
+                matchType: true,
+                matchKey: true,
+                name: true,
+                category: true,
+                includeChars: true,
+            },
         });
         return rows.map((r) => ({
             ...r,
-            matchType: r.matchType === 'DESCRIPTION' ? 'DESCRIPTION' : 'NAME',
+            matchType: r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+                ? r.matchType
+                : 'NAME',
         }));
     }
     async customAccountsOf(scope) {
@@ -173,6 +181,10 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             matchKey,
         };
         const previous = await this.prisma.customerNameRule.findFirst({ where });
+        if (input.matchType === 'CONTAINS') {
+            await this.saveContainsRule(scope, previous, where, input.matchKey, name, category);
+            return;
+        }
         if (input.matchType === 'NAME') {
             const names = new Set([matchKey]);
             if (previous?.name)
@@ -214,6 +226,43 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.upsertRule(previous, { ...where, category }, { category });
         const rows = await this.matchingRows(scope, 'DESCRIPTION', matchKey, new Set(), true);
         await this.writeRows(scope, rows.filter((r) => !(0, name_memory_util_1.cleanName)(r.name)), () => ({ name: null, category }));
+    }
+    async saveContainsRule(scope, previous, where, raw, name, category) {
+        const includeChars = raw.trim().slice(0, 191);
+        if (includeChars.length < name_memory_util_1.CONTAINS_MIN) {
+            throw new common_1.BadRequestException(`Type at least ${name_memory_util_1.CONTAINS_MIN} characters the description must contain.`);
+        }
+        if (!name && !category) {
+            throw new common_1.BadRequestException('Pick a name or a category for this rule.');
+        }
+        const rows = await this.containsRows(scope, where.matchKey);
+        if (name) {
+            const target = await this.categoryOfName(scope, name);
+            await this.upsertRule(previous, { ...where, includeChars, name, category: null }, { includeChars, name, category: null });
+            await this.writeRows(scope, rows, (row) => ({
+                name,
+                category: row.offsetAccount,
+            }));
+            const adopt = category ?? target;
+            if (adopt)
+                await this.setNameCategory(scope, name, adopt);
+            return;
+        }
+        await this.upsertRule(previous, { ...where, includeChars, name: null, category }, { includeChars, name: null, category });
+        const { nameCategories } = (0, name_memory_util_1.indexRules)(await this.rulesOf(scope));
+        await this.writeRows(scope, rows, (row) => {
+            const own = row.name ? nameCategories.get((0, name_memory_util_1.nameKey)(row.name)) : undefined;
+            return { name: row.name, category: own ?? category };
+        });
+    }
+    async containsRows(scope, key) {
+        const exact = new Set((await this.prisma.customerNameRule.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), matchType: 'DESCRIPTION' },
+            select: { matchKey: true },
+        })).map((r) => r.matchKey));
+        const rows = await this.matchingRows(scope, 'DESCRIPTION', '', new Set(), false, true);
+        return rows.filter((r) => (0, name_memory_util_1.descriptionContains)(r.description, key) &&
+            !exact.has((0, name_memory_util_1.descriptionKey)(r.description)));
     }
     async editTransaction(scope, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
@@ -351,6 +400,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
         if (!rule)
             throw new common_1.NotFoundException('That name has no saved change');
+        if (input.matchType === 'CONTAINS') {
+            const reached = await this.containsRows(scope, matchKey);
+            await this.prisma.customerNameRule.delete({ where: { id: rule.id } });
+            await this.reresolveAfterContains(scope, rule, reached);
+            return;
+        }
         await this.prisma.customerNameRule.delete({ where: { id: rule.id } });
         const names = new Set([matchKey]);
         if (rule.name)
@@ -377,6 +432,23 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             return { name: out.name, category: out.category };
         });
     }
+    async reresolveAfterContains(scope, rule, rows) {
+        if (!rows.length)
+            return;
+        const ctx = await this.contextFor(scope, rows.map((r) => r.description), rows.map((r) => r.name));
+        const renamed = !!(0, name_memory_util_1.cleanName)(rule.name);
+        await this.writeRows(scope, rows, (row) => {
+            const key = (0, name_memory_util_1.descriptionKey)(row.description);
+            const remembered = key ? ctx.memory.get(key) : undefined;
+            const out = (0, name_memory_util_1.resolveRow)({
+                description: row.description,
+                name: remembered?.name ?? (renamed ? null : row.name),
+                offsetAccount: remembered?.category ??
+                    (rule.category ? chart_of_accounts_1.UNCATEGORIZED : row.offsetAccount),
+            }, ctx);
+            return { name: out.name, category: out.category };
+        });
+    }
     async upsertRule(existing, create, update) {
         if (existing) {
             await this.prisma.customerNameRule.update({
@@ -388,7 +460,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             await this.prisma.customerNameRule.create({ data: create });
         }
     }
-    async matchingRows(scope, matchType, matchKey, names, includeManual) {
+    async matchingRows(scope, matchType, matchKey, names, includeManual, all = false) {
         const manual = includeManual
             ? { splitOfId: null }
             : { manualEdit: false, splitOfId: null };
@@ -403,6 +475,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             where: { ...(0, scope_1.scopeWhere)(scope), ...manual },
             select: MATCH_SELECT,
         });
+        if (all)
+            return rows.map(toMatched);
         return rows
             .filter((r) => (0, name_memory_util_1.descriptionKey)(r.description) === matchKey)
             .map(toMatched);
@@ -447,7 +521,9 @@ const MATCH_SELECT = {
 };
 const ruleKeyOf = (matchType, raw) => matchType === 'NAME'
     ? (0, name_memory_util_1.nameKey)(raw)
-    : (0, name_memory_util_1.descriptionKey)(raw) || raw.trim().toLowerCase();
+    : matchType === 'CONTAINS'
+        ? (0, name_memory_util_1.containsKey)(raw)
+        : (0, name_memory_util_1.descriptionKey)(raw) || raw.trim().toLowerCase();
 function originalName(current, matchKey) {
     if (current && (0, name_memory_util_1.nameKey)(current) === matchKey)
         return current;

@@ -40,7 +40,7 @@ Statements (STATEMENT_READER) — the "Bank feeds" tab of the Bookkeeping page
 - Starting-balance rows are computed, not stored; statements chain per account.
 
 Names and categories
-- The payee name is read out of the description ("WALMART #1234 TORONTO" -> "Walmart"). Resolution order: AI answer -> firm-wide memory (DescriptionMemory, NameMemory) -> bank-fee / Owner's Loan defaults -> the customer's own DESCRIPTION rules -> NAME rules -> the name's ONE category. A name always has one category.
+- The payee name is read out of the description ("WALMART #1234 TORONTO" -> "Walmart"). Resolution order: AI answer -> firm-wide memory (DescriptionMemory, NameMemory) -> bank-fee / Owner's Loan defaults -> the customer's own DESCRIPTION rules (one exact description) or, when none, their CONTAINS rules ("every description that contains <text>", case-insensitive, longest text wins; set on the Names tab, "Add description rule") -> NAME rules -> the name's ONE category. A name always has one category; a CONTAINS rule with only a category puts every matching row in it unless the row's name has a category of the customer's own.
 - Customers rename / recategorize on the Names tab or the ledger ("always" = a rule for every row like it; "only this row" = a one-time edit).
 - Tax is chosen per name by the customer (agencies picked on the Names tab), computed on read, included in the amount.
 

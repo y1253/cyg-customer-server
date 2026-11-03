@@ -21,6 +21,7 @@ export interface NameView {
     otherCategories: number;
     type: NameType;
     rows: number;
+    total: number;
     agencyIds: number[];
     descriptions: Array<{
         description: string;
@@ -40,14 +41,23 @@ export interface UnrecognizedView {
     category: string;
     otherCategories: number;
     rows: number;
+    total: number;
     rule: {
         matchType: RuleMatchType;
         matchKey: string;
     } | null;
 }
+export interface ContainsRuleView {
+    text: string;
+    key: string;
+    name: string | null;
+    category: string | null;
+    rows: number;
+}
 export interface NamesView {
     names: NameView[];
     unrecognized: UnrecognizedView[];
+    containsRules: ContainsRuleView[];
 }
 export interface StoredTax {
     agencyId: number;

@@ -4,7 +4,7 @@ import { NameMemoryService } from './name-memory.service';
 import { type BookScope } from './scope';
 export interface StaffNameRuleView {
     id: number;
-    matchType: 'NAME' | 'DESCRIPTION';
+    matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
     matchKey: string;
     example: string | null;
     name: string | null;

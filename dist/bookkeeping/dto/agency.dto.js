@@ -110,7 +110,7 @@ class SaveNameRuleDto {
 }
 exports.SaveNameRuleDto = SaveNameRuleDto;
 __decorate([
-    (0, class_validator_1.IsIn)(['NAME', 'DESCRIPTION']),
+    (0, class_validator_1.IsIn)(['NAME', 'DESCRIPTION', 'CONTAINS']),
     __metadata("design:type", String)
 ], SaveNameRuleDto.prototype, "matchType", void 0);
 __decorate([
@@ -144,7 +144,7 @@ class ResetNameRuleDto {
 }
 exports.ResetNameRuleDto = ResetNameRuleDto;
 __decorate([
-    (0, class_validator_1.IsIn)(['NAME', 'DESCRIPTION']),
+    (0, class_validator_1.IsIn)(['NAME', 'DESCRIPTION', 'CONTAINS']),
     __metadata("design:type", String)
 ], ResetNameRuleDto.prototype, "matchType", void 0);
 __decorate([

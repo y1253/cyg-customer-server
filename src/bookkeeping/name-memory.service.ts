@@ -17,6 +17,9 @@ import { TaxService } from './tax.service';
 import {
   bankPayeeName,
   cleanName,
+  CONTAINS_MIN,
+  containsKey,
+  descriptionContains,
   isBankCharge,
   isOwnersLoanMove,
   descriptionKey,
@@ -114,11 +117,20 @@ export class NameMemoryService {
   async rulesOf(scope: BookScope): Promise<NameRule[]> {
     const rows = await this.prisma.customerNameRule.findMany({
       where: scopeWhere(scope),
-      select: { matchType: true, matchKey: true, name: true, category: true },
+      select: {
+        matchType: true,
+        matchKey: true,
+        name: true,
+        category: true,
+        includeChars: true,
+      },
     });
     return rows.map((r) => ({
       ...r,
-      matchType: r.matchType === 'DESCRIPTION' ? 'DESCRIPTION' : 'NAME',
+      matchType:
+        r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+          ? r.matchType
+          : 'NAME',
     }));
   }
 
@@ -280,6 +292,18 @@ export class NameMemoryService {
     };
     const previous = await this.prisma.customerNameRule.findFirst({ where });
 
+    if (input.matchType === 'CONTAINS') {
+      await this.saveContainsRule(
+        scope,
+        previous,
+        where,
+        input.matchKey,
+        name,
+        category,
+      );
+      return;
+    }
+
     if (input.matchType === 'NAME') {
       // Rows this covers: those still carrying the original name AND those an earlier
       // version of the rule already renamed.
@@ -359,6 +383,91 @@ export class NameMemoryService {
       scope,
       rows.filter((r) => !cleanName(r.name)),
       () => ({ name: null, category }),
+    );
+  }
+
+  /**
+   * A CONTAINS rule (step2): every description holding the text, except those an exact
+   * DESCRIPTION rule covers (that one means only its description and wins). A NAME goes on
+   * the rows and carries its one category from there (the DESCRIPTION path's rule); with no
+   * name the CATEGORY itself goes on every such row — named ones too (the customer's
+   * request: "every description that includes it is that category") — unless the row's
+   * name has a category of the customer's own, which `resolveRow` lets win.
+   * Rows flagged `manualEdit` and splits are left alone, like every ALWAYS rule.
+   */
+  private async saveContainsRule(
+    scope: BookScope,
+    previous: { id: number } | null,
+    where: Prisma.CustomerNameRuleUncheckedCreateInput,
+    raw: string,
+    name: string | null,
+    category: string | null,
+  ): Promise<void> {
+    const includeChars = raw.trim().slice(0, 191);
+    if (includeChars.length < CONTAINS_MIN) {
+      throw new BadRequestException(
+        `Type at least ${CONTAINS_MIN} characters the description must contain.`,
+      );
+    }
+    if (!name && !category) {
+      throw new BadRequestException('Pick a name or a category for this rule.');
+    }
+    const rows = await this.containsRows(scope, where.matchKey);
+    if (name) {
+      const target = await this.categoryOfName(scope, name);
+      await this.upsertRule(
+        previous,
+        { ...where, includeChars, name, category: null },
+        { includeChars, name, category: null },
+      );
+      await this.writeRows(scope, rows, (row) => ({
+        name,
+        category: row.offsetAccount,
+      }));
+      const adopt = category ?? target;
+      if (adopt) await this.setNameCategory(scope, name, adopt);
+      return;
+    }
+    await this.upsertRule(
+      previous,
+      { ...where, includeChars, name: null, category },
+      { includeChars, name: null, category },
+    );
+    const { nameCategories } = indexRules(await this.rulesOf(scope));
+    await this.writeRows(scope, rows, (row) => {
+      const own = row.name ? nameCategories.get(nameKey(row.name)) : undefined;
+      return { name: row.name, category: own ?? category! };
+    });
+  }
+
+  /**
+   * The rows a CONTAINS rule reaches: live, not split, not a one-time edit, holding the text,
+   * and not covered by one of the customer's exact DESCRIPTION rules.
+   */
+  private async containsRows(
+    scope: BookScope,
+    key: string,
+  ): Promise<MatchedRow[]> {
+    const exact = new Set(
+      (
+        await this.prisma.customerNameRule.findMany({
+          where: { ...scopeWhere(scope), matchType: 'DESCRIPTION' },
+          select: { matchKey: true },
+        })
+      ).map((r) => r.matchKey),
+    );
+    const rows = await this.matchingRows(
+      scope,
+      'DESCRIPTION',
+      '',
+      new Set(),
+      false,
+      true,
+    );
+    return rows.filter(
+      (r) =>
+        descriptionContains(r.description, key) &&
+        !exact.has(descriptionKey(r.description)),
     );
   }
 
@@ -560,6 +669,13 @@ export class NameMemoryService {
       where: { ...scopeWhere(scope), matchType: input.matchType, matchKey },
     });
     if (!rule) throw new NotFoundException('That name has no saved change');
+    if (input.matchType === 'CONTAINS') {
+      // The rows it reaches now, read before it goes.
+      const reached = await this.containsRows(scope, matchKey);
+      await this.prisma.customerNameRule.delete({ where: { id: rule.id } });
+      await this.reresolveAfterContains(scope, rule, reached);
+      return;
+    }
     await this.prisma.customerNameRule.delete({ where: { id: rule.id } });
 
     const names = new Set<string>([matchKey]);
@@ -602,6 +718,42 @@ export class NameMemoryService {
   }
 
   /**
+   * A CONTAINS rule was removed: its rows go back to the firm memory's answer for their
+   * description, then through every rule the customer still has (another CONTAINS rule may
+   * now take them). What the rule replaced is not known any more, so a renamed row loses
+   * the name (the memory's, else none) and a re-categorised one its category (the
+   * memory's, else Uncategorized, then its name's).
+   */
+  private async reresolveAfterContains(
+    scope: BookScope,
+    rule: { name: string | null; category: string | null },
+    rows: MatchedRow[],
+  ): Promise<void> {
+    if (!rows.length) return;
+    const ctx = await this.contextFor(
+      scope,
+      rows.map((r) => r.description),
+      rows.map((r) => r.name),
+    );
+    const renamed = !!cleanName(rule.name);
+    await this.writeRows(scope, rows, (row) => {
+      const key = descriptionKey(row.description);
+      const remembered = key ? ctx.memory.get(key) : undefined;
+      const out = resolveRow(
+        {
+          description: row.description,
+          name: remembered?.name ?? (renamed ? null : row.name),
+          offsetAccount:
+            remembered?.category ??
+            (rule.category ? UNCATEGORIZED : row.offsetAccount),
+        },
+        ctx,
+      );
+      return { name: out.name, category: out.category };
+    });
+  }
+
+  /**
    * Create or update one rule. Not a compound-key upsert: the key holds companyId, which is
    * NULL for the general book, and Prisma cannot address a NULL through a unique key.
    */
@@ -626,6 +778,8 @@ export class NameMemoryService {
     matchKey: string,
     names: ReadonlySet<string>,
     includeManual: boolean,
+    /** Every row of the book (the caller filters) — how a CONTAINS rule finds its rows. */
+    all = false,
   ): Promise<MatchedRow[]> {
     // Splits are a receipt's items or the customer's own parts: never a rule's rows.
     const manual = includeManual
@@ -643,6 +797,7 @@ export class NameMemoryService {
       where: { ...scopeWhere(scope), ...manual },
       select: MATCH_SELECT,
     });
+    if (all) return rows.map(toMatched);
     return rows
       .filter((r) => descriptionKey(r.description) === matchKey)
       .map(toMatched);
@@ -695,7 +850,9 @@ const MATCH_SELECT = {
 const ruleKeyOf = (matchType: RuleMatchType, raw: string): string =>
   matchType === 'NAME'
     ? nameKey(raw)
-    : descriptionKey(raw) || raw.trim().toLowerCase();
+    : matchType === 'CONTAINS'
+      ? containsKey(raw)
+      : descriptionKey(raw) || raw.trim().toLowerCase();
 
 /**
  * The name a NAME rule's rows had before it renamed them. The key is lower-cased, so a row

@@ -5,14 +5,22 @@ import {
   type AccountView,
 } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
-import { cleanName, descriptionKey, nameKey } from './name-memory.util';
+import {
+  cleanName,
+  descriptionContains,
+  descriptionKey,
+  nameKey,
+} from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
 
 /** One of the customer's name / description rules, as staff see it. */
 export interface StaffNameRuleView {
   id: number;
-  matchType: 'NAME' | 'DESCRIPTION';
-  /** The payee name (NAME) or the description key (DESCRIPTION) the rule matches. */
+  matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
+  /**
+   * The payee name (NAME), the description key (DESCRIPTION) or the lower-cased text a
+   * description must contain (CONTAINS, step2 — listed with the descriptions).
+   */
   matchKey: string;
   /** A real bank description it matches — the key alone has its digits stripped. */
   example: string | null;
@@ -94,15 +102,24 @@ export class StaffRulesService {
             ? byDescription.get(r.matchKey)
             : undefined;
         const names = new Set([r.matchKey, ...(name ? [nameKey(name)] : [])]);
-        const rowCount =
-          r.matchType === 'DESCRIPTION'
+        const contains = r.matchType === 'CONTAINS';
+        const rowCount = contains
+          ? rows.filter((t) => descriptionContains(t.description, r.matchKey))
+              .length
+          : r.matchType === 'DESCRIPTION'
             ? (description?.rows ?? 0)
             : [...names].reduce((n, k) => n + (byName.get(k) ?? 0), 0);
         return {
           id: r.id,
-          matchType: r.matchType === 'NAME' ? 'NAME' : 'DESCRIPTION',
+          matchType: contains
+            ? 'CONTAINS'
+            : r.matchType === 'NAME'
+              ? 'NAME'
+              : 'DESCRIPTION',
           matchKey: r.matchKey,
-          example: description?.example ?? null,
+          example: contains
+            ? `Contains "${r.includeChars ?? r.matchKey}"`
+            : (description?.example ?? null),
           name,
           category: r.category,
           effectiveCategory:
@@ -115,7 +132,7 @@ export class StaffRulesService {
     );
 
     return {
-      descriptions: views.filter((v) => v.matchType === 'DESCRIPTION'),
+      descriptions: views.filter((v) => v.matchType !== 'NAME'),
       names: views.filter((v) => v.matchType === 'NAME'),
       items: items.map((i) => ({
         id: i.id,

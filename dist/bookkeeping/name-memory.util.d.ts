@@ -1,5 +1,8 @@
-export type RuleMatchType = 'NAME' | 'DESCRIPTION';
+export type RuleMatchType = 'NAME' | 'DESCRIPTION' | 'CONTAINS';
 export declare const RULE_MATCH_TYPES: readonly RuleMatchType[];
+export declare const CONTAINS_MIN = 3;
+export declare const containsKey: (text: string) => string;
+export declare const descriptionContains: (description: string, key: string) => boolean;
 export declare function descriptionKey(description: string | null | undefined): string;
 export declare function cleanName(name: string | null | undefined): string | null;
 export declare const nameKey: (name: string) => string;
@@ -12,11 +15,13 @@ export interface NameRule {
     matchKey: string;
     name: string | null;
     category: string | null;
+    includeChars?: string | null;
 }
 export interface ResolveContext {
     memory: ReadonlyMap<string, MemoryEntry>;
     descRules: ReadonlyMap<string, NameRule>;
     nameRules: ReadonlyMap<string, NameRule>;
+    containsRules?: readonly NameRule[];
     customAccounts?: ReadonlySet<string>;
     bankName?: string | null;
     nameCategories?: ReadonlyMap<string, string>;
@@ -69,8 +74,10 @@ export declare function memoryWrites(rows: ReadonlyArray<{
     creates: MemoryWrite[];
     fills: MemoryWrite[];
 };
+export declare function containsRuleFor(description: string, rules: readonly NameRule[] | undefined): NameRule | undefined;
 export declare function indexRules(rules: readonly NameRule[]): {
     descRules: Map<string, NameRule>;
     nameRules: Map<string, NameRule>;
+    containsRules: NameRule[];
     nameCategories: Map<string, string>;
 };

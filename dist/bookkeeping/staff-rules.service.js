@@ -62,14 +62,24 @@ let StaffRulesService = class StaffRulesService {
                 ? byDescription.get(r.matchKey)
                 : undefined;
             const names = new Set([r.matchKey, ...(name ? [(0, name_memory_util_1.nameKey)(name)] : [])]);
-            const rowCount = r.matchType === 'DESCRIPTION'
-                ? (description?.rows ?? 0)
-                : [...names].reduce((n, k) => n + (byName.get(k) ?? 0), 0);
+            const contains = r.matchType === 'CONTAINS';
+            const rowCount = contains
+                ? rows.filter((t) => (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey))
+                    .length
+                : r.matchType === 'DESCRIPTION'
+                    ? (description?.rows ?? 0)
+                    : [...names].reduce((n, k) => n + (byName.get(k) ?? 0), 0);
             return {
                 id: r.id,
-                matchType: r.matchType === 'NAME' ? 'NAME' : 'DESCRIPTION',
+                matchType: contains
+                    ? 'CONTAINS'
+                    : r.matchType === 'NAME'
+                        ? 'NAME'
+                        : 'DESCRIPTION',
                 matchKey: r.matchKey,
-                example: description?.example ?? null,
+                example: contains
+                    ? `Contains "${r.includeChars ?? r.matchKey}"`
+                    : (description?.example ?? null),
                 name,
                 category: r.category,
                 effectiveCategory: r.category ??
@@ -79,7 +89,7 @@ let StaffRulesService = class StaffRulesService {
             };
         }));
         return {
-            descriptions: views.filter((v) => v.matchType === 'DESCRIPTION'),
+            descriptions: views.filter((v) => v.matchType !== 'NAME'),
             names: views.filter((v) => v.matchType === 'NAME'),
             items: items.map((i) => ({
                 id: i.id,

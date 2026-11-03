@@ -28,6 +28,8 @@ export declare class NameMemoryService {
         category: string | null;
         scope?: EditScope;
     }): Promise<void>;
+    private saveContainsRule;
+    private containsRows;
     editTransaction(scope: BookScope, id: number, input: {
         name: string | null;
         category: string | null;
@@ -40,6 +42,7 @@ export declare class NameMemoryService {
         matchType: RuleMatchType;
         matchKey: string;
     }): Promise<void>;
+    private reresolveAfterContains;
     private upsertRule;
     private matchingRows;
     private writeRows;

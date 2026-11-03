@@ -18,14 +18,14 @@ export declare class SetNameAgenciesDto {
     agencyIds: number[];
 }
 export declare class SaveNameRuleDto {
-    matchType: 'NAME' | 'DESCRIPTION';
+    matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
     matchKey: string;
     name?: string | null;
     category?: string | null;
     scope?: 'ALWAYS' | 'ONCE';
 }
 export declare class ResetNameRuleDto {
-    matchType: 'NAME' | 'DESCRIPTION';
+    matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
     matchKey: string;
 }
 export declare class SaveProductRuleDto {
