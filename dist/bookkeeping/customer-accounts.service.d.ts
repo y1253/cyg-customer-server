@@ -9,7 +9,10 @@ export interface AccountView {
 }
 export declare class CustomerAccountsService {
     private readonly prisma;
+    private readonly logger;
     constructor(prisma: PrismaService);
+    mergeAccounts(scope: BookScope, rawFrom: string, rawInto: string): Promise<void>;
+    private mergeSide;
     list(scope: BookScope): Promise<AccountView[]>;
     types(scope: BookScope): Promise<Map<string, AccountType>>;
     overrides(scope: BookScope): Promise<Map<string, AccountType>>;

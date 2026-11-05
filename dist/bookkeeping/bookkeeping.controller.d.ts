@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeDto, NameGroupDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -43,11 +43,21 @@ export declare class BookkeepingController {
     updateAgency(scope: BookScope, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     removeAgency(scope: BookScope, id: number): Promise<void>;
     names(scope: BookScope): Promise<NamesView>;
+    searchNames(scope: BookScope, q?: string): Promise<{
+        name: string;
+        key: string;
+        description: string;
+    }[]>;
+    setNameGroup(scope: BookScope, dto: SetNameGroupDto): Promise<NamesView>;
+    createNameGroup(scope: BookScope, dto: NameGroupDto): Promise<NamesView>;
+    renameNameGroup(scope: BookScope, id: number, dto: NameGroupDto): Promise<NamesView>;
+    deleteNameGroup(scope: BookScope, id: number): Promise<NamesView>;
     setNameAgencies(scope: BookScope, dto: SetNameAgenciesDto): Promise<NamesView>;
     saveNameRule(scope: BookScope, dto: SaveNameRuleDto): Promise<NamesView>;
     editTransaction(scope: BookScope, id: number, dto: EditTransactionDto): Promise<void>;
     saveSplits(scope: BookScope, id: number, dto: SaveSplitsDto): Promise<void>;
     renameTaxLine(scope: BookScope, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
+    mergeNames(scope: BookScope, dto: MergeDto): Promise<NamesView>;
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;
     products(scope: BookScope): Promise<ProductView[]>;
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;
@@ -57,7 +67,7 @@ export declare class BookkeepingController {
     communicationPage(scope: BookScope, channel: string, before?: string): Promise<CommPage>;
     intake(scope: BookScope): Promise<IntakeView>;
     listAttachments(scope: BookScope): Promise<AttachmentView[]>;
-    attachmentFile(scope: BookScope, id: number, res: Response): Promise<StreamableFile>;
+    attachmentFile(scope: BookScope, id: number, res: Response, original?: string): Promise<StreamableFile>;
     setAttachmentTransaction(scope: BookScope, id: number, dto: SetAttachmentTransactionDto): Promise<AttachmentView>;
     applyAttachmentItems(scope: BookScope, id: number): Promise<AttachmentView>;
     retryAttachment(scope: BookScope, id: number): Promise<AttachmentView>;
@@ -74,6 +84,7 @@ export declare class BookkeepingController {
     accountList(scope: BookScope): Promise<AccountView[]>;
     createAccount(scope: BookScope, dto: CreateAccountDto): Promise<AccountView>;
     setAccountType(scope: BookScope, dto: SetAccountTypeDto): Promise<void>;
+    mergeAccounts(scope: BookScope, dto: MergeDto): Promise<void>;
     resetAccountType(scope: BookScope, dto: ResetAccountTypeDto): Promise<void>;
     setAccountCurrency(scope: BookScope, dto: SetAccountCurrencyDto): Promise<void>;
     resetAccountCurrency(scope: BookScope, dto: ResetAccountTypeDto): Promise<void>;

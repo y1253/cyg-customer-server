@@ -38,6 +38,7 @@ const TITLES: Record<string, string> = {
   contact: 'Preferred contact method',
   ask_ai: '"Ask AI" about one unfiled file',
   files: 'Files the customer just sent',
+  statement: '"Ask AI" about one statement we could not read',
 };
 
 export const BUILTIN_INSTRUCTIONS: BuiltinInstruction[] = [

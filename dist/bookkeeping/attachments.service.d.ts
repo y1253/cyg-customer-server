@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { AttachmentKind, AttachmentStatus } from '@prisma/client';
-import type { Readable } from 'stream';
+import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
@@ -30,6 +30,8 @@ export interface AttachmentView {
     message: string | null;
     folder: string | null;
     messageCount: number;
+    cropped: boolean;
+    siblings: number[];
     transaction: {
         id: number;
         name: string | null;
@@ -60,12 +62,15 @@ export declare class AttachmentsService {
     intake(scope: BookScope): Promise<IntakeView>;
     list(scope: BookScope): Promise<AttachmentView[]>;
     get(scope: BookScope, id: number): Promise<AttachmentView>;
+    private groupOf;
+    reread(scope: BookScope, id: number, note?: string): Promise<AttachmentView>;
+    private readingOf;
     private messageCounts;
     setTransaction(scope: BookScope, id: number, transactionId: number | null): Promise<AttachmentView>;
     applyItems(scope: BookScope, id: number): Promise<AttachmentView>;
     retry(scope: BookScope, id: number): Promise<AttachmentView>;
     remove(scope: BookScope, id: number): Promise<void>;
-    file(scope: BookScope, id: number): Promise<{
+    file(scope: BookScope, id: number, original?: boolean): Promise<{
         stream: Readable;
         filename: string;
         mimeType: string;

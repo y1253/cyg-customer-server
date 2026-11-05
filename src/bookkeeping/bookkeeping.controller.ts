@@ -61,6 +61,9 @@ import {
   RenameTaxLineDto,
   ResetNameRuleDto,
   ResetAccountTypeDto,
+  MergeDto,
+  NameGroupDto,
+  SetNameGroupDto,
   SetAccountCurrencyDto,
   ResetProductRuleDto,
   SaveSplitsDto,
@@ -172,6 +175,50 @@ export class BookkeepingController {
     return this.tax.names(scope);
   }
 
+  /** step9: which names have rows whose bank description contains `q` (the Names-tab search). */
+  @Get('names/search')
+  searchNames(@Book() scope: BookScope, @Query('q') q?: string) {
+    return this.tax.searchDescriptions(scope, String(q ?? '').slice(0, 100));
+  }
+
+  /** step9: put a name in a Names-tab group (Customers, Suppliers, Other, their own). */
+  @Put('names/group')
+  async setNameGroup(
+    @Book() scope: BookScope,
+    @Body() dto: SetNameGroupDto,
+  ): Promise<NamesView> {
+    await this.tax.setNameGroup(scope, dto.name, dto.group ?? null);
+    return this.tax.names(scope);
+  }
+
+  @Post('name-groups')
+  async createNameGroup(
+    @Book() scope: BookScope,
+    @Body() dto: NameGroupDto,
+  ): Promise<NamesView> {
+    await this.tax.createNameGroup(scope, dto.name);
+    return this.tax.names(scope);
+  }
+
+  @Patch('name-groups/:id')
+  async renameNameGroup(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: NameGroupDto,
+  ): Promise<NamesView> {
+    await this.tax.renameNameGroup(scope, id, dto.name);
+    return this.tax.names(scope);
+  }
+
+  @Delete('name-groups/:id')
+  async deleteNameGroup(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<NamesView> {
+    await this.tax.deleteNameGroup(scope, id);
+    return this.tax.names(scope);
+  }
+
   /** Which tax agencies tax one name — the whole set; [] = not taxed (the default). */
   @Put('names/agencies')
   setNameAgencies(
@@ -251,6 +298,20 @@ export class BookkeepingController {
       dto.name?.trim() || null,
     );
     if (!ok) throw new NotFoundException('Tax line not found');
+  }
+
+  /**
+   * step8: merge one name into another (Names tab: drag one onto the other) — its rows take
+   * the target's name, category and tax. Tax agencies cannot be merged.
+   */
+  @Post('names/merge')
+  @HttpCode(200)
+  async mergeNames(
+    @Book() scope: BookScope,
+    @Body() dto: MergeDto,
+  ): Promise<NamesView> {
+    await this.nameMemory.mergeNames(scope, dto.from, dto.into);
+    return this.tax.names(scope);
   }
 
   /** Drop the customer's own rule: their rows go back to the default. */
@@ -355,8 +416,10 @@ export class BookkeepingController {
     @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
     @Res({ passthrough: true }) res: Response,
+    /** step9: `?original=1` = the whole image a cropped cheque was cut out of. */
+    @Query('original') original?: string,
   ): Promise<StreamableFile> {
-    const f = await this.attachments.file(scope, id);
+    const f = await this.attachments.file(scope, id, original === '1');
     res.set({
       'Content-Type': f.mimeType,
       'Content-Length': String(f.size),
@@ -543,6 +606,19 @@ export class BookkeepingController {
     @Body() dto: SetAccountTypeDto,
   ): Promise<void> {
     return this.accounts.setType(scope, dto.account, dto.type);
+  }
+
+  /**
+   * step8: merge one account into another (Chart of accounts / Balance sheet: drag one onto
+   * the other). A bank / card account with a folder only merges with another folder account.
+   */
+  @Post('accounts/merge')
+  @HttpCode(204)
+  mergeAccounts(
+    @Book() scope: BookScope,
+    @Body() dto: MergeDto,
+  ): Promise<void> {
+    return this.accounts.mergeAccounts(scope, dto.from, dto.into);
   }
 
   /** Put a moved account back where the chart (or their own category) puts it. */

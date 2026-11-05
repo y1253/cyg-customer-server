@@ -32,6 +32,7 @@ export interface ConversationView {
     title: string | null;
     peer: string | null;
     attachmentId: number | null;
+    statementId: number | null;
     lastMessageAt: string;
     preview: string | null;
 }
@@ -99,6 +100,13 @@ export declare class AssistantService {
         messages: AssistantMessageView[];
     }>;
     attachmentChat(scope: BookScope, attachmentId: number, text: string): Promise<ChatResult>;
+    statementThread(scope: BookScope, statementId: number): Promise<{
+        conversationId: number | null;
+        messages: AssistantMessageView[];
+    }>;
+    statementChat(scope: BookScope, statementId: number, text: string): Promise<ChatResult>;
+    private ownStatement;
+    private statementContext;
     conversations(scope: BookScope): Promise<ConversationView[]>;
     messages(scope: BookScope, conversationId: number): Promise<AssistantMessageView[]>;
     private ownConversation;

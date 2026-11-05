@@ -143,9 +143,10 @@ export class StatementProcessorService {
       const pdf = await this.storage.getBuffer(row.storageKey);
       // One run does every re-read (at most MAX_REREADS); each round refreshes updatedAt
       // so a long run is not mistaken for a crashed one and claimed again.
-      const rules =
+      const learned =
         (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
         '';
+      const rules = withCustomerNote(learned, row.customerNote);
       const extracted = await this.extractor.extract(pdf, row.filename, {
         rules,
         onRound: async () => {
@@ -175,10 +176,13 @@ export class StatementProcessorService {
       // The customer's own rules first, then the firm memory, then the AI's guess — and
       // the memory learns this statement's new descriptions (`name-memory.util.ts`). Bank
       // fees and interest with no payee are named after the bank.
+      // step9: the statement id lets the customer's one-time edits (EXCEPTION rules) find
+      // their rows again on a re-read.
       const { lines, customAccounts } = await this.names.resolveStatement(
         scope,
         extracted.transactions,
         extracted.bankName,
+        row.id,
       );
       const rows = buildLedgerRows(lines, bank, customAccounts);
       const { verification, checks } = extracted.verification;
@@ -318,4 +322,15 @@ export function needsReviewMessage(
     `We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +
     "Nothing from it is in your ledger. Try again, or contact us and we'll look at it."
   );
+}
+
+/**
+ * step8: what the customer said was wrong with THIS statement (its chat on Bank feeds) goes
+ * to the reader after the learned rules, on every re-read of it.
+ */
+export function withCustomerNote(rules: string, note: string | null): string {
+  const text = note?.trim();
+  if (!text) return rules;
+  // Like every other block appended to the reader's prompt, it starts on a fresh paragraph.
+  return `${rules}\n\nThe customer says about THIS statement (follow it when reading it):\n${text}`;
 }

@@ -24,6 +24,8 @@ const openai_client_1 = require("../ai/openai.client");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const attachments_service_1 = require("../bookkeeping/attachments.service");
 const scope_1 = require("../bookkeeping/scope");
+const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
+const statement_label_1 = require("../bookkeeping/statement-label");
 const prisma_service_1 = require("../prisma/prisma.service");
 const assistant_tools_1 = require("./assistant-tools");
 const assistant_prompt_1 = require("./assistant-prompt");
@@ -262,8 +264,74 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 total: file.total,
                 texted: file.message,
                 attachedTo: file.transaction,
+                source: file.source,
+                cutFromBiggerImage: file.cropped,
+                otherDocumentsOfSameImage: file.siblings,
             },
         });
+    }
+    async statementThread(scope, statementId) {
+        await this.ownStatement(scope, statementId);
+        const c = await this.prisma.aiConversation.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), channel: 'BOT', statementId },
+            orderBy: { id: 'desc' },
+        });
+        return {
+            conversationId: c?.id ?? null,
+            messages: c ? await this.messages(scope, c.id) : [],
+        };
+    }
+    async statementChat(scope, statementId, text) {
+        this.assertEnabled();
+        const s = await this.ownStatement(scope, statementId);
+        const conversation = (await this.prisma.aiConversation.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), channel: 'BOT', statementId },
+            orderBy: { id: 'desc' },
+        })) ??
+            (await this.prisma.aiConversation.create({
+                data: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    channel: 'BOT',
+                    statementId,
+                    title: `About ${(0, statement_label_1.statementLabel)(s)}`.slice(0, 120),
+                },
+            }));
+        return this.respond(conversation, text);
+    }
+    async ownStatement(scope, id) {
+        const s = await this.prisma.bankStatement.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+        });
+        if (!s)
+            throw new common_1.NotFoundException('Statement not found');
+        return s;
+    }
+    async statementContext(conversation) {
+        if (!conversation.statementId)
+            return undefined;
+        const s = await this.prisma.bankStatement.findFirst({
+            where: {
+                id: conversation.statementId,
+                ...(0, scope_1.scopeWhere)((0, scope_1.scopeOf)(conversation)),
+            },
+        });
+        if (!s)
+            return undefined;
+        return {
+            statementId: s.id,
+            label: (0, statement_label_1.statementLabel)(s),
+            filename: s.filename,
+            status: s.status,
+            deleted: !!s.deletedAt,
+            whyNotRead: s.error,
+            failedChecks: (0, bookkeeping_service_1.failedChecks)(s.verificationDetail),
+            account: s.accountNameByCustomer ?? s.accountName,
+            accountKind: s.accountKind,
+            bank: s.bankName,
+            periodStart: s.periodStart?.toISOString().slice(0, 10) ?? null,
+            periodEnd: s.periodEnd?.toISOString().slice(0, 10) ?? null,
+            customerNote: s.customerNote,
+        };
     }
     async conversations(scope) {
         const rows = await this.prisma.aiConversation.findMany({
@@ -280,6 +348,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             title: c.title,
             peer: c.peer,
             attachmentId: c.attachmentId,
+            statementId: c.statementId,
             lastMessageAt: c.lastMessageAt.toISOString(),
             preview: c.messages[0]?.text.slice(0, 120) ?? null,
         }));
@@ -502,6 +571,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             reach: await (0, reach_1.firmReach)(this.prisma, this.config).catch(() => null),
             nameUnknown: await this.nameUnknown(scope.customerId),
             attachment: extra.attachment,
+            statement: await this.statementContext(conversation),
             files: extra.files,
         }, await this.instructions?.assistant());
         const parts = [prompt];

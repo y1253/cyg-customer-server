@@ -38,6 +38,8 @@ exports.AssistantModule = AssistantModule = __decorate([
             assistant_controller_1.AssistantConfigController,
             assistant_controller_1.AssistantController,
             assistant_controller_1.AttachmentChatController,
+            assistant_controller_1.StatementChatController,
+            assistant_controller_1.DictationController,
             assistant_controller_1.ContactReplyController,
             assistant_controller_1.IntakeController,
         ],

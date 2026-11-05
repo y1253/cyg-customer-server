@@ -17,6 +17,9 @@ export declare function siblingOf(sourceRef: string | null | undefined): {
     index: number;
 } | null;
 export declare function kindFor(cls: AttachmentClass, reading: AttachmentReading): AttachmentKind;
+export declare function sniffImageMime(b: Buffer): string | null;
+export declare function customerNoteOf(extracted: unknown): string | null;
+export declare function readerHints(source: string, note: string | null): string;
 export declare function classOf(mimeType: string): AttachmentClass;
 export declare class AttachmentProcessorService {
     private readonly prisma;
@@ -35,6 +38,8 @@ export declare class AttachmentProcessorService {
     private processOne;
     private finish;
     private fileSiblings;
+    private cut;
+    private storeOwnFile;
     family(ids: number[]): Promise<number[]>;
     waitUntilRead(ids: number[], timeoutMs?: number): Promise<boolean>;
     private nameFromCheque;

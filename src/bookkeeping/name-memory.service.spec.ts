@@ -610,3 +610,161 @@ describe('NameMemoryService — books are kept apart (step8)', () => {
     }
   });
 });
+
+describe('NameMemoryService.mergeNames (step8)', () => {
+  const rowsOf = (): Tx[] => [
+    {
+      id: 1,
+      description: 'AMZN MKTP',
+      name: 'Amzn',
+      amount: money(-20),
+      offsetAccount: 'Supplies',
+      debitAccount: 'Supplies',
+      creditAccount: 'BMO 1234',
+      manualEdit: true,
+    },
+    {
+      id: 2,
+      description: 'AMAZON.CA',
+      name: 'Amazon',
+      amount: money(-5),
+      offsetAccount: 'Office Expense',
+      debitAccount: 'Office Expense',
+      creditAccount: 'BMO 1234',
+    },
+  ];
+  const setup = (agencies: Array<{ name: string }> = []) => {
+    const fake = fakePrisma(rowsOf());
+    const prisma = {
+      ...fake.prisma,
+      taxAgency: { findMany: jest.fn().mockResolvedValue(agencies) },
+      ledgerNameAgency: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      ledgerName: {
+        ...fake.prisma.ledgerName,
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    // The target's usual category, as its rows vote for it.
+    prisma.bankTransaction.groupBy.mockResolvedValue([
+      { offsetAccount: 'Office Expense', _count: { _all: 1 } },
+    ]);
+    return { prisma, rows: fake.rows, tax: fakeTax() };
+  };
+
+  it("moves every row (one-time edits too) to the target's name and category, and drops the merged name's tax", async () => {
+    const { prisma, rows, tax } = setup();
+    await service(prisma, tax).mergeNames(BOOK as never, 'Amzn', 'Amazon');
+    expect(state(rows[0])).toEqual([
+      'Amazon',
+      'Office Expense',
+      'Office Expense',
+      'BMO 1234',
+    ]);
+    expect(prisma.ledgerNameAgency.deleteMany).toHaveBeenCalledWith({
+      where: { customerId: 7, companyId: null, name: 'Amzn' },
+    });
+    expect(tax.carryAgencies).not.toHaveBeenCalled();
+    // Rules that named rows "Amzn" now name them "Amazon", and later rows follow.
+    expect(prisma.customerNameRule.updateMany).toHaveBeenCalledWith({
+      where: { customerId: 7, companyId: null, name: 'Amzn' },
+      data: { name: 'Amazon' },
+    });
+    expect(createdRules(prisma)).toContainEqual(
+      expect.objectContaining({
+        matchType: 'NAME',
+        matchKey: 'amzn',
+        name: 'Amazon',
+      }),
+    );
+  });
+
+  it('refuses a tax agency, the nameless rows and the same name', async () => {
+    const { prisma, tax } = setup([{ name: 'Revenu Québec' }]);
+    const s = service(prisma, tax);
+    await expect(
+      s.mergeNames(BOOK as never, 'Revenu Québec', 'Amazon'),
+    ).rejects.toThrow(/tax agency/);
+    await expect(
+      s.mergeNames(BOOK as never, 'Unclarified name', 'Amazon'),
+    ).rejects.toThrow(/Unclarified/);
+    await expect(
+      s.mergeNames(BOOK as never, 'amazon', 'Amazon'),
+    ).rejects.toThrow(/same name/);
+    expect(prisma.bankTransaction.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('NameMemoryService.syncProvenance (step9)', () => {
+  it('turns a one-time rename into an EXCEPTION rule and records the main name', async () => {
+    const fake = fakePrisma([]);
+    const rows = [
+      {
+        id: 1,
+        statementId: 3,
+        externalId: null,
+        postingDate: new Date('2026-10-02T00:00:00Z'),
+        pendingDate: null,
+        amount: money(-12.5),
+        description: 'POS WALMART TORONTO',
+        name: 'Costco',
+        offsetAccount: 'Supplies',
+        manualEdit: true,
+        generalRuleId: null,
+        personalRuleId: null,
+        exceptionRuleId: null,
+        ruleName: 'Walmart',
+      },
+      {
+        id: 2,
+        statementId: 3,
+        externalId: null,
+        postingDate: new Date('2026-10-05T00:00:00Z'),
+        pendingDate: null,
+        amount: money(-8),
+        description: 'POS WALMART TORONTO',
+        name: 'Walmart',
+        offsetAccount: 'Supplies',
+        manualEdit: false,
+        generalRuleId: null,
+        personalRuleId: null,
+        exceptionRuleId: null,
+        ruleName: 'Walmart',
+      },
+    ];
+    const prisma = {
+      ...fake.prisma,
+      bankTransaction: {
+        ...fake.prisma.bankTransaction,
+        findMany: jest.fn().mockResolvedValue(rows),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customerNameRule: {
+        ...fake.prisma.customerNameRule,
+        create: jest.fn().mockResolvedValue({ id: 55 }),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    await service(prisma).syncProvenance(BOOK as never);
+    expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        matchType: 'EXCEPTION',
+        name: 'Costco',
+        category: 'Supplies',
+      }) as unknown,
+      select: { id: true },
+    });
+    // Only the edited row changes: it is an exception from Walmart.
+    expect(prisma.bankTransaction.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.bankTransaction.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [1] } },
+      data: {
+        generalRuleId: null,
+        personalRuleId: null,
+        exceptionRuleId: 55,
+        ruleName: 'Walmart',
+      },
+    });
+  });
+});

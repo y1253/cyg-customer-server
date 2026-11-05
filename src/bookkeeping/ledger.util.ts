@@ -14,6 +14,16 @@ export interface ExtractedTransaction {
   offsetAccount: string;
   /** 0-based page (chunk) the row was read from; set when pages are assembled. */
   page?: number;
+  /** step9: where the name came from (`resolveRow`), set by `resolveStatement`. */
+  provenance?: Provenance;
+}
+
+/** step9: which rules decided a row (`BankTransaction.generalRuleId` …). */
+export interface Provenance {
+  generalRuleId: number | null;
+  personalRuleId: number | null;
+  exceptionRuleId: number | null;
+  ruleName: string | null;
 }
 
 /** One ledger row, ready for `BankTransaction`. */
@@ -29,6 +39,12 @@ export interface LedgerRow {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  generalRuleId?: number | null;
+  personalRuleId?: number | null;
+  exceptionRuleId?: number | null;
+  ruleName?: string | null;
+  /** A one-time edit came back (an EXCEPTION rule): "Always" rules keep off it. */
+  manualEdit?: boolean;
 }
 
 /**
@@ -101,6 +117,10 @@ export function buildLedgerRows(
           : toMoney(line.balanceAfter),
       offsetAccount: offset,
       ...doubleEntry(Number(amount), bankAccount, offset),
+      ...(line.provenance && {
+        ...line.provenance,
+        manualEdit: line.provenance.exceptionRuleId !== null,
+      }),
     });
   }
   return rows;

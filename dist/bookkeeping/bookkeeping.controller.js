@@ -90,6 +90,25 @@ let BookkeepingController = class BookkeepingController {
     names(scope) {
         return this.tax.names(scope);
     }
+    searchNames(scope, q) {
+        return this.tax.searchDescriptions(scope, String(q ?? '').slice(0, 100));
+    }
+    async setNameGroup(scope, dto) {
+        await this.tax.setNameGroup(scope, dto.name, dto.group ?? null);
+        return this.tax.names(scope);
+    }
+    async createNameGroup(scope, dto) {
+        await this.tax.createNameGroup(scope, dto.name);
+        return this.tax.names(scope);
+    }
+    async renameNameGroup(scope, id, dto) {
+        await this.tax.renameNameGroup(scope, id, dto.name);
+        return this.tax.names(scope);
+    }
+    async deleteNameGroup(scope, id) {
+        await this.tax.deleteNameGroup(scope, id);
+        return this.tax.names(scope);
+    }
     setNameAgencies(scope, dto) {
         return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
     }
@@ -119,6 +138,10 @@ let BookkeepingController = class BookkeepingController {
         const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null);
         if (!ok)
             throw new common_1.NotFoundException('Tax line not found');
+    }
+    async mergeNames(scope, dto) {
+        await this.nameMemory.mergeNames(scope, dto.from, dto.into);
+        return this.tax.names(scope);
     }
     async resetNameRule(scope, dto) {
         await this.nameMemory.resetRule(scope, dto);
@@ -160,8 +183,8 @@ let BookkeepingController = class BookkeepingController {
     listAttachments(scope) {
         return this.attachments.list(scope);
     }
-    async attachmentFile(scope, id, res) {
-        const f = await this.attachments.file(scope, id);
+    async attachmentFile(scope, id, res, original) {
+        const f = await this.attachments.file(scope, id, original === '1');
         res.set({
             'Content-Type': f.mimeType,
             'Content-Length': String(f.size),
@@ -250,6 +273,9 @@ let BookkeepingController = class BookkeepingController {
     setAccountType(scope, dto) {
         return this.accounts.setType(scope, dto.account, dto.type);
     }
+    mergeAccounts(scope, dto) {
+        return this.accounts.mergeAccounts(scope, dto.from, dto.into);
+    }
     resetAccountType(scope, dto) {
         return this.accounts.resetType(scope, dto.account);
     }
@@ -321,6 +347,47 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "names", null);
 __decorate([
+    (0, common_1.Get)('names/search'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Query)('q')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", void 0)
+], BookkeepingController.prototype, "searchNames", null);
+__decorate([
+    (0, common_1.Put)('names/group'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.SetNameGroupDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setNameGroup", null);
+__decorate([
+    (0, common_1.Post)('name-groups'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.NameGroupDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "createNameGroup", null);
+__decorate([
+    (0, common_1.Patch)('name-groups/:id'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.NameGroupDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "renameNameGroup", null);
+__decorate([
+    (0, common_1.Delete)('name-groups/:id'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "deleteNameGroup", null);
+__decorate([
     (0, common_1.Put)('names/agencies'),
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
@@ -367,6 +434,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, Number, agency_dto_1.RenameTaxLineDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "renameTaxLine", null);
+__decorate([
+    (0, common_1.Post)('names/merge'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.MergeDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "mergeNames", null);
 __decorate([
     (0, common_1.Delete)('names/rule'),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -443,8 +519,9 @@ __decorate([
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Res)({ passthrough: true })),
+    __param(3, (0, common_1.Query)('original')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Number, Object]),
+    __metadata("design:paramtypes", [Object, Number, Object, String]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "attachmentFile", null);
 __decorate([
@@ -581,6 +658,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, agency_dto_1.SetAccountTypeDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "setAccountType", null);
+__decorate([
+    (0, common_1.Post)('accounts/merge'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.MergeDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "mergeAccounts", null);
 __decorate([
     (0, common_1.Delete)('accounts/type'),
     (0, common_1.HttpCode)(204),

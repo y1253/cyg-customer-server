@@ -8,8 +8,12 @@ import {
   ParseIntPipe,
   Post,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
+  BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
@@ -38,6 +42,13 @@ import {
 } from './intake-agent.service';
 import { RulesService, type CustomerRuleView } from './rules.service';
 import { changeFeed } from './change-feed';
+import { OpenAiClient } from '../ai/openai.client';
+import { withAiUsage } from '../ai/ai-usage.context';
+import { isHallucinatedTranscript } from '../ai/transcript-hygiene.util';
+import {
+  MAX_TRANSCRIBE_BYTES,
+  transcribeFileFilter,
+} from '../ai/transcribe-upload';
 
 /** Is the assistant on? The website hides it when not. */
 @Controller('assistant')
@@ -114,6 +125,49 @@ export class AssistantController {
   }
 }
 
+/**
+ * step8: voice dictation for every chat on the site (the mic button in `ChatPanel`) — the
+ * recording in, its text out; the text goes into the message box, the customer sends it.
+ * The internal app's `POST /ai/transcribe` shape: no steering prompt (a prompt makes
+ * near-silence come back as the prompt), and a "Thank you for watching" artefact is
+ * answered as silence (`isHallucinatedTranscript`). Costed as TRANSCRIBE for this book.
+ */
+@Controller('assistant')
+@UseGuards(CustomerJwtGuard, BookScopeGuard)
+export class DictationController {
+  constructor(
+    private readonly assistant: AssistantService,
+    private readonly openai: OpenAiClient,
+  ) {}
+
+  @Post('transcribe')
+  @HttpCode(200)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_TRANSCRIBE_BYTES, files: 1 },
+      fileFilter: transcribeFileFilter,
+    }),
+  )
+  async transcribe(
+    @Book() scope: BookScope,
+    @UploadedFile()
+    file?: { buffer: Buffer; originalname: string; mimetype: string },
+  ): Promise<{ text: string }> {
+    if (!this.assistant.enabled) {
+      throw new BadRequestException('The assistant is switched off.');
+    }
+    if (!file) throw new BadRequestException('No recording was uploaded.');
+    const text = await withAiUsage({ ...scope, feature: 'TRANSCRIBE' }, () =>
+      this.openai.transcribe(
+        file.buffer,
+        file.originalname || 'dictation.webm',
+        file.mimetype,
+      ),
+    );
+    return { text: isHallucinatedTranscript(text) ? '' : text };
+  }
+}
+
 /** "Ask AI" about one attachment we could not file (step11). */
 @Controller('bookkeeping/attachments')
 @UseGuards(CustomerJwtGuard, BookScopeGuard)
@@ -141,6 +195,27 @@ export class AttachmentChatController {
     @Body() dto: AttachmentChatDto,
   ): Promise<ChatResult> {
     return this.assistant.attachmentChat(scope, id, dto.text);
+  }
+}
+
+/** step8: "Ask AI" about one statement we could not read (Bank feeds). */
+@Controller('bookkeeping/statements')
+@UseGuards(CustomerJwtGuard, BookScopeGuard)
+export class StatementChatController {
+  constructor(private readonly assistant: AssistantService) {}
+
+  @Get(':id/chat')
+  thread(@Book() scope: BookScope, @Param('id', ParseIntPipe) id: number) {
+    return this.assistant.statementThread(scope, id);
+  }
+
+  @Post(':id/chat')
+  chat(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AttachmentChatDto,
+  ): Promise<ChatResult> {
+    return this.assistant.statementChat(scope, id, dto.text);
   }
 }
 

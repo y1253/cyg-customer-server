@@ -19,6 +19,7 @@ const bank_feed_sync_service_1 = require("./bank-feed-sync.service");
 const crypto_util_1 = require("./crypto.util");
 const plaid_client_1 = require("./plaid.client");
 const plaid_webhook_util_1 = require("./plaid-webhook.util");
+const plaid_error_util_1 = require("./plaid-error.util");
 const DAYS_REQUESTED = 730;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -28,6 +29,7 @@ function viewOf(item, syncing) {
         institutionName: item.institutionName,
         status: item.status,
         error: item.error,
+        errorDetail: item.errorDetail,
         historyDone: item.historyDone,
         lastSyncAt: item.lastSyncAt,
         createdAt: item.createdAt,
@@ -171,7 +173,12 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         const item = await this.owned(scope, id);
         await this.prisma.plaidItem.update({
             where: { id: item.id },
-            data: { status: 'ACTIVE', error: null, newAccounts: false },
+            data: {
+                status: 'ACTIVE',
+                error: null,
+                errorDetail: null,
+                newAccounts: false,
+            },
         });
         try {
             const { accounts } = await this.plaid.call('/accounts/get', {
@@ -308,20 +315,19 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         if (code === 'LOGIN_REPAIRED') {
             await this.prisma.plaidItem.update({
                 where: { id: item.id },
-                data: { status: 'ACTIVE', error: null },
+                data: { status: 'ACTIVE', error: null, errorDetail: null },
             });
             this.sync.syncSoon(item.id);
             return;
         }
-        const reason = (fallback) => (body.error?.display_message ||
-            body.error?.error_message ||
-            fallback).slice(0, 2000);
+        const detail = (0, plaid_error_util_1.plaidErrorDetail)(body.error?.error_code ?? code, body.error?.display_message || body.error?.error_message);
         if (code === 'PENDING_EXPIRATION' || code === 'PENDING_DISCONNECT') {
             await this.prisma.plaidItem.update({
                 where: { id: item.id },
                 data: {
                     status: 'LOGIN_REQUIRED',
-                    error: reason('Your bank asks you to sign in again.'),
+                    error: (0, plaid_error_util_1.explainPlaidError)(code),
+                    errorDetail: detail,
                 },
             });
         }
@@ -331,7 +337,8 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
                 where: { id: item.id },
                 data: {
                     status: 'ERROR',
-                    error: 'Access was turned off at your bank. Connect it again to resume.',
+                    error: (0, plaid_error_util_1.explainPlaidError)(code),
+                    errorDetail: detail,
                 },
             });
         }
@@ -341,7 +348,8 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
                 where: { id: item.id },
                 data: {
                     status: login ? 'LOGIN_REQUIRED' : 'ERROR',
-                    error: reason('Your bank connection stopped working.'),
+                    error: (0, plaid_error_util_1.explainPlaidError)(body.error?.error_code),
+                    errorDetail: detail,
                 },
             });
         }

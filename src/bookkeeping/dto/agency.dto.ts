@@ -313,3 +313,41 @@ export class MoveStatementDto {
   @MaxLength(191)
   accountName!: string;
 }
+
+/** step8: merge one payee name, or one account, into another (drag one onto the other). */
+export class MergeDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  from!: string;
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  into!: string;
+}
+
+/** step9: put a payee name in a Names-tab group (null = back to following its category). */
+export class SetNameGroupDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(CUSTOMER|SUPPLIER|OTHER|g\d+)$/, { message: 'Pick a group' })
+  group!: string | null;
+}
+
+/** step9: a customer's own Names-tab group ("Employees"). */
+export class NameGroupDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  name!: string;
+}

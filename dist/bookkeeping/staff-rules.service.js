@@ -28,7 +28,7 @@ let StaffRulesService = class StaffRulesService {
     async view(scope) {
         const [rules, items, rows, categories] = await Promise.all([
             this.prisma.customerNameRule.findMany({
-                where: (0, scope_1.scopeWhere)(scope),
+                where: { ...(0, scope_1.scopeWhere)(scope), matchType: { not: 'EXCEPTION' } },
                 orderBy: { updatedAt: 'desc' },
             }),
             this.prisma.customerItemRule.findMany({

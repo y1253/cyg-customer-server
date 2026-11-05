@@ -7,6 +7,11 @@ import {
 
 /** How a customer rule is matched. */
 export type RuleMatchType = 'NAME' | 'DESCRIPTION' | 'CONTAINS';
+/**
+ * step9: a one-time edit of ONE row — not a match type a customer picks (never in
+ * `RULE_MATCH_TYPES`), written by `editTransaction` ONCE and keyed by `exceptionKey`.
+ */
+export const EXCEPTION = 'EXCEPTION';
 export const RULE_MATCH_TYPES: readonly RuleMatchType[] = [
   'NAME',
   'DESCRIPTION',
@@ -21,8 +26,10 @@ export const containsKey = (text: string): string =>
   text.trim().toLowerCase().slice(0, KEY_MAX);
 
 /** Does this description hold a CONTAINS rule's text (its `matchKey`)? */
-export const descriptionContains = (description: string, key: string): boolean =>
-  !!key && description.toLowerCase().includes(key);
+export const descriptionContains = (
+  description: string,
+  key: string,
+): boolean => !!key && description.toLowerCase().includes(key);
 
 /** The column widths of `DescriptionMemory` / `CustomerNameRule`. */
 const KEY_MAX = 191;
@@ -60,13 +67,17 @@ export const nameKey = (name: string): string => name.trim().toLowerCase();
 
 /** What the firm memory holds for one description key. */
 export interface MemoryEntry {
+  /** step9: the `DescriptionMemory` row — a row it names records it as `generalRuleId`. */
+  id?: number;
   name: string | null;
   category: string;
 }
 
 /** A customer's own rule. A null field leaves that value as it is. */
 export interface NameRule {
-  matchType: RuleMatchType;
+  /** step9: the `CustomerNameRule` row — recorded on the rows it decides. */
+  id?: number;
+  matchType: RuleMatchType | typeof EXCEPTION;
   matchKey: string;
   name: string | null;
   category: string | null;
@@ -91,6 +102,38 @@ export interface ResolveContext {
   nameCategories?: ReadonlyMap<string, string>;
   /** FIRM memory of each name's ONE category (`NameMemory`), by `nameKey`. */
   nameMemory?: ReadonlyMap<string, string>;
+  /** step9: the customer's one-time rules (EXCEPTION) by row fingerprint (`exceptionKey`). */
+  exceptions?: ReadonlyMap<string, NameRule>;
+}
+
+/**
+ * step9: the fingerprint an EXCEPTION rule finds its row by — statement, day, amount and
+ * description. Not the row id: a re-read of the statement creates new rows, and the
+ * customer's one-time edit must come back on the same transaction.
+ */
+export function exceptionKey(row: {
+  statementId: number;
+  /** A bank-feed row is updated in place by its Plaid id: that is its fingerprint. */
+  externalId?: string | null;
+  postingDate: Date | string | null;
+  pendingDate?: Date | string | null;
+  amount: number | { toString(): string };
+  description: string;
+}): string {
+  if (row.externalId) return `p:${row.externalId}`.slice(0, 191);
+  const date = row.postingDate ?? row.pendingDate ?? null;
+  const day =
+    date === null
+      ? '-'
+      : typeof date === 'string'
+        ? date.slice(0, 10)
+        : date.toISOString().slice(0, 10);
+  const cents = Math.round(Number(row.amount.toString()) * 100);
+  const desc = row.description.trim().toLowerCase();
+  // A short, stable hash of the description keeps the key inside VarChar(191).
+  let h = 0;
+  for (let i = 0; i < desc.length; i++) h = (h * 31 + desc.charCodeAt(i)) | 0;
+  return `x:${row.statementId}:${day}:${cents}:${(h >>> 0).toString(36)}:${desc.length}`;
 }
 
 /** Common banks by the name their customers use for them; anything else stays as printed. */
@@ -167,6 +210,14 @@ export interface Resolved {
   followsName: boolean;
   /** …and the name too came from the AI / firm memory, so `NameMemory` may learn it. */
   learnable: boolean;
+  /** step9: the firm `DescriptionMemory` row that named / categorized it (null = none). */
+  generalRuleId: number | null;
+  /** step9: the customer's rule (NAME / DESCRIPTION / CONTAINS) that decided it. */
+  personalRuleId: number | null;
+  /** step9: the customer's one-time rule for this row (EXCEPTION), applied last. */
+  exceptionRuleId: number | null;
+  /** step9: the name the general / personal rules give — before the exception. */
+  ruleName: string | null;
 }
 
 /**
@@ -193,13 +244,21 @@ export interface Resolved {
  * The category always goes through `normalizeAccount`: nothing outside the chart gets in.
  */
 export function resolveRow(
-  row: { description: string; name?: string | null; offsetAccount: string },
+  row: {
+    description: string;
+    name?: string | null;
+    offsetAccount: string;
+    /** step9: the row's `exceptionKey`, when it may carry a one-time edit. */
+    exceptionKey?: string;
+  },
   ctx: ResolveContext,
 ): Resolved {
   let name = cleanName(row.name);
   let category = normalizeAccount(row.offsetAccount, ctx.customAccounts);
   let source: NameSource = 'ai';
   const key = descriptionKey(row.description);
+  let generalRuleId: number | null = null;
+  let personalRuleId: number | null = null;
 
   const remembered = key ? ctx.memory.get(key) : undefined;
   if (remembered) {
@@ -207,7 +266,10 @@ export function resolveRow(
     const memCategory = normalizeAccount(remembered.category);
     if (memName) name = memName;
     if (memCategory !== UNCATEGORIZED) category = memCategory;
-    if (memName || memCategory !== UNCATEGORIZED) source = 'memory';
+    if (memName || memCategory !== UNCATEGORIZED) {
+      source = 'memory';
+      generalRuleId = remembered.id ?? null;
+    }
   }
 
   if (!name && isBankCharge(category)) name = bankPayeeName(ctx.bankName);
@@ -220,6 +282,10 @@ export function resolveRow(
   const apply = (rule: NameRule | undefined) => {
     if (!rule) return;
     const ruleName = cleanName(rule.name);
+    // The rule that named the row is "its" rule; one that only set the category counts
+    // while no rule has named it.
+    if (rule.id !== undefined && (ruleName || personalRuleId === null))
+      personalRuleId = rule.id;
     if (ruleName) {
       name = ruleName;
       customerName = true;
@@ -252,12 +318,30 @@ export function resolveRow(
     }
   }
 
+  // step9: the customer's one-time edit of THIS row wins over every rule — and the name the
+  // rules gave is kept, so the row knows what it is an exception from.
+  const ruleName = name;
+  const exception = row.exceptionKey
+    ? ctx.exceptions?.get(row.exceptionKey)
+    : undefined;
+  if (exception) {
+    const exName = cleanName(exception.name);
+    if (exName) name = exName;
+    if (exception.category)
+      category = normalizeAccount(exception.category, ctx.customAccounts);
+    source = 'customer';
+  }
+
   return {
     name,
     category,
     source,
-    followsName,
-    learnable: followsName && !customerName,
+    followsName: followsName && !exception,
+    learnable: followsName && !customerName && !exception,
+    generalRuleId,
+    personalRuleId,
+    exceptionRuleId: exception?.id ?? null,
+    ruleName,
   };
 }
 
@@ -405,16 +489,19 @@ export function indexRules(rules: readonly NameRule[]): {
   nameRules: Map<string, NameRule>;
   containsRules: NameRule[];
   nameCategories: Map<string, string>;
+  exceptions: Map<string, NameRule>;
 } {
   const descRules = new Map<string, NameRule>();
   const nameRules = new Map<string, NameRule>();
   const containsRules: NameRule[] = [];
   const nameCategories = new Map<string, string>();
+  const exceptions = new Map<string, NameRule>();
   for (const r of rules) {
     if (r.matchType === 'DESCRIPTION') descRules.set(r.matchKey, r);
     else if (r.matchType === 'CONTAINS') {
       if (r.matchKey) containsRules.push(r);
-    } else nameRules.set(r.matchKey, r);
+    } else if (r.matchType === EXCEPTION) exceptions.set(r.matchKey, r);
+    else nameRules.set(r.matchKey, r);
   }
   containsRules.sort(
     (a, b) =>
@@ -432,5 +519,5 @@ export function indexRules(rules: readonly NameRule[]): {
     if (r.category && !cleanName(r.name))
       nameCategories.set(r.matchKey, r.category);
   }
-  return { descRules, nameRules, containsRules, nameCategories };
+  return { descRules, nameRules, containsRules, nameCategories, exceptions };
 }

@@ -7,6 +7,13 @@ export interface ExtractedTransaction {
     balanceAfter: number | null;
     offsetAccount: string;
     page?: number;
+    provenance?: Provenance;
+}
+export interface Provenance {
+    generalRuleId: number | null;
+    personalRuleId: number | null;
+    exceptionRuleId: number | null;
+    ruleName: string | null;
 }
 export interface LedgerRow {
     position: number;
@@ -19,6 +26,11 @@ export interface LedgerRow {
     offsetAccount: string;
     debitAccount: string;
     creditAccount: string;
+    generalRuleId?: number | null;
+    personalRuleId?: number | null;
+    exceptionRuleId?: number | null;
+    ruleName?: string | null;
+    manualEdit?: boolean;
 }
 export declare function doubleEntry(amount: number, bankAccount: string, offsetAccount: string): {
     debitAccount: string;

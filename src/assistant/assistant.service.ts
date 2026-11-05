@@ -17,6 +17,8 @@ import {
   type AttachmentView,
 } from '../bookkeeping/attachments.service';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
+import { failedChecks } from '../bookkeeping/bookkeeping.service';
+import { statementLabel } from '../bookkeeping/statement-label';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AssistantTools,
@@ -62,6 +64,8 @@ export interface ConversationView {
   title: string | null;
   peer: string | null;
   attachmentId: number | null;
+  /** step8: the statement this thread is about (Bank feeds → Ask AI). */
+  statementId: number | null;
   lastMessageAt: string;
   preview: string | null;
 }
@@ -389,8 +393,95 @@ export class AssistantService {
         total: file.total,
         texted: file.message,
         attachedTo: file.transaction,
+        // step9: where it came from, and the other documents read off the same image.
+        source: file.source,
+        cutFromBiggerImage: file.cropped,
+        otherDocumentsOfSameImage: file.siblings,
       },
     });
+  }
+
+  /** step8: the "Ask AI" thread of one statement we could not read ({ null, [] } before the first message). */
+  async statementThread(
+    scope: BookScope,
+    statementId: number,
+  ): Promise<{
+    conversationId: number | null;
+    messages: AssistantMessageView[];
+  }> {
+    await this.ownStatement(scope, statementId); // 404 when not this book's
+    const c = await this.prisma.aiConversation.findFirst({
+      where: { ...scopeWhere(scope), channel: 'BOT', statementId },
+      orderBy: { id: 'desc' },
+    });
+    return {
+      conversationId: c?.id ?? null,
+      messages: c ? await this.messages(scope, c.id) : [],
+    };
+  }
+
+  /**
+   * step8: the customer says what is wrong with a statement we could not read. One BOT
+   * conversation per statement; the statement itself reaches the prompt in `promptFor`.
+   */
+  async statementChat(
+    scope: BookScope,
+    statementId: number,
+    text: string,
+  ): Promise<ChatResult> {
+    this.assertEnabled();
+    const s = await this.ownStatement(scope, statementId);
+    const conversation =
+      (await this.prisma.aiConversation.findFirst({
+        where: { ...scopeWhere(scope), channel: 'BOT', statementId },
+        orderBy: { id: 'desc' },
+      })) ??
+      (await this.prisma.aiConversation.create({
+        data: {
+          ...scopeWhere(scope),
+          channel: 'BOT',
+          statementId,
+          title: `About ${statementLabel(s)}`.slice(0, 120),
+        },
+      }));
+    return this.respond(conversation, text);
+  }
+
+  private async ownStatement(scope: BookScope, id: number) {
+    const s = await this.prisma.bankStatement.findFirst({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+    });
+    if (!s) throw new NotFoundException('Statement not found');
+    return s;
+  }
+
+  /** What the "Ask AI" chat of a statement knows about it — read fresh for every answer. */
+  private async statementContext(
+    conversation: AiConversation,
+  ): Promise<unknown> {
+    if (!conversation.statementId) return undefined;
+    const s = await this.prisma.bankStatement.findFirst({
+      where: {
+        id: conversation.statementId,
+        ...scopeWhere(scopeOf(conversation)),
+      },
+    });
+    if (!s) return undefined;
+    return {
+      statementId: s.id,
+      label: statementLabel(s),
+      filename: s.filename,
+      status: s.status,
+      deleted: !!s.deletedAt,
+      whyNotRead: s.error,
+      failedChecks: failedChecks(s.verificationDetail),
+      account: s.accountNameByCustomer ?? s.accountName,
+      accountKind: s.accountKind,
+      bank: s.bankName,
+      periodStart: s.periodStart?.toISOString().slice(0, 10) ?? null,
+      periodEnd: s.periodEnd?.toISOString().slice(0, 10) ?? null,
+      customerNote: s.customerNote,
+    };
   }
 
   async conversations(scope: BookScope): Promise<ConversationView[]> {
@@ -408,6 +499,7 @@ export class AssistantService {
       title: c.title,
       peer: c.peer,
       attachmentId: c.attachmentId,
+      statementId: c.statementId,
       lastMessageAt: c.lastMessageAt.toISOString(),
       preview: c.messages[0]?.text.slice(0, 120) ?? null,
     }));
@@ -759,6 +851,7 @@ export class AssistantService {
         reach: await firmReach(this.prisma, this.config).catch(() => null),
         nameUnknown: await this.nameUnknown(scope.customerId),
         attachment: extra.attachment,
+        statement: await this.statementContext(conversation),
         files: extra.files,
       },
       // step12: the blocks as the strong AI / staff last left them (`AiInstruction`).

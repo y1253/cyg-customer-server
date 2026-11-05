@@ -21,6 +21,7 @@ import {
   verifyPlaidWebhook,
   type PlaidJwk,
 } from './plaid-webhook.util';
+import { explainPlaidError, plaidErrorDetail } from './plaid-error.util';
 
 /** Plaid keeps up to 2 years of history for Transactions; ask for all of it. */
 const DAYS_REQUESTED = 730;
@@ -31,8 +32,13 @@ export interface BankConnectionView {
   id: number;
   institutionName: string | null;
   status: ItemStatus;
-  /** Plaid's reason for LOGIN_REQUIRED / ERROR. */
+  /**
+   * LOGIN_REQUIRED / ERROR: what happened and what to do, in plain words (step8,
+   * `explainPlaidError`). ACTIVE: the "waiting on the bank" note, or null.
+   */
   error: string | null;
+  /** step8: Plaid's raw `CODE: message` behind `error` — the "Details". */
+  errorDetail: string | null;
   /** All past transactions (up to 2 years) have arrived. */
   historyDone: boolean;
   lastSyncAt: Date | null;
@@ -74,6 +80,7 @@ function viewOf(
     institutionName: item.institutionName,
     status: item.status as ItemStatus,
     error: item.error,
+    errorDetail: item.errorDetail,
     historyDone: item.historyDone,
     lastSyncAt: item.lastSyncAt,
     createdAt: item.createdAt,
@@ -278,7 +285,12 @@ export class BankFeedsService {
     const item = await this.owned(scope, id);
     await this.prisma.plaidItem.update({
       where: { id: item.id },
-      data: { status: 'ACTIVE', error: null, newAccounts: false },
+      data: {
+        status: 'ACTIVE',
+        error: null,
+        errorDetail: null,
+        newAccounts: false,
+      },
     });
     try {
       const { accounts } = await this.plaid.call<{
@@ -462,23 +474,24 @@ export class BankFeedsService {
     if (code === 'LOGIN_REPAIRED') {
       await this.prisma.plaidItem.update({
         where: { id: item.id },
-        data: { status: 'ACTIVE', error: null },
+        data: { status: 'ACTIVE', error: null, errorDetail: null },
       });
       this.sync.syncSoon(item.id);
       return;
     }
-    const reason = (fallback: string) =>
-      (
-        body.error?.display_message ||
-        body.error?.error_message ||
-        fallback
-      ).slice(0, 2000);
+    // step8: `error` = what happened and what to do, in plain words; Plaid's own text is
+    // kept as `errorDetail` ("Details" on the Bank feeds tab).
+    const detail = plaidErrorDetail(
+      body.error?.error_code ?? code,
+      body.error?.display_message || body.error?.error_message,
+    );
     if (code === 'PENDING_EXPIRATION' || code === 'PENDING_DISCONNECT') {
       await this.prisma.plaidItem.update({
         where: { id: item.id },
         data: {
           status: 'LOGIN_REQUIRED',
-          error: reason('Your bank asks you to sign in again.'),
+          error: explainPlaidError(code),
+          errorDetail: detail,
         },
       });
     } else if (
@@ -489,8 +502,8 @@ export class BankFeedsService {
         where: { id: item.id },
         data: {
           status: 'ERROR',
-          error:
-            'Access was turned off at your bank. Connect it again to resume.',
+          error: explainPlaidError(code),
+          errorDetail: detail,
         },
       });
     } else if (code === 'ERROR') {
@@ -499,7 +512,8 @@ export class BankFeedsService {
         where: { id: item.id },
         data: {
           status: login ? 'LOGIN_REQUIRED' : 'ERROR',
-          error: reason('Your bank connection stopped working.'),
+          error: explainPlaidError(body.error?.error_code),
+          errorDetail: detail,
         },
       });
     }

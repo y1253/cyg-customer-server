@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = void 0;
+exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = exports.EXCEPTION = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
+exports.exceptionKey = exceptionKey;
 exports.bankPayeeName = bankPayeeName;
 exports.isOwnersLoanMove = isOwnersLoanMove;
 exports.resolveRow = resolveRow;
@@ -12,6 +13,7 @@ exports.memoryWrites = memoryWrites;
 exports.containsRuleFor = containsRuleFor;
 exports.indexRules = indexRules;
 const chart_of_accounts_1 = require("./chart-of-accounts");
+exports.EXCEPTION = 'EXCEPTION';
 exports.RULE_MATCH_TYPES = [
     'NAME',
     'DESCRIPTION',
@@ -41,6 +43,22 @@ function cleanName(name) {
 }
 const nameKey = (name) => name.trim().toLowerCase();
 exports.nameKey = nameKey;
+function exceptionKey(row) {
+    if (row.externalId)
+        return `p:${row.externalId}`.slice(0, 191);
+    const date = row.postingDate ?? row.pendingDate ?? null;
+    const day = date === null
+        ? '-'
+        : typeof date === 'string'
+            ? date.slice(0, 10)
+            : date.toISOString().slice(0, 10);
+    const cents = Math.round(Number(row.amount.toString()) * 100);
+    const desc = row.description.trim().toLowerCase();
+    let h = 0;
+    for (let i = 0; i < desc.length; i++)
+        h = (h * 31 + desc.charCodeAt(i)) | 0;
+    return `x:${row.statementId}:${day}:${cents}:${(h >>> 0).toString(36)}:${desc.length}`;
+}
 const BANK_NAMES = [
     [/^td\b|toronto[- ]dominion/i, 'TD Bank'],
     [/^bmo\b|bank of montreal|banque de montr[ée]al/i, 'BMO'],
@@ -84,6 +102,8 @@ function resolveRow(row, ctx) {
     let category = (0, chart_of_accounts_1.normalizeAccount)(row.offsetAccount, ctx.customAccounts);
     let source = 'ai';
     const key = descriptionKey(row.description);
+    let generalRuleId = null;
+    let personalRuleId = null;
     const remembered = key ? ctx.memory.get(key) : undefined;
     if (remembered) {
         const memName = cleanName(remembered.name);
@@ -92,8 +112,10 @@ function resolveRow(row, ctx) {
             name = memName;
         if (memCategory !== chart_of_accounts_1.UNCATEGORIZED)
             category = memCategory;
-        if (memName || memCategory !== chart_of_accounts_1.UNCATEGORIZED)
+        if (memName || memCategory !== chart_of_accounts_1.UNCATEGORIZED) {
             source = 'memory';
+            generalRuleId = remembered.id ?? null;
+        }
     }
     if (!name && (0, exports.isBankCharge)(category))
         name = bankPayeeName(ctx.bankName);
@@ -107,6 +129,8 @@ function resolveRow(row, ctx) {
         if (!rule)
             return;
         const ruleName = cleanName(rule.name);
+        if (rule.id !== undefined && (ruleName || personalRuleId === null))
+            personalRuleId = rule.id;
         if (ruleName) {
             name = ruleName;
             customerName = true;
@@ -139,12 +163,28 @@ function resolveRow(row, ctx) {
                 source = 'memory';
         }
     }
+    const ruleName = name;
+    const exception = row.exceptionKey
+        ? ctx.exceptions?.get(row.exceptionKey)
+        : undefined;
+    if (exception) {
+        const exName = cleanName(exception.name);
+        if (exName)
+            name = exName;
+        if (exception.category)
+            category = (0, chart_of_accounts_1.normalizeAccount)(exception.category, ctx.customAccounts);
+        source = 'customer';
+    }
     return {
         name,
         category,
         source,
-        followsName,
-        learnable: followsName && !customerName,
+        followsName: followsName && !exception,
+        learnable: followsName && !customerName && !exception,
+        generalRuleId,
+        personalRuleId,
+        exceptionRuleId: exception?.id ?? null,
+        ruleName,
     };
 }
 function resolveRows(rows, ctx) {
@@ -234,6 +274,7 @@ function indexRules(rules) {
     const nameRules = new Map();
     const containsRules = [];
     const nameCategories = new Map();
+    const exceptions = new Map();
     for (const r of rules) {
         if (r.matchType === 'DESCRIPTION')
             descRules.set(r.matchKey, r);
@@ -241,6 +282,8 @@ function indexRules(rules) {
             if (r.matchKey)
                 containsRules.push(r);
         }
+        else if (r.matchType === exports.EXCEPTION)
+            exceptions.set(r.matchKey, r);
         else
             nameRules.set(r.matchKey, r);
     }
@@ -257,6 +300,6 @@ function indexRules(rules) {
         if (r.category && !cleanName(r.name))
             nameCategories.set(r.matchKey, r.category);
     }
-    return { descRules, nameRules, containsRules, nameCategories };
+    return { descRules, nameRules, containsRules, nameCategories, exceptions };
 }
 //# sourceMappingURL=name-memory.util.js.map

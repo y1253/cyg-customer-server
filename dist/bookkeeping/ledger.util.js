@@ -45,6 +45,10 @@ function buildLedgerRows(lines, bankAccount, customAccounts) {
                 : toMoney(line.balanceAfter),
             offsetAccount: offset,
             ...doubleEntry(Number(amount), bankAccount, offset),
+            ...(line.provenance && {
+                ...line.provenance,
+                manualEdit: line.provenance.exceptionRuleId !== null,
+            }),
         });
     }
     return rows;

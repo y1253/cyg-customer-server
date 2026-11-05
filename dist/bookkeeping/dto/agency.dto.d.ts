@@ -78,3 +78,14 @@ export declare class SetAttachmentTransactionDto {
 export declare class MoveStatementDto {
     accountName: string;
 }
+export declare class MergeDto {
+    from: string;
+    into: string;
+}
+export declare class SetNameGroupDto {
+    name: string;
+    group: string | null;
+}
+export declare class NameGroupDto {
+    name: string;
+}

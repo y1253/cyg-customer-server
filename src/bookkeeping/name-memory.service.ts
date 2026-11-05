@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  type OnApplicationBootstrap,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +15,7 @@ import {
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
 import { TaxService } from './tax.service';
+import { UNCLARIFIED_NAME } from './reports.util';
 import {
   bankPayeeName,
   cleanName,
@@ -23,6 +25,8 @@ import {
   isBankCharge,
   isOwnersLoanMove,
   descriptionKey,
+  EXCEPTION,
+  exceptionKey,
   indexRules,
   memoryWrites,
   nameKey,
@@ -56,8 +60,33 @@ export type EditScope = 'ALWAYS' | 'ONCE';
  * The rules themselves are pure (`name-memory.util.ts`); this is only the IO around them.
  */
 @Injectable()
-export class NameMemoryService {
+export class NameMemoryService implements OnApplicationBootstrap {
   private readonly logger = new Logger(NameMemoryService.name);
+
+  /**
+   * step9 backfill, with no script (the host has no ts-node): a minute after start, every
+   * book with named rows that do not know where their name came from yet (`ruleName`
+   * null) gets `syncProvenance` — once; afterwards every edit keeps it up to date.
+   */
+  onApplicationBootstrap(): void {
+    setTimeout(() => void this.backfillProvenance(), 60_000).unref();
+  }
+
+  async backfillProvenance(): Promise<number> {
+    try {
+      const books = await this.prisma.bankTransaction.groupBy({
+        by: ['customerId', 'bookId', 'companyId'],
+        where: { ruleName: null, name: { not: null }, splitOfId: null },
+      });
+      for (const b of books) await this.syncProvenance(b);
+      if (books.length)
+        this.logger.log(`provenance backfilled for ${books.length} book(s)`);
+      return books.length;
+    } catch (err) {
+      this.logger.warn(`provenance backfill failed: ${String(err)}`);
+      return 0;
+    }
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -79,7 +108,12 @@ export class NameMemoryService {
       keys.length
         ? this.prisma.descriptionMemory.findMany({
             where: { descriptionKey: { in: keys } },
-            select: { descriptionKey: true, name: true, category: true },
+            select: {
+              id: true,
+              descriptionKey: true,
+              name: true,
+              category: true,
+            },
           })
         : Promise.resolve([]),
       this.rulesOf(scope),
@@ -88,7 +122,7 @@ export class NameMemoryService {
     const memory = new Map<string, MemoryEntry>(
       memoryRows.map((m) => [
         m.descriptionKey,
-        { name: m.name, category: m.category },
+        { id: m.id, name: m.name, category: m.category },
       ]),
     );
     const nameKeys = new Set<string>();
@@ -118,6 +152,7 @@ export class NameMemoryService {
     const rows = await this.prisma.customerNameRule.findMany({
       where: scopeWhere(scope),
       select: {
+        id: true,
         matchType: true,
         matchKey: true,
         name: true,
@@ -128,7 +163,9 @@ export class NameMemoryService {
     return rows.map((r) => ({
       ...r,
       matchType:
-        r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+        r.matchType === 'DESCRIPTION' ||
+        r.matchType === 'CONTAINS' ||
+        r.matchType === EXCEPTION
           ? r.matchType
           : 'NAME',
     }));
@@ -154,6 +191,8 @@ export class NameMemoryService {
     scope: BookScope,
     rows: ExtractedTransaction[],
     bankName: string | null = null,
+    /** step9: the statement being (re-)read — its rows' one-time edits come back. */
+    statementId?: number,
   ): Promise<{ lines: ExtractedTransaction[]; customAccounts: Set<string> }> {
     try {
       const ctx = {
@@ -165,11 +204,30 @@ export class NameMemoryService {
         bankName,
       };
       // One category per name: a name new to the memory takes its first category here.
-      const { resolved } = resolveRows(rows, ctx);
+      const keyed = rows.map((r) => ({
+        ...r,
+        exceptionKey:
+          statementId === undefined
+            ? undefined
+            : exceptionKey({
+                statementId,
+                postingDate: r.postingDate,
+                pendingDate: r.pendingDate,
+                amount: r.amount,
+                description: r.description,
+              }),
+      }));
+      const { resolved } = resolveRows(keyed, ctx);
       const lines = rows.map((r, i) => ({
         ...r,
         name: resolved[i].name,
         offsetAccount: resolved[i].category,
+        provenance: {
+          generalRuleId: resolved[i].generalRuleId,
+          personalRuleId: resolved[i].personalRuleId,
+          exceptionRuleId: resolved[i].exceptionRuleId,
+          ruleName: resolved[i].ruleName,
+        },
       }));
       await this.learn(rows, ctx.memory);
       await this.learnNames(resolved, ctx.nameMemory ?? new Map());
@@ -191,6 +249,221 @@ export class NameMemoryService {
       });
       return { lines, customAccounts: new Set() };
     }
+  }
+
+  // ---- step9: the public edits — each one also brings the rows' provenance up to date ----
+
+  /** See `applyRule`. */
+  async saveRule(
+    scope: BookScope,
+    input: Parameters<NameMemoryService['applyRule']>[1],
+  ): Promise<void> {
+    await this.applyRule(scope, input);
+    await this.syncProvenance(scope);
+  }
+
+  /** See `applyEdit`. A ONE-TIME edit becomes an EXCEPTION rule (`syncProvenance`). */
+  async editTransaction(
+    scope: BookScope,
+    id: number,
+    input: Parameters<NameMemoryService['applyEdit']>[2],
+  ): Promise<void> {
+    await this.applyEdit(scope, id, input);
+    await this.syncProvenance(scope);
+  }
+
+  /** See `applyMerge`. */
+  async mergeNames(
+    scope: BookScope,
+    from: string,
+    into: string,
+  ): Promise<void> {
+    await this.applyMerge(scope, from, into);
+    await this.syncProvenance(scope);
+  }
+
+  /** See `applyReset`. */
+  async resetRule(
+    scope: BookScope,
+    input: Parameters<NameMemoryService['applyReset']>[1],
+  ): Promise<void> {
+    await this.applyReset(scope, input);
+    await this.syncProvenance(scope);
+  }
+
+  /**
+   * step9: record on every row of the book WHERE its name and category come from —
+   * `generalRuleId` (firm memory), `personalRuleId` (the customer's rule), `ruleName`
+   * (the name those give) — by replaying `resolveRow` on the row as stored. Names and
+   * categories are never changed here.
+   *
+   * A row the customer edited ONE time (`manualEdit`) whose name or category differs from
+   * what the rules give is an EXCEPTION: it gets (or keeps, updated to the row) an
+   * EXCEPTION rule keyed by `exceptionKey`, which a re-read of its statement applies again.
+   * A one-time edit that matches the rules again is no exception, and its rule goes.
+   * Never throws: provenance is a label, an edit must not fail on it.
+   */
+  async syncProvenance(scope: BookScope): Promise<void> {
+    try {
+      const rows = await this.prisma.bankTransaction.findMany({
+        where: { ...scopeWhere(scope), splitOfId: null },
+        select: {
+          id: true,
+          statementId: true,
+          externalId: true,
+          postingDate: true,
+          pendingDate: true,
+          amount: true,
+          description: true,
+          name: true,
+          offsetAccount: true,
+          manualEdit: true,
+          generalRuleId: true,
+          personalRuleId: true,
+          exceptionRuleId: true,
+          ruleName: true,
+        },
+      });
+      if (!rows.length) return;
+      const ctx = await this.contextFor(
+        scope,
+        rows.map((r) => r.description),
+        rows.map((r) => r.name),
+      );
+      const exceptions = ctx.exceptions ?? new Map<string, NameRule>();
+      const keep = new Set<number>();
+      const writes = new Map<string, number[]>();
+      for (const r of rows) {
+        const key = exceptionKey(r);
+        // What the rules give the row, without its one-time edit — replayed from the name
+        // the rules gave it before that edit (`ruleName`), else the name it has.
+        const ruled = resolveRow(
+          {
+            description: r.description,
+            name: r.manualEdit ? (r.ruleName ?? r.name) : r.name,
+            offsetAccount: r.offsetAccount,
+          },
+          { ...ctx, exceptions: undefined },
+        );
+        const differs =
+          nameKey(ruled.name ?? '') !== nameKey(r.name ?? '') ||
+          ruled.category !== r.offsetAccount;
+        let exceptionRuleId: number | null = null;
+        const existing = exceptions.get(key);
+        if (r.manualEdit && differs) {
+          exceptionRuleId = await this.saveException(scope, key, existing, r);
+          keep.add(exceptionRuleId);
+        }
+        const next = {
+          generalRuleId: ruled.generalRuleId,
+          personalRuleId: ruled.personalRuleId,
+          exceptionRuleId,
+          ruleName: ruled.name,
+        };
+        if (
+          next.generalRuleId === r.generalRuleId &&
+          next.personalRuleId === r.personalRuleId &&
+          next.exceptionRuleId === r.exceptionRuleId &&
+          next.ruleName === r.ruleName
+        )
+          continue;
+        const k = JSON.stringify(next);
+        writes.set(k, [...(writes.get(k) ?? []), r.id]);
+      }
+      for (const [k, ids] of writes) {
+        const data = JSON.parse(k) as Record<string, unknown>;
+        for (let i = 0; i < ids.length; i += 1000) {
+          await this.prisma.bankTransaction.updateMany({
+            where: { id: { in: ids.slice(i, i + 1000) } },
+            data,
+          });
+        }
+      }
+      // Exception rules whose row is no exception any more (or is gone) go. A rule of a
+      // statement that is being re-read right now is kept while it has no rows yet.
+      const live = new Set(rows.map((r) => exceptionKey(r)));
+      const stale = [...exceptions.entries()]
+        .filter(
+          ([key, rule]) =>
+            live.has(key) && rule.id !== undefined && !keep.has(rule.id),
+        )
+        .map(([, rule]) => rule.id!);
+      if (stale.length) {
+        await this.prisma.customerNameRule.deleteMany({
+          where: {
+            id: { in: stale },
+            ...scopeWhere(scope),
+            matchType: EXCEPTION,
+          },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `provenance of ${bookLabel(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** The EXCEPTION rule of one row, holding the row's own name and category. */
+  private async saveException(
+    scope: BookScope,
+    key: string,
+    existing: NameRule | undefined,
+    row: { name: string | null; offsetAccount: string },
+  ): Promise<number> {
+    if (existing?.id !== undefined) {
+      if (
+        existing.name !== row.name ||
+        existing.category !== row.offsetAccount
+      ) {
+        await this.prisma.customerNameRule.update({
+          where: { id: existing.id },
+          data: { name: row.name, category: row.offsetAccount },
+        });
+      }
+      return existing.id;
+    }
+    const created = await this.prisma.customerNameRule.create({
+      data: {
+        ...scopeWhere(scope),
+        matchType: EXCEPTION,
+        matchKey: key,
+        name: row.name,
+        category: row.offsetAccount,
+      },
+      select: { id: true },
+    });
+    return created.id;
+  }
+
+  /**
+   * step9: this row follows the rules again (an "always" edit of it): it is no one-time edit
+   * and no exception any more.
+   */
+  private async clearException(scope: BookScope, id: number): Promise<void> {
+    const row = await this.prisma.bankTransaction.findFirst({
+      where: { id, ...scopeWhere(scope) },
+      select: {
+        statementId: true,
+        externalId: true,
+        postingDate: true,
+        pendingDate: true,
+        amount: true,
+        description: true,
+      },
+    });
+    if (!row) return;
+    await this.prisma.customerNameRule.deleteMany({
+      where: {
+        ...scopeWhere(scope),
+        matchType: EXCEPTION,
+        matchKey: exceptionKey(row),
+      },
+    });
+    await this.prisma.bankTransaction.update({
+      where: { id },
+      data: { manualEdit: false, exceptionRuleId: null },
+    });
   }
 
   /** Store the AI's answers the memory lacks; count the ones it reused. */
@@ -270,7 +543,7 @@ export class NameMemoryService {
    * Editing a payee that an earlier rule already renamed updates THAT rule (the caller
    * passes the `ruleKey` the Names tab was given), so edits never chain.
    */
-  async saveRule(
+  private async applyRule(
     scope: BookScope,
     input: {
       matchType: RuleMatchType;
@@ -481,7 +754,7 @@ export class NameMemoryService {
    * no name sets its description's category instead.
    * A hand-made split belongs to its one transaction: only it changes.
    */
-  async editTransaction(
+  private async applyEdit(
     scope: BookScope,
     id: number,
     input: { name: string | null; category: string | null; scope: EditScope },
@@ -530,14 +803,16 @@ export class NameMemoryService {
           'This transaction has no description to remember. Apply the name to this row only.',
         );
       }
-      // The clicked row too, even when an earlier one-time edit flagged it.
+      // The clicked row too, even when an earlier one-time edit flagged it — and it is no
+      // exception any more (step9): the rule for every row is now its rule.
       if (row.manualEdit) {
         await this.writeRows(scope, [matched], (r) => ({
           name,
           category: r.offsetAccount,
         }));
+        await this.clearException(scope, row.id);
       }
-      await this.saveRule(scope, {
+      await this.applyRule(scope, {
         matchType: 'DESCRIPTION',
         matchKey: key,
         name,
@@ -552,7 +827,7 @@ export class NameMemoryService {
     if (current) {
       await this.setNameCategory(scope, current, category);
     } else if (key) {
-      await this.saveRule(scope, {
+      await this.applyRule(scope, {
         matchType: 'DESCRIPTION',
         matchKey: key,
         name: null,
@@ -656,11 +931,87 @@ export class NameMemoryService {
   }
 
   /**
+   * step8: merge payee `from` into `into` (the Names tab: drag one name onto another).
+   * Every row of `from` — one-time edits included — takes `into`'s name and category; its
+   * tax is `into`'s alone (`from`'s agencies are dropped, not carried); the rules that gave
+   * rows the name `from` now give `into`; and a NAME rule `from → into` makes later rows
+   * follow. Tax agencies and "Unclarified name" are not payees, so they never merge.
+   */
+  private async applyMerge(
+    scope: BookScope,
+    from: string,
+    into: string,
+  ): Promise<void> {
+    const source = cleanName(from);
+    const target = cleanName(into);
+    if (!source || !target) throw new BadRequestException('Pick two names.');
+    if (nameKey(source) === nameKey(target))
+      throw new BadRequestException('That is the same name.');
+    if ([source, target].some((n) => nameKey(n) === nameKey(UNCLARIFIED_NAME)))
+      throw new BadRequestException(
+        '"Unclarified name" cannot be merged — give its rows a name instead.',
+      );
+    const agencies = await this.prisma.taxAgency.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null },
+      select: { name: true },
+    });
+    const agency = [source, target].find((n) =>
+      agencies.some((a) => nameKey(a.name) === nameKey(n)),
+    );
+    if (agency)
+      throw new BadRequestException(
+        `"${agency}" is a tax agency — tax agencies cannot be merged.`,
+      );
+    const rows = await this.matchingRows(
+      scope,
+      'NAME',
+      nameKey(source),
+      new Set([nameKey(source)]),
+      true,
+    );
+    if (!rows.length)
+      throw new NotFoundException(`No rows are named "${source}".`);
+    // The target's category, read BEFORE the rows move (they would vote for their own).
+    const category =
+      (await this.categoryOfName(scope, target)) ?? UNCATEGORIZED;
+
+    // Rules that named rows `source` (renames to it, description / contains rules) → target.
+    await this.prisma.customerNameRule.updateMany({
+      where: { ...scopeWhere(scope), name: source },
+      data: { name: target },
+    });
+    const where = {
+      ...scopeWhere(scope),
+      matchType: 'NAME' as const,
+      matchKey: nameKey(source),
+    };
+    const previous = await this.prisma.customerNameRule.findFirst({ where });
+    await this.upsertRule(
+      previous,
+      { ...where, name: target, category: null },
+      { name: target, category: null },
+    );
+    await this.writeRows(scope, rows, () => ({ name: target, category }));
+    if (category !== UNCATEGORIZED)
+      await this.setNameCategory(scope, target, category);
+    // The tax follows the target only: the merged name's own choices go.
+    await this.prisma.ledgerNameAgency.deleteMany({
+      where: { ...scopeWhere(scope), name: source },
+    });
+    await this.prisma.ledgerName.deleteMany({
+      where: { ...scopeWhere(scope), name: source },
+    });
+    this.logger.log(
+      `book ${bookLabel(scope)}: merged name "${source}" into "${target}" (${rows.length} rows)`,
+    );
+  }
+
+  /**
    * Remove a customer's rule: their rows go back to what the firm memory says for each
    * description (and keep what they have where the memory knows nothing). One-time edits
    * stay as they are.
    */
-  async resetRule(
+  private async applyReset(
     scope: BookScope,
     input: { matchType: RuleMatchType; matchKey: string },
   ): Promise<void> {

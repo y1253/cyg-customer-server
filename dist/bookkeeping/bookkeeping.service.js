@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var BookkeepingService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingService = void 0;
+exports.failedChecks = failedChecks;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
@@ -106,6 +107,8 @@ function toView(s, currencies = new Map()) {
         sizeBytes: s.sizeBytes,
         status: s.status,
         error: s.error,
+        checks: s.status === 'NEEDS_REVIEW' ? failedChecks(s.verificationDetail) : [],
+        customerNote: s.customerNote,
         accountName: s.accountName,
         accountKind: s.accountKind,
         currency: s.currency,
@@ -120,6 +123,16 @@ function toView(s, currencies = new Map()) {
         movedByCustomer: s.accountNameByCustomer !== null,
         source: s.source,
     };
+}
+function failedChecks(detail) {
+    if (!Array.isArray(detail))
+        return [];
+    return detail.flatMap((c) => {
+        const check = c;
+        return check && !check.ok && !check.skipped && check.text
+            ? [check.text]
+            : [];
+    });
 }
 let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     prisma;
@@ -260,6 +273,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             description: r.description,
             name: r.name,
             ...(r.itemName && { itemName: r.itemName }),
+            ...(r.exceptionRuleId !== null &&
+                r.ruleName &&
+                r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {
+                exception: { main: r.ruleName },
+            }),
             amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
             offsetAccount: r.offsetAccount,
             debitAccount: r.debitAccount,
@@ -394,7 +412,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         });
     }
-    async retry(scope, id) {
+    async retry(scope, id, note) {
         const s = await this.owned(scope, id);
         if (s.status !== client_1.StatementStatus.FAILED &&
             s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
@@ -407,6 +425,9 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 attempts: 0,
                 runs: 0,
                 error: null,
+                ...(note === undefined
+                    ? {}
+                    : { customerNote: note.trim().slice(0, 4000) || null }),
             },
         });
         this.processor.processSoon();

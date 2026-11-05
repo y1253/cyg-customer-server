@@ -43,6 +43,7 @@ exports.FIXED_ASSISTANT_KEYS = [
     'ask_ai',
     'files',
     'core.requests',
+    'statement',
 ];
 const isFixedKey = (k) => exports.FIXED_ASSISTANT_KEYS.includes(k);
 exports.isFixedKey = isFixedKey;

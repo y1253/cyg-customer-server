@@ -23,17 +23,42 @@ export interface NameView {
     rows: number;
     total: number;
     agencyIds: number[];
-    descriptions: Array<{
-        description: string;
-        category: string;
+    descriptions: NameDescriptionView[];
+    followsContains: Array<{
+        key: string;
+        text: string;
+        category: string | null;
         rows: number;
     }>;
+    exceptionOf: Array<{
+        main: string;
+        key: string;
+        description: string;
+        rows: number;
+    }>;
+    group: string;
     ruleKey: string;
     rule: {
         matchType: RuleMatchType;
         matchKey: string;
     } | null;
     unclarified?: true;
+}
+export interface NameDescriptionView {
+    key: string;
+    description: string;
+    category: string;
+    rows: number;
+    rule: {
+        id: number;
+        matchType: 'DESCRIPTION' | 'CONTAINS';
+        matchKey: string;
+        text: string;
+    } | null;
+    exceptions: Array<{
+        name: string;
+        rows: number;
+    }>;
 }
 export interface UnrecognizedView {
     key: string;
@@ -58,7 +83,14 @@ export interface NamesView {
     names: NameView[];
     unrecognized: UnrecognizedView[];
     containsRules: ContainsRuleView[];
+    groups: NameGroupView[];
 }
+export interface NameGroupView {
+    key: string;
+    label: string;
+    id?: number;
+}
+export declare const BUILTIN_GROUPS: NameGroupView[];
 export interface StoredTax {
     agencyId: number;
     agency: string;
@@ -85,6 +117,15 @@ export declare class TaxService {
     linesFor(scope: BookScope, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
     private compute;
     names(scope: BookScope): Promise<NamesView>;
+    setNameGroup(scope: BookScope, rawName: string, group: string | null): Promise<void>;
+    createNameGroup(scope: BookScope, rawName: string): Promise<NameGroupView>;
+    renameNameGroup(scope: BookScope, id: number, rawName: string): Promise<void>;
+    deleteNameGroup(scope: BookScope, id: number): Promise<void>;
+    searchDescriptions(scope: BookScope, q: string): Promise<Array<{
+        name: string;
+        key: string;
+        description: string;
+    }>>;
     setNameAgencies(scope: BookScope, name: string, agencyIds: number[]): Promise<NamesView>;
     carryAgencies(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;

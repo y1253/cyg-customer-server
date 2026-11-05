@@ -14,6 +14,7 @@ export interface PromptInput {
     reach?: FirmReach | null;
     nameUnknown?: boolean;
     attachment?: unknown;
+    statement?: unknown;
     files?: unknown[];
 }
 export declare function systemPrompt(p: PromptInput, texts?: AssistantTexts): string;

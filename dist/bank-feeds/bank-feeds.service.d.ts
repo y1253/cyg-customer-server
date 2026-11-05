@@ -8,6 +8,7 @@ export interface BankConnectionView {
     institutionName: string | null;
     status: ItemStatus;
     error: string | null;
+    errorDetail: string | null;
     historyDone: boolean;
     lastSyncAt: Date | null;
     createdAt: Date;

@@ -9,6 +9,8 @@ import {
   AssistantConfigController,
   AssistantController,
   AttachmentChatController,
+  StatementChatController,
+  DictationController,
   ContactReplyController,
   IntakeController,
 } from './assistant.controller';
@@ -40,6 +42,8 @@ import { StrongAiService } from './strong-ai.service';
     AssistantConfigController,
     AssistantController,
     AttachmentChatController,
+    StatementChatController,
+  DictationController,
     ContactReplyController,
     IntakeController,
   ],

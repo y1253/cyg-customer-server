@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.itemBoxes = itemBoxes;
 exports.itemImages = itemImages;
+exports.renderClip = renderClip;
 const SCALE = 2;
 const MIN_WIDTH_SHARE = 0.25;
 const MIN_HEIGHT_PT = 40;
@@ -61,35 +62,7 @@ async function itemImages(pdf, pages) {
                 if (!boxes.length && !hasRows)
                     boxes = [bounds];
                 boxes.forEach((box, index) => {
-                    const matrix = [
-                        SCALE,
-                        0,
-                        0,
-                        SCALE,
-                        -box[0] * SCALE,
-                        -box[1] * SCALE,
-                    ];
-                    const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [
-                        0,
-                        0,
-                        Math.round((box[2] - box[0]) * SCALE),
-                        Math.round((box[3] - box[1]) * SCALE),
-                    ], false);
-                    try {
-                        pix.clear(255);
-                        const device = new mupdf.DrawDevice(matrix, pix);
-                        try {
-                            p.run(device, matrix);
-                            device.close();
-                        }
-                        finally {
-                            device.destroy();
-                        }
-                        out.push({ page, index, png: Buffer.from(pix.asPNG()) });
-                    }
-                    finally {
-                        pix.destroy();
-                    }
+                    out.push({ page, index, png: renderClip(mupdf, p, box, SCALE) });
                 });
             }
             catch {
@@ -102,6 +75,37 @@ async function itemImages(pdf, pages) {
     }
     finally {
         doc.destroy();
+    }
+}
+function renderClip(mupdf, p, box, scale) {
+    const matrix = [
+        scale,
+        0,
+        0,
+        scale,
+        -box[0] * scale,
+        -box[1] * scale,
+    ];
+    const pix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [
+        0,
+        0,
+        Math.max(1, Math.round((box[2] - box[0]) * scale)),
+        Math.max(1, Math.round((box[3] - box[1]) * scale)),
+    ], false);
+    try {
+        pix.clear(255);
+        const device = new mupdf.DrawDevice(matrix, pix);
+        try {
+            p.run(device, matrix);
+            device.close();
+        }
+        finally {
+            device.destroy();
+        }
+        return Buffer.from(pix.asPNG());
+    }
+    finally {
+        pix.destroy();
     }
 }
 //# sourceMappingURL=pdf-images.js.map

@@ -22,7 +22,14 @@ export interface AttachmentReading {
     payee: string | null;
     memo: string | null;
     category?: string | null;
+    box?: DocumentBox | null;
     transcript?: string;
+}
+export interface DocumentBox {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
 }
 export declare class UnreadableAttachmentError extends Error {
 }
@@ -43,3 +50,4 @@ export declare class AttachmentExtractor {
 }
 export declare function cleanReadings(raw: unknown): AttachmentReading[];
 export declare function cleanReading(r: AttachmentReading): AttachmentReading;
+export declare function cleanBox(b: unknown): DocumentBox | null;

@@ -52,8 +52,22 @@ export interface AttachmentReading {
    * memo — the category the cheque's row gets when its payee is a new name.
    */
   category?: string | null;
+  /**
+   * step9: where this document is on the image, as fractions of its width / height (0 = left
+   * / top). Set when one image holds several documents, so each can be cropped into its own
+   * file (`crop.util.ts`). Null = not given (one document, a PDF, audio, text).
+   */
+  box?: DocumentBox | null;
   /** Audio only: what was said. */
   transcript?: string;
+}
+
+/** step9: a document's rectangle on its image, fractions 0–1 of the image size. */
+export interface DocumentBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 /** A file the AI cannot read (blank page, silence, not a document at all). */
@@ -79,6 +93,7 @@ const DOCUMENT_SCHEMA = {
     'payee',
     'memo',
     'category',
+    'box',
   ],
   properties: {
     documentType: { type: 'string', enum: [...DOCUMENT_TYPES] },
@@ -102,6 +117,22 @@ const DOCUMENT_SCHEMA = {
     payee: text,
     memo: text,
     category: { type: ['string', 'null'], enum: [...ACCOUNT_NAMES, null] },
+    box: {
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['x0', 'y0', 'x1', 'y1'],
+          properties: {
+            x0: { type: 'number' },
+            y0: { type: 'number' },
+            x1: { type: 'number' },
+            y1: { type: 'number' },
+          },
+        },
+      ],
+    },
   },
 };
 
@@ -150,7 +181,13 @@ amounts together. One document = one entry. For each entry:
   a person paid wages -> Payroll & Wages); "Uncategorized" when unclear; null for
   anything that is not a cheque.
 For a BANK_STATEMENT or a DOCUMENT leave the money fields null and items empty unless a
-single payment amount is clearly the point of it.`;
+single payment amount is clearly the point of it.
+- box: when this IMAGE shows more than one document (two or more cheques, a receipt next
+  to a cheque), where THIS document is: {x0, y0, x1, y1} as fractions of the image's width
+  and height (0,0 = top-left, 1,1 = bottom-right), drawn around the whole document and
+  nothing of the next one — each document is cut out on its own from it. The front and the
+  back of the SAME cheque printed side by side are ONE document: its box is the front.
+  null when the file shows only one document, or for a PDF, a transcript or a text.`;
 
 const DOCUMENT_PROMPT =
   'A small-business owner sent this file to their bookkeeper. It may be a receipt, an ' +
@@ -412,5 +449,26 @@ export function cleanReading(r: AttachmentReading): AttachmentReading {
       typeof r.category === 'string' && ACCOUNT_NAMES.includes(r.category)
         ? r.category
         : null,
+    box: cleanBox(r.box),
   };
+}
+
+/** A box inside the image with some size, else null (never trusted as it came). */
+export function cleanBox(b: unknown): DocumentBox | null {
+  if (!b || typeof b !== 'object') return null;
+  const v = b as Record<string, unknown>;
+  const n = (k: string) =>
+    typeof v[k] === 'number' && Number.isFinite(v[k])
+      ? Math.min(1, Math.max(0, v[k]))
+      : NaN;
+  const [x0, y0, x1, y1] = [n('x0'), n('y0'), n('x1'), n('y1')];
+  if ([x0, y0, x1, y1].some(Number.isNaN)) return null;
+  const box = {
+    x0: Math.min(x0, x1),
+    y0: Math.min(y0, y1),
+    x1: Math.max(x0, x1),
+    y1: Math.max(y0, y1),
+  };
+  // A sliver is a misread, not a document.
+  return box.x1 - box.x0 >= 0.05 && box.y1 - box.y0 >= 0.05 ? box : null;
 }

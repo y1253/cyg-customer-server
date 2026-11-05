@@ -1,4 +1,4 @@
-import { StatementStatus, type AttachmentKind } from '@prisma/client';
+import { StatementStatus, type AttachmentKind, type Prisma } from '@prisma/client';
 import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +14,8 @@ export interface StatementView {
     sizeBytes: number;
     status: StatementStatus;
     error: string | null;
+    checks: string[];
+    customerNote: string | null;
     accountName: string | null;
     accountKind: string | null;
     currency: string | null;
@@ -42,6 +44,9 @@ export interface TransactionView {
     description: string;
     name: string | null;
     itemName?: string | null;
+    exception?: {
+        main: string;
+    };
     amount: number;
     offsetAccount: string;
     debitAccount: string;
@@ -59,6 +64,7 @@ export interface TransactionView {
     fxRate?: number | null;
     homeAmount?: number;
 }
+export declare function failedChecks(detail: Prisma.JsonValue | null): string[];
 export declare class BookkeepingService {
     private readonly prisma;
     private readonly storage;
@@ -93,7 +99,7 @@ export declare class BookkeepingService {
         generated: boolean;
     }>;
     private feedStatementPdf;
-    retry(scope: BookScope, id: number): Promise<StatementView>;
+    retry(scope: BookScope, id: number, note?: string): Promise<StatementView>;
     remove(scope: BookScope, id: number): Promise<void>;
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;
     private owned;

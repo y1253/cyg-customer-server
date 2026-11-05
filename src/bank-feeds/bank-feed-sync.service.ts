@@ -53,6 +53,7 @@ import {
   recentEnough,
 } from './transaction-alert.util';
 import { changeFeed } from '../assistant/change-feed';
+import { explainPlaidError, plaidErrorDetail } from './plaid-error.util';
 
 /** Plaid error codes that mean the customer must sign in to their bank again (update mode). */
 const LOGIN_CODES = new Set([
@@ -261,6 +262,7 @@ export class BankFeedSyncService {
           status: 'ACTIVE',
           // On an ACTIVE item `error` is the "waiting on the bank" note (null = none).
           error: note,
+          errorDetail: null,
           historyDone,
         },
       });
@@ -550,10 +552,15 @@ export class BankFeedSyncService {
         ? err.message
         : String(err);
     this.logger.warn(`item #${item.id} sync failed (${status}): ${message}`);
+    // step8: the customer reads what happened and what to do; the raw text is "Details".
     await this.prisma.plaidItem
       .update({
         where: { id: item.id },
-        data: { status, error: message.slice(0, 2000) },
+        data: {
+          status,
+          error: explainPlaidError(plaidErr?.code),
+          errorDetail: plaidErrorDetail(null, message),
+        },
       })
       .catch(() => undefined);
   }

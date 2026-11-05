@@ -456,12 +456,35 @@ describe('AssistantTools', () => {
       JSON.stringify({ statementId: 178 }),
       ctx,
     );
-    expect(bookkeeping.retry).toHaveBeenCalledWith(ctx.scope, 178);
+    expect(bookkeeping.retry).toHaveBeenCalledWith(ctx.scope, 178, undefined);
     expect(out.action).toEqual({
       tool: 'retry_statement',
       ok: true,
       summary: 'Reading TD 5234 · Oct 2024 again',
     });
+  });
+
+  it('step8: re-reads a statement with what the customer said is wrong with it', async () => {
+    const bookkeeping = {
+      retry: jest.fn().mockResolvedValue({ label: 'TD 5234 · Oct 2024' }),
+    };
+    const tools = withDeps((d) => (d[1] = bookkeeping));
+    const out = await tools.run(
+      'retry_statement',
+      JSON.stringify({
+        statementId: 178,
+        note: 'Page 3 withdrawals were read as deposits',
+      }),
+      ctx,
+    );
+    expect(bookkeeping.retry).toHaveBeenCalledWith(
+      ctx.scope,
+      178,
+      'Page 3 withdrawals were read as deposits',
+    );
+    expect(out.action?.summary).toBe(
+      'Reading TD 5234 · Oct 2024 again with your note',
+    );
   });
 
   it('shows a link that could not be made as a failed action, with the reason', async () => {

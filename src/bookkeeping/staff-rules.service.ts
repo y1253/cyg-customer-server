@@ -67,7 +67,8 @@ export class StaffRulesService {
   async view(scope: BookScope): Promise<StaffRulesView> {
     const [rules, items, rows, categories] = await Promise.all([
       this.prisma.customerNameRule.findMany({
-        where: scopeWhere(scope),
+        // step9: a one-time edit of one row (EXCEPTION) is not a rule staff manage.
+        where: { ...scopeWhere(scope), matchType: { not: 'EXCEPTION' } },
         orderBy: { updatedAt: 'desc' },
       }),
       this.prisma.customerItemRule.findMany({

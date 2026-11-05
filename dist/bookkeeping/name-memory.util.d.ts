@@ -1,4 +1,5 @@
 export type RuleMatchType = 'NAME' | 'DESCRIPTION' | 'CONTAINS';
+export declare const EXCEPTION = "EXCEPTION";
 export declare const RULE_MATCH_TYPES: readonly RuleMatchType[];
 export declare const CONTAINS_MIN = 3;
 export declare const containsKey: (text: string) => string;
@@ -7,11 +8,13 @@ export declare function descriptionKey(description: string | null | undefined): 
 export declare function cleanName(name: string | null | undefined): string | null;
 export declare const nameKey: (name: string) => string;
 export interface MemoryEntry {
+    id?: number;
     name: string | null;
     category: string;
 }
 export interface NameRule {
-    matchType: RuleMatchType;
+    id?: number;
+    matchType: RuleMatchType | typeof EXCEPTION;
     matchKey: string;
     name: string | null;
     category: string | null;
@@ -26,7 +29,18 @@ export interface ResolveContext {
     bankName?: string | null;
     nameCategories?: ReadonlyMap<string, string>;
     nameMemory?: ReadonlyMap<string, string>;
+    exceptions?: ReadonlyMap<string, NameRule>;
 }
+export declare function exceptionKey(row: {
+    statementId: number;
+    externalId?: string | null;
+    postingDate: Date | string | null;
+    pendingDate?: Date | string | null;
+    amount: number | {
+        toString(): string;
+    };
+    description: string;
+}): string;
 export declare function bankPayeeName(bankName: string | null | undefined): string | null;
 export declare const isBankCharge: (category: string) => boolean;
 export declare function isOwnersLoanMove(description: string, category: string): boolean;
@@ -37,11 +51,16 @@ export interface Resolved {
     source: NameSource;
     followsName: boolean;
     learnable: boolean;
+    generalRuleId: number | null;
+    personalRuleId: number | null;
+    exceptionRuleId: number | null;
+    ruleName: string | null;
 }
 export declare function resolveRow(row: {
     description: string;
     name?: string | null;
     offsetAccount: string;
+    exceptionKey?: string;
 }, ctx: ResolveContext): Resolved;
 export declare function resolveRows<T extends {
     description: string;
@@ -80,4 +99,5 @@ export declare function indexRules(rules: readonly NameRule[]): {
     nameRules: Map<string, NameRule>;
     containsRules: NameRule[];
     nameCategories: Map<string, string>;
+    exceptions: Map<string, NameRule>;
 };

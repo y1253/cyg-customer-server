@@ -224,6 +224,28 @@ const WRITE_TOOLS = [
         parameters: obj({ name: str, newName: str, category: str }, ['name']),
     },
     {
+        name: 'set_name_group',
+        description: 'Put a payee name in a Names-tab group: CUSTOMER, SUPPLIER, OTHER, or one of the customer\'s own groups by its key ("g12", from list_names → groups). A label only — its categories and tax do not change. Leave group out to make it follow its category again. To make a new group (e.g. "Employees") pass newGroup instead.',
+        parameters: obj({
+            name: str,
+            group: str,
+            newGroup: {
+                type: 'string',
+                description: 'Create this group and put the name in it',
+            },
+        }, ['name']),
+    },
+    {
+        name: 'merge_names',
+        description: 'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and tax of "into", and later rows follow. Tax agencies and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
+        parameters: obj({ from: str, into: str }, ['from', 'into']),
+    },
+    {
+        name: 'merge_accounts',
+        description: 'Merge account "from" into account "into" (categories, or two bank / card accounts with a Bank feeds folder — never a folder account with one without a folder): every row, rule and statement of "from" moves to "into". Tax agencies cannot be merged. Cannot be undone; only when the customer asks to merge / combine two accounts.',
+        parameters: obj({ from: str, into: str }, ['from', 'into']),
+    },
+    {
         name: 'create_category',
         description: "Create a category of the customer's own.",
         parameters: obj({ name: str, type: { type: 'string', enum: [...customer_accounts_service_1.ACCOUNT_TYPES] } }, ['name', 'type']),
@@ -256,9 +278,26 @@ const WRITE_TOOLS = [
         parameters: obj({ attachmentId: int }, ['attachmentId']),
     },
     {
+        name: 'reread_attachment',
+        description: 'step9: read ANY attachment again from scratch — also one already attached (the customer says it was read or attached wrong, or one image holds two cheques that were filed as one). It and every other document read off the same image are taken off their transactions and read again; an image with several cheques is cut into one file per cheque, each matched on its own. note = what the customer says is wrong with THIS file (given to the reader). Takes a minute.',
+        parameters: obj({
+            attachmentId: int,
+            note: {
+                type: 'string',
+                description: "What is wrong with this file, in the customer's words — only for THIS file",
+            },
+        }, ['attachmentId']),
+    },
+    {
         name: 'retry_statement',
-        description: 'Read a bank / card statement again from its PDF — one we could not read or that needs review (statementId from list_statements). Free; it takes a few minutes.',
-        parameters: obj({ statementId: int }, ['statementId']),
+        description: 'Read a bank / card statement again from its PDF — one we could not read or that needs review (statementId from list_statements). Free; it takes a few minutes. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it.',
+        parameters: obj({
+            statementId: int,
+            note: {
+                type: 'string',
+                description: "What is wrong with this statement, in the customer's words — only for THIS statement",
+            },
+        }, ['statementId']),
     },
     {
         name: 'delete_attachment',
@@ -1080,6 +1119,35 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 });
                 return done(`${from}${values.name && values.name !== from ? ` → ${values.name}` : ''}${values.category ? ` filed under ${values.category}` : ''} everywhere`);
             }
+            case 'set_name_group': {
+                const name = s(a.name);
+                if (!name)
+                    throw new Error('which name?');
+                const created = s(a.newGroup)
+                    ? await this.tax.createNameGroup(scope, s(a.newGroup))
+                    : null;
+                const group = created?.key ?? s(a.group);
+                await this.tax.setNameGroup(scope, name, group);
+                return done(group
+                    ? `${name} is now listed under ${created?.label ?? group}`
+                    : `${name} follows its category again`);
+            }
+            case 'merge_names': {
+                const from = s(a.from);
+                const into = s(a.into);
+                if (!from || !into)
+                    throw new Error('which two names?');
+                await this.names.mergeNames(scope, from, into);
+                return done(`Merged ${from} into ${into}`);
+            }
+            case 'merge_accounts': {
+                const from = s(a.from);
+                const into = s(a.into);
+                if (!from || !into)
+                    throw new Error('which two accounts?');
+                await this.accounts.mergeAccounts(scope, from, into);
+                return done(`Merged the account ${from} into ${into}`);
+            }
             case 'create_category': {
                 const type = s(a.type);
                 if (!type || !customer_accounts_service_1.ACCOUNT_TYPES.includes(type))
@@ -1109,9 +1177,15 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 const view = await this.attachments.retry(scope, id(a.attachmentId));
                 return done(`Reading ${view.filename} again`);
             }
+            case 'reread_attachment': {
+                const note = typeof a.note === 'string' ? a.note : undefined;
+                const view = await this.attachments.reread(scope, id(a.attachmentId), note);
+                return done(`Reading ${view.filename} again${note?.trim() ? ' with your note' : ''}`);
+            }
             case 'retry_statement': {
-                const view = await this.bookkeeping.retry(scope, id(a.statementId));
-                return done(`Reading ${view.label} again`);
+                const note = typeof a.note === 'string' ? a.note : undefined;
+                const view = await this.bookkeeping.retry(scope, id(a.statementId), note);
+                return done(`Reading ${view.label} again${note?.trim() ? ' with your note' : ''}`);
             }
             case 'delete_attachment': {
                 const view = await this.attachments.get(scope, id(a.attachmentId));

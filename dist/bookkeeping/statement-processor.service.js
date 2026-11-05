@@ -15,6 +15,7 @@ var StatementProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
 exports.needsReviewMessage = needsReviewMessage;
+exports.withCustomerNote = withCustomerNote;
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const change_feed_1 = require("../assistant/change-feed");
 const common_1 = require("@nestjs/common");
@@ -129,8 +130,9 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         const scope = (0, scope_1.scopeOf)(row);
         try {
             const pdf = await this.storage.getBuffer(row.storageKey);
-            const rules = (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
+            const learned = (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
                 '';
+            const rules = withCustomerNote(learned, row.customerNote);
             const extracted = await this.extractor.extract(pdf, row.filename, {
                 rules,
                 onRound: async () => {
@@ -146,7 +148,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 this.logger.log(`statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`);
             }
             const bank = accountName ?? 'Bank account';
-            const { lines, customAccounts } = await this.names.resolveStatement(scope, extracted.transactions, extracted.bankName);
+            const { lines, customAccounts } = await this.names.resolveStatement(scope, extracted.transactions, extracted.bankName, row.id);
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
@@ -279,5 +281,11 @@ function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';
     return (`We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +
         "Nothing from it is in your ledger. Try again, or contact us and we'll look at it.");
+}
+function withCustomerNote(rules, note) {
+    const text = note?.trim();
+    if (!text)
+        return rules;
+    return `${rules}\n\nThe customer says about THIS statement (follow it when reading it):\n${text}`;
 }
 //# sourceMappingURL=statement-processor.service.js.map

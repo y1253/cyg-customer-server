@@ -14,7 +14,7 @@ import {
   StatementStatus,
   type Prisma,
 } from '@prisma/client';
-import type { Readable } from 'stream';
+import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { firmReach } from '../messaging/reach';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,6 +23,8 @@ import type { AttachmentReading } from './attachment-extractor';
 import {
   AttachmentProcessorService,
   readingTotal,
+  siblingOf,
+  sniffImageMime,
 } from './attachment-processor.service';
 import { attachmentFolder } from './attachment-folders.util';
 import { attachmentType } from './attachment-uploads';
@@ -67,6 +69,13 @@ export interface AttachmentView {
    * assistant changing it) — the Attachments tab shows the conversation when > 0.
    */
   messageCount: number;
+  /**
+   * step9: this file was cut out of a bigger image holding several documents (two cheques
+   * side by side) — `GET attachments/:id/file?original=1` gives the whole image.
+   */
+  cropped: boolean;
+  /** step9: the other documents read off the same image (`doc:<row>:<n>` rows), by id. */
+  siblings: number[];
   /** The transaction it belongs to; null while unmatched. */
   transaction: {
     id: number;
@@ -148,6 +157,8 @@ function toView(a: Loaded, messageCount = 0): AttachmentView {
     message: a.message,
     folder: attachmentFolder(live ? t : null),
     messageCount,
+    cropped: !!a.sourceStorageKey,
+    siblings: [],
     transaction: live
       ? {
           id: t.id,
@@ -276,7 +287,98 @@ export class AttachmentsService {
   async get(scope: BookScope, id: number): Promise<AttachmentView> {
     const row = await this.owned(scope, id);
     const counts = await this.messageCounts(scope, [row.id]);
-    return toView(row, counts.get(row.id) ?? 0);
+    const group = await this.groupOf(scope, row);
+    return {
+      ...toView(row, counts.get(row.id) ?? 0),
+      siblings: group.filter((x) => x.id !== row.id).map((x) => x.id),
+    };
+  }
+
+  /**
+   * step9: every row read off the same file — the original row and its `doc:<row>:<n>`
+   * siblings (two cheques in one image are two rows). Live rows only.
+   */
+  private async groupOf(
+    scope: BookScope,
+    row: { id: number; sourceRef: string | null },
+  ): Promise<Array<{ id: number; transactionId: number | null }>> {
+    const rootId = siblingOf(row.sourceRef)?.rowId ?? row.id;
+    return this.prisma.transactionAttachment.findMany({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        OR: [{ id: rootId }, { sourceRef: { startsWith: `doc:${rootId}:` } }],
+      },
+      select: { id: true, transactionId: true },
+      orderBy: { id: 'asc' },
+    });
+  }
+
+  /**
+   * step9: read a file again from scratch — also one that is MATCHED (the customer says it
+   * was read or attached wrong, or two cheques were filed as one). The file and every other
+   * document read off it are taken off their transactions and read again, cut into one file
+   * per document when the image holds several; `note` (what the customer said is wrong) is
+   * given to the reader. Splits already made from it stay.
+   */
+  async reread(
+    scope: BookScope,
+    id: number,
+    note?: string,
+  ): Promise<AttachmentView> {
+    const a = await this.owned(scope, id);
+    if (
+      a.status === AttachmentStatus.PENDING ||
+      a.status === AttachmentStatus.PROCESSING
+    ) {
+      throw new BadRequestException('This file is being read right now');
+    }
+    const group = await this.groupOf(scope, a);
+    const rootId = siblingOf(a.sourceRef)?.rowId ?? a.id;
+    const root = group.find((x) => x.id === rootId) ?? { id: a.id };
+    const text = note?.trim().slice(0, 1000) || null;
+    await this.prisma.$transaction([
+      // The others are filed again by the original's read (`fileSiblings`).
+      this.prisma.transactionAttachment.updateMany({
+        where: {
+          id: { in: group.map((x) => x.id).filter((x) => x !== root.id) },
+        },
+        data: {
+          transactionId: null,
+          status: AttachmentStatus.UNMATCHED,
+          matchNote: 'Being read again.',
+        },
+      }),
+      this.prisma.transactionAttachment.update({
+        where: { id: root.id },
+        data: {
+          transactionId: null,
+          status: AttachmentStatus.PENDING,
+          attempts: 0,
+          error: null,
+          // The customer's correction rides along until the read is done (`processOne`).
+          ...(text && {
+            extracted: {
+              ...((await this.readingOf(root.id)) ?? {}),
+              customerNote: text,
+            } as Prisma.InputJsonValue,
+          }),
+        },
+      }),
+    ]);
+    this.processor.processSoon();
+    return this.get(scope, root.id);
+  }
+
+  private async readingOf(id: number): Promise<Record<string, unknown> | null> {
+    const row = await this.prisma.transactionAttachment.findUnique({
+      where: { id },
+      select: { extracted: true },
+    });
+    const e = row?.extracted;
+    return e && typeof e === 'object' && !Array.isArray(e)
+      ? (e as Record<string, unknown>)
+      : null;
   }
 
   /** step11b: how many AI messages each attachment is linked to. Never fails the list. */
@@ -393,6 +495,8 @@ export class AttachmentsService {
   async file(
     scope: BookScope,
     id: number,
+    /** step9: the whole image a cropped file was cut out of. */
+    original = false,
   ): Promise<{
     stream: Readable;
     filename: string;
@@ -400,8 +504,19 @@ export class AttachmentsService {
     size: number;
   }> {
     const a = await this.owned(scope, id);
-    const info = await this.storage.head(a.storageKey);
+    const key = (original && a.sourceStorageKey) || a.storageKey;
+    const info = await this.storage.head(key);
     if (!info) throw new NotFoundException('The file is no longer available');
+    if (key !== a.storageKey) {
+      // The uncut original keeps its own type (the crops are PNG).
+      const head = await this.storage.getBuffer(key);
+      return {
+        stream: Readable.from(head),
+        filename: `whole image - ${a.filename}`,
+        mimeType: sniffImageMime(head) ?? 'application/octet-stream',
+        size: head.length,
+      };
+    }
     return {
       stream: await this.storage.getStream(a.storageKey),
       filename: a.filename,

@@ -17,11 +17,32 @@ const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
 const tax_service_1 = require("./tax.service");
+const reports_util_1 = require("./reports.util");
 const name_memory_util_1 = require("./name-memory.util");
 let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     prisma;
     tax;
     logger = new common_1.Logger(NameMemoryService_1.name);
+    onApplicationBootstrap() {
+        setTimeout(() => void this.backfillProvenance(), 60_000).unref();
+    }
+    async backfillProvenance() {
+        try {
+            const books = await this.prisma.bankTransaction.groupBy({
+                by: ['customerId', 'bookId', 'companyId'],
+                where: { ruleName: null, name: { not: null }, splitOfId: null },
+            });
+            for (const b of books)
+                await this.syncProvenance(b);
+            if (books.length)
+                this.logger.log(`provenance backfilled for ${books.length} book(s)`);
+            return books.length;
+        }
+        catch (err) {
+            this.logger.warn(`provenance backfill failed: ${String(err)}`);
+            return 0;
+        }
+    }
     constructor(prisma, tax) {
         this.prisma = prisma;
         this.tax = tax;
@@ -32,7 +53,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             keys.length
                 ? this.prisma.descriptionMemory.findMany({
                     where: { descriptionKey: { in: keys } },
-                    select: { descriptionKey: true, name: true, category: true },
+                    select: {
+                        id: true,
+                        descriptionKey: true,
+                        name: true,
+                        category: true,
+                    },
                 })
                 : Promise.resolve([]),
             this.rulesOf(scope),
@@ -40,7 +66,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         ]);
         const memory = new Map(memoryRows.map((m) => [
             m.descriptionKey,
-            { name: m.name, category: m.category },
+            { id: m.id, name: m.name, category: m.category },
         ]));
         const nameKeys = new Set();
         for (const n of [
@@ -68,6 +94,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const rows = await this.prisma.customerNameRule.findMany({
             where: (0, scope_1.scopeWhere)(scope),
             select: {
+                id: true,
                 matchType: true,
                 matchKey: true,
                 name: true,
@@ -77,7 +104,9 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
         return rows.map((r) => ({
             ...r,
-            matchType: r.matchType === 'DESCRIPTION' || r.matchType === 'CONTAINS'
+            matchType: r.matchType === 'DESCRIPTION' ||
+                r.matchType === 'CONTAINS' ||
+                r.matchType === name_memory_util_1.EXCEPTION
                 ? r.matchType
                 : 'NAME',
         }));
@@ -89,17 +118,35 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         });
         return new Set(rows.map((r) => r.name));
     }
-    async resolveStatement(scope, rows, bankName = null) {
+    async resolveStatement(scope, rows, bankName = null, statementId) {
         try {
             const ctx = {
                 ...(await this.contextFor(scope, rows.map((r) => r.description), rows.map((r) => r.name))),
                 bankName,
             };
-            const { resolved } = (0, name_memory_util_1.resolveRows)(rows, ctx);
+            const keyed = rows.map((r) => ({
+                ...r,
+                exceptionKey: statementId === undefined
+                    ? undefined
+                    : (0, name_memory_util_1.exceptionKey)({
+                        statementId,
+                        postingDate: r.postingDate,
+                        pendingDate: r.pendingDate,
+                        amount: r.amount,
+                        description: r.description,
+                    }),
+            }));
+            const { resolved } = (0, name_memory_util_1.resolveRows)(keyed, ctx);
             const lines = rows.map((r, i) => ({
                 ...r,
                 name: resolved[i].name,
                 offsetAccount: resolved[i].category,
+                provenance: {
+                    generalRuleId: resolved[i].generalRuleId,
+                    personalRuleId: resolved[i].personalRuleId,
+                    exceptionRuleId: resolved[i].exceptionRuleId,
+                    ruleName: resolved[i].ruleName,
+                },
             }));
             await this.learn(rows, ctx.memory);
             await this.learnNames(resolved, ctx.nameMemory ?? new Map());
@@ -120,6 +167,154 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             });
             return { lines, customAccounts: new Set() };
         }
+    }
+    async saveRule(scope, input) {
+        await this.applyRule(scope, input);
+        await this.syncProvenance(scope);
+    }
+    async editTransaction(scope, id, input) {
+        await this.applyEdit(scope, id, input);
+        await this.syncProvenance(scope);
+    }
+    async mergeNames(scope, from, into) {
+        await this.applyMerge(scope, from, into);
+        await this.syncProvenance(scope);
+    }
+    async resetRule(scope, input) {
+        await this.applyReset(scope, input);
+        await this.syncProvenance(scope);
+    }
+    async syncProvenance(scope) {
+        try {
+            const rows = await this.prisma.bankTransaction.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: null },
+                select: {
+                    id: true,
+                    statementId: true,
+                    externalId: true,
+                    postingDate: true,
+                    pendingDate: true,
+                    amount: true,
+                    description: true,
+                    name: true,
+                    offsetAccount: true,
+                    manualEdit: true,
+                    generalRuleId: true,
+                    personalRuleId: true,
+                    exceptionRuleId: true,
+                    ruleName: true,
+                },
+            });
+            if (!rows.length)
+                return;
+            const ctx = await this.contextFor(scope, rows.map((r) => r.description), rows.map((r) => r.name));
+            const exceptions = ctx.exceptions ?? new Map();
+            const keep = new Set();
+            const writes = new Map();
+            for (const r of rows) {
+                const key = (0, name_memory_util_1.exceptionKey)(r);
+                const ruled = (0, name_memory_util_1.resolveRow)({
+                    description: r.description,
+                    name: r.manualEdit ? (r.ruleName ?? r.name) : r.name,
+                    offsetAccount: r.offsetAccount,
+                }, { ...ctx, exceptions: undefined });
+                const differs = (0, name_memory_util_1.nameKey)(ruled.name ?? '') !== (0, name_memory_util_1.nameKey)(r.name ?? '') ||
+                    ruled.category !== r.offsetAccount;
+                let exceptionRuleId = null;
+                const existing = exceptions.get(key);
+                if (r.manualEdit && differs) {
+                    exceptionRuleId = await this.saveException(scope, key, existing, r);
+                    keep.add(exceptionRuleId);
+                }
+                const next = {
+                    generalRuleId: ruled.generalRuleId,
+                    personalRuleId: ruled.personalRuleId,
+                    exceptionRuleId,
+                    ruleName: ruled.name,
+                };
+                if (next.generalRuleId === r.generalRuleId &&
+                    next.personalRuleId === r.personalRuleId &&
+                    next.exceptionRuleId === r.exceptionRuleId &&
+                    next.ruleName === r.ruleName)
+                    continue;
+                const k = JSON.stringify(next);
+                writes.set(k, [...(writes.get(k) ?? []), r.id]);
+            }
+            for (const [k, ids] of writes) {
+                const data = JSON.parse(k);
+                for (let i = 0; i < ids.length; i += 1000) {
+                    await this.prisma.bankTransaction.updateMany({
+                        where: { id: { in: ids.slice(i, i + 1000) } },
+                        data,
+                    });
+                }
+            }
+            const live = new Set(rows.map((r) => (0, name_memory_util_1.exceptionKey)(r)));
+            const stale = [...exceptions.entries()]
+                .filter(([key, rule]) => live.has(key) && rule.id !== undefined && !keep.has(rule.id))
+                .map(([, rule]) => rule.id);
+            if (stale.length) {
+                await this.prisma.customerNameRule.deleteMany({
+                    where: {
+                        id: { in: stale },
+                        ...(0, scope_1.scopeWhere)(scope),
+                        matchType: name_memory_util_1.EXCEPTION,
+                    },
+                });
+            }
+        }
+        catch (err) {
+            this.logger.warn(`provenance of ${(0, scope_1.bookLabel)(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    async saveException(scope, key, existing, row) {
+        if (existing?.id !== undefined) {
+            if (existing.name !== row.name ||
+                existing.category !== row.offsetAccount) {
+                await this.prisma.customerNameRule.update({
+                    where: { id: existing.id },
+                    data: { name: row.name, category: row.offsetAccount },
+                });
+            }
+            return existing.id;
+        }
+        const created = await this.prisma.customerNameRule.create({
+            data: {
+                ...(0, scope_1.scopeWhere)(scope),
+                matchType: name_memory_util_1.EXCEPTION,
+                matchKey: key,
+                name: row.name,
+                category: row.offsetAccount,
+            },
+            select: { id: true },
+        });
+        return created.id;
+    }
+    async clearException(scope, id) {
+        const row = await this.prisma.bankTransaction.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope) },
+            select: {
+                statementId: true,
+                externalId: true,
+                postingDate: true,
+                pendingDate: true,
+                amount: true,
+                description: true,
+            },
+        });
+        if (!row)
+            return;
+        await this.prisma.customerNameRule.deleteMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                matchType: name_memory_util_1.EXCEPTION,
+                matchKey: (0, name_memory_util_1.exceptionKey)(row),
+            },
+        });
+        await this.prisma.bankTransaction.update({
+            where: { id },
+            data: { manualEdit: false, exceptionRuleId: null },
+        });
     }
     async learn(rows, memory) {
         const { creates, fills } = (0, name_memory_util_1.memoryWrites)(rows, memory);
@@ -169,7 +364,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             });
         }
     }
-    async saveRule(scope, input) {
+    async applyRule(scope, input) {
         const matchKey = ruleKeyOf(input.matchType, input.matchKey);
         const name = (0, name_memory_util_1.cleanName)(input.name);
         const category = input.category
@@ -264,7 +459,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         return rows.filter((r) => (0, name_memory_util_1.descriptionContains)(r.description, key) &&
             !exact.has((0, name_memory_util_1.descriptionKey)(r.description)));
     }
-    async editTransaction(scope, id, input) {
+    async applyEdit(scope, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
             where: { id, ...(0, scope_1.scopeWhere)(scope) },
             select: { ...MATCH_SELECT, manualEdit: true, splitOfId: true },
@@ -302,8 +497,9 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     name,
                     category: r.offsetAccount,
                 }));
+                await this.clearException(scope, row.id);
             }
-            await this.saveRule(scope, {
+            await this.applyRule(scope, {
                 matchType: 'DESCRIPTION',
                 matchKey: key,
                 name,
@@ -319,7 +515,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             await this.setNameCategory(scope, current, category);
         }
         else if (key) {
-            await this.saveRule(scope, {
+            await this.applyRule(scope, {
                 matchType: 'DESCRIPTION',
                 matchKey: key,
                 name: null,
@@ -393,7 +589,49 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const hit = rules.find((r) => r.matchKey === key || (r.name && (0, name_memory_util_1.nameKey)(r.name) === key));
         return hit?.matchKey ?? key;
     }
-    async resetRule(scope, input) {
+    async applyMerge(scope, from, into) {
+        const source = (0, name_memory_util_1.cleanName)(from);
+        const target = (0, name_memory_util_1.cleanName)(into);
+        if (!source || !target)
+            throw new common_1.BadRequestException('Pick two names.');
+        if ((0, name_memory_util_1.nameKey)(source) === (0, name_memory_util_1.nameKey)(target))
+            throw new common_1.BadRequestException('That is the same name.');
+        if ([source, target].some((n) => (0, name_memory_util_1.nameKey)(n) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME)))
+            throw new common_1.BadRequestException('"Unclarified name" cannot be merged — give its rows a name instead.');
+        const agencies = await this.prisma.taxAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { name: true },
+        });
+        const agency = [source, target].find((n) => agencies.some((a) => (0, name_memory_util_1.nameKey)(a.name) === (0, name_memory_util_1.nameKey)(n)));
+        if (agency)
+            throw new common_1.BadRequestException(`"${agency}" is a tax agency — tax agencies cannot be merged.`);
+        const rows = await this.matchingRows(scope, 'NAME', (0, name_memory_util_1.nameKey)(source), new Set([(0, name_memory_util_1.nameKey)(source)]), true);
+        if (!rows.length)
+            throw new common_1.NotFoundException(`No rows are named "${source}".`);
+        const category = (await this.categoryOfName(scope, target)) ?? chart_of_accounts_1.UNCATEGORIZED;
+        await this.prisma.customerNameRule.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+            data: { name: target },
+        });
+        const where = {
+            ...(0, scope_1.scopeWhere)(scope),
+            matchType: 'NAME',
+            matchKey: (0, name_memory_util_1.nameKey)(source),
+        };
+        const previous = await this.prisma.customerNameRule.findFirst({ where });
+        await this.upsertRule(previous, { ...where, name: target, category: null }, { name: target, category: null });
+        await this.writeRows(scope, rows, () => ({ name: target, category }));
+        if (category !== chart_of_accounts_1.UNCATEGORIZED)
+            await this.setNameCategory(scope, target, category);
+        await this.prisma.ledgerNameAgency.deleteMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+        });
+        await this.prisma.ledgerName.deleteMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+        });
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged name "${source}" into "${target}" (${rows.length} rows)`);
+    }
+    async applyReset(scope, input) {
         const matchKey = ruleKeyOf(input.matchType, input.matchKey);
         const rule = await this.prisma.customerNameRule.findFirst({
             where: { ...(0, scope_1.scopeWhere)(scope), matchType: input.matchType, matchKey },

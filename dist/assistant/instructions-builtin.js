@@ -16,6 +16,7 @@ const TITLES = {
     contact: 'Preferred contact method',
     ask_ai: '"Ask AI" about one unfiled file',
     files: 'Files the customer just sent',
+    statement: '"Ask AI" about one statement we could not read',
 };
 exports.BUILTIN_INSTRUCTIONS = [
     ...instructions_util_1.FIXED_ASSISTANT_KEYS.map((key, i) => ({

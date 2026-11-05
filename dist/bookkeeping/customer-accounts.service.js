@@ -8,9 +8,11 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var CustomerAccountsService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomerAccountsService = exports.ACCOUNT_TYPES = void 0;
 const common_1 = require("@nestjs/common");
+const account_merge_util_1 = require("./account-merge.util");
 const prisma_service_1 = require("../prisma/prisma.service");
 const fx_util_1 = require("./fx.util");
 const reports_util_1 = require("./reports.util");
@@ -23,10 +25,123 @@ exports.ACCOUNT_TYPES = [
     'LIABILITY',
     'EQUITY',
 ];
-let CustomerAccountsService = class CustomerAccountsService {
+let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccountsService {
     prisma;
+    logger = new common_1.Logger(CustomerAccountsService_1.name);
     constructor(prisma) {
         this.prisma = prisma;
+    }
+    async mergeAccounts(scope, rawFrom, rawInto) {
+        const from = rawFrom.trim();
+        const into = rawInto.trim();
+        if (!from || !into)
+            throw new common_1.BadRequestException('Pick two accounts.');
+        const [fromSide, intoSide] = await Promise.all([
+            this.mergeSide(scope, from),
+            this.mergeSide(scope, into),
+        ]);
+        const refusal = (0, account_merge_util_1.mergeRefusal)(fromSide, intoSide);
+        if (refusal)
+            throw new common_1.BadRequestException(refusal);
+        const used = await this.prisma.bankTransaction.count({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                OR: [
+                    { offsetAccount: from },
+                    { debitAccount: from },
+                    { creditAccount: from },
+                ],
+            },
+        });
+        const own = await this.prisma.customerAccount.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: from },
+            select: { id: true },
+        });
+        if (!used && !fromSide.folder && !own)
+            throw new common_1.BadRequestException(`"${from}" has nothing to merge.`);
+        const where = (0, scope_1.scopeWhere)(scope);
+        await this.prisma.$transaction([
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, offsetAccount: from },
+                data: { offsetAccount: into },
+            }),
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, debitAccount: from },
+                data: { debitAccount: into },
+            }),
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, creditAccount: from },
+                data: { creditAccount: into },
+            }),
+            this.prisma.bankStatement.updateMany({
+                where: { ...where, accountName: from },
+                data: { accountName: into },
+            }),
+            this.prisma.bankStatement.updateMany({
+                where: { ...where, accountNameByCustomer: from },
+                data: { accountNameByCustomer: into },
+            }),
+            this.prisma.plaidAccount.updateMany({
+                where: { item: where, accountName: from },
+                data: { accountName: into },
+            }),
+            this.prisma.customerNameRule.updateMany({
+                where: { ...where, category: from },
+                data: { category: into },
+            }),
+            this.prisma.customerItemRule.updateMany({
+                where: { ...where, category: from },
+                data: { category: into },
+            }),
+            this.prisma.customerAccountType.deleteMany({
+                where: { ...where, account: from },
+            }),
+            this.prisma.customerAccountCurrency.deleteMany({
+                where: { ...where, account: from },
+            }),
+            this.prisma.customerAccount.deleteMany({
+                where: { ...where, name: from },
+            }),
+        ]);
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged account "${from}" into "${into}" (${used} rows)`);
+    }
+    async mergeSide(scope, name) {
+        const [agency, statement, plaid, currency] = await Promise.all([
+            this.prisma.taxAgency.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name, deletedAt: null },
+                select: { id: true },
+            }),
+            this.prisma.bankStatement.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), accountName: name, deletedAt: null },
+                orderBy: { id: 'desc' },
+                select: { accountKind: true, currency: true },
+            }),
+            this.prisma.plaidAccount.findFirst({
+                where: {
+                    item: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+                    accountName: name,
+                },
+                select: { kind: true, currency: true },
+            }),
+            this.prisma.customerAccountCurrency.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), account: name },
+                select: { currency: true },
+            }),
+        ]);
+        const kind = statement?.accountKind ?? plaid?.kind ?? null;
+        return {
+            name,
+            agency: !!agency,
+            folder: statement || plaid
+                ? {
+                    kind: kind === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK',
+                    currency: currency?.currency ??
+                        statement?.currency ??
+                        plaid?.currency ??
+                        null,
+                }
+                : null,
+        };
     }
     async list(scope) {
         const own = await this.own(scope);
@@ -180,7 +295,7 @@ let CustomerAccountsService = class CustomerAccountsService {
     }
 };
 exports.CustomerAccountsService = CustomerAccountsService;
-exports.CustomerAccountsService = CustomerAccountsService = __decorate([
+exports.CustomerAccountsService = CustomerAccountsService = CustomerAccountsService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService])
 ], CustomerAccountsService);

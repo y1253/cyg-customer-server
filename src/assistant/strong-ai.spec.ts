@@ -64,6 +64,11 @@ describe('systemPrompt from instruction rows', () => {
           'core.requests': '',
           'core.channels': '',
           'core.answers': oldAnswers,
+          // step9 widened the "Ask AI" block to files already attached.
+          ask_ai: LEGACY_SMS_PROMPT.slice(
+            LEGACY_SMS_PROMPT.indexOf('\n\nTHIS CHAT') + 1,
+            LEGACY_SMS_PROMPT.indexOf('\nFile: '),
+          ),
         },
         extras: [],
       }),
@@ -113,6 +118,18 @@ describe('systemPrompt from instruction rows', () => {
     });
     expect(p).not.toContain('THIS CHAT IS ABOUT ONE FILE');
     expect(p).toContain('No transaction of $12');
+  });
+
+  it('step8: a statement chat gets the statement block and its data — and only then', () => {
+    const statement = {
+      statementId: 178,
+      failedChecks: ['Withdrawals: off by $84.37'],
+    };
+    const p = systemPrompt({ ...SMS_INPUT, attachment: undefined, statement });
+    expect(p).toContain('THIS CHAT IS ABOUT ONE BANK / CARD STATEMENT');
+    expect(p).toContain('report_ai_issue');
+    expect(p).toContain('Withdrawals: off by $84.37');
+    expect(systemPrompt(SMS_INPUT)).not.toContain('ONE BANK / CARD STATEMENT');
   });
 });
 

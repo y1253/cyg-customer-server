@@ -18,6 +18,7 @@ const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
+const stream_1 = require("stream");
 const openai_client_1 = require("../ai/openai.client");
 const reach_1 = require("../messaging/reach");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -71,6 +72,8 @@ function toView(a, messageCount = 0) {
         message: a.message,
         folder: (0, attachment_folders_util_1.attachmentFolder)(live ? t : null),
         messageCount,
+        cropped: !!a.sourceStorageKey,
+        siblings: [],
         transaction: live
             ? {
                 id: t.id,
@@ -171,7 +174,73 @@ let AttachmentsService = class AttachmentsService {
     async get(scope, id) {
         const row = await this.owned(scope, id);
         const counts = await this.messageCounts(scope, [row.id]);
-        return toView(row, counts.get(row.id) ?? 0);
+        const group = await this.groupOf(scope, row);
+        return {
+            ...toView(row, counts.get(row.id) ?? 0),
+            siblings: group.filter((x) => x.id !== row.id).map((x) => x.id),
+        };
+    }
+    async groupOf(scope, row) {
+        const rootId = (0, attachment_processor_service_1.siblingOf)(row.sourceRef)?.rowId ?? row.id;
+        return this.prisma.transactionAttachment.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                OR: [{ id: rootId }, { sourceRef: { startsWith: `doc:${rootId}:` } }],
+            },
+            select: { id: true, transactionId: true },
+            orderBy: { id: 'asc' },
+        });
+    }
+    async reread(scope, id, note) {
+        const a = await this.owned(scope, id);
+        if (a.status === client_1.AttachmentStatus.PENDING ||
+            a.status === client_1.AttachmentStatus.PROCESSING) {
+            throw new common_1.BadRequestException('This file is being read right now');
+        }
+        const group = await this.groupOf(scope, a);
+        const rootId = (0, attachment_processor_service_1.siblingOf)(a.sourceRef)?.rowId ?? a.id;
+        const root = group.find((x) => x.id === rootId) ?? { id: a.id };
+        const text = note?.trim().slice(0, 1000) || null;
+        await this.prisma.$transaction([
+            this.prisma.transactionAttachment.updateMany({
+                where: {
+                    id: { in: group.map((x) => x.id).filter((x) => x !== root.id) },
+                },
+                data: {
+                    transactionId: null,
+                    status: client_1.AttachmentStatus.UNMATCHED,
+                    matchNote: 'Being read again.',
+                },
+            }),
+            this.prisma.transactionAttachment.update({
+                where: { id: root.id },
+                data: {
+                    transactionId: null,
+                    status: client_1.AttachmentStatus.PENDING,
+                    attempts: 0,
+                    error: null,
+                    ...(text && {
+                        extracted: {
+                            ...((await this.readingOf(root.id)) ?? {}),
+                            customerNote: text,
+                        },
+                    }),
+                },
+            }),
+        ]);
+        this.processor.processSoon();
+        return this.get(scope, root.id);
+    }
+    async readingOf(id) {
+        const row = await this.prisma.transactionAttachment.findUnique({
+            where: { id },
+            select: { extracted: true },
+        });
+        const e = row?.extracted;
+        return e && typeof e === 'object' && !Array.isArray(e)
+            ? e
+            : null;
     }
     async messageCounts(scope, ids) {
         const out = new Map();
@@ -258,11 +327,21 @@ let AttachmentsService = class AttachmentsService {
             data: { deletedAt: new Date() },
         });
     }
-    async file(scope, id) {
+    async file(scope, id, original = false) {
         const a = await this.owned(scope, id);
-        const info = await this.storage.head(a.storageKey);
+        const key = (original && a.sourceStorageKey) || a.storageKey;
+        const info = await this.storage.head(key);
         if (!info)
             throw new common_1.NotFoundException('The file is no longer available');
+        if (key !== a.storageKey) {
+            const head = await this.storage.getBuffer(key);
+            return {
+                stream: stream_1.Readable.from(head),
+                filename: `whole image - ${a.filename}`,
+                mimeType: (0, attachment_processor_service_1.sniffImageMime)(head) ?? 'application/octet-stream',
+                size: head.length,
+            };
+        }
         return {
             stream: await this.storage.getStream(a.storageKey),
             filename: a.filename,

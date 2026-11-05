@@ -6,6 +6,7 @@ import { AttachmentChatDto, ChatDto, IntakeAgentDto, IntakeRouteDto, ContactRepl
 import { ContactRelayService, type RelayResult } from './contact-relay.service';
 import { IntakeAgentService, type IntakeReply, type IntakeRoute } from './intake-agent.service';
 import { RulesService, type CustomerRuleView } from './rules.service';
+import { OpenAiClient } from '../ai/openai.client';
 export declare class AssistantConfigController {
     private readonly assistant;
     constructor(assistant: AssistantService);
@@ -30,6 +31,18 @@ export declare class AssistantController {
         ok: true;
     }>;
 }
+export declare class DictationController {
+    private readonly assistant;
+    private readonly openai;
+    constructor(assistant: AssistantService, openai: OpenAiClient);
+    transcribe(scope: BookScope, file?: {
+        buffer: Buffer;
+        originalname: string;
+        mimetype: string;
+    }): Promise<{
+        text: string;
+    }>;
+}
 export declare class AttachmentChatController {
     private readonly assistant;
     constructor(assistant: AssistantService);
@@ -38,6 +51,15 @@ export declare class AttachmentChatController {
         messages: AssistantMessageView[];
     }>;
     messages(scope: BookScope, id: number): Promise<AssistantMessageView[]>;
+    chat(scope: BookScope, id: number, dto: AttachmentChatDto): Promise<ChatResult>;
+}
+export declare class StatementChatController {
+    private readonly assistant;
+    constructor(assistant: AssistantService);
+    thread(scope: BookScope, id: number): Promise<{
+        conversationId: number | null;
+        messages: AssistantMessageView[];
+    }>;
     chat(scope: BookScope, id: number, dto: AttachmentChatDto): Promise<ChatResult>;
 }
 export declare class ContactReplyController {

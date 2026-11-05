@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { mergeRefusal, type MergeSide } from './account-merge.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { isFxCurrency } from './fx.util';
 import { UNCLARIFIED_NAME } from './reports.util';
-import { scopeWhere, type BookScope } from './scope';
+import { bookLabel, scopeWhere, type BookScope } from './scope';
 import {
   ACCOUNT_NAMES,
   CHART_OF_ACCOUNTS,
@@ -34,7 +35,141 @@ export interface AccountView {
  */
 @Injectable()
 export class CustomerAccountsService {
+  private readonly logger = new Logger(CustomerAccountsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * step8: merge account `from` into `into` (drag one onto the other on the Chart of
+   * accounts / Balance sheet). Every place that names `from` names `into` instead — the
+   * rows' both sides, the customer's name / item rules, and, for two Bank feeds folders, the
+   * statements and the connected bank account (so the next sync files under `into`, not the
+   * old folder). `into`'s section and currency settings win; `from`, when it is one of the
+   * customer's own categories, is removed. Only text is rewritten — nothing is read again.
+   * Refused per `mergeRefusal` (a folder account only with another folder account).
+   */
+  async mergeAccounts(
+    scope: BookScope,
+    rawFrom: string,
+    rawInto: string,
+  ): Promise<void> {
+    const from = rawFrom.trim();
+    const into = rawInto.trim();
+    if (!from || !into) throw new BadRequestException('Pick two accounts.');
+    const [fromSide, intoSide] = await Promise.all([
+      this.mergeSide(scope, from),
+      this.mergeSide(scope, into),
+    ]);
+    const refusal = mergeRefusal(fromSide, intoSide);
+    if (refusal) throw new BadRequestException(refusal);
+    const used = await this.prisma.bankTransaction.count({
+      where: {
+        ...scopeWhere(scope),
+        OR: [
+          { offsetAccount: from },
+          { debitAccount: from },
+          { creditAccount: from },
+        ],
+      },
+    });
+    const own = await this.prisma.customerAccount.findFirst({
+      where: { ...scopeWhere(scope), name: from },
+      select: { id: true },
+    });
+    if (!used && !fromSide.folder && !own)
+      throw new BadRequestException(`"${from}" has nothing to merge.`);
+
+    const where = scopeWhere(scope);
+    await this.prisma.$transaction([
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, offsetAccount: from },
+        data: { offsetAccount: into },
+      }),
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, debitAccount: from },
+        data: { debitAccount: into },
+      }),
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, creditAccount: from },
+        data: { creditAccount: into },
+      }),
+      this.prisma.bankStatement.updateMany({
+        where: { ...where, accountName: from },
+        data: { accountName: into },
+      }),
+      this.prisma.bankStatement.updateMany({
+        where: { ...where, accountNameByCustomer: from },
+        data: { accountNameByCustomer: into },
+      }),
+      this.prisma.plaidAccount.updateMany({
+        where: { item: where, accountName: from },
+        data: { accountName: into },
+      }),
+      this.prisma.customerNameRule.updateMany({
+        where: { ...where, category: from },
+        data: { category: into },
+      }),
+      this.prisma.customerItemRule.updateMany({
+        where: { ...where, category: from },
+        data: { category: into },
+      }),
+      // The target's section and currency stay; the merged account's settings go.
+      this.prisma.customerAccountType.deleteMany({
+        where: { ...where, account: from },
+      }),
+      this.prisma.customerAccountCurrency.deleteMany({
+        where: { ...where, account: from },
+      }),
+      this.prisma.customerAccount.deleteMany({
+        where: { ...where, name: from },
+      }),
+    ]);
+    this.logger.log(
+      `book ${bookLabel(scope)}: merged account "${from}" into "${into}" (${used} rows)`,
+    );
+  }
+
+  /** What `mergeRefusal` needs to know about one account of this book. */
+  private async mergeSide(scope: BookScope, name: string): Promise<MergeSide> {
+    const [agency, statement, plaid, currency] = await Promise.all([
+      this.prisma.taxAgency.findFirst({
+        where: { ...scopeWhere(scope), name, deletedAt: null },
+        select: { id: true },
+      }),
+      this.prisma.bankStatement.findFirst({
+        where: { ...scopeWhere(scope), accountName: name, deletedAt: null },
+        orderBy: { id: 'desc' },
+        select: { accountKind: true, currency: true },
+      }),
+      this.prisma.plaidAccount.findFirst({
+        where: {
+          item: { ...scopeWhere(scope), deletedAt: null },
+          accountName: name,
+        },
+        select: { kind: true, currency: true },
+      }),
+      this.prisma.customerAccountCurrency.findFirst({
+        where: { ...scopeWhere(scope), account: name },
+        select: { currency: true },
+      }),
+    ]);
+    const kind = statement?.accountKind ?? plaid?.kind ?? null;
+    return {
+      name,
+      agency: !!agency,
+      folder:
+        statement || plaid
+          ? {
+              kind: kind === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK',
+              currency:
+                currency?.currency ??
+                statement?.currency ??
+                plaid?.currency ??
+                null,
+            }
+          : null,
+    };
+  }
 
   /** The chart, then the customer's own accounts A–Z. */
   async list(scope: BookScope): Promise<AccountView[]> {

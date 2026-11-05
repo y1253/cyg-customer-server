@@ -13,6 +13,7 @@ import {
   StatementStatus,
   type AttachmentKind,
   type BankStatement,
+  type Prisma,
 } from '@prisma/client';
 import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
@@ -47,6 +48,14 @@ export interface StatementView {
   sizeBytes: number;
   status: StatementStatus;
   error: string | null;
+  /**
+   * step8: the checks against the bank's own figures that FAILED, in words ("Withdrawals:
+   * statement $4,812.40, read $4,728.03 (off by $84.37)") — the "Details" of a statement
+   * that needs review. Empty for every other statement.
+   */
+  checks: string[];
+  /** step8: what the customer said was wrong with it (its chat); given to every re-read. */
+  customerNote: string | null;
   accountName: string | null;
   /** BANK | CREDIT_CARD (null = read before it was recorded). */
   accountKind: string | null;
@@ -94,6 +103,11 @@ export interface TransactionView {
   name: string | null;
   /** On a split made for a receipt line: that line ("Pampers"). */
   itemName?: string | null;
+  /**
+   * step9: a one-time edit — the name the rules give this row (`ruleName`) that it is an
+   * exception from. Absent = it follows the rules.
+   */
+  exception?: { main: string };
   amount: number;
   offsetAccount: string;
   debitAccount: string;
@@ -215,8 +229,9 @@ function withTaxLines(
 }
 
 /**
- * What the customer sees of a statement. The check against the bank's figures
- * (`verification`, `verificationDetail`) is stored for us but deliberately NOT returned.
+ * What the customer sees of a statement. Of the check against the bank's figures
+ * (`verificationDetail`) only the FAILED checks of a statement that needs review are
+ * returned, in words (step8 — they used to stay with us).
  */
 function toView(
   s: BankStatement,
@@ -228,6 +243,9 @@ function toView(
     sizeBytes: s.sizeBytes,
     status: s.status,
     error: s.error,
+    checks:
+      s.status === 'NEEDS_REVIEW' ? failedChecks(s.verificationDetail) : [],
+    customerNote: s.customerNote,
     accountName: s.accountName,
     accountKind: s.accountKind,
     currency: s.currency,
@@ -242,6 +260,21 @@ function toView(
     movedByCustomer: s.accountNameByCustomer !== null,
     source: s.source,
   };
+}
+
+/** The failed (not skipped) checks' words, as the processor stored them. */
+export function failedChecks(detail: Prisma.JsonValue | null): string[] {
+  if (!Array.isArray(detail)) return [];
+  return detail.flatMap((c) => {
+    const check = c as {
+      ok?: boolean;
+      skipped?: string | null;
+      text?: string;
+    } | null;
+    return check && !check.ok && !check.skipped && check.text
+      ? [check.text]
+      : [];
+  });
 }
 
 /**
@@ -430,6 +463,11 @@ export class BookkeepingService {
       description: r.description,
       name: r.name,
       ...(r.itemName && { itemName: r.itemName }),
+      ...(r.exceptionRuleId !== null &&
+        r.ruleName &&
+        r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {
+          exception: { main: r.ruleName },
+        }),
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
       offsetAccount: r.offsetAccount,
       debitAccount: r.debitAccount,
@@ -603,7 +641,16 @@ export class BookkeepingService {
     });
   }
 
-  async retry(scope: BookScope, id: number): Promise<StatementView> {
+  /**
+   * Read a statement that failed again. `note` (step8: what the customer said was wrong
+   * with it, from its chat) is kept on the statement and given to this and every later
+   * re-read; an empty note clears it, no note leaves it as it is.
+   */
+  async retry(
+    scope: BookScope,
+    id: number,
+    note?: string,
+  ): Promise<StatementView> {
     const s = await this.owned(scope, id);
     if (
       s.status !== StatementStatus.FAILED &&
@@ -621,6 +668,9 @@ export class BookkeepingService {
         attempts: 0,
         runs: 0,
         error: null,
+        ...(note === undefined
+          ? {}
+          : { customerNote: note.trim().slice(0, 4000) || null }),
       },
     });
     this.processor.processSoon();

@@ -62,6 +62,8 @@ export const FIXED_ASSISTANT_KEYS = [
   // step12e: last so the rows already saved keep their sortOrder; the prompt puts it after
   // core.issues.
   'core.requests',
+  // step8: the "Ask AI" chat about one statement we could not read.
+  'statement',
 ] as const;
 export type FixedAssistantKey = (typeof FIXED_ASSISTANT_KEYS)[number];
 

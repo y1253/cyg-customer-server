@@ -35,6 +35,7 @@ const crypto_util_1 = require("./crypto.util");
 const plaid_client_1 = require("./plaid.client");
 const transaction_alert_util_1 = require("./transaction-alert.util");
 const change_feed_1 = require("../assistant/change-feed");
+const plaid_error_util_1 = require("./plaid-error.util");
 const LOGIN_CODES = new Set([
     'ITEM_LOGIN_REQUIRED',
     'PENDING_EXPIRATION',
@@ -184,6 +185,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
                     lastSyncAt: new Date(),
                     status: 'ACTIVE',
                     error: note,
+                    errorDetail: null,
                     historyDone,
                 },
             });
@@ -401,7 +403,11 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         await this.prisma.plaidItem
             .update({
             where: { id: item.id },
-            data: { status, error: message.slice(0, 2000) },
+            data: {
+                status,
+                error: (0, plaid_error_util_1.explainPlaidError)(plaidErr?.code),
+                errorDetail: (0, plaid_error_util_1.plaidErrorDetail)(null, message),
+            },
         })
             .catch(() => undefined);
     }

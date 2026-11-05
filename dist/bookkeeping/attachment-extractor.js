@@ -12,6 +12,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AttachmentExtractor = exports.MAX_DOCUMENTS_PER_FILE = exports.UnreadableAttachmentError = exports.isPaymentDocument = exports.DOCUMENT_TYPES = void 0;
 exports.cleanReadings = cleanReadings;
 exports.cleanReading = cleanReading;
+exports.cleanBox = cleanBox;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const openai_client_1 = require("../ai/openai.client");
@@ -54,6 +55,7 @@ const DOCUMENT_SCHEMA = {
         'payee',
         'memo',
         'category',
+        'box',
     ],
     properties: {
         documentType: { type: 'string', enum: [...exports.DOCUMENT_TYPES] },
@@ -77,6 +79,22 @@ const DOCUMENT_SCHEMA = {
         payee: text,
         memo: text,
         category: { type: ['string', 'null'], enum: [...chart_of_accounts_1.ACCOUNT_NAMES, null] },
+        box: {
+            anyOf: [
+                { type: 'null' },
+                {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['x0', 'y0', 'x1', 'y1'],
+                    properties: {
+                        x0: { type: 'number' },
+                        y0: { type: 'number' },
+                        x1: { type: 'number' },
+                        y1: { type: 'number' },
+                    },
+                },
+            ],
+        },
     },
 };
 const READING_SCHEMA = {
@@ -117,7 +135,13 @@ amounts together. One document = one entry. For each entry:
   a person paid wages -> Payroll & Wages); "Uncategorized" when unclear; null for
   anything that is not a cheque.
 For a BANK_STATEMENT or a DOCUMENT leave the money fields null and items empty unless a
-single payment amount is clearly the point of it.`;
+single payment amount is clearly the point of it.
+- box: when this IMAGE shows more than one document (two or more cheques, a receipt next
+  to a cheque), where THIS document is: {x0, y0, x1, y1} as fractions of the image's width
+  and height (0,0 = top-left, 1,1 = bottom-right), drawn around the whole document and
+  nothing of the next one — each document is cut out on its own from it. The front and the
+  back of the SAME cheque printed side by side are ONE document: its box is the front.
+  null when the file shows only one document, or for a PDF, a transcript or a text.`;
 const DOCUMENT_PROMPT = 'A small-business owner sent this file to their bookkeeper. It may be a receipt, an ' +
     'invoice, one or more cheques, a deposit slip, a statement, or something else entirely ' +
     '(a letter, a request, a screenshot). Copy what is printed; never guess a number that ' +
@@ -301,6 +325,25 @@ function cleanReading(r) {
         category: typeof r.category === 'string' && chart_of_accounts_1.ACCOUNT_NAMES.includes(r.category)
             ? r.category
             : null,
+        box: cleanBox(r.box),
     };
+}
+function cleanBox(b) {
+    if (!b || typeof b !== 'object')
+        return null;
+    const v = b;
+    const n = (k) => typeof v[k] === 'number' && Number.isFinite(v[k])
+        ? Math.min(1, Math.max(0, v[k]))
+        : NaN;
+    const [x0, y0, x1, y1] = [n('x0'), n('y0'), n('x1'), n('y1')];
+    if ([x0, y0, x1, y1].some(Number.isNaN))
+        return null;
+    const box = {
+        x0: Math.min(x0, x1),
+        y0: Math.min(y0, y1),
+        x1: Math.max(x0, x1),
+        y1: Math.max(y0, y1),
+    };
+    return box.x1 - box.x0 >= 0.05 && box.y1 - box.y0 >= 0.05 ? box : null;
 }
 //# sourceMappingURL=attachment-extractor.js.map

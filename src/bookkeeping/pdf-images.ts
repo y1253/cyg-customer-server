@@ -97,39 +97,7 @@ export async function itemImages(
         let boxes = itemBoxes(found, bounds);
         if (!boxes.length && !hasRows) boxes = [bounds];
         boxes.forEach((box, index) => {
-          // The pixmap starts at 0,0 (mupdf's draw device ignores its origin), so the
-          // page is shifted onto it: scale, then move the box's corner to the origin.
-          const matrix: [number, number, number, number, number, number] = [
-            SCALE,
-            0,
-            0,
-            SCALE,
-            -box[0] * SCALE,
-            -box[1] * SCALE,
-          ];
-          const pix = new mupdf.Pixmap(
-            mupdf.ColorSpace.DeviceRGB,
-            [
-              0,
-              0,
-              Math.round((box[2] - box[0]) * SCALE),
-              Math.round((box[3] - box[1]) * SCALE),
-            ],
-            false,
-          );
-          try {
-            pix.clear(255);
-            const device = new mupdf.DrawDevice(matrix, pix);
-            try {
-              p.run(device, matrix);
-              device.close();
-            } finally {
-              device.destroy();
-            }
-            out.push({ page, index, png: Buffer.from(pix.asPNG()) });
-          } finally {
-            pix.destroy();
-          }
+          out.push({ page, index, png: renderClip(mupdf, p, box, SCALE) });
         });
       } catch {
         // One unreadable page never costs the others their images.
@@ -140,5 +108,52 @@ export async function itemImages(
     return out;
   } finally {
     doc.destroy();
+  }
+}
+
+type Mupdf = typeof import('mupdf');
+type MupdfPage = ReturnType<InstanceType<Mupdf['Document']>['loadPage']>;
+
+/**
+ * One box of a page as a PNG, at `scale` pixels per point. The pixmap starts at 0,0
+ * (mupdf's draw device ignores its origin), so the page is shifted onto it: scale, then move
+ * the box's corner to the origin. step9: also cuts each cheque out of an image (`crop.ts`).
+ */
+export function renderClip(
+  mupdf: Mupdf,
+  p: MupdfPage,
+  box: Box,
+  scale: number,
+): Buffer {
+  const matrix: [number, number, number, number, number, number] = [
+    scale,
+    0,
+    0,
+    scale,
+    -box[0] * scale,
+    -box[1] * scale,
+  ];
+  const pix = new mupdf.Pixmap(
+    mupdf.ColorSpace.DeviceRGB,
+    [
+      0,
+      0,
+      Math.max(1, Math.round((box[2] - box[0]) * scale)),
+      Math.max(1, Math.round((box[3] - box[1]) * scale)),
+    ],
+    false,
+  );
+  try {
+    pix.clear(255);
+    const device = new mupdf.DrawDevice(matrix, pix);
+    try {
+      p.run(device, matrix);
+      device.close();
+    } finally {
+      device.destroy();
+    }
+    return Buffer.from(pix.asPNG());
+  } finally {
+    pix.destroy();
   }
 }

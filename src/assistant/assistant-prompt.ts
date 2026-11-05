@@ -119,10 +119,12 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'If they ask how we will reach them, say so; they can change it on their Account page.',
   ask_ai: [
     '',
-    'THIS CHAT IS ABOUT ONE FILE we could not match to a transaction (shown below with ' +
-      'what was read off it and why it did not match). Help the customer file it:',
-    '1. Use their explanation to search again with find_match_candidates (widen dates, ' +
-      'use the amount or a word they gave), then attach_receipt.',
+    'THIS CHAT IS ABOUT ONE FILE (shown below: what was read off it, where it is attached ' +
+      'or why it did not match, where it came from, and the other documents read off the ' +
+      'same image). It may be unmatched, or already attached. Help the customer with it:',
+    '1. Not matched yet: use their explanation to search again with ' +
+      'find_match_candidates (widen dates, use the amount or a word they gave), then ' +
+      'attach_receipt.',
     '2. When you understand WHY the automatic match failed (e.g. the bank prints a ' +
       'different name, the charge is split, the date is the shipping date), call save_rule ' +
       'with the SHORTEST possible rule (max 15 words) so it is right next time: scope ' +
@@ -130,6 +132,31 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       "'global' only when it would help every customer.",
     '3. When the customer tells you where it goes but you cannot see why it matches, do ' +
       'what they said with attach_receipt understood=false — the customer will be warned.',
+    '4. When they say WE got it wrong — read wrong, attached to the wrong transaction, ' +
+      'two cheques (or a cheque and its neighbour) in one image filed as one — call ' +
+      'report_ai_issue with their words and this attachment id first, then fix it: ' +
+      'detach_receipt / attach_receipt for a wrong transaction, or reread_attachment with ' +
+      'note = what is wrong with THIS file to read it again from scratch (an image with ' +
+      'several cheques is then cut into one file per cheque, each matched on its own).',
+  ].join('\n'),
+  statement: [
+    '',
+    'THIS CHAT IS ABOUT ONE BANK / CARD STATEMENT we could not read, or whose transactions ' +
+      "do not add up to the bank's own totals (shown below: why, and which checks failed). " +
+      'Help the customer fix it:',
+    '1. Ask what is wrong if they have not said (which page, which amount, what kind of ' +
+      'account it is). Use what is shown below; do not ask them to repeat it.',
+    '2. When they say how it was READ wrong ("the withdrawals on page 3 were read as ' +
+      'deposits", "it is a credit card", "the second page is a different account"), that ' +
+      'is our mistake: call report_ai_issue with their words and the statement — a ' +
+      'specialist decides whether it is a problem with how EVERY statement is read, with ' +
+      "this customer's statements, or only this one, and fixes it there. Follow what it " +
+      'returns.',
+    '3. Then read it again with retry_statement, passing note = what is wrong with THIS ' +
+      'statement in a short sentence (the reader follows it on every re-read). Use ' +
+      'move_statement first when they say it is filed under the wrong account.',
+    '4. Tell them it is being read again (a few minutes) and that it appears in their ' +
+      'books once it matches the bank totals.',
   ].join('\n'),
   files: [
     '',
@@ -165,6 +192,8 @@ export interface PromptInput {
   nameUnknown?: boolean;
   /** Set for the "Ask AI" chat about one unfiled attachment. */
   attachment?: unknown;
+  /** step8: set for the "Ask AI" chat about one statement we could not read. */
+  statement?: unknown;
   /**
    * step11b: the files that came with THIS message, already read — what each one is, what
    * was read off it and whether it was filed. The answer reports on them.
@@ -229,6 +258,12 @@ export function systemPrompt(
   // The file itself is data the code adds — an edited block can never drop it.
   if (p.attachment !== undefined) {
     lines.push(block('ask_ai') ?? '', `File: ${JSON.stringify(p.attachment)}`);
+  }
+  if (p.statement !== undefined) {
+    lines.push(
+      block('statement') ?? '',
+      `Statement: ${JSON.stringify(p.statement)}`,
+    );
   }
   if (p.files?.length) {
     lines.push(block('files') ?? '', `Files: ${JSON.stringify(p.files)}`);

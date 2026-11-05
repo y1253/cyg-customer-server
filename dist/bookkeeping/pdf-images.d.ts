@@ -10,3 +10,7 @@ export interface ItemImage {
 }
 export declare function itemBoxes(boxes: readonly Box[], page: Box): Box[];
 export declare function itemImages(pdf: Buffer, pages: readonly ImagePage[]): Promise<ItemImage[]>;
+type Mupdf = typeof import('mupdf');
+type MupdfPage = ReturnType<InstanceType<Mupdf['Document']>['loadPage']>;
+export declare function renderClip(mupdf: Mupdf, p: MupdfPage, box: Box, scale: number): Buffer;
+export {};

@@ -65,9 +65,32 @@ export interface NameView {
   agencyIds: number[];
   /**
    * The descriptions the AI put under this name (one per description key, most rows first,
-   * at most `MAX_DESCRIPTIONS`), with the category their rows mostly have.
+   * at most `MAX_DESCRIPTIONS`), with the category their rows mostly have — and (step9) the
+   * customer's rule that ties it to this name, and its exceptions.
    */
-  descriptions: Array<{ description: string; category: string; rows: number }>;
+  descriptions: NameDescriptionView[];
+  /** step9: the customer's "description contains …" rules that give rows this name. */
+  followsContains: Array<{
+    key: string;
+    text: string;
+    category: string | null;
+    rows: number;
+  }>;
+  /**
+   * step9: this name's rows that are one-time EXCEPTIONS from another name (the name their
+   * description's rules give, `ruleName`) — "exception from Walmart".
+   */
+  exceptionOf: Array<{
+    main: string;
+    key: string;
+    description: string;
+    rows: number;
+  }>;
+  /**
+   * step9: its Names-tab group — `LedgerName.group` (CUSTOMER | SUPPLIER | OTHER | g<id>), else
+   * its `type`. A label only.
+   */
+  group: string;
   /** What an edit of this row saves under: a NAME rule with this key. */
   ruleKey: string;
   /** The customer's own rule behind this row, if any — what "Reset to default" removes. */
@@ -78,6 +101,31 @@ export interface NameView {
    * `NamesView.unrecognized`.
    */
   unclarified?: true;
+}
+
+/** step9: one description under a name on the Names tab. */
+export interface NameDescriptionView {
+  /** Its description key — what a DESCRIPTION rule (an Assign, a drag) saves under. */
+  key: string;
+  /** One of its descriptions, as printed. */
+  description: string;
+  category: string;
+  rows: number;
+  /**
+   * The customer's rule that gives these rows this name (`personalRuleId`): an exact
+   * DESCRIPTION rule or a CONTAINS rule. Null = the AI / firm memory named them.
+   */
+  rule: {
+    id: number;
+    matchType: 'DESCRIPTION' | 'CONTAINS';
+    matchKey: string;
+    text: string;
+  } | null;
+  /**
+   * Rows of this description the customer renamed ONE time — they are exceptions from this
+   * name, listed under the names they carry now.
+   */
+  exceptions: Array<{ name: string; rows: number }>;
 }
 
 /** Rows the AI found no payee name for, grouped by description, on the Names tab. */
@@ -109,8 +157,26 @@ export interface ContainsRuleView {
 export interface NamesView {
   names: NameView[];
   unrecognized: UnrecognizedView[];
+  /** step9: only the CONTAINS rules with NO name (category only) — the others sit in their name. */
   containsRules: ContainsRuleView[];
+  /** step9: the Names-tab groups — the built-in three, then the customer's own. */
+  groups: NameGroupView[];
 }
+
+/** step9: a Names-tab group. `key` is what `LedgerName.group` stores. */
+export interface NameGroupView {
+  key: string;
+  label: string;
+  /** Made by the customer (renamable, removable). */
+  id?: number;
+}
+
+/** step9: the built-in groups, in Names-tab order. */
+export const BUILTIN_GROUPS: NameGroupView[] = [
+  { key: 'SUPPLIER', label: 'Suppliers' },
+  { key: 'CUSTOMER', label: 'Customers' },
+  { key: 'OTHER', label: 'Other' },
+];
 
 /** One tax line on a row, as the ledger, exports and reports read it. */
 export interface StoredTax {
@@ -393,11 +459,22 @@ export class TaxService {
       }),
       this.prisma.bankTransaction.findMany({
         where: { ...scopeWhere(scope), name: { not: null }, statement: DONE },
-        select: { ...TOTAL_SELECT, name: true, description: true, offsetAccount: true },
+        select: {
+          ...TOTAL_SELECT,
+          ...PROVENANCE_SELECT,
+          name: true,
+          description: true,
+          offsetAccount: true,
+        },
       }),
       this.prisma.bankTransaction.findMany({
         where: { ...scopeWhere(scope), name: null, statement: DONE },
-        select: { ...TOTAL_SELECT, description: true, offsetAccount: true },
+        select: {
+          ...TOTAL_SELECT,
+          ...PROVENANCE_SELECT,
+          description: true,
+          offsetAccount: true,
+        },
       }),
       this.prisma.ledgerNameAgency.findMany({
         where: { ...scopeWhere(scope), agency: { deletedAt: null } },
@@ -407,6 +484,7 @@ export class TaxService {
       this.prisma.customerNameRule.findMany({
         where: scopeWhere(scope),
         select: {
+          id: true,
           matchType: true,
           matchKey: true,
           name: true,
@@ -417,7 +495,32 @@ export class TaxService {
       }),
       this.typeContext(scope),
     ]);
-    const descriptionsOf = groupDescriptions(named);
+    const [placed, ownGroups] = await Promise.all([
+      this.prisma.ledgerName.findMany({
+        where: { ...scopeWhere(scope), group: { not: null } },
+        select: { name: true, group: true },
+      }),
+      this.prisma.customerNameGroup.findMany({
+        where: { ...scopeWhere(scope), deletedAt: null },
+        orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+        select: { id: true, name: true },
+      }),
+    ]);
+    const groupList: NameGroupView[] = [
+      ...BUILTIN_GROUPS,
+      ...ownGroups.map((g) => ({ key: `g${g.id}`, label: g.name, id: g.id })),
+    ];
+    const validGroups = new Set(groupList.map((g) => g.key));
+    const groupOf = new Map(
+      placed
+        .filter((l) => l.group && validGroups.has(l.group))
+        .map((l) => [nameKey(l.name), l.group!]),
+    );
+    const rulesById = new Map(rules.map((r) => [r.id, r]));
+    const { descriptionsOf, exceptionOf } = groupDescriptions(
+      [...named, ...nameless],
+      rulesById,
+    );
     const shareOf = rowShares([...named, ...nameless]);
     const totalOf = new Map<string, number>();
     for (const r of named) {
@@ -479,6 +582,23 @@ export class TaxService {
           total: (totalOf.get(key) ?? 0) / 100,
           agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
           descriptions: descriptionsOf.get(key) ?? [],
+          followsContains: rules
+            .filter(
+              (r) =>
+                r.matchType === 'CONTAINS' && r.name && nameKey(r.name) === key,
+            )
+            .map((r) => ({
+              key: r.matchKey,
+              text: r.includeChars ?? r.matchKey,
+              category: r.category,
+              rows: [...named, ...nameless].filter(
+                (t) =>
+                  !t.splitOfId &&
+                  descriptionContains(t.description, r.matchKey),
+              ).length,
+            })),
+          exceptionOf: exceptionOf.get(key) ?? [],
+          group: groupOf.get(key) ?? typeOfCategory(category, ctx),
           ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
           rule,
         };
@@ -535,10 +655,19 @@ export class TaxService {
         total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
         agencyIds: agenciesOf.get(nameTaxKey(null)) ?? [],
         descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
+          key: u.key,
           description: u.sampleDescription,
           category: u.category,
           rows: u.rows,
+          rule: null,
+          exceptions:
+            descriptionsOf
+              .get(nameKey(UNCLARIFIED_NAME))
+              ?.find((d) => d.key === u.key)?.exceptions ?? [],
         })),
+        followsContains: [],
+        exceptionOf: exceptionOf.get(nameKey(UNCLARIFIED_NAME)) ?? [],
+        group: 'OTHER',
         ruleKey: '',
         rule: null,
         unclarified: true,
@@ -547,8 +676,10 @@ export class TaxService {
     }
 
     const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
+    // A CONTAINS rule that names its rows lives in that name (`followsContains`); only the
+    // category-only ones are listed on their own.
     const containsRules = rules
-      .filter((r) => r.matchType === 'CONTAINS')
+      .filter((r) => r.matchType === 'CONTAINS' && !r.name)
       .map(
         (r): ContainsRuleView => ({
           text: r.includeChars ?? r.matchKey,
@@ -561,7 +692,131 @@ export class TaxService {
         }),
       );
 
-    return { names, unrecognized, containsRules };
+    return { names, unrecognized, containsRules, groups: groupList };
+  }
+
+  /**
+   * step9: put a name in a Names-tab group — a label only (its accounts and tax stay).
+   * `group` null = follow its category again. One `LedgerName` row per name and book.
+   */
+  async setNameGroup(
+    scope: BookScope,
+    rawName: string,
+    group: string | null,
+  ): Promise<void> {
+    const name = rawName.trim();
+    if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
+      throw new BadRequestException('Pick a name');
+    if (group && /^g\d+$/.test(group)) {
+      const own = await this.prisma.customerNameGroup.findFirst({
+        where: {
+          id: Number(group.slice(1)),
+          ...scopeWhere(scope),
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!own) throw new BadRequestException('That group no longer exists');
+    }
+    const existing = await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name },
+      select: { id: true },
+    });
+    if (existing) {
+      await this.prisma.ledgerName.update({
+        where: { id: existing.id },
+        data: { group },
+      });
+    } else if (group) {
+      await this.prisma.ledgerName.create({
+        data: { ...scopeWhere(scope), name, group },
+      });
+    }
+  }
+
+  /** step9: a new Names-tab group of the customer's own ("Employees"). */
+  async createNameGroup(
+    scope: BookScope,
+    rawName: string,
+  ): Promise<NameGroupView> {
+    const name = rawName.trim().slice(0, 64);
+    const groups = await this.prisma.customerNameGroup.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null },
+      select: { name: true, sortOrder: true },
+    });
+    const taken = [
+      ...BUILTIN_GROUPS.map((g) => g.label),
+      ...groups.map((g) => g.name),
+    ];
+    if (taken.some((t) => t.toLowerCase() === name.toLowerCase()))
+      throw new BadRequestException(`You already have a group "${name}"`);
+    const row = await this.prisma.customerNameGroup.create({
+      data: {
+        ...scopeWhere(scope),
+        name,
+        sortOrder: groups.reduce((n, g) => Math.max(n, g.sortOrder + 1), 0),
+      },
+    });
+    return { key: `g${row.id}`, label: row.name, id: row.id };
+  }
+
+  async renameNameGroup(
+    scope: BookScope,
+    id: number,
+    rawName: string,
+  ): Promise<void> {
+    const found = await this.prisma.customerNameGroup.updateMany({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+      data: { name: rawName.trim().slice(0, 64) },
+    });
+    if (!found.count) throw new NotFoundException('Group not found');
+  }
+
+  /** Removing a group sends its names back to following their category. */
+  async deleteNameGroup(scope: BookScope, id: number): Promise<void> {
+    const found = await this.prisma.customerNameGroup.updateMany({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+    if (!found.count) throw new NotFoundException('Group not found');
+    await this.prisma.ledgerName.updateMany({
+      where: { ...scopeWhere(scope), group: `g${id}` },
+      data: { group: null },
+    });
+  }
+
+  /**
+   * step9: the Names-tab search by bank description — every name whose rows' descriptions
+   * contain `q` (case-insensitive), with the matching descriptions (one per key).
+   */
+  async searchDescriptions(
+    scope: BookScope,
+    q: string,
+  ): Promise<Array<{ name: string; key: string; description: string }>> {
+    const text = q.trim();
+    if (text.length < 2) return [];
+    const rows = await this.prisma.bankTransaction.findMany({
+      where: {
+        ...scopeWhere(scope),
+        statement: DONE,
+        splitOfId: null,
+        description: { contains: text },
+      },
+      select: { name: true, description: true },
+      take: 2000,
+    });
+    const seen = new Map<
+      string,
+      { name: string; key: string; description: string }
+    >();
+    for (const r of rows) {
+      const name = r.name ?? UNCLARIFIED_NAME;
+      const key =
+        descriptionKey(r.description) || r.description.trim().toLowerCase();
+      const k = `${nameKey(name)}|${key}`;
+      if (!seen.has(k)) seen.set(k, { name, key, description: r.description });
+    }
+    return [...seen.values()].slice(0, 300);
   }
 
   /**
@@ -687,6 +942,12 @@ const MAX_DESCRIPTIONS = 25;
  * description and the category those rows mostly have, most rows first.
  */
 const TOTAL_SELECT = { id: true, amount: true, splitOfId: true } as const;
+/** step9: where a row's name came from — for a description's rule and its exceptions. */
+const PROVENANCE_SELECT = {
+  personalRuleId: true,
+  exceptionRuleId: true,
+  ruleName: true,
+} as const;
 
 /**
  * Each row's own share of the money, in cents: a split its amount, a parent what its splits
@@ -698,12 +959,19 @@ function rowShares(
     amount: Prisma.Decimal | number;
     splitOfId: number | null;
   }>,
-): (row: { id: number; amount: Prisma.Decimal | number; splitOfId: number | null }) => number {
+): (row: {
+  id: number;
+  amount: Prisma.Decimal | number;
+  splitOfId: number | null;
+}) => number {
   const cents = (a: Prisma.Decimal | number) => Math.round(Number(a) * 100);
   const splitCents = new Map<number, number>();
   for (const r of rows) {
     if (r.splitOfId === null) continue;
-    splitCents.set(r.splitOfId, (splitCents.get(r.splitOfId) ?? 0) + cents(r.amount));
+    splitCents.set(
+      r.splitOfId,
+      (splitCents.get(r.splitOfId) ?? 0) + cents(r.amount),
+    );
   }
   return (r) =>
     r.splitOfId !== null
@@ -713,64 +981,128 @@ function rowShares(
 
 function groupDescriptions(
   rows: ReadonlyArray<{
-    name: string | null;
+    name?: string | null;
     description: string;
     offsetAccount: string;
+    personalRuleId: number | null;
+    exceptionRuleId: number | null;
+    ruleName: string | null;
   }>,
-): Map<string, Array<{ description: string; category: string; rows: number }>> {
-  const byName = new Map<
+  rulesById: ReadonlyMap<
+    number,
+    { matchType: string; matchKey: string; includeChars: string | null }
+  >,
+): {
+  descriptionsOf: Map<string, NameDescriptionView[]>;
+  exceptionOf: Map<string, NameView['exceptionOf']>;
+} {
+  type Group = {
+    description: string;
+    categories: Map<string, number>;
+    rules: Map<number, number>;
+    exceptions: Map<string, { name: string; rows: number }>;
+    rows: number;
+  };
+  const byName = new Map<string, Map<string, Group>>();
+  const groupFor = (name: string, key: string, description: string) => {
+    const groups = byName.get(name) ?? new Map<string, Group>();
+    byName.set(name, groups);
+    const g = groups.get(key) ?? {
+      description,
+      categories: new Map<string, number>(),
+      rules: new Map<number, number>(),
+      exceptions: new Map<string, { name: string; rows: number }>(),
+      rows: 0,
+    };
+    groups.set(key, g);
+    return g;
+  };
+  const exceptionOf = new Map<
     string,
-    Map<string, { description: string; categories: Map<string, number> }>
+    Map<string, NameView['exceptionOf'][number]>
   >();
   for (const r of rows) {
-    if (!r.name) continue;
-    const name = r.name.toLowerCase();
+    const own = r.name ?? UNCLARIFIED_NAME;
+    const name = own.toLowerCase();
     const key =
       descriptionKey(r.description) || r.description.trim().toLowerCase();
-    const groups: Map<
-      string,
-      { description: string; categories: Map<string, number> }
-    > =
-      byName.get(name) ??
-      new Map<
-        string,
-        { description: string; categories: Map<string, number> }
-      >();
-    const g = groups.get(key) ?? {
-      description: r.description,
-      categories: new Map<string, number>(),
-    };
+    const g = groupFor(name, key, r.description);
+    g.rows++;
     g.categories.set(
       r.offsetAccount,
       (g.categories.get(r.offsetAccount) ?? 0) + 1,
     );
-    groups.set(key, g);
-    byName.set(name, groups);
+    if (r.personalRuleId !== null)
+      g.rules.set(r.personalRuleId, (g.rules.get(r.personalRuleId) ?? 0) + 1);
+    // An exception: the rules give it another name (`ruleName`) — counted under THAT name.
+    const main = r.exceptionRuleId !== null ? r.ruleName : null;
+    if (main && main.toLowerCase() !== name) {
+      const m = groupFor(main.toLowerCase(), key, r.description);
+      const e = m.exceptions.get(name) ?? { name: own, rows: 0 };
+      e.rows++;
+      m.exceptions.set(name, e);
+      const mine =
+        exceptionOf.get(name) ??
+        new Map<string, NameView['exceptionOf'][number]>();
+      const x = mine.get(`${main.toLowerCase()}|${key}`) ?? {
+        main,
+        key,
+        description: r.description,
+        rows: 0,
+      };
+      x.rows++;
+      mine.set(`${main.toLowerCase()}|${key}`, x);
+      exceptionOf.set(name, mine);
+    }
   }
-  const out = new Map<
-    string,
-    Array<{ description: string; category: string; rows: number }>
-  >();
+  const descriptionsOf = new Map<string, NameDescriptionView[]>();
   for (const [name, groups] of byName) {
-    out.set(
+    descriptionsOf.set(
       name,
-      [...groups.values()]
-        .map((g) => {
+      [...groups.entries()]
+        .map(([key, g]): NameDescriptionView => {
           const sorted = [...g.categories.entries()].sort(
             (a, b) => b[1] - a[1],
           );
+          const ruleId = [...g.rules.entries()].sort(
+            (a, b) => b[1] - a[1],
+          )[0]?.[0];
+          const rule = ruleId === undefined ? undefined : rulesById.get(ruleId);
           return {
+            key,
             description: g.description,
-            category: sorted[0][0],
-            rows: sorted.reduce((n, [, c]) => n + c, 0),
+            category: sorted[0]?.[0] ?? UNCATEGORIZED,
+            rows: g.rows,
+            rule:
+              rule &&
+              ruleId !== undefined &&
+              (rule.matchType === 'DESCRIPTION' ||
+                rule.matchType === 'CONTAINS')
+                ? {
+                    id: ruleId,
+                    matchType: rule.matchType,
+                    matchKey: rule.matchKey,
+                    text: rule.includeChars ?? rule.matchKey,
+                  }
+                : null,
+            exceptions: [...g.exceptions.values()].sort(
+              (a, b) => b.rows - a.rows,
+            ),
           };
         })
         .sort(
           (a, b) =>
-            b.rows - a.rows || a.description.localeCompare(b.description),
+            b.rows - a.rows ||
+            b.exceptions.length - a.exceptions.length ||
+            a.description.localeCompare(b.description),
         )
         .slice(0, MAX_DESCRIPTIONS),
     );
   }
-  return out;
+  return {
+    descriptionsOf,
+    exceptionOf: new Map(
+      [...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]]),
+    ),
+  };
 }

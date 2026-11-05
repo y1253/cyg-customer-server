@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TaxService = void 0;
+exports.TaxService = exports.BUILTIN_GROUPS = void 0;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
@@ -20,6 +20,11 @@ const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const tax_util_1 = require("./tax.util");
+exports.BUILTIN_GROUPS = [
+    { key: 'SUPPLIER', label: 'Suppliers' },
+    { key: 'CUSTOMER', label: 'Customers' },
+    { key: 'OTHER', label: 'Other' },
+];
 const KIND_ORDER = ['SALES', 'PURCHASE'];
 const toAgency = (a) => ({
     id: a.id,
@@ -218,11 +223,22 @@ let TaxService = class TaxService {
             }),
             this.prisma.bankTransaction.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), name: { not: null }, statement: DONE },
-                select: { ...TOTAL_SELECT, name: true, description: true, offsetAccount: true },
+                select: {
+                    ...TOTAL_SELECT,
+                    ...PROVENANCE_SELECT,
+                    name: true,
+                    description: true,
+                    offsetAccount: true,
+                },
             }),
             this.prisma.bankTransaction.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), name: null, statement: DONE },
-                select: { ...TOTAL_SELECT, description: true, offsetAccount: true },
+                select: {
+                    ...TOTAL_SELECT,
+                    ...PROVENANCE_SELECT,
+                    description: true,
+                    offsetAccount: true,
+                },
             }),
             this.prisma.ledgerNameAgency.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), agency: { deletedAt: null } },
@@ -232,6 +248,7 @@ let TaxService = class TaxService {
             this.prisma.customerNameRule.findMany({
                 where: (0, scope_1.scopeWhere)(scope),
                 select: {
+                    id: true,
                     matchType: true,
                     matchKey: true,
                     name: true,
@@ -242,7 +259,27 @@ let TaxService = class TaxService {
             }),
             this.typeContext(scope),
         ]);
-        const descriptionsOf = groupDescriptions(named);
+        const [placed, ownGroups] = await Promise.all([
+            this.prisma.ledgerName.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), group: { not: null } },
+                select: { name: true, group: true },
+            }),
+            this.prisma.customerNameGroup.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+                orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+                select: { id: true, name: true },
+            }),
+        ]);
+        const groupList = [
+            ...exports.BUILTIN_GROUPS,
+            ...ownGroups.map((g) => ({ key: `g${g.id}`, label: g.name, id: g.id })),
+        ];
+        const validGroups = new Set(groupList.map((g) => g.key));
+        const groupOf = new Map(placed
+            .filter((l) => l.group && validGroups.has(l.group))
+            .map((l) => [(0, name_memory_util_1.nameKey)(l.name), l.group]));
+        const rulesById = new Map(rules.map((r) => [r.id, r]));
+        const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
         const shareOf = rowShares([...named, ...nameless]);
         const totalOf = new Map();
         for (const r of named) {
@@ -293,6 +330,17 @@ let TaxService = class TaxService {
                 total: (totalOf.get(key) ?? 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(name)) ?? [],
                 descriptions: descriptionsOf.get(key) ?? [],
+                followsContains: rules
+                    .filter((r) => r.matchType === 'CONTAINS' && r.name && (0, name_memory_util_1.nameKey)(r.name) === key)
+                    .map((r) => ({
+                    key: r.matchKey,
+                    text: r.includeChars ?? r.matchKey,
+                    category: r.category,
+                    rows: [...named, ...nameless].filter((t) => !t.splitOfId &&
+                        (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
+                })),
+                exceptionOf: exceptionOf.get(key) ?? [],
+                group: groupOf.get(key) ?? typeOfCategory(category, ctx),
                 ruleKey: rule?.matchType === 'NAME' ? rule.matchKey : key,
                 rule,
             };
@@ -337,10 +385,18 @@ let TaxService = class TaxService {
                 total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(null)) ?? [],
                 descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
+                    key: u.key,
                     description: u.sampleDescription,
                     category: u.category,
                     rows: u.rows,
+                    rule: null,
+                    exceptions: descriptionsOf
+                        .get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+                        ?.find((d) => d.key === u.key)?.exceptions ?? [],
                 })),
+                followsContains: [],
+                exceptionOf: exceptionOf.get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME)) ?? [],
+                group: 'OTHER',
                 ruleKey: '',
                 rule: null,
                 unclarified: true,
@@ -349,7 +405,7 @@ let TaxService = class TaxService {
         }
         const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
         const containsRules = rules
-            .filter((r) => r.matchType === 'CONTAINS')
+            .filter((r) => r.matchType === 'CONTAINS' && !r.name)
             .map((r) => ({
             text: r.includeChars ?? r.matchKey,
             key: r.matchKey,
@@ -357,7 +413,104 @@ let TaxService = class TaxService {
             category: r.category,
             rows: descriptions.filter((t) => (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
         }));
-        return { names, unrecognized, containsRules };
+        return { names, unrecognized, containsRules, groups: groupList };
+    }
+    async setNameGroup(scope, rawName, group) {
+        const name = rawName.trim();
+        if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            throw new common_1.BadRequestException('Pick a name');
+        if (group && /^g\d+$/.test(group)) {
+            const own = await this.prisma.customerNameGroup.findFirst({
+                where: {
+                    id: Number(group.slice(1)),
+                    ...(0, scope_1.scopeWhere)(scope),
+                    deletedAt: null,
+                },
+                select: { id: true },
+            });
+            if (!own)
+                throw new common_1.BadRequestException('That group no longer exists');
+        }
+        const existing = await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
+            select: { id: true },
+        });
+        if (existing) {
+            await this.prisma.ledgerName.update({
+                where: { id: existing.id },
+                data: { group },
+            });
+        }
+        else if (group) {
+            await this.prisma.ledgerName.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), name, group },
+            });
+        }
+    }
+    async createNameGroup(scope, rawName) {
+        const name = rawName.trim().slice(0, 64);
+        const groups = await this.prisma.customerNameGroup.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { name: true, sortOrder: true },
+        });
+        const taken = [
+            ...exports.BUILTIN_GROUPS.map((g) => g.label),
+            ...groups.map((g) => g.name),
+        ];
+        if (taken.some((t) => t.toLowerCase() === name.toLowerCase()))
+            throw new common_1.BadRequestException(`You already have a group "${name}"`);
+        const row = await this.prisma.customerNameGroup.create({
+            data: {
+                ...(0, scope_1.scopeWhere)(scope),
+                name,
+                sortOrder: groups.reduce((n, g) => Math.max(n, g.sortOrder + 1), 0),
+            },
+        });
+        return { key: `g${row.id}`, label: row.name, id: row.id };
+    }
+    async renameNameGroup(scope, id, rawName) {
+        const found = await this.prisma.customerNameGroup.updateMany({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            data: { name: rawName.trim().slice(0, 64) },
+        });
+        if (!found.count)
+            throw new common_1.NotFoundException('Group not found');
+    }
+    async deleteNameGroup(scope, id) {
+        const found = await this.prisma.customerNameGroup.updateMany({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            data: { deletedAt: new Date() },
+        });
+        if (!found.count)
+            throw new common_1.NotFoundException('Group not found');
+        await this.prisma.ledgerName.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), group: `g${id}` },
+            data: { group: null },
+        });
+    }
+    async searchDescriptions(scope, q) {
+        const text = q.trim();
+        if (text.length < 2)
+            return [];
+        const rows = await this.prisma.bankTransaction.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                statement: DONE,
+                splitOfId: null,
+                description: { contains: text },
+            },
+            select: { name: true, description: true },
+            take: 2000,
+        });
+        const seen = new Map();
+        for (const r of rows) {
+            const name = r.name ?? reports_util_1.UNCLARIFIED_NAME;
+            const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
+            const k = `${(0, name_memory_util_1.nameKey)(name)}|${key}`;
+            if (!seen.has(k))
+                seen.set(k, { name, key, description: r.description });
+        }
+        return [...seen.values()].slice(0, 300);
     }
     async setNameAgencies(scope, name, agencyIds) {
         const clean = name.trim();
@@ -453,6 +606,11 @@ exports.TaxService = TaxService = __decorate([
 ], TaxService);
 const MAX_DESCRIPTIONS = 25;
 const TOTAL_SELECT = { id: true, amount: true, splitOfId: true };
+const PROVENANCE_SELECT = {
+    personalRuleId: true,
+    exceptionRuleId: true,
+    ruleName: true,
+};
 function rowShares(rows) {
     const cents = (a) => Math.round(Number(a) * 100);
     const splitCents = new Map();
@@ -465,37 +623,84 @@ function rowShares(rows) {
         ? cents(r.amount)
         : cents(r.amount) - (splitCents.get(r.id) ?? 0);
 }
-function groupDescriptions(rows) {
+function groupDescriptions(rows, rulesById) {
     const byName = new Map();
-    for (const r of rows) {
-        if (!r.name)
-            continue;
-        const name = r.name.toLowerCase();
-        const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
-        const groups = byName.get(name) ??
-            new Map();
-        const g = groups.get(key) ?? {
-            description: r.description,
-            categories: new Map(),
-        };
-        g.categories.set(r.offsetAccount, (g.categories.get(r.offsetAccount) ?? 0) + 1);
-        groups.set(key, g);
+    const groupFor = (name, key, description) => {
+        const groups = byName.get(name) ?? new Map();
         byName.set(name, groups);
+        const g = groups.get(key) ?? {
+            description,
+            categories: new Map(),
+            rules: new Map(),
+            exceptions: new Map(),
+            rows: 0,
+        };
+        groups.set(key, g);
+        return g;
+    };
+    const exceptionOf = new Map();
+    for (const r of rows) {
+        const own = r.name ?? reports_util_1.UNCLARIFIED_NAME;
+        const name = own.toLowerCase();
+        const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
+        const g = groupFor(name, key, r.description);
+        g.rows++;
+        g.categories.set(r.offsetAccount, (g.categories.get(r.offsetAccount) ?? 0) + 1);
+        if (r.personalRuleId !== null)
+            g.rules.set(r.personalRuleId, (g.rules.get(r.personalRuleId) ?? 0) + 1);
+        const main = r.exceptionRuleId !== null ? r.ruleName : null;
+        if (main && main.toLowerCase() !== name) {
+            const m = groupFor(main.toLowerCase(), key, r.description);
+            const e = m.exceptions.get(name) ?? { name: own, rows: 0 };
+            e.rows++;
+            m.exceptions.set(name, e);
+            const mine = exceptionOf.get(name) ??
+                new Map();
+            const x = mine.get(`${main.toLowerCase()}|${key}`) ?? {
+                main,
+                key,
+                description: r.description,
+                rows: 0,
+            };
+            x.rows++;
+            mine.set(`${main.toLowerCase()}|${key}`, x);
+            exceptionOf.set(name, mine);
+        }
     }
-    const out = new Map();
+    const descriptionsOf = new Map();
     for (const [name, groups] of byName) {
-        out.set(name, [...groups.values()]
-            .map((g) => {
+        descriptionsOf.set(name, [...groups.entries()]
+            .map(([key, g]) => {
             const sorted = [...g.categories.entries()].sort((a, b) => b[1] - a[1]);
+            const ruleId = [...g.rules.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+            const rule = ruleId === undefined ? undefined : rulesById.get(ruleId);
             return {
+                key,
                 description: g.description,
-                category: sorted[0][0],
-                rows: sorted.reduce((n, [, c]) => n + c, 0),
+                category: sorted[0]?.[0] ?? chart_of_accounts_1.UNCATEGORIZED,
+                rows: g.rows,
+                rule: rule &&
+                    ruleId !== undefined &&
+                    (rule.matchType === 'DESCRIPTION' ||
+                        rule.matchType === 'CONTAINS')
+                    ? {
+                        id: ruleId,
+                        matchType: rule.matchType,
+                        matchKey: rule.matchKey,
+                        text: rule.includeChars ?? rule.matchKey,
+                    }
+                    : null,
+                exceptions: [...g.exceptions.values()].sort((a, b) => b.rows - a.rows),
             };
         })
-            .sort((a, b) => b.rows - a.rows || a.description.localeCompare(b.description))
+            .sort((a, b) => b.rows - a.rows ||
+            b.exceptions.length - a.exceptions.length ||
+            a.description.localeCompare(b.description))
             .slice(0, MAX_DESCRIPTIONS));
     }
-    return out;
+    return {
+        descriptionsOf,
+        exceptionOf: new Map([...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]])),
+    };
 }
 //# sourceMappingURL=tax.service.js.map

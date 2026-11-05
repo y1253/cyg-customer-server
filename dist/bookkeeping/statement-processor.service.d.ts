@@ -27,3 +27,4 @@ export declare class StatementProcessorService {
     private recordFailure;
 }
 export declare function needsReviewMessage(rereads: number, problems: string[]): string;
+export declare function withCustomerNote(rules: string, note: string | null): string;
