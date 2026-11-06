@@ -101,16 +101,20 @@ function buildReports(rows, from = null, to = null, options = {}) {
                 ...(foreign !== undefined && { foreignBalance: foreign }),
             };
         }),
-        ...[...chartNames, ...extra].map((name) => {
-            const type = typeOf(name);
+        ...[...chartNames, ...extra].flatMap((name) => {
             const t = period.offsets.get(name);
-            return {
-                name,
-                type,
-                bank: false,
-                balance: dollars(normal(type, t?.sum ?? 0)),
-                count: t?.count ?? 0,
-            };
+            if (!t?.count)
+                return [];
+            const type = typeOf(name);
+            return [
+                {
+                    name,
+                    type,
+                    bank: false,
+                    balance: dollars(normal(type, t.sum)),
+                    count: t.count,
+                },
+            ];
         }),
     ];
     const byName = (account, type) => [...(period.names.get(account) ?? new Map())]

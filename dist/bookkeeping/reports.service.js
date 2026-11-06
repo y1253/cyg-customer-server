@@ -117,7 +117,7 @@ let ReportsService = class ReportsService {
             offsetAccount: f.offsetAccount,
             bankAccount: f.bankAccount,
             date: f.date,
-            name: null,
+            name: f.offsetAccount,
             ...(fx.isForeign(f.statementId) && { foreign: 0 }),
         }));
         const view = (0, reports_util_1.buildReports)([...ledgerRows, ...revaluations], from, to, {

@@ -10,6 +10,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     private readonly tax;
     private readonly logger;
     onApplicationBootstrap(): void;
+    backfillNames(): Promise<number>;
     backfillProvenance(): Promise<number>;
     constructor(prisma: PrismaService, tax: TaxService);
     contextFor(scope: BookScope, descriptions: readonly string[], names?: ReadonlyArray<string | null | undefined>): Promise<ResolveContext & {

@@ -62,6 +62,28 @@ export function cleanName(name: string | null | undefined): string | null {
   return (name ?? '').trim().slice(0, NAME_MAX) || null;
 }
 
+/** step11: a description used as a name — whitespace folded, clipped to the column. */
+export function descriptionName(description: string): string | null {
+  return cleanName(description.replace(/\s+/g, ' '));
+}
+
+/**
+ * step11 (user's rule 2026-11-05): only an Uncategorized row may be nameless ("Unclarified
+ * name"). A row with a real category and no name is named by its description; an
+ * Uncategorized row named only by its description goes back to nameless.
+ */
+export function fallbackName(
+  name: string | null | undefined,
+  category: string,
+  description: string,
+): string | null {
+  const clean = cleanName(name);
+  const fromDescription = descriptionName(description);
+  if (category === UNCATEGORIZED)
+    return clean && clean === fromDescription ? null : clean;
+  return clean ?? fromDescription;
+}
+
 /** The lower-cased form a NAME rule is keyed on. MySQL compares names the same way. */
 export const nameKey = (name: string): string => name.trim().toLowerCase();
 
@@ -332,16 +354,22 @@ export function resolveRow(
     source = 'customer';
   }
 
+  // step11: a categorized row is never nameless — its description names it, and such a
+  // name is never learned by the firm memory.
+  const finalName = fallbackName(name, category, row.description);
+  const fromDescription =
+    !!finalName && finalName === descriptionName(row.description);
+
   return {
-    name,
+    name: finalName,
     category,
     source,
     followsName: followsName && !exception,
-    learnable: followsName && !customerName && !exception,
+    learnable: followsName && !customerName && !exception && !fromDescription,
     generalRuleId,
     personalRuleId,
     exceptionRuleId: exception?.id ?? null,
-    ruleName,
+    ruleName: fallbackName(ruleName, category, row.description),
   };
 }
 

@@ -6,6 +6,8 @@ export declare const containsKey: (text: string) => string;
 export declare const descriptionContains: (description: string, key: string) => boolean;
 export declare function descriptionKey(description: string | null | undefined): string;
 export declare function cleanName(name: string | null | undefined): string | null;
+export declare function descriptionName(description: string): string | null;
+export declare function fallbackName(name: string | null | undefined, category: string, description: string): string | null;
 export declare const nameKey: (name: string) => string;
 export interface MemoryEntry {
     id?: number;

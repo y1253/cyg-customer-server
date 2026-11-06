@@ -25,8 +25,10 @@ import {
   isBankCharge,
   isOwnersLoanMove,
   descriptionKey,
+  descriptionName,
   EXCEPTION,
   exceptionKey,
+  fallbackName,
   indexRules,
   memoryWrites,
   nameKey,
@@ -69,7 +71,53 @@ export class NameMemoryService implements OnApplicationBootstrap {
    * null) gets `syncProvenance` — once; afterwards every edit keeps it up to date.
    */
   onApplicationBootstrap(): void {
-    setTimeout(() => void this.backfillProvenance(), 60_000).unref();
+    setTimeout(
+      () => void this.backfillNames().then(() => this.backfillProvenance()),
+      60_000,
+    ).unref();
+  }
+
+  /**
+   * step11 backfill (same no-script pattern): rows with a real category and no name — read
+   * before the rule "only Uncategorized may be nameless" — are named by their description,
+   * then their book's provenance is synced. The `where` is its own "still to do" marker.
+   */
+  async backfillNames(): Promise<number> {
+    try {
+      const where = {
+        name: null,
+        offsetAccount: { not: UNCATEGORIZED },
+      } satisfies Prisma.BankTransactionWhereInput;
+      const books = await this.prisma.bankTransaction.groupBy({
+        by: ['customerId', 'bookId', 'companyId'],
+        where,
+      });
+      let named = 0;
+      for (const b of books) {
+        const descriptions = await this.prisma.bankTransaction.groupBy({
+          by: ['description'],
+          where: { ...where, ...scopeWhere(b) },
+        });
+        for (const { description } of descriptions) {
+          const name = descriptionName(description);
+          if (!name) continue;
+          const done = await this.prisma.bankTransaction.updateMany({
+            where: { ...where, ...scopeWhere(b), description },
+            data: { name },
+          });
+          named += done.count;
+        }
+        await this.syncProvenance(b);
+      }
+      if (named)
+        this.logger.log(
+          `named ${named} categorized row(s) by their description in ${books.length} book(s)`,
+        );
+      return named;
+    } catch (err) {
+      this.logger.warn(`name backfill failed: ${String(err)}`);
+      return 0;
+    }
   }
 
   async backfillProvenance(): Promise<number> {
@@ -245,7 +293,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
         if (isOwnersLoanMove(r.description, r.offsetAccount)) {
           out = { ...out, offsetAccount: OWNERS_LOAN };
         }
-        return out;
+        const name = fallbackName(out.name, out.offsetAccount, out.description);
+        return name === out.name ? out : { ...out, name };
       });
       return { lines, customAccounts: new Set() };
     }
@@ -1167,7 +1216,10 @@ export class NameMemoryService implements OnApplicationBootstrap {
     manual = false,
   ): Promise<void> {
     const updates = rows.flatMap((row) => {
-      const { name, category } = next(row);
+      const out = next(row);
+      const category = out.category;
+      // step11: only an Uncategorized row may be nameless.
+      const name = fallbackName(out.name, category, row.description);
       if (name === row.name && category === row.offsetAccount) return [];
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;

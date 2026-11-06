@@ -34,7 +34,7 @@ describe('buildReports', () => {
     expect(acc('Office Expense')).toMatchObject({ balance: 100.05, count: 2 });
     expect(acc('Sales Income')).toMatchObject({ balance: 1000, count: 1 });
     expect(acc('Owner Draw').balance).toBe(-300);
-    expect(acc('Rent')).toMatchObject({ balance: 0, count: 0 });
+    expect(r.accounts.find((a) => a.name === 'Rent')).toBeUndefined();
     expect(acc(BANK)).toMatchObject({ bank: true, type: 'ASSET', count: 9 });
   });
 
@@ -163,15 +163,12 @@ describe("the customer's own categories", () => {
   });
 });
 
-it("lists the customer's own category in the chart before any row uses it", () => {
+it('leaves out a category with no rows in the period (step11)', () => {
   const r = buildReports([row(100, 'Sales Income')], null, null, {
     customTypes: new Map([['Groceries', 'EXPENSE']]),
   });
-  expect(r.accounts.find((a) => a.name === 'Groceries')).toMatchObject({
-    type: 'EXPENSE',
-    balance: 0,
-    count: 0,
-  });
+  expect(r.accounts.find((a) => a.name === 'Groceries')).toBeUndefined();
+  expect(r.accounts.every((a) => a.bank || a.count > 0)).toBe(true);
   expect(line(r.incomeStatement.expenses, 'Groceries')).toBeUndefined();
 });
 

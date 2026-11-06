@@ -4,6 +4,7 @@ import {
   containsKey,
   descriptionContains,
   descriptionKey,
+  fallbackName,
   indexRules,
   isOwnersLoanMove,
   memoryWrites,
@@ -300,7 +301,8 @@ describe('bank fees and interest are named after the bank', () => {
         { description: 'TRANSFER 0042', offsetAccount: 'Owner Draws' },
         c,
       ).name,
-    ).toBeNull();
+      // step11: not the bank — a categorized row is named by its description.
+    ).toBe('TRANSFER 0042');
     // A name the AI read stays.
     expect(resolveRow({ ...fee, name: 'Moneris' }, c).name).toBe('Moneris');
   });
@@ -555,5 +557,42 @@ describe('CONTAINS rules (step2): every description holding the text', () => {
     expect(nameRules.size).toBe(0);
     expect(descriptionContains('xx ABCDEF', 'abcdef')).toBe(true);
     expect(descriptionContains('anything', '')).toBe(false);
+  });
+});
+
+describe('step11: only an Uncategorized row is nameless', () => {
+  it('names a categorized nameless row by its description, never learned', () => {
+    const out = resolveRow(
+      { description: 'TFR-TO  0042   1234', offsetAccount: 'Office Expense' },
+      ctx(),
+    );
+    expect(out.name).toBe('TFR-TO 0042 1234');
+    expect(out.learnable).toBe(false);
+    expect(nameMemoryWrites([out], new Map()).creates).toEqual([]);
+  });
+
+  it('leaves an Uncategorized row nameless', () => {
+    const out = resolveRow(
+      { description: 'POS 0923 ???', offsetAccount: UNCATEGORIZED },
+      ctx(),
+    );
+    expect(out.name).toBeNull();
+  });
+
+  it('fallbackName', () => {
+    expect(fallbackName('Walmart', 'Office Expense', 'POS WALMART')).toBe(
+      'Walmart',
+    );
+    expect(fallbackName(null, 'Office Expense', ' POS  WALMART ')).toBe(
+      'POS WALMART',
+    );
+    expect(fallbackName(null, UNCATEGORIZED, 'POS WALMART')).toBeNull();
+    // A description-name on a row moved back to Uncategorized goes away; a real one stays.
+    expect(
+      fallbackName('POS WALMART', UNCATEGORIZED, 'POS WALMART'),
+    ).toBeNull();
+    expect(fallbackName('Walmart', UNCATEGORIZED, 'POS WALMART')).toBe(
+      'Walmart',
+    );
   });
 });

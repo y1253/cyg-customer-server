@@ -7,7 +7,7 @@ import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
-import { cleanName } from './name-memory.util';
+import { cleanName, fallbackName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
 import { itemKey } from './receipt-items.util';
 import { scopeWhere, type BookScope } from './scope';
@@ -74,14 +74,23 @@ export class SplitsService {
       }
     }
     const rows = await Promise.all(
-      input.map(async (s) => ({
-        id: s.id,
-        name: cleanName(s.name ?? null),
-        itemName: cleanName(s.itemName ?? null),
-        always: s.always === true,
-        category: await this.accounts.validCategory(scope, s.category),
-        amount: signedLike(amount, s.amount),
-      })),
+      input.map(async (s) => {
+        const category = await this.accounts.validCategory(scope, s.category);
+        return {
+          id: s.id,
+          // step11: a categorized split is never nameless — the parent's name, else its
+          // description.
+          name: fallbackName(
+            cleanName(s.name ?? null) ?? parent.name,
+            category,
+            parent.description,
+          ),
+          itemName: cleanName(s.itemName ?? null),
+          always: s.always === true,
+          category,
+          amount: signedLike(amount, s.amount),
+        };
+      }),
     );
 
     // The bank side of the parent is the bank side of every split.

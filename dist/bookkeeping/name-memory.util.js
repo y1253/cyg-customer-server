@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = exports.EXCEPTION = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
+exports.descriptionName = descriptionName;
+exports.fallbackName = fallbackName;
 exports.exceptionKey = exceptionKey;
 exports.bankPayeeName = bankPayeeName;
 exports.isOwnersLoanMove = isOwnersLoanMove;
@@ -40,6 +42,16 @@ function descriptionKey(description) {
 }
 function cleanName(name) {
     return (name ?? '').trim().slice(0, NAME_MAX) || null;
+}
+function descriptionName(description) {
+    return cleanName(description.replace(/\s+/g, ' '));
+}
+function fallbackName(name, category, description) {
+    const clean = cleanName(name);
+    const fromDescription = descriptionName(description);
+    if (category === chart_of_accounts_1.UNCATEGORIZED)
+        return clean && clean === fromDescription ? null : clean;
+    return clean ?? fromDescription;
 }
 const nameKey = (name) => name.trim().toLowerCase();
 exports.nameKey = nameKey;
@@ -175,16 +187,18 @@ function resolveRow(row, ctx) {
             category = (0, chart_of_accounts_1.normalizeAccount)(exception.category, ctx.customAccounts);
         source = 'customer';
     }
+    const finalName = fallbackName(name, category, row.description);
+    const fromDescription = !!finalName && finalName === descriptionName(row.description);
     return {
-        name,
+        name: finalName,
         category,
         source,
         followsName: followsName && !exception,
-        learnable: followsName && !customerName && !exception,
+        learnable: followsName && !customerName && !exception && !fromDescription,
         generalRuleId,
         personalRuleId,
         exceptionRuleId: exception?.id ?? null,
-        ruleName,
+        ruleName: fallbackName(ruleName, category, row.description),
     };
 }
 function resolveRows(rows, ctx) {

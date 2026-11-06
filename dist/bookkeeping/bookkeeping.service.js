@@ -67,7 +67,7 @@ function withFx(views, ctx, statements) {
                 pendingDate: null,
                 postingDate: r.date,
                 description: `Exchange rate on ${r.date}: ${r.rate.toFixed(4)}`,
-                name: null,
+                name: r.offsetAccount,
                 amount: 0,
                 offsetAccount: r.offsetAccount,
                 debitAccount: r.debitAccount,

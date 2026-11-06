@@ -232,8 +232,9 @@ export function buildReports(
   // ---- chart of accounts + income statement: the period ----
   const period = tally(rows, from, to);
   const chartNames = CHART_OF_ACCOUNTS.map((a) => a.name);
-  // The customer's own categories are listed even before a row uses them — one they just
-  // created shows at once, at zero. Then anything else with rows that is not in the chart.
+  // step11 (user's request 2026-11-05): a category with no rows in the period is left out —
+  // chart accounts and the customer's own alike (nothing is deleted; it comes back with its
+  // first row). Bank / card accounts stay: they are accounts, not categories.
   const own = [...customTypes.keys()].filter((n) => !TYPE_OF.has(n));
   const extra = [
     ...own,
@@ -256,16 +257,19 @@ export function buildReports(
         ...(foreign !== undefined && { foreignBalance: foreign }),
       };
     }),
-    ...[...chartNames, ...extra].map((name) => {
-      const type = typeOf(name);
+    ...[...chartNames, ...extra].flatMap((name) => {
       const t = period.offsets.get(name);
-      return {
-        name,
-        type,
-        bank: false,
-        balance: dollars(normal(type, t?.sum ?? 0)),
-        count: t?.count ?? 0,
-      };
+      if (!t?.count) return [];
+      const type = typeOf(name);
+      return [
+        {
+          name,
+          type,
+          bank: false,
+          balance: dollars(normal(type, t.sum)),
+          count: t.count,
+        },
+      ];
     }),
   ];
 

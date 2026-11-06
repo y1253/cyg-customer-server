@@ -24,7 +24,44 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     tax;
     logger = new common_1.Logger(NameMemoryService_1.name);
     onApplicationBootstrap() {
-        setTimeout(() => void this.backfillProvenance(), 60_000).unref();
+        setTimeout(() => void this.backfillNames().then(() => this.backfillProvenance()), 60_000).unref();
+    }
+    async backfillNames() {
+        try {
+            const where = {
+                name: null,
+                offsetAccount: { not: chart_of_accounts_1.UNCATEGORIZED },
+            };
+            const books = await this.prisma.bankTransaction.groupBy({
+                by: ['customerId', 'bookId', 'companyId'],
+                where,
+            });
+            let named = 0;
+            for (const b of books) {
+                const descriptions = await this.prisma.bankTransaction.groupBy({
+                    by: ['description'],
+                    where: { ...where, ...(0, scope_1.scopeWhere)(b) },
+                });
+                for (const { description } of descriptions) {
+                    const name = (0, name_memory_util_1.descriptionName)(description);
+                    if (!name)
+                        continue;
+                    const done = await this.prisma.bankTransaction.updateMany({
+                        where: { ...where, ...(0, scope_1.scopeWhere)(b), description },
+                        data: { name },
+                    });
+                    named += done.count;
+                }
+                await this.syncProvenance(b);
+            }
+            if (named)
+                this.logger.log(`named ${named} categorized row(s) by their description in ${books.length} book(s)`);
+            return named;
+        }
+        catch (err) {
+            this.logger.warn(`name backfill failed: ${String(err)}`);
+            return 0;
+        }
     }
     async backfillProvenance() {
         try {
@@ -163,7 +200,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 if ((0, name_memory_util_1.isOwnersLoanMove)(r.description, r.offsetAccount)) {
                     out = { ...out, offsetAccount: chart_of_accounts_1.OWNERS_LOAN };
                 }
-                return out;
+                const name = (0, name_memory_util_1.fallbackName)(out.name, out.offsetAccount, out.description);
+                return name === out.name ? out : { ...out, name };
             });
             return { lines, customAccounts: new Set() };
         }
@@ -721,7 +759,9 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     }
     async writeRows(scope, rows, next, manual = false) {
         const updates = rows.flatMap((row) => {
-            const { name, category } = next(row);
+            const out = next(row);
+            const category = out.category;
+            const name = (0, name_memory_util_1.fallbackName)(out.name, category, row.description);
             if (name === row.name && category === row.offsetAccount)
                 return [];
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;

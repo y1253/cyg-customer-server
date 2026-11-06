@@ -147,7 +147,8 @@ export class ReportsService {
         offsetAccount: f.offsetAccount,
         bankAccount: f.bankAccount,
         date: f.date,
-        name: null,
+        // step11: never "Unclarified name" — the row is named by its account.
+        name: f.offsetAccount,
         ...(fx.isForeign(f.statementId) && { foreign: 0 }),
       }),
     );

@@ -56,14 +56,17 @@ let SplitsService = class SplitsService {
                 throw new common_1.BadRequestException('A split was removed meanwhile. Reload.');
             }
         }
-        const rows = await Promise.all(input.map(async (s) => ({
-            id: s.id,
-            name: (0, name_memory_util_1.cleanName)(s.name ?? null),
-            itemName: (0, name_memory_util_1.cleanName)(s.itemName ?? null),
-            always: s.always === true,
-            category: await this.accounts.validCategory(scope, s.category),
-            amount: (0, splits_util_1.signedLike)(amount, s.amount),
-        })));
+        const rows = await Promise.all(input.map(async (s) => {
+            const category = await this.accounts.validCategory(scope, s.category);
+            return {
+                id: s.id,
+                name: (0, name_memory_util_1.fallbackName)((0, name_memory_util_1.cleanName)(s.name ?? null) ?? parent.name, category, parent.description),
+                itemName: (0, name_memory_util_1.cleanName)(s.itemName ?? null),
+                always: s.always === true,
+                category,
+                amount: (0, splits_util_1.signedLike)(amount, s.amount),
+            };
+        }));
         const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
         const keep = new Set(rows.flatMap((r) => (r.id != null ? [r.id] : [])));
         await this.prisma.$transaction(async (tx) => {
