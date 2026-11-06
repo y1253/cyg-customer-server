@@ -7,7 +7,9 @@ import {
   doneTarget,
   featureDoneText,
   saveFeatureRequest,
+  saveTypedRequest,
   SUMMARY_MAX,
+  TYPED_PER_DAY,
 } from './feature-requests.store';
 
 const scope = { customerId: 7, bookId: 3, companyId: null };
@@ -121,5 +123,47 @@ describe('feature request helpers', () => {
         to: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe('saveTypedRequest (My requests page)', () => {
+  function typedMock(count: number) {
+    const create = jest
+      .fn()
+      .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 5, ...data }),
+      );
+    const prisma = {
+      featureRequest: { count: jest.fn().mockResolvedValue(count), create },
+    } as unknown as PrismaService;
+    return { prisma, create };
+  }
+
+  it('saves a FORM request with no book or conversation', async () => {
+    const { prisma, create } = typedMock(0);
+    await saveTypedRequest(prisma, 7, {
+      summary: '  Payroll   for my staff ',
+      request: 'Run payroll every two weeks',
+    });
+    const [arg] = create.mock.calls[0] as [{ data: Record<string, unknown> }];
+    expect(arg.data).toEqual({
+      customerId: 7,
+      channel: 'FORM',
+      summary: 'Payroll for my staff',
+      request: 'Run payroll every two weeks',
+    });
+  });
+
+  it('uses the summary as the request when no details are given', async () => {
+    const { prisma, create } = typedMock(0);
+    await saveTypedRequest(prisma, 7, { summary: 'Invoices', request: '  ' });
+    const [arg] = create.mock.calls[0] as [{ data: Record<string, unknown> }];
+    expect(arg.data.request).toBe('Invoices');
+  });
+
+  it('refuses past the daily limit', async () => {
+    const { prisma, create } = typedMock(TYPED_PER_DAY);
+    expect(await saveTypedRequest(prisma, 7, { summary: 'x' })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
   });
 });

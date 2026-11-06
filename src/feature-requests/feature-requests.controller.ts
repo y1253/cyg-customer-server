@@ -1,7 +1,8 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
+import { CreateFeatureRequestDto } from './dto/create-feature-request.dto';
 import {
   FeatureRequestsService,
   type FeatureRequestView,
@@ -9,7 +10,10 @@ import {
 
 type AuthedRequest = Request & { user: CustomerRequestUser };
 
-/** step12e: `/api/feature-requests` — the customer's "My requests" page (read-only). */
+/**
+ * step12e: `/api/feature-requests` — the customer's "My requests" page: the list, and a
+ * request typed there directly (the AI's `request_feature` saves the others).
+ */
 @Controller('feature-requests')
 @UseGuards(CustomerJwtGuard)
 export class FeatureRequestsController {
@@ -18,5 +22,13 @@ export class FeatureRequestsController {
   @Get()
   list(@Req() req: AuthedRequest): Promise<FeatureRequestView[]> {
     return this.requests.listForCustomer(req.user.customerId);
+  }
+
+  @Post()
+  create(
+    @Req() req: AuthedRequest,
+    @Body() dto: CreateFeatureRequestDto,
+  ): Promise<FeatureRequestView> {
+    return this.requests.createForCustomer(req.user.customerId, dto);
   }
 }

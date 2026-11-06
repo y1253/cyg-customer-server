@@ -15,6 +15,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.FeatureRequestsController = void 0;
 const common_1 = require("@nestjs/common");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
+const create_feature_request_dto_1 = require("./dto/create-feature-request.dto");
 const feature_requests_service_1 = require("./feature-requests.service");
 let FeatureRequestsController = class FeatureRequestsController {
     requests;
@@ -23,6 +24,9 @@ let FeatureRequestsController = class FeatureRequestsController {
     }
     list(req) {
         return this.requests.listForCustomer(req.user.customerId);
+    }
+    create(req, dto) {
+        return this.requests.createForCustomer(req.user.customerId, dto);
     }
 };
 exports.FeatureRequestsController = FeatureRequestsController;
@@ -33,6 +37,14 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], FeatureRequestsController.prototype, "list", null);
+__decorate([
+    (0, common_1.Post)(),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, create_feature_request_dto_1.CreateFeatureRequestDto]),
+    __metadata("design:returntype", Promise)
+], FeatureRequestsController.prototype, "create", null);
 exports.FeatureRequestsController = FeatureRequestsController = __decorate([
     (0, common_1.Controller)('feature-requests'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),

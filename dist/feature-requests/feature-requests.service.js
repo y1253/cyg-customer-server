@@ -19,6 +19,20 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const schedules_service_1 = require("../schedules/schedules.service");
 const feature_requests_store_1 = require("./feature-requests.store");
 const BATCH = 20;
+function toView(r, book) {
+    return {
+        id: r.id,
+        summary: r.summary,
+        request: r.request,
+        status: r.status,
+        staffNote: r.staffNote,
+        channel: r.channel,
+        book,
+        createdAt: r.createdAt.toISOString(),
+        updatedAt: r.updatedAt.toISOString(),
+        doneAt: r.doneAt?.toISOString() ?? null,
+    };
+}
 let FeatureRequestsService = FeatureRequestsService_1 = class FeatureRequestsService {
     prisma;
     messenger;
@@ -46,18 +60,13 @@ let FeatureRequestsService = FeatureRequestsService_1 = class FeatureRequestsSer
             })
             : [];
         const bookName = new Map(books.map((b) => [b.id, b.name]));
-        return rows.map((r) => ({
-            id: r.id,
-            summary: r.summary,
-            request: r.request,
-            status: r.status,
-            staffNote: r.staffNote,
-            channel: r.channel,
-            book: r.bookId !== null ? (bookName.get(r.bookId) ?? null) : null,
-            createdAt: r.createdAt.toISOString(),
-            updatedAt: r.updatedAt.toISOString(),
-            doneAt: r.doneAt?.toISOString() ?? null,
-        }));
+        return rows.map((r) => toView(r, r.bookId !== null ? (bookName.get(r.bookId) ?? null) : null));
+    }
+    async createForCustomer(customerId, input) {
+        const row = await (0, feature_requests_store_1.saveTypedRequest)(this.prisma, customerId, input);
+        if (!row)
+            throw new common_1.HttpException(`You can send up to ${feature_requests_store_1.TYPED_PER_DAY} requests a day. Please try again tomorrow.`, common_1.HttpStatus.TOO_MANY_REQUESTS);
+        return toView(row, null);
     }
     async tick() {
         if (this.ticking)

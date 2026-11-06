@@ -1,11 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { FeatureRequest } from '@prisma/client';
 import { answerHtml } from '../mail/answer-html';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchedulesService } from '../schedules/schedules.service';
-import { doneTarget, featureDoneText } from './feature-requests.store';
+import {
+  doneTarget,
+  featureDoneText,
+  saveTypedRequest,
+  TYPED_PER_DAY,
+} from './feature-requests.store';
 
 export interface FeatureRequestView {
   id: number;
@@ -21,6 +26,21 @@ export interface FeatureRequestView {
 }
 
 const BATCH = 20;
+
+function toView(r: FeatureRequest, book: string | null): FeatureRequestView {
+  return {
+    id: r.id,
+    summary: r.summary,
+    request: r.request,
+    status: r.status,
+    staffNote: r.staffNote,
+    channel: r.channel,
+    book,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+    doneAt: r.doneAt?.toISOString() ?? null,
+  };
+}
 
 /**
  * step12e: the customer's "My requests" list, and the message that tells them a request
@@ -56,18 +76,23 @@ export class FeatureRequestsService {
         })
       : [];
     const bookName = new Map(books.map((b) => [b.id, b.name]));
-    return rows.map((r) => ({
-      id: r.id,
-      summary: r.summary,
-      request: r.request,
-      status: r.status,
-      staffNote: r.staffNote,
-      channel: r.channel,
-      book: r.bookId !== null ? (bookName.get(r.bookId) ?? null) : null,
-      createdAt: r.createdAt.toISOString(),
-      updatedAt: r.updatedAt.toISOString(),
-      doneAt: r.doneAt?.toISOString() ?? null,
-    }));
+    return rows.map((r) =>
+      toView(r, r.bookId !== null ? (bookName.get(r.bookId) ?? null) : null),
+    );
+  }
+
+  /** A request the customer typed on the My requests page. */
+  async createForCustomer(
+    customerId: number,
+    input: { summary: string; request?: string },
+  ): Promise<FeatureRequestView> {
+    const row = await saveTypedRequest(this.prisma, customerId, input);
+    if (!row)
+      throw new HttpException(
+        `You can send up to ${TYPED_PER_DAY} requests a day. Please try again tomorrow.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    return toView(row, null);
   }
 
   // ---- the "it's available now" message ----------------------------------------------

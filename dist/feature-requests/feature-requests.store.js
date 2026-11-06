@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SUMMARY_MAX = exports.DEDUPE_MS = exports.FEATURE_STATUSES = void 0;
+exports.TYPED_WINDOW_MS = exports.TYPED_PER_DAY = exports.REQUEST_MAX = exports.SUMMARY_MAX = exports.DEDUPE_MS = exports.FEATURE_STATUSES = void 0;
 exports.cleanSummary = cleanSummary;
 exports.featureDoneText = featureDoneText;
 exports.saveFeatureRequest = saveFeatureRequest;
+exports.saveTypedRequest = saveTypedRequest;
 exports.doneTarget = doneTarget;
 exports.FEATURE_STATUSES = [
     'OPEN',
@@ -13,7 +14,7 @@ exports.FEATURE_STATUSES = [
 ];
 exports.DEDUPE_MS = 10 * 60_000;
 exports.SUMMARY_MAX = 200;
-const REQUEST_MAX = 4_000;
+exports.REQUEST_MAX = 4_000;
 function cleanSummary(raw) {
     const one = raw.replace(/\s+/g, ' ').trim();
     return one.length > exports.SUMMARY_MAX ? `${one.slice(0, exports.SUMMARY_MAX - 1)}…` : one;
@@ -45,10 +46,32 @@ async function saveFeatureRequest(prisma, input, now = new Date()) {
             conversationId: input.conversationId,
             messageId: input.messageId,
             channel: input.channel.slice(0, 12),
-            request: input.request.trim().slice(0, REQUEST_MAX),
+            request: input.request.trim().slice(0, exports.REQUEST_MAX),
             summary: cleanSummary(input.summary) || cleanSummary(input.request),
         },
         select: { id: true, summary: true },
+    });
+}
+exports.TYPED_PER_DAY = 10;
+exports.TYPED_WINDOW_MS = 24 * 60 * 60_000;
+async function saveTypedRequest(prisma, customerId, input, now = new Date()) {
+    const recent = await prisma.featureRequest.count({
+        where: {
+            customerId,
+            channel: 'FORM',
+            createdAt: { gte: new Date(now.getTime() - exports.TYPED_WINDOW_MS) },
+        },
+    });
+    if (recent >= exports.TYPED_PER_DAY)
+        return null;
+    const summary = cleanSummary(input.summary);
+    return prisma.featureRequest.create({
+        data: {
+            customerId,
+            channel: 'FORM',
+            request: (input.request?.trim() || summary).slice(0, exports.REQUEST_MAX),
+            summary,
+        },
     });
 }
 function doneTarget(origin, smsConfigured, preferred) {

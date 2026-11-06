@@ -1,3 +1,4 @@
+import type { FeatureRequest } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { BookScope } from '../bookkeeping/scope';
 
@@ -14,7 +15,7 @@ export type FeatureStatus = (typeof FEATURE_STATUSES)[number];
 export const DEDUPE_MS = 10 * 60_000;
 
 export const SUMMARY_MAX = 200;
-const REQUEST_MAX = 4_000;
+export const REQUEST_MAX = 4_000;
 
 /** A short one-line title: whitespace folded, clipped to the column. */
 export function cleanSummary(raw: string): string {
@@ -72,6 +73,39 @@ export async function saveFeatureRequest(
       summary: cleanSummary(input.summary) || cleanSummary(input.request),
     },
     select: { id: true, summary: true },
+  });
+}
+
+/** Requests a customer may type on the My requests page per `TYPED_WINDOW_MS`. */
+export const TYPED_PER_DAY = 10;
+export const TYPED_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * A request typed on the My requests page: channel FORM, no book or conversation. null =
+ * the customer already sent `TYPED_PER_DAY` in the last day.
+ */
+export async function saveTypedRequest(
+  prisma: PrismaService,
+  customerId: number,
+  input: { summary: string; request?: string },
+  now: Date = new Date(),
+): Promise<FeatureRequest | null> {
+  const recent = await prisma.featureRequest.count({
+    where: {
+      customerId,
+      channel: 'FORM',
+      createdAt: { gte: new Date(now.getTime() - TYPED_WINDOW_MS) },
+    },
+  });
+  if (recent >= TYPED_PER_DAY) return null;
+  const summary = cleanSummary(input.summary);
+  return prisma.featureRequest.create({
+    data: {
+      customerId,
+      channel: 'FORM',
+      request: (input.request?.trim() || summary).slice(0, REQUEST_MAX),
+      summary,
+    },
   });
 }
 

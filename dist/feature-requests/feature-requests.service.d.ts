@@ -21,6 +21,10 @@ export declare class FeatureRequestsService {
     private ticking;
     constructor(prisma: PrismaService, messenger: CustomerMessenger, schedules: SchedulesService);
     listForCustomer(customerId: number): Promise<FeatureRequestView[]>;
+    createForCustomer(customerId: number, input: {
+        summary: string;
+        request?: string;
+    }): Promise<FeatureRequestView>;
     tick(): Promise<void>;
     private notify;
 }
