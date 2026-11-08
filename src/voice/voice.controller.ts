@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   ForbiddenException,
@@ -19,6 +20,19 @@ import type { BookScope } from '../bookkeeping/scope';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import { VoiceCallsService, type TranscriptLine } from './voice-calls.service';
 import { signalWireSignatureValid } from './voice.util';
+import { IsInt, IsOptional, Min } from 'class-validator';
+
+export class CallMeDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  statementId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  attachmentId?: number;
+}
 
 /**
  * `POST /api/voice/status` — SignalWire reports a call we PLACED (a schedule call): ringing,
@@ -94,5 +108,34 @@ export class VoiceRecordingController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<{ lines: TranscriptLine[] }> {
     return this.calls.transcript(scope, id);
+  }
+}
+
+/**
+ * step2 (2026-11-08): the "Call me" button of a statement's / attachment's chat.
+ * `GET` = can we call them now (phone on the account, calls set up); `POST` places the
+ * call about that chat (`VoiceCallsService.callMeFromChat`).
+ */
+@Controller('bookkeeping/call-me')
+@UseGuards(CustomerJwtGuard, BookScopeGuard)
+export class CallMeController {
+  constructor(private readonly calls: VoiceCallsService) {}
+
+  @Get()
+  async available(@Book() scope: BookScope): Promise<{ available: boolean }> {
+    return { available: await this.calls.callMeAvailable(scope.customerId) };
+  }
+
+  @Post()
+  async callMe(
+    @Book() scope: BookScope,
+    @Body() dto: CallMeDto,
+  ): Promise<{ ok: boolean; message: string }> {
+    if (!dto.statementId && !dto.attachmentId)
+      throw new BadRequestException('Say which statement or attachment');
+    const placed = await this.calls.callMeFromChat(scope, dto);
+    return placed.ok
+      ? { ok: true, message: placed.summary }
+      : { ok: false, message: placed.error };
   }
 }

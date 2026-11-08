@@ -32,6 +32,7 @@ export interface ResolveContext {
     nameCategories?: ReadonlyMap<string, string>;
     nameMemory?: ReadonlyMap<string, string>;
     exceptions?: ReadonlyMap<string, NameRule>;
+    renamed?: ReadonlyMap<string, string>;
 }
 export declare function exceptionKey(row: {
     statementId: number;
@@ -95,6 +96,11 @@ export declare function memoryWrites(rows: ReadonlyArray<{
     creates: MemoryWrite[];
     fills: MemoryWrite[];
 };
+export declare const byContainsPriority: (a: {
+    matchKey: string;
+}, b: {
+    matchKey: string;
+}) => number;
 export declare function containsRuleFor(description: string, rules: readonly NameRule[] | undefined): NameRule | undefined;
 export declare function indexRules(rules: readonly NameRule[]): {
     descRules: Map<string, NameRule>;
@@ -103,3 +109,19 @@ export declare function indexRules(rules: readonly NameRule[]): {
     nameCategories: Map<string, string>;
     exceptions: Map<string, NameRule>;
 };
+export declare const RULE_CONFLICT = "RULE_CONFLICT";
+export interface LinkConflict {
+    matchType: 'DESCRIPTION' | 'CONTAINS';
+    text: string;
+    name: string;
+    ruleId?: number;
+    remove: boolean;
+}
+export declare function findLinkConflicts(input: {
+    matchType: 'DESCRIPTION' | 'CONTAINS';
+    key: string;
+    name: string;
+    rules: readonly NameRule[];
+    descriptions: readonly string[];
+}): LinkConflict[];
+export declare function linkConflictMessage(conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[], name: string): string;

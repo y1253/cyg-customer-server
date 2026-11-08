@@ -7,3 +7,4 @@ export interface MergeSide {
     } | null;
 }
 export declare function mergeRefusal(from: MergeSide, into: MergeSide): string | null;
+export declare function renameRefusal(from: MergeSide, to: string, taken: boolean): string | null;

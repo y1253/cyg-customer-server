@@ -18,6 +18,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     }>;
     private nameMemoryFor;
     rulesOf(scope: BookScope): Promise<NameRule[]>;
+    private renamedAccountsOf;
     private customAccountsOf;
     resolveStatement(scope: BookScope, rows: ExtractedTransaction[], bankName?: string | null, statementId?: number): Promise<{
         lines: ExtractedTransaction[];
@@ -34,6 +35,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     private learnNames;
     private applyRule;
     private saveContainsRule;
+    private guardLinks;
     private containsRows;
     private applyEdit;
     private setNameCategory;

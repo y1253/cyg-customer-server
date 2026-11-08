@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var BookkeepingService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingService = void 0;
+exports.balanceFit = balanceFit;
 exports.failedChecks = failedChecks;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
@@ -107,6 +108,7 @@ function toView(s, currencies = new Map()) {
         sizeBytes: s.sizeBytes,
         status: s.status,
         error: s.error,
+        errorDetail: s.status === 'FAILED' ? s.errorDetail : null,
         checks: s.status === 'NEEDS_REVIEW' ? failedChecks(s.verificationDetail) : [],
         customerNote: s.customerNote,
         accountName: s.accountName,
@@ -122,6 +124,16 @@ function toView(s, currencies = new Map()) {
         processedAt: s.processedAt,
         movedByCustomer: s.accountNameByCustomer !== null,
         source: s.source,
+    };
+}
+function balanceFit(opening, closing, net, card) {
+    if (opening === null)
+        return { balancesMatch: null, expectedClosing: null };
+    const c = (n) => Math.round(n * 100);
+    const expected = (c(opening) + (card ? -c(net) : c(net))) / 100;
+    return {
+        balancesMatch: closing === null ? null : c(expected) === c(closing),
+        expectedClosing: expected,
     };
 }
 function failedChecks(detail) {
@@ -414,9 +426,13 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     }
     async retry(scope, id, note) {
         const s = await this.owned(scope, id);
+        if (s.source === 'PLAID') {
+            throw new common_1.BadRequestException('A bank-feed month comes straight from the bank — it cannot be read again');
+        }
         if (s.status !== client_1.StatementStatus.FAILED &&
-            s.status !== client_1.StatementStatus.NEEDS_REVIEW) {
-            throw new common_1.BadRequestException('Only a statement that failed can be retried');
+            s.status !== client_1.StatementStatus.NEEDS_REVIEW &&
+            s.status !== client_1.StatementStatus.DONE) {
+            throw new common_1.BadRequestException('This statement is still waiting or being read');
         }
         const row = await this.prisma.bankStatement.update({
             where: { id: s.id },
@@ -425,6 +441,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 attempts: 0,
                 runs: 0,
                 error: null,
+                errorDetail: null,
                 ...(note === undefined
                     ? {}
                     : { customerNote: note.trim().slice(0, 4000) || null }),
@@ -432,6 +449,52 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
         this.processor.processSoon();
         return toView(row);
+    }
+    async setBalances(scope, id, input) {
+        const s = await this.owned(scope, id);
+        if (s.source === 'PLAID') {
+            throw new common_1.BadRequestException("A bank-feed month's balances come from the bank itself and cannot be changed. If they look wrong, check the account's start date or reconnect the bank.");
+        }
+        if (s.status !== client_1.StatementStatus.DONE) {
+            throw new common_1.BadRequestException('Only a statement that was read can have its balances set — read it again with retry_statement and a note instead');
+        }
+        const money = (n) => n === undefined ? undefined : n === null ? null : n.toFixed(2);
+        const opening = money(input.openingBalance);
+        const closing = money(input.closingBalance);
+        if (opening === undefined && closing === undefined) {
+            throw new common_1.BadRequestException('Give the opening or the closing balance');
+        }
+        const words = [
+            opening !== undefined
+                ? `opening balance is ${opening ?? 'not printed'}`
+                : '',
+            closing !== undefined
+                ? `closing balance is ${closing ?? 'not printed'}`
+                : '',
+        ]
+            .filter(Boolean)
+            .join(' and ');
+        const line = `The ${words} (customer: ${input.reason.trim().slice(0, 500)})`;
+        const customerNote = [s.customerNote?.trim(), line]
+            .filter(Boolean)
+            .join('\n')
+            .slice(-4000);
+        const row = await this.prisma.bankStatement.update({
+            where: { id: s.id },
+            data: {
+                ...(opening === undefined ? {} : { openingBalance: opening }),
+                ...(closing === undefined ? {} : { closingBalance: closing }),
+                customerNote,
+            },
+        });
+        const sum = await this.prisma.bankTransaction.aggregate({
+            where: { statementId: s.id, splitOfId: null },
+            _sum: { amount: true },
+        });
+        return {
+            statement: toView(row),
+            ...balanceFit(row.openingBalance === null ? null : Number(row.openingBalance), row.closingBalance === null ? null : Number(row.closingBalance), Number(sum._sum.amount ?? 0), row.accountKind === 'CREDIT_CARD'),
+        };
     }
     async remove(scope, id) {
         const s = await this.owned(scope, id);

@@ -21,6 +21,7 @@ const jwt_1 = require("@nestjs/jwt");
 const comm_usage_service_1 = require("../comm-usage/comm-usage.service");
 const rxjs_1 = require("rxjs");
 const assistant_tools_1 = require("../assistant/assistant-tools");
+const assistant_service_1 = require("../assistant/assistant.service");
 const customer_outbox_service_1 = require("../assistant/customer-outbox.service");
 const books_1 = require("../bookkeeping/books");
 const scope_1 = require("../bookkeeping/scope");
@@ -39,11 +40,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     tools;
     outbox;
     usage;
+    chats;
     logger = new common_1.Logger(VoiceCallsService_1.name);
     jwt;
     outboundMissed$ = new rxjs_1.Subject();
     personCalls = new Map();
-    constructor(prisma, config, signalwire, storage, tools, outbox, usage) {
+    constructor(prisma, config, signalwire, storage, tools, outbox, usage, chats) {
         this.prisma = prisma;
         this.config = config;
         this.signalwire = signalwire;
@@ -51,6 +53,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         this.tools = tools;
         this.outbox = outbox;
         this.usage = usage;
+        this.chats = chats;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
@@ -60,8 +63,30 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         this.tools?.setPersonCallHandler((ctx, person, message) => this.callPersonNow(ctx, person, message));
     }
     async callMeNow(ctx, about) {
+        const c = ctx.conversation;
+        const chat = c && (c.statementId || c.attachmentId) ? c.id : null;
+        return this.callMe(ctx.scope, about, chat);
+    }
+    async callMeFromChat(scope, target) {
+        if (!this.chats)
+            return { ok: false, error: 'Phone calls are not set up.' };
+        const conversation = await this.chats.threadFor(scope, target);
+        const placed = await this.callMe(scope, conversation.title ?? 'this', conversation.id);
+        await this.chats.save(conversation, 'ASSISTANT', placed.ok
+            ? `${placed.summary} — pick up and we'll go through it together. What we say is added here after the call.`
+            : `I could not call you: ${placed.error}`);
+        return placed;
+    }
+    async callMeAvailable(customerId) {
         const customer = await this.prisma.customer.findFirst({
-            where: { id: ctx.scope.customerId, deletedAt: null },
+            where: { id: customerId, deletedAt: null },
+            select: { phoneE164: true },
+        });
+        return !!customer?.phoneE164 && (await this.canCall());
+    }
+    async callMe(scope, about, chat) {
+        const customer = await this.prisma.customer.findFirst({
+            where: { id: scope.customerId, deletedAt: null },
             select: { phoneE164: true },
         });
         if (!customer?.phoneE164) {
@@ -72,13 +97,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }
         if (!(await this.canCall()))
             return { ok: false, error: 'Phone calls are not set up right now.' };
-        if (await this.overCallLimit(ctx.scope.customerId)) {
+        if (await this.overCallLimit(scope.customerId)) {
             return {
                 ok: false,
                 error: "Today's limit of calls from the assistant is reached — try again tomorrow.",
             };
         }
-        const scope = ctx.scope;
         const peer = customer.phoneE164;
         setTimeout(() => {
             void this.callCustomer({
@@ -86,6 +110,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
                 peer,
                 purpose: 'REQUESTED',
                 script: `They asked you to call them about: ${about}. Start with that.`,
+                about: chat,
             }).then((r) => {
                 if ('error' in r)
                     this.logger.warn(`call_me for customer ${scope.customerId} not placed: ${r.error}`);
@@ -464,6 +489,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             bookId: input.scope.bookId,
             runId: input.runId ?? null,
             script: input.script.slice(0, 1500),
+            ...(input.about ? { about: input.about } : {}),
             ...(input.purpose === 'THIRD_PARTY'
                 ? {
                     contactId: input.contactId ?? null,
@@ -637,13 +663,15 @@ exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate
     __param(4, (0, common_1.Optional)()),
     __param(5, (0, common_1.Optional)()),
     __param(6, (0, common_1.Optional)()),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         signalwire_client_1.SignalWireClient,
         object_storage_service_1.ObjectStorageService,
         assistant_tools_1.AssistantTools,
         customer_outbox_service_1.CustomerOutbox,
-        comm_usage_service_1.CommUsageService])
+        comm_usage_service_1.CommUsageService,
+        assistant_service_1.AssistantService])
 ], VoiceCallsService);
 function toCallView(c) {
     const inbound = c.direction === 'INBOUND';

@@ -1,4 +1,4 @@
-import { mergeRefusal, type MergeSide } from './account-merge.util';
+import { mergeRefusal, renameRefusal, type MergeSide } from './account-merge.util';
 
 const category = (name: string): MergeSide => ({
   name,
@@ -68,5 +68,44 @@ describe('mergeRefusal', () => {
     expect(
       mergeRefusal(category('Office'), category('Retained Earnings')),
     ).toMatch(/cannot be merged/);
+  });
+});
+
+describe('renameRefusal (step2)', () => {
+  it('renames a category or a folder account to a free name', () => {
+    expect(renameRefusal(category('Office'), 'Office supplies', false)).toBeNull();
+    expect(renameRefusal(folder('TD 4562'), 'TD Chequing 4562', false)).toBeNull();
+    // Only the case changes: still a rename.
+    expect(renameRefusal(folder('td 4562'), 'TD 4562', false)).toBeNull();
+  });
+
+  it('sends a name already in use to merge instead', () => {
+    expect(renameRefusal(category('Office'), 'Travel', true)).toMatch(/merge/);
+  });
+
+  it('refuses an empty or unchanged name', () => {
+    expect(renameRefusal(category('Office'), '  ', false)).toMatch(/Enter/);
+    expect(renameRefusal(category('Office'), 'Office', false)).toMatch(
+      /already its name/,
+    );
+  });
+
+  it('never renames tax agencies or the accounts the books compute themselves', () => {
+    expect(
+      renameRefusal({ ...category('GST'), agency: true }, 'GST/HST', false),
+    ).toMatch(/tax agency/);
+    for (const name of [
+      'Uncategorized',
+      'Retained Earnings',
+      "Owner's Loan",
+      'Exchange Gain or Loss',
+    ]) {
+      expect(renameRefusal(category(name), 'Other', false)).toMatch(
+        /cannot be renamed/,
+      );
+      expect(renameRefusal(category('Office'), name, false)).toMatch(
+        /books' own use/,
+      );
+    }
   });
 });

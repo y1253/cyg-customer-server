@@ -1,5 +1,15 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { mergeRefusal, type MergeSide } from './account-merge.util';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import {
+  mergeRefusal,
+  renameRefusal,
+  type MergeSide,
+} from './account-merge.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { isFxCurrency } from './fx.util';
 import { UNCLARIFIED_NAME } from './reports.util';
@@ -47,11 +57,13 @@ export class CustomerAccountsService {
    * old folder). `into`'s section and currency settings win; `from`, when it is one of the
    * customer's own categories, is removed. Only text is rewritten — nothing is read again.
    * Refused per `mergeRefusal` (a folder account only with another folder account).
+   * step2 (2026-11-08): `name` = what the merged account is called (default `into`).
    */
   async mergeAccounts(
     scope: BookScope,
     rawFrom: string,
     rawInto: string,
+    rawName?: string | null,
   ): Promise<void> {
     const from = rawFrom.trim();
     const into = rawInto.trim();
@@ -78,41 +90,23 @@ export class CustomerAccountsService {
     });
     if (!used && !fromSide.folder && !own)
       throw new BadRequestException(`"${from}" has nothing to merge.`);
+    // step2: the merged account may get a new name ("TD 4562 & 5845") — a rename of `into`
+    // right after, in the same transaction.
+    const newName = rawName?.trim() || into;
+    let rename: Prisma.PrismaPromise<unknown>[] = [];
+    if (newName !== into) {
+      const refusal = renameRefusal(
+        intoSide,
+        newName,
+        await this.nameTaken(scope, newName, [from, into]),
+      );
+      if (refusal) throw new BadRequestException(refusal);
+      rename = await this.renameWrites(scope, into, newName);
+    }
 
     const where = scopeWhere(scope);
     await this.prisma.$transaction([
-      this.prisma.bankTransaction.updateMany({
-        where: { ...where, offsetAccount: from },
-        data: { offsetAccount: into },
-      }),
-      this.prisma.bankTransaction.updateMany({
-        where: { ...where, debitAccount: from },
-        data: { debitAccount: into },
-      }),
-      this.prisma.bankTransaction.updateMany({
-        where: { ...where, creditAccount: from },
-        data: { creditAccount: into },
-      }),
-      this.prisma.bankStatement.updateMany({
-        where: { ...where, accountName: from },
-        data: { accountName: into },
-      }),
-      this.prisma.bankStatement.updateMany({
-        where: { ...where, accountNameByCustomer: from },
-        data: { accountNameByCustomer: into },
-      }),
-      this.prisma.plaidAccount.updateMany({
-        where: { item: where, accountName: from },
-        data: { accountName: into },
-      }),
-      this.prisma.customerNameRule.updateMany({
-        where: { ...where, category: from },
-        data: { category: into },
-      }),
-      this.prisma.customerItemRule.updateMany({
-        where: { ...where, category: from },
-        data: { category: into },
-      }),
+      ...this.repointWrites(scope, from, into),
       // The target's section and currency stay; the merged account's settings go.
       this.prisma.customerAccountType.deleteMany({
         where: { ...where, account: from },
@@ -123,10 +117,214 @@ export class CustomerAccountsService {
       this.prisma.customerAccount.deleteMany({
         where: { ...where, name: from },
       }),
+      ...rename,
     ]);
     this.logger.log(
-      `book ${bookLabel(scope)}: merged account "${from}" into "${into}" (${used} rows)`,
+      `book ${bookLabel(scope)}: merged account "${from}" into "${into}"` +
+        `${newName !== into ? ` as "${newName}"` : ''} (${used} rows)`,
     );
+  }
+
+  /**
+   * step2 (2026-11-08): rename an account — click its name on the Balance sheet / Income
+   * statement or its Bank feeds folder. Every place that names `from` names `to` instead (the
+   * `mergeAccounts` list), and its section, currency and own-category rows are RENAMED, not
+   * dropped. A chart account becomes one of the customer's own with the chart's type and
+   * `replaces` = the chart name, so rows the AI or the firm memory still file under the chart
+   * name land in it (`resolveRow`). Refused per `renameRefusal` (a name already in use = a
+   * merge, 409).
+   */
+  async renameAccount(
+    scope: BookScope,
+    rawFrom: string,
+    rawTo: string,
+  ): Promise<void> {
+    const from = rawFrom.trim();
+    const to = rawTo.trim();
+    if (!from) throw new BadRequestException('Which account?');
+    const [side, replaced] = await Promise.all([
+      this.mergeSide(scope, from),
+      this.prisma.customerAccount.findFirst({
+        where: { ...scopeWhere(scope), name: from },
+        select: { replaces: true },
+      }),
+    ]);
+    // A renamed chart account may go back to its chart name.
+    const back = replaced?.replaces ? [replaced.replaces] : [];
+    const taken = await this.nameTaken(scope, to, [from, ...back]);
+    const refusal = renameRefusal(side, to, taken);
+    if (refusal) {
+      if (taken) throw new ConflictException(refusal);
+      throw new BadRequestException(refusal);
+    }
+    const writes = await this.renameWrites(scope, from, to);
+    if (!writes.length)
+      throw new BadRequestException(`"${from}" is not one of your accounts.`);
+    await this.prisma.$transaction(writes);
+    this.logger.log(
+      `book ${bookLabel(scope)}: renamed account "${from}" to "${to}"`,
+    );
+  }
+
+  /**
+   * The writes that rename account `from` to `to`; [] when nothing of this book names it.
+   * Its settings move with it; a chart account becomes the customer's own (see
+   * `renameAccount`).
+   */
+  private async renameWrites(
+    scope: BookScope,
+    from: string,
+    to: string,
+  ): Promise<Prisma.PrismaPromise<unknown>[]> {
+    const where = scopeWhere(scope);
+    const [used, folder, own] = await Promise.all([
+      this.prisma.bankTransaction.count({
+        where: {
+          ...where,
+          OR: [
+            { offsetAccount: from },
+            { debitAccount: from },
+            { creditAccount: from },
+          ],
+        },
+      }),
+      this.prisma.bankStatement.count({
+        where: { ...where, accountName: from, deletedAt: null },
+      }),
+      this.prisma.customerAccount.findFirst({
+        where: { ...where, name: from },
+        select: { id: true, replaces: true },
+      }),
+    ]);
+    const chart = CHART_OF_ACCOUNTS.find(
+      (a) => a.name.toLowerCase() === from.toLowerCase(),
+    );
+    const plaid = await this.prisma.plaidAccount.count({
+      where: { item: where, accountName: from },
+    });
+    if (!used && !folder && !own && !plaid && !chart) return [];
+    const writes: Prisma.PrismaPromise<unknown>[] = [
+      ...this.repointWrites(scope, from, to),
+      this.prisma.customerAccountType.updateMany({
+        where: { ...where, account: from },
+        data: { account: to },
+      }),
+      this.prisma.customerAccountCurrency.updateMany({
+        where: { ...where, account: from },
+        data: { account: to },
+      }),
+    ];
+    if (own && own.replaces?.toLowerCase() === to.toLowerCase()) {
+      // Back to the chart account it was renamed from: the chart one is used again.
+      writes.push(this.prisma.customerAccount.delete({ where: { id: own.id } }));
+    } else if (own) {
+      writes.push(
+        this.prisma.customerAccount.update({
+          where: { id: own.id },
+          data: { name: to },
+        }),
+      );
+    } else if (chart && !folder && !plaid) {
+      writes.push(
+        this.prisma.customerAccount.create({
+          data: { ...where, name: to, type: chart.type, replaces: chart.name },
+        }),
+      );
+    }
+    return writes;
+  }
+
+  /**
+   * Every place that names account `from` names `to` instead: the rows' both sides, the
+   * statements' folder (AI-read and customer-set), the connected bank account (so the next
+   * sync files under `to`) and the customer's name / item rules. Shared by merge and rename.
+   */
+  private repointWrites(
+    scope: BookScope,
+    from: string,
+    to: string,
+  ): Prisma.PrismaPromise<unknown>[] {
+    const where = scopeWhere(scope);
+    return [
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, offsetAccount: from },
+        data: { offsetAccount: to },
+      }),
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, debitAccount: from },
+        data: { debitAccount: to },
+      }),
+      this.prisma.bankTransaction.updateMany({
+        where: { ...where, creditAccount: from },
+        data: { creditAccount: to },
+      }),
+      this.prisma.bankStatement.updateMany({
+        where: { ...where, accountName: from },
+        data: { accountName: to },
+      }),
+      this.prisma.bankStatement.updateMany({
+        where: { ...where, accountNameByCustomer: from },
+        data: { accountNameByCustomer: to },
+      }),
+      this.prisma.plaidAccount.updateMany({
+        where: { item: where, accountName: from },
+        data: { accountName: to },
+      }),
+      this.prisma.customerNameRule.updateMany({
+        where: { ...where, category: from },
+        data: { category: to },
+      }),
+      this.prisma.customerItemRule.updateMany({
+        where: { ...where, category: from },
+        data: { category: to },
+      }),
+    ];
+  }
+
+  /**
+   * Does any account of this book other than `except` already go by `name` (any case)? A
+   * chart account, their own category, a tax agency, a statement folder, a connected bank
+   * account or a ledger side.
+   */
+  private async nameTaken(
+    scope: BookScope,
+    name: string,
+    except: string[],
+  ): Promise<boolean> {
+    const wanted = name.trim().toLowerCase();
+    if (except.some((e) => e.trim().toLowerCase() === wanted)) return false;
+    if (ACCOUNT_NAMES.some((n) => n.toLowerCase() === wanted)) return true;
+    const where = scopeWhere(scope);
+    const [own, agency, statement, plaid, row] = await Promise.all([
+      this.prisma.customerAccount.findFirst({
+        where: { ...where, name },
+        select: { id: true },
+      }),
+      this.prisma.taxAgency.findFirst({
+        where: { ...where, name, deletedAt: null },
+        select: { id: true },
+      }),
+      this.prisma.bankStatement.findFirst({
+        where: { ...where, accountName: name, deletedAt: null },
+        select: { id: true },
+      }),
+      this.prisma.plaidAccount.findFirst({
+        where: { item: where, accountName: name },
+        select: { id: true },
+      }),
+      this.prisma.bankTransaction.findFirst({
+        where: {
+          ...where,
+          OR: [
+            { offsetAccount: name },
+            { debitAccount: name },
+            { creditAccount: name },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+    return !!(own || agency || statement || plaid || row);
   }
 
   /** What `mergeRefusal` needs to know about one account of this book. */
@@ -174,10 +372,29 @@ export class CustomerAccountsService {
   /** The chart, then the customer's own accounts A–Z. */
   async list(scope: BookScope): Promise<AccountView[]> {
     const own = await this.own(scope);
+    // step2: a chart account renamed to one of their own is listed by its new name only.
+    const replaced = new Set(
+      own.map((a) => a.replaces?.toLowerCase()).filter(Boolean),
+    );
     return [
-      ...CHART_OF_ACCOUNTS.map((a) => ({ ...a, custom: false })),
-      ...own.map((a) => ({ ...a, custom: true })),
+      ...CHART_OF_ACCOUNTS.filter(
+        (a) => !replaced.has(a.name.toLowerCase()),
+      ).map((a) => ({ ...a, custom: false })),
+      ...own.map((a) => ({ name: a.name, type: a.type, custom: true })),
     ];
+  }
+
+  /**
+   * step2 (2026-11-08): the chart accounts this book renamed, lower-cased chart name → their
+   * own account's name. `resolveRow` files a row the AI / firm memory put in the chart
+   * account under the new name instead.
+   */
+  async renamed(scope: BookScope): Promise<Map<string, string>> {
+    return new Map(
+      (await this.own(scope))
+        .filter((a) => a.replaces)
+        .map((a) => [a.replaces!.toLowerCase(), a.name]),
+    );
   }
 
   /** The customer's own accounts' types, by name — for reports, tax and the Names tab. */
@@ -295,11 +512,13 @@ export class CustomerAccountsService {
    */
   async validCategory(scope: BookScope, name: string): Promise<string> {
     const wanted = name.trim().toLowerCase();
+    const accounts = await this.own(scope);
+    // step2: a renamed chart account's old name means its new one.
+    const renamed = accounts.find((a) => a.replaces?.toLowerCase() === wanted);
+    if (renamed) return renamed.name;
     const chart = ACCOUNT_NAMES.find((n) => n.toLowerCase() === wanted);
     if (chart) return chart;
-    const own = (await this.own(scope)).find(
-      (a) => a.name.toLowerCase() === wanted,
-    );
+    const own = accounts.find((a) => a.name.toLowerCase() === wanted);
     if (own) return own.name;
     throw new BadRequestException(
       `"${name}" is not one of your categories. Create it first.`,
@@ -375,14 +594,17 @@ export class CustomerAccountsService {
 
   private async own(
     scope: BookScope,
-  ): Promise<Array<{ name: string; type: AccountType }>> {
+  ): Promise<
+    Array<{ name: string; type: AccountType; replaces: string | null }>
+  > {
     const rows = await this.prisma.customerAccount.findMany({
       where: scopeWhere(scope),
-      select: { name: true, type: true },
+      select: { name: true, type: true, replaces: true },
       orderBy: { name: 'asc' },
     });
     return rows.map((r) => ({
       name: r.name,
+      replaces: r.replaces,
       type: ACCOUNT_TYPES.includes(r.type as AccountType)
         ? (r.type as AccountType)
         : 'EXPENSE',

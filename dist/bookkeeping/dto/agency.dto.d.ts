@@ -23,6 +23,7 @@ export declare class SaveNameRuleDto {
     name?: string | null;
     category?: string | null;
     scope?: 'ALWAYS' | 'ONCE';
+    replace?: boolean;
 }
 export declare class ResetNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
@@ -39,6 +40,7 @@ export declare class EditTransactionDto {
     name?: string | null;
     category?: string | null;
     scope: 'ALWAYS' | 'ONCE';
+    replace?: boolean;
 }
 export declare class CreateAccountDto {
     name: string;
@@ -81,6 +83,13 @@ export declare class MoveStatementDto {
 export declare class MergeDto {
     from: string;
     into: string;
+}
+export declare class MergeAccountsDto extends MergeDto {
+    name?: string;
+}
+export declare class RenameAccountDto {
+    from: string;
+    to: string;
 }
 export declare class SetNameGroupDto {
     name: string;

@@ -120,6 +120,7 @@ let BookkeepingController = class BookkeepingController {
             name,
             category,
             scope: dto.scope ?? 'ALWAYS',
+            replace: dto.replace,
         });
         return this.tax.names(scope);
     }
@@ -129,6 +130,7 @@ let BookkeepingController = class BookkeepingController {
             name,
             category,
             scope: dto.scope,
+            replace: dto.replace,
         });
     }
     saveSplits(scope, id, dto) {
@@ -274,7 +276,10 @@ let BookkeepingController = class BookkeepingController {
         return this.accounts.setType(scope, dto.account, dto.type);
     }
     mergeAccounts(scope, dto) {
-        return this.accounts.mergeAccounts(scope, dto.from, dto.into);
+        return this.accounts.mergeAccounts(scope, dto.from, dto.into, dto.name);
+    }
+    renameAccount(scope, dto) {
+        return this.accounts.renameAccount(scope, dto.from, dto.to);
     }
     resetAccountType(scope, dto) {
         return this.accounts.resetType(scope, dto.account);
@@ -664,9 +669,18 @@ __decorate([
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, agency_dto_1.MergeDto]),
+    __metadata("design:paramtypes", [Object, agency_dto_1.MergeAccountsDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "mergeAccounts", null);
+__decorate([
+    (0, common_1.Post)('accounts/rename'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.RenameAccountDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "renameAccount", null);
 __decorate([
     (0, common_1.Delete)('accounts/type'),
     (0, common_1.HttpCode)(204),

@@ -31,7 +31,7 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async mergeAccounts(scope, rawFrom, rawInto) {
+    async mergeAccounts(scope, rawFrom, rawInto, rawName) {
         const from = rawFrom.trim();
         const into = rawInto.trim();
         if (!from || !into)
@@ -59,40 +59,17 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
         });
         if (!used && !fromSide.folder && !own)
             throw new common_1.BadRequestException(`"${from}" has nothing to merge.`);
+        const newName = rawName?.trim() || into;
+        let rename = [];
+        if (newName !== into) {
+            const refusal = (0, account_merge_util_1.renameRefusal)(intoSide, newName, await this.nameTaken(scope, newName, [from, into]));
+            if (refusal)
+                throw new common_1.BadRequestException(refusal);
+            rename = await this.renameWrites(scope, into, newName);
+        }
         const where = (0, scope_1.scopeWhere)(scope);
         await this.prisma.$transaction([
-            this.prisma.bankTransaction.updateMany({
-                where: { ...where, offsetAccount: from },
-                data: { offsetAccount: into },
-            }),
-            this.prisma.bankTransaction.updateMany({
-                where: { ...where, debitAccount: from },
-                data: { debitAccount: into },
-            }),
-            this.prisma.bankTransaction.updateMany({
-                where: { ...where, creditAccount: from },
-                data: { creditAccount: into },
-            }),
-            this.prisma.bankStatement.updateMany({
-                where: { ...where, accountName: from },
-                data: { accountName: into },
-            }),
-            this.prisma.bankStatement.updateMany({
-                where: { ...where, accountNameByCustomer: from },
-                data: { accountNameByCustomer: into },
-            }),
-            this.prisma.plaidAccount.updateMany({
-                where: { item: where, accountName: from },
-                data: { accountName: into },
-            }),
-            this.prisma.customerNameRule.updateMany({
-                where: { ...where, category: from },
-                data: { category: into },
-            }),
-            this.prisma.customerItemRule.updateMany({
-                where: { ...where, category: from },
-                data: { category: into },
-            }),
+            ...this.repointWrites(scope, from, into),
             this.prisma.customerAccountType.deleteMany({
                 where: { ...where, account: from },
             }),
@@ -102,8 +79,165 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
             this.prisma.customerAccount.deleteMany({
                 where: { ...where, name: from },
             }),
+            ...rename,
         ]);
-        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged account "${from}" into "${into}" (${used} rows)`);
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged account "${from}" into "${into}"` +
+            `${newName !== into ? ` as "${newName}"` : ''} (${used} rows)`);
+    }
+    async renameAccount(scope, rawFrom, rawTo) {
+        const from = rawFrom.trim();
+        const to = rawTo.trim();
+        if (!from)
+            throw new common_1.BadRequestException('Which account?');
+        const [side, replaced] = await Promise.all([
+            this.mergeSide(scope, from),
+            this.prisma.customerAccount.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name: from },
+                select: { replaces: true },
+            }),
+        ]);
+        const back = replaced?.replaces ? [replaced.replaces] : [];
+        const taken = await this.nameTaken(scope, to, [from, ...back]);
+        const refusal = (0, account_merge_util_1.renameRefusal)(side, to, taken);
+        if (refusal) {
+            if (taken)
+                throw new common_1.ConflictException(refusal);
+            throw new common_1.BadRequestException(refusal);
+        }
+        const writes = await this.renameWrites(scope, from, to);
+        if (!writes.length)
+            throw new common_1.BadRequestException(`"${from}" is not one of your accounts.`);
+        await this.prisma.$transaction(writes);
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: renamed account "${from}" to "${to}"`);
+    }
+    async renameWrites(scope, from, to) {
+        const where = (0, scope_1.scopeWhere)(scope);
+        const [used, folder, own] = await Promise.all([
+            this.prisma.bankTransaction.count({
+                where: {
+                    ...where,
+                    OR: [
+                        { offsetAccount: from },
+                        { debitAccount: from },
+                        { creditAccount: from },
+                    ],
+                },
+            }),
+            this.prisma.bankStatement.count({
+                where: { ...where, accountName: from, deletedAt: null },
+            }),
+            this.prisma.customerAccount.findFirst({
+                where: { ...where, name: from },
+                select: { id: true, replaces: true },
+            }),
+        ]);
+        const chart = chart_of_accounts_1.CHART_OF_ACCOUNTS.find((a) => a.name.toLowerCase() === from.toLowerCase());
+        const plaid = await this.prisma.plaidAccount.count({
+            where: { item: where, accountName: from },
+        });
+        if (!used && !folder && !own && !plaid && !chart)
+            return [];
+        const writes = [
+            ...this.repointWrites(scope, from, to),
+            this.prisma.customerAccountType.updateMany({
+                where: { ...where, account: from },
+                data: { account: to },
+            }),
+            this.prisma.customerAccountCurrency.updateMany({
+                where: { ...where, account: from },
+                data: { account: to },
+            }),
+        ];
+        if (own && own.replaces?.toLowerCase() === to.toLowerCase()) {
+            writes.push(this.prisma.customerAccount.delete({ where: { id: own.id } }));
+        }
+        else if (own) {
+            writes.push(this.prisma.customerAccount.update({
+                where: { id: own.id },
+                data: { name: to },
+            }));
+        }
+        else if (chart && !folder && !plaid) {
+            writes.push(this.prisma.customerAccount.create({
+                data: { ...where, name: to, type: chart.type, replaces: chart.name },
+            }));
+        }
+        return writes;
+    }
+    repointWrites(scope, from, to) {
+        const where = (0, scope_1.scopeWhere)(scope);
+        return [
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, offsetAccount: from },
+                data: { offsetAccount: to },
+            }),
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, debitAccount: from },
+                data: { debitAccount: to },
+            }),
+            this.prisma.bankTransaction.updateMany({
+                where: { ...where, creditAccount: from },
+                data: { creditAccount: to },
+            }),
+            this.prisma.bankStatement.updateMany({
+                where: { ...where, accountName: from },
+                data: { accountName: to },
+            }),
+            this.prisma.bankStatement.updateMany({
+                where: { ...where, accountNameByCustomer: from },
+                data: { accountNameByCustomer: to },
+            }),
+            this.prisma.plaidAccount.updateMany({
+                where: { item: where, accountName: from },
+                data: { accountName: to },
+            }),
+            this.prisma.customerNameRule.updateMany({
+                where: { ...where, category: from },
+                data: { category: to },
+            }),
+            this.prisma.customerItemRule.updateMany({
+                where: { ...where, category: from },
+                data: { category: to },
+            }),
+        ];
+    }
+    async nameTaken(scope, name, except) {
+        const wanted = name.trim().toLowerCase();
+        if (except.some((e) => e.trim().toLowerCase() === wanted))
+            return false;
+        if (chart_of_accounts_1.ACCOUNT_NAMES.some((n) => n.toLowerCase() === wanted))
+            return true;
+        const where = (0, scope_1.scopeWhere)(scope);
+        const [own, agency, statement, plaid, row] = await Promise.all([
+            this.prisma.customerAccount.findFirst({
+                where: { ...where, name },
+                select: { id: true },
+            }),
+            this.prisma.taxAgency.findFirst({
+                where: { ...where, name, deletedAt: null },
+                select: { id: true },
+            }),
+            this.prisma.bankStatement.findFirst({
+                where: { ...where, accountName: name, deletedAt: null },
+                select: { id: true },
+            }),
+            this.prisma.plaidAccount.findFirst({
+                where: { item: where, accountName: name },
+                select: { id: true },
+            }),
+            this.prisma.bankTransaction.findFirst({
+                where: {
+                    ...where,
+                    OR: [
+                        { offsetAccount: name },
+                        { debitAccount: name },
+                        { creditAccount: name },
+                    ],
+                },
+                select: { id: true },
+            }),
+        ]);
+        return !!(own || agency || statement || plaid || row);
     }
     async mergeSide(scope, name) {
         const [agency, statement, plaid, currency] = await Promise.all([
@@ -145,10 +279,16 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
     }
     async list(scope) {
         const own = await this.own(scope);
+        const replaced = new Set(own.map((a) => a.replaces?.toLowerCase()).filter(Boolean));
         return [
-            ...chart_of_accounts_1.CHART_OF_ACCOUNTS.map((a) => ({ ...a, custom: false })),
-            ...own.map((a) => ({ ...a, custom: true })),
+            ...chart_of_accounts_1.CHART_OF_ACCOUNTS.filter((a) => !replaced.has(a.name.toLowerCase())).map((a) => ({ ...a, custom: false })),
+            ...own.map((a) => ({ name: a.name, type: a.type, custom: true })),
         ];
+    }
+    async renamed(scope) {
+        return new Map((await this.own(scope))
+            .filter((a) => a.replaces)
+            .map((a) => [a.replaces.toLowerCase(), a.name]));
     }
     async types(scope) {
         return new Map((await this.own(scope)).map((a) => [a.name, a.type]));
@@ -229,10 +369,14 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
     }
     async validCategory(scope, name) {
         const wanted = name.trim().toLowerCase();
+        const accounts = await this.own(scope);
+        const renamed = accounts.find((a) => a.replaces?.toLowerCase() === wanted);
+        if (renamed)
+            return renamed.name;
         const chart = chart_of_accounts_1.ACCOUNT_NAMES.find((n) => n.toLowerCase() === wanted);
         if (chart)
             return chart;
-        const own = (await this.own(scope)).find((a) => a.name.toLowerCase() === wanted);
+        const own = accounts.find((a) => a.name.toLowerCase() === wanted);
         if (own)
             return own.name;
         throw new common_1.BadRequestException(`"${name}" is not one of your categories. Create it first.`);
@@ -283,11 +427,12 @@ let CustomerAccountsService = CustomerAccountsService_1 = class CustomerAccounts
     async own(scope) {
         const rows = await this.prisma.customerAccount.findMany({
             where: (0, scope_1.scopeWhere)(scope),
-            select: { name: true, type: true },
+            select: { name: true, type: true, replaces: true },
             orderBy: { name: 'asc' },
         });
         return rows.map((r) => ({
             name: r.name,
+            replaces: r.replaces,
             type: exports.ACCOUNT_TYPES.includes(r.type)
                 ? r.type
                 : 'EXPENSE',

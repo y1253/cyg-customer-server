@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -18,6 +19,7 @@ import { TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
   bankPayeeName,
+  byContainsPriority,
   cleanName,
   CONTAINS_MIN,
   containsKey,
@@ -29,12 +31,15 @@ import {
   EXCEPTION,
   exceptionKey,
   fallbackName,
+  findLinkConflicts,
   indexRules,
+  linkConflictMessage,
   memoryWrites,
   nameKey,
   nameMemoryWrites,
   resolveRow,
   resolveRows,
+  RULE_CONFLICT,
   type MemoryEntry,
   type Resolved,
   type NameRule,
@@ -152,7 +157,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
     names: ReadonlyArray<string | null | undefined> = [],
   ): Promise<ResolveContext & { customAccounts: Set<string> }> {
     const keys = [...new Set(descriptions.map(descriptionKey).filter(Boolean))];
-    const [memoryRows, rules, customAccounts] = await Promise.all([
+    const [memoryRows, rules, customAccounts, renamed] = await Promise.all([
       keys.length
         ? this.prisma.descriptionMemory.findMany({
             where: { descriptionKey: { in: keys } },
@@ -166,6 +171,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
         : Promise.resolve([]),
       this.rulesOf(scope),
       this.customAccountsOf(scope),
+      this.renamedAccountsOf(scope),
     ]);
     const memory = new Map<string, MemoryEntry>(
       memoryRows.map((m) => [
@@ -183,7 +189,13 @@ export class NameMemoryService implements OnApplicationBootstrap {
       if (clean) nameKeys.add(nameKey(clean));
     }
     const nameMemory = await this.nameMemoryFor([...nameKeys]);
-    return { memory, ...indexRules(rules), customAccounts, nameMemory };
+    return {
+      memory,
+      ...indexRules(rules),
+      customAccounts,
+      nameMemory,
+      renamed,
+    };
   }
 
   /** The firm `NameMemory` for these name keys: `nameKey` → category. */
@@ -217,6 +229,21 @@ export class NameMemoryService implements OnApplicationBootstrap {
           ? r.matchType
           : 'NAME',
     }));
+  }
+
+  /** step2: the chart accounts this book renamed (`ResolveContext.renamed`). */
+  private async renamedAccountsOf(
+    scope: BookScope,
+  ): Promise<Map<string, string>> {
+    const rows = await this.prisma.customerAccount.findMany({
+      where: { ...scopeWhere(scope), replaces: { not: null } },
+      select: { name: true, replaces: true },
+    });
+    return new Map(
+      rows.flatMap((r) =>
+        r.replaces ? [[r.replaces.toLowerCase(), r.name] as const] : [],
+      ),
+    );
   }
 
   private async customAccountsOf(scope: BookScope): Promise<Set<string>> {
@@ -600,6 +627,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
       name: string | null;
       category: string | null;
       scope?: EditScope;
+      /** step2: take the description from the name it is linked to now (`guardLinks`). */
+      replace?: boolean;
     },
   ): Promise<void> {
     const matchKey = ruleKeyOf(input.matchType, input.matchKey);
@@ -607,6 +636,19 @@ export class NameMemoryService implements OnApplicationBootstrap {
     const category = input.category
       ? normalizeAccount(input.category, await this.customAccountsOf(scope))
       : null;
+    if (
+      name &&
+      input.matchType !== 'NAME' &&
+      (input.matchType === 'CONTAINS' || (input.scope ?? 'ALWAYS') === 'ALWAYS')
+    ) {
+      await this.guardLinks(
+        scope,
+        input.matchType,
+        matchKey,
+        name,
+        input.replace,
+      );
+    }
     const where = {
       ...scopeWhere(scope),
       matchType: input.matchType,
@@ -656,6 +698,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
       }));
       // The tax agencies live on the payee NAME, so a rename carries them over.
       await this.tax.carryAgencies(scope, [...names], name);
+      // step2: and its group / "Tax applies" switch.
+      await this.tax.carryNameSettings(scope, [...names], name);
       const adopt = category ?? target;
       if (adopt) await this.setNameCategory(scope, name, adopt);
       return;
@@ -763,21 +807,82 @@ export class NameMemoryService implements OnApplicationBootstrap {
   }
 
   /**
+   * step2 (2026-11-08): a DESCRIPTION / CONTAINS rule for `name` that would take a
+   * description from ANOTHER name is refused with a 409 `RULE_CONFLICT` listing those
+   * links (`findLinkConflicts`) — unless `replace`: then the rules that would still win
+   * (a longer text, an exact description) are deleted first, so the new link takes them.
+   */
+  private async guardLinks(
+    scope: BookScope,
+    matchType: 'DESCRIPTION' | 'CONTAINS',
+    key: string,
+    name: string,
+    replace?: boolean,
+  ): Promise<void> {
+    // An exact description rule beats every text rule: nothing has to go.
+    if (replace && matchType === 'DESCRIPTION') return;
+    // Too short a text is refused by `saveContainsRule` — never asked about.
+    if (matchType === 'CONTAINS' && key.length < CONTAINS_MIN) return;
+    const [rules, rows] = await Promise.all([
+      this.rulesOf(scope),
+      this.prisma.bankTransaction.findMany({
+        where: { ...scopeWhere(scope), splitOfId: null },
+        select: { description: true },
+      }),
+    ]);
+    const conflicts = findLinkConflicts({
+      matchType,
+      key,
+      name,
+      rules,
+      descriptions: [...new Set(rows.map((r) => r.description))],
+    });
+    if (!conflicts.length) return;
+    if (!replace) {
+      throw new ConflictException({
+        code: RULE_CONFLICT,
+        message: linkConflictMessage(conflicts, name),
+        conflicts: conflicts.map(({ matchType: type, text, name: from }) => ({
+          matchType: type,
+          text,
+          name: from,
+        })),
+      });
+    }
+    const ids = conflicts.flatMap((c) =>
+      c.remove && c.ruleId ? [c.ruleId] : [],
+    );
+    if (ids.length) {
+      await this.prisma.customerNameRule.deleteMany({
+        where: { ...scopeWhere(scope), id: { in: ids } },
+      });
+    }
+  }
+
+  /**
    * The rows a CONTAINS rule reaches: live, not split, not a one-time edit, holding the text,
-   * and not covered by one of the customer's exact DESCRIPTION rules.
+   * not covered by one of the customer's exact DESCRIPTION rules, and not won by a LONGER
+   * text rule (`resolveRow` gives those to that rule — step2 fix: saving "AMZN" used to
+   * rewrite the rows "AMZN MKTP" owns).
    */
   private async containsRows(
     scope: BookScope,
     key: string,
   ): Promise<MatchedRow[]> {
+    const rules = await this.prisma.customerNameRule.findMany({
+      where: {
+        ...scopeWhere(scope),
+        matchType: { in: ['DESCRIPTION', 'CONTAINS'] },
+      },
+      select: { matchType: true, matchKey: true },
+    });
     const exact = new Set(
-      (
-        await this.prisma.customerNameRule.findMany({
-          where: { ...scopeWhere(scope), matchType: 'DESCRIPTION' },
-          select: { matchKey: true },
-        })
-      ).map((r) => r.matchKey),
+      rules.filter((r) => r.matchType === 'DESCRIPTION').map((r) => r.matchKey),
     );
+    const contains = [
+      ...rules.filter((r) => r.matchType === 'CONTAINS' && r.matchKey !== key),
+      { matchKey: key },
+    ].sort(byContainsPriority);
     const rows = await this.matchingRows(
       scope,
       'DESCRIPTION',
@@ -789,7 +894,9 @@ export class NameMemoryService implements OnApplicationBootstrap {
     return rows.filter(
       (r) =>
         descriptionContains(r.description, key) &&
-        !exact.has(descriptionKey(r.description)),
+        !exact.has(descriptionKey(r.description)) &&
+        contains.find((c) => descriptionContains(r.description, c.matchKey))
+          ?.matchKey === key,
     );
   }
 
@@ -806,7 +913,12 @@ export class NameMemoryService implements OnApplicationBootstrap {
   private async applyEdit(
     scope: BookScope,
     id: number,
-    input: { name: string | null; category: string | null; scope: EditScope },
+    input: {
+      name: string | null;
+      category: string | null;
+      scope: EditScope;
+      replace?: boolean;
+    },
   ): Promise<void> {
     const row = await this.prisma.bankTransaction.findFirst({
       where: { id, ...scopeWhere(scope) },
@@ -852,6 +964,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
           'This transaction has no description to remember. Apply the name to this row only.',
         );
       }
+      // Asked BEFORE the clicked row changes, so a refusal changes nothing.
+      await this.guardLinks(scope, 'DESCRIPTION', key, name, input.replace);
       // The clicked row too, even when an earlier one-time edit flagged it — and it is no
       // exception any more (step9): the rule for every row is now its rule.
       if (row.manualEdit) {
@@ -867,6 +981,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
         name,
         category,
         scope: 'ALWAYS',
+        replace: true,
       });
       return;
     }
@@ -1168,7 +1283,18 @@ export class NameMemoryService implements OnApplicationBootstrap {
         data: update,
       });
     } else {
-      await this.prisma.customerNameRule.create({ data: create });
+      try {
+        await this.prisma.customerNameRule.create({ data: create });
+      } catch (e) {
+        // Two saves of the same key at once: the other one created it first.
+        if ((e as { code?: string }).code !== 'P2002') throw e;
+        throw new ConflictException({
+          code: RULE_CONFLICT,
+          message:
+            'This was just changed by another save. Refresh the page and try again.',
+          conflicts: [],
+        });
+      }
     }
   }
 

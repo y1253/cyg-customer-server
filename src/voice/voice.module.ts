@@ -6,6 +6,7 @@ import { MessagingModule } from '../messaging/messaging.module';
 import { SalesModule } from '../sales/sales.module';
 import { VoiceCallsService } from './voice-calls.service';
 import {
+  CallMeController,
   VoiceRecordingController,
   VoiceStatusController,
 } from './voice.controller';
@@ -20,7 +21,11 @@ import { VoiceGateway } from './voice.gateway';
     MessagingModule,
     SalesModule,
   ],
-  controllers: [VoiceStatusController, VoiceRecordingController],
+  controllers: [
+    VoiceStatusController,
+    VoiceRecordingController,
+    CallMeController,
+  ],
   providers: [VoiceCallsService, VoiceGateway],
   exports: [VoiceCallsService],
 })

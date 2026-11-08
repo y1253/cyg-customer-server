@@ -61,6 +61,7 @@ export interface VoiceTokenClaims {
     script?: string | null;
     contactId?: number | null;
     contactName?: string | null;
+    about?: number | null;
 }
 export declare function realtimeTools(defs: readonly ToolDefinition[]): {
     type: "function";

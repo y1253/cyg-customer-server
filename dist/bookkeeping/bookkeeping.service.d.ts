@@ -14,6 +14,7 @@ export interface StatementView {
     sizeBytes: number;
     status: StatementStatus;
     error: string | null;
+    errorDetail: string | null;
     checks: string[];
     customerNote: string | null;
     accountName: string | null;
@@ -64,6 +65,15 @@ export interface TransactionView {
     fxRate?: number | null;
     homeAmount?: number;
 }
+export interface StatementBalancesResult {
+    statement: StatementView;
+    balancesMatch: boolean | null;
+    expectedClosing: number | null;
+}
+export declare function balanceFit(opening: number | null, closing: number | null, net: number, card: boolean): {
+    balancesMatch: boolean | null;
+    expectedClosing: number | null;
+};
 export declare function failedChecks(detail: Prisma.JsonValue | null): string[];
 export declare class BookkeepingService {
     private readonly prisma;
@@ -100,6 +110,11 @@ export declare class BookkeepingService {
     }>;
     private feedStatementPdf;
     retry(scope: BookScope, id: number, note?: string): Promise<StatementView>;
+    setBalances(scope: BookScope, id: number, input: {
+        openingBalance?: number | null;
+        closingBalance?: number | null;
+        reason: string;
+    }): Promise<StatementBalancesResult>;
     remove(scope: BookScope, id: number): Promise<void>;
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;
     private owned;

@@ -25,6 +25,8 @@ export declare class StatementProcessorService {
     private processOne;
     private knownAccounts;
     private recordFailure;
+    private linkedReceipts;
+    private relinkReceipts;
 }
 export declare function needsReviewMessage(rereads: number, problems: string[]): string;
 export declare function withCustomerNote(rules: string, note: string | null): string;

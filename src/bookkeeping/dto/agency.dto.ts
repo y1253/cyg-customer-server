@@ -126,6 +126,15 @@ export class SaveNameRuleDto {
   @IsOptional()
   @IsIn(['ALWAYS', 'ONCE'])
   scope?: 'ALWAYS' | 'ONCE';
+
+  /**
+   * step2 (2026-11-08): true = the description (or text) is already linked to ANOTHER name
+   * and the customer agreed to take it away from that name. Without it such a save is a
+   * 409 `RULE_CONFLICT` listing the links it would move.
+   */
+  @IsOptional()
+  @IsBoolean()
+  replace?: boolean;
 }
 
 /** `DELETE /api/bookkeeping/names/rule` — back to the default. */
@@ -185,6 +194,15 @@ export class EditTransactionDto {
    */
   @IsIn(['ALWAYS', 'ONCE'])
   scope!: 'ALWAYS' | 'ONCE';
+
+  /**
+   * step2 (2026-11-08): true = the description (or text) is already linked to ANOTHER name
+   * and the customer agreed to take it away from that name. Without it such a save is a
+   * 409 `RULE_CONFLICT` listing the links it would move.
+   */
+  @IsOptional()
+  @IsBoolean()
+  replace?: boolean;
 }
 
 /** `POST /api/bookkeeping/accounts` — a category of the customer's own. */
@@ -327,6 +345,33 @@ export class MergeDto {
   @IsNotEmpty()
   @MaxLength(191)
   into!: string;
+}
+
+/**
+ * step8: merge one account into another. step2 (2026-11-08): `name` = what the merged
+ * account is called ("TD 4562 & 5845" for two bank folders); omitted = `into`'s name.
+ */
+export class MergeAccountsDto extends MergeDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string;
+}
+
+/** step2 (2026-11-08): rename an account (click its name on the reports / Bank feeds). */
+export class RenameAccountDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  from!: string;
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  to!: string;
 }
 
 /** step9: put a payee name in a Names-tab group (null = back to following its category). */

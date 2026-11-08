@@ -4,6 +4,7 @@ import type { AiCall, AiConversation } from '@prisma/client';
 import { CommUsageService } from '../comm-usage/comm-usage.service';
 import { Subject } from 'rxjs';
 import { AssistantTools, type PersonTarget, type ToolContext } from '../assistant/assistant-tools';
+import { AssistantService } from '../assistant/assistant.service';
 import { CustomerOutbox } from '../assistant/customer-outbox.service';
 import { type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
@@ -52,11 +53,12 @@ export declare class VoiceCallsService implements OnModuleInit {
     private readonly tools?;
     private readonly outbox?;
     private readonly usage?;
+    private readonly chats?;
     private readonly logger;
     private readonly jwt;
     readonly outboundMissed$: Subject<OutboundMissed>;
     private readonly personCalls;
-    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined, usage?: CommUsageService | undefined);
+    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined, usage?: CommUsageService | undefined, chats?: AssistantService | undefined);
     onModuleInit(): void;
     callMeNow(ctx: ToolContext, about: string): Promise<{
         ok: true;
@@ -65,6 +67,18 @@ export declare class VoiceCallsService implements OnModuleInit {
         ok: false;
         error: string;
     }>;
+    callMeFromChat(scope: BookScope, target: {
+        statementId?: number;
+        attachmentId?: number;
+    }): Promise<{
+        ok: true;
+        summary: string;
+    } | {
+        ok: false;
+        error: string;
+    }>;
+    callMeAvailable(customerId: number): Promise<boolean>;
+    private callMe;
     callPersonNow(ctx: ToolContext, person: PersonTarget, message: string): Promise<{
         ok: true;
         summary: string;
@@ -105,6 +119,7 @@ export declare class VoiceCallsService implements OnModuleInit {
         script: string;
         contactId?: number | null;
         contactName?: string | null;
+        about?: number | null;
     }): Promise<{
         callSid: string;
     } | {

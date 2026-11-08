@@ -596,3 +596,25 @@ describe('step11: only an Uncategorized row is nameless', () => {
     );
   });
 });
+
+describe('resolveRow — a chart account the customer renamed (step2)', () => {
+  const renamed = new Map([['supplies', 'Shop supplies']]);
+  it('files the chart category under its new name, from any source', () => {
+    expect(
+      resolveRow(row(), { ...ctx(), renamed }).category,
+    ).toBe('Shop supplies');
+    expect(
+      resolveRow(row({ offsetAccount: 'Travel' }), {
+        ...ctx({ [KEY]: { name: 'Walmart', category: 'Supplies' } }),
+        renamed,
+      }).category,
+    ).toBe('Shop supplies');
+  });
+
+  it('leaves the other categories alone', () => {
+    expect(
+      resolveRow(row({ offsetAccount: 'Travel' }), { ...ctx(), renamed })
+        .category,
+    ).toBe('Travel');
+  });
+});

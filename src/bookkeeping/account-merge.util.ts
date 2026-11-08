@@ -45,3 +45,37 @@ export function mergeRefusal(from: MergeSide, into: MergeSide): string | null {
   }
   return null;
 }
+
+/**
+ * step2 (2026-11-08): accounts the books make up on READ (Starting balance rows, FX
+ * revaluation, net income) or keep as a holding place — renaming one would split it in two.
+ */
+const NOT_RENAMABLE = new Set([
+  ...NOT_MERGEABLE,
+  "owner's loan",
+  'exchange gain or loss',
+]);
+
+/**
+ * step2 (2026-11-08): may account `from` be renamed to `to` (click its name on the reports or
+ * its Bank feeds folder)? `taken` = another account of this book already has that name (then
+ * it is a merge, not a rename). Null = it may go ahead.
+ */
+export function renameRefusal(
+  from: MergeSide,
+  to: string,
+  taken: boolean,
+): string | null {
+  const name = to.trim();
+  if (!name) return 'Enter the new name.';
+  if (name === from.name.trim()) return 'That is already its name.';
+  if (NOT_RENAMABLE.has(from.name.trim().toLowerCase()))
+    return `"${from.name}" cannot be renamed.`;
+  if (from.agency)
+    return `"${from.name}" is a tax agency — rename it in your tax settings.`;
+  if (NOT_RENAMABLE.has(name.toLowerCase()))
+    return `"${name}" is kept for the books' own use — pick another name.`;
+  if (taken)
+    return `You already have an account called "${name}". Drag one onto the other to merge them instead.`;
+  return null;
+}

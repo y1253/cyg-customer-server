@@ -29,6 +29,8 @@ const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
 const reconcile_util_1 = require("./reconcile.util");
 const statement_extractor_1 = require("./statement-extractor");
+const statement_errors_1 = require("./statement-errors");
+const reread_relink_util_1 = require("./reread-relink.util");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_uploads_1 = require("./statement-uploads");
 const tax_service_1 = require("./tax.service");
@@ -122,7 +124,11 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 updatedAt: row.updatedAt,
                 deletedAt: null,
             },
-            data: { status: client_1.StatementStatus.PROCESSING, error: null },
+            data: {
+                status: client_1.StatementStatus.PROCESSING,
+                error: null,
+                errorDetail: null,
+            },
         });
         if (claimed.count === 0)
             return;
@@ -158,6 +164,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 : client_1.StatementStatus.DONE;
             const failed = checks.filter((c) => !c.ok && !c.skipped);
             const money = (n) => (n === null ? null : n.toFixed(2));
+            const linked = await this.linkedReceipts(row.id);
             await this.prisma.$transaction([
                 this.prisma.bankTransaction.deleteMany({
                     where: { statementId: row.id },
@@ -201,6 +208,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     },
                 }),
             ]);
+            if (linked.length)
+                await this.relinkReceipts(row.id, linked, !mismatch);
             if (!mismatch) {
                 await this.images.harvest({
                     ...row,
@@ -246,11 +255,80 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 error: final
                     ? err instanceof statement_extractor_1.UnreadableStatementError
                         ? message
-                        : 'We could not read this statement. Please try again, or upload a clearer copy.'
+                        : (0, statement_errors_1.failureReason)(message)
                     : null,
+                errorDetail: final ? message.slice(0, statement_errors_1.ERROR_DETAIL_MAX) : null,
             },
         })
             .catch(() => undefined);
+    }
+    async linkedReceipts(statementId) {
+        const rows = await this.prisma.transactionAttachment.findMany({
+            where: {
+                deletedAt: null,
+                transaction: { statementId },
+                NOT: { sourceRef: { startsWith: `stmt:${statementId}:` } },
+            },
+            select: {
+                id: true,
+                transaction: {
+                    select: {
+                        amount: true,
+                        postingDate: true,
+                        pendingDate: true,
+                        description: true,
+                    },
+                },
+            },
+        });
+        return rows.flatMap((a) => a.transaction
+            ? [
+                {
+                    attachmentId: a.id,
+                    amountCents: Math.round(Number(a.transaction.amount) * 100),
+                    day: isoDay(a.transaction.postingDate ?? a.transaction.pendingDate),
+                    description: a.transaction.description,
+                },
+            ]
+            : []);
+    }
+    async relinkReceipts(statementId, linked, done) {
+        try {
+            const fresh = done
+                ? await this.prisma.bankTransaction.findMany({
+                    where: { statementId, splitOfId: null },
+                    select: {
+                        id: true,
+                        amount: true,
+                        postingDate: true,
+                        pendingDate: true,
+                        description: true,
+                    },
+                })
+                : [];
+            const plan = (0, reread_relink_util_1.relinkPlan)(linked, fresh.map((r) => ({
+                id: r.id,
+                amountCents: Math.round(Number(r.amount) * 100),
+                day: isoDay(r.postingDate ?? r.pendingDate),
+                description: r.description,
+            })));
+            for (const a of linked) {
+                const transactionId = plan.get(a.attachmentId);
+                await this.prisma.transactionAttachment.update({
+                    where: { id: a.attachmentId },
+                    data: transactionId
+                        ? { transactionId }
+                        : {
+                            status: client_1.AttachmentStatus.UNMATCHED,
+                            matchNote: 'Its statement was read again and the transaction changed — pick it again.',
+                        },
+                });
+            }
+            this.logger.log(`statement #${statementId}: ${plan.size} of ${linked.length} receipt(s) put back after the re-read`);
+        }
+        catch (err) {
+            this.logger.warn(`statement #${statementId}: receipts not put back: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 };
 exports.StatementProcessorService = StatementProcessorService;
@@ -277,6 +355,9 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
         statement_images_service_1.StatementImagesService,
         rules_service_1.RulesService])
 ], StatementProcessorService);
+function isoDay(d) {
+    return d ? d.toISOString().slice(0, 10) : null;
+}
 function needsReviewMessage(rereads, problems) {
     const what = problems.length ? ` (${problems.join('; ')})` : '';
     return (`We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +

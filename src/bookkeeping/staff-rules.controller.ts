@@ -55,13 +55,15 @@ export class StaffRulesController {
     @Body() dto: SaveNameRuleDto,
   ): Promise<StaffRulesView> {
     const { name, category } = await this.accounts.editValues(staff.scope, dto);
-    // Staff always edit the saved rule, never a one-time change.
+    // Staff always edit the saved rule, never a one-time change — and their word moves a
+    // description already linked to another name (step2: no RULE_CONFLICT for staff).
     await this.nameMemory.saveRule(staff.scope, {
       matchType: dto.matchType,
       matchKey: dto.matchKey,
       name,
       category,
       scope: 'ALWAYS',
+      replace: true,
     });
     this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
     return this.rules.view(staff.scope);

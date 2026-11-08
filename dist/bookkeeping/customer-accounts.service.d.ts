@@ -11,9 +11,14 @@ export declare class CustomerAccountsService {
     private readonly prisma;
     private readonly logger;
     constructor(prisma: PrismaService);
-    mergeAccounts(scope: BookScope, rawFrom: string, rawInto: string): Promise<void>;
+    mergeAccounts(scope: BookScope, rawFrom: string, rawInto: string, rawName?: string | null): Promise<void>;
+    renameAccount(scope: BookScope, rawFrom: string, rawTo: string): Promise<void>;
+    private renameWrites;
+    private repointWrites;
+    private nameTaken;
     private mergeSide;
     list(scope: BookScope): Promise<AccountView[]>;
+    renamed(scope: BookScope): Promise<Map<string, string>>;
     types(scope: BookScope): Promise<Map<string, AccountType>>;
     overrides(scope: BookScope): Promise<Map<string, AccountType>>;
     setType(scope: BookScope, account: string, type: AccountType): Promise<void>;

@@ -36,6 +36,7 @@ export interface IssueReport {
     whatWentWrong: string;
     attachmentIds: number[];
     transactionIds: number[];
+    statementIds?: number[];
 }
 export interface IssueOutcome {
     instructions: string;

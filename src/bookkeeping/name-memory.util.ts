@@ -126,6 +126,11 @@ export interface ResolveContext {
   nameMemory?: ReadonlyMap<string, string>;
   /** step9: the customer's one-time rules (EXCEPTION) by row fingerprint (`exceptionKey`). */
   exceptions?: ReadonlyMap<string, NameRule>;
+  /**
+   * step2 (2026-11-08): chart accounts the customer renamed, lower-cased chart name → their
+   * own account (`CustomerAccount.replaces`) — applied to the final category.
+   */
+  renamed?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -356,6 +361,9 @@ export function resolveRow(
 
   // step11: a categorized row is never nameless — its description names it, and such a
   // name is never learned by the firm memory.
+  // step2: a chart account the customer renamed is filed under its new name.
+  category = ctx.renamed?.get(category.toLowerCase()) ?? category;
+
   const finalName = fallbackName(name, category, row.description);
   const fromDescription =
     !!finalName && finalName === descriptionName(row.description);
@@ -503,6 +511,13 @@ export function memoryWrites(
   return { creates: [...creates.values()], fills: [...fills.values()] };
 }
 
+/** The order CONTAINS rules are tried in: the longest text first (it wins), then A–Z. */
+export const byContainsPriority = (
+  a: { matchKey: string },
+  b: { matchKey: string },
+): number =>
+  b.matchKey.length - a.matchKey.length || a.matchKey.localeCompare(b.matchKey);
+
 /** The CONTAINS rule a description falls under: the longest text it holds (rules sorted so). */
 export function containsRuleFor(
   description: string,
@@ -531,11 +546,7 @@ export function indexRules(rules: readonly NameRule[]): {
     } else if (r.matchType === EXCEPTION) exceptions.set(r.matchKey, r);
     else nameRules.set(r.matchKey, r);
   }
-  containsRules.sort(
-    (a, b) =>
-      b.matchKey.length - a.matchKey.length ||
-      a.matchKey.localeCompare(b.matchKey),
-  );
+  containsRules.sort(byContainsPriority);
   // The customer's category for each FINAL name: a rule keyed on the name itself first,
   // then any rename rule that leads to it.
   for (const r of nameRules.values()) {
@@ -548,4 +559,143 @@ export function indexRules(rules: readonly NameRule[]): {
       nameCategories.set(r.matchKey, r.category);
   }
   return { descRules, nameRules, containsRules, nameCategories, exceptions };
+}
+
+// ---- step2 (2026-11-08): a description already linked to ANOTHER name ----
+
+/** The 409 `code` of a save that would move a description from one name to another. */
+export const RULE_CONFLICT = 'RULE_CONFLICT';
+
+/** One link a save would take away from another name. */
+export interface LinkConflict {
+  /** What links it today: an exact description, or a text descriptions contain. */
+  matchType: 'DESCRIPTION' | 'CONTAINS';
+  /** The description (as printed) or the contained text (as typed). */
+  text: string;
+  /** The name it is linked to now. */
+  name: string;
+  ruleId?: number;
+  /**
+   * With `replace`, this rule must GO for the new link to win: a longer text (it beats a
+   * shorter one) or an exact description (it beats every text). The others lose by
+   * themselves — the rule being saved is updated in place, or wins over them.
+   */
+  remove: boolean;
+}
+
+/**
+ * The links a DESCRIPTION or CONTAINS rule for `name` would take away from other names
+ * (user's request: say so before moving a description, and move it only when they agree).
+ * `descriptions` = the book's row descriptions as printed. A one-time ("only this row")
+ * change is never a link, so it is never asked about; neither is the same name again.
+ */
+export function findLinkConflicts(input: {
+  matchType: 'DESCRIPTION' | 'CONTAINS';
+  key: string;
+  name: string;
+  rules: readonly NameRule[];
+  descriptions: readonly string[];
+}): LinkConflict[] {
+  const { key, rules } = input;
+  const target = nameKey(input.name);
+  const other = (r: NameRule): boolean =>
+    !!cleanName(r.name) && nameKey(r.name!) !== target;
+  const textOf = (r: NameRule): string => r.includeChars?.trim() || r.matchKey;
+  const contains = rules
+    .filter((r) => r.matchType === 'CONTAINS' && r.matchKey)
+    .sort(byContainsPriority);
+  const out: LinkConflict[] = [];
+  const seen = new Set<string>();
+  const push = (c: LinkConflict) => {
+    const k = `${c.matchType}:${c.ruleId ?? c.text}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(c);
+  };
+
+  if (input.matchType === 'DESCRIPTION') {
+    const printed = input.descriptions.filter((d) => descriptionKey(d) === key);
+    const exact = rules.find(
+      (r) => r.matchType === 'DESCRIPTION' && r.matchKey === key,
+    );
+    if (exact && cleanName(exact.name)) {
+      // The exact rule decides this description; no text rule reaches it.
+      if (other(exact)) {
+        push({
+          matchType: 'DESCRIPTION',
+          text: printed[0] ?? key,
+          name: cleanName(exact.name)!,
+          ruleId: exact.id,
+          remove: false,
+        });
+      }
+      return out;
+    }
+    for (const d of printed) {
+      const r = containsRuleFor(d, contains);
+      if (r && other(r)) {
+        push({
+          matchType: 'CONTAINS',
+          text: textOf(r),
+          name: cleanName(r.name)!,
+          ruleId: r.id,
+          remove: false,
+        });
+      }
+    }
+    return out;
+  }
+
+  for (const r of contains) {
+    if (!other(r)) continue;
+    // Equal = the rule being saved; shorter = the new, longer text wins over it.
+    const longer = r.matchKey !== key && r.matchKey.includes(key);
+    if (longer || key.includes(r.matchKey)) {
+      push({
+        matchType: 'CONTAINS',
+        text: textOf(r),
+        name: cleanName(r.name)!,
+        ruleId: r.id,
+        remove: longer,
+      });
+    }
+  }
+  const exact = new Map(
+    rules
+      .filter((r) => r.matchType === 'DESCRIPTION' && other(r))
+      .map((r) => [r.matchKey, r]),
+  );
+  if (!exact.size) return out;
+  for (const d of input.descriptions) {
+    if (!descriptionContains(d, key)) continue;
+    const r = exact.get(descriptionKey(d));
+    if (r) {
+      push({
+        matchType: 'DESCRIPTION',
+        text: d,
+        name: cleanName(r.name)!,
+        ruleId: r.id,
+        remove: true,
+      });
+    }
+  }
+  return out;
+}
+
+/** What a RULE_CONFLICT says — to the customer's screen and to the AI. */
+export function linkConflictMessage(
+  conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[],
+  name: string,
+): string {
+  const names = [...new Set(conflicts.map((c) => c.name))];
+  const shown = conflicts
+    .slice(0, 5)
+    .map((c) => `"${c.text}" → ${c.name}`)
+    .join('; ');
+  const more = conflicts.length > 5 ? ` and ${conflicts.length - 5} more` : '';
+  return (
+    `Already linked to ${names.length > 1 ? 'other names' : names[0]}: ${shown}${more}. ` +
+    `Confirm to take it away from ${names.join(', ')} and link it to ${name}, ` +
+    `or change only this transaction instead.`
+  );
 }

@@ -102,6 +102,7 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
 /** Tax is per name, on read: an edit only carries a renamed name's agencies over. */
 const fakeTax = () => ({
   carryAgencies: jest.fn().mockResolvedValue(undefined),
+  carryNameSettings: jest.fn().mockResolvedValue(undefined),
 });
 
 /** The general book of customer 7. */

@@ -73,6 +73,8 @@ export interface IssueReport {
   whatWentWrong: string;
   attachmentIds: number[];
   transactionIds: number[];
+  /** step2 (2026-11-08): the bank / card statements it is about. */
+  statementIds?: number[];
 }
 
 /** step12: the strong AI's answer, as this agent's tool result and action. */
@@ -326,13 +328,14 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'edit_transaction',
     description:
-      'Rename a transaction and/or change its category. always=true applies it to every row with this description, now and later; false only this row.',
+      'Rename a transaction and/or change its category. always=true applies it to every row with this description, now and later; false only this row. When the description is already linked to ANOTHER name the tool fails with "Already linked to …": tell the customer which name has it and ask whether to take it away from that name (then call again with replace=true) or change only this row (always=false). Never set replace without their yes.',
     parameters: obj(
       {
         transactionId: int,
         name: str,
         category: str,
         always: { type: 'boolean' },
+        replace: { type: 'boolean' },
       },
       ['transactionId', 'always'],
     ),
@@ -368,8 +371,13 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'merge_accounts',
     description:
-      'Merge account "from" into account "into" (categories, or two bank / card accounts with a Bank feeds folder — never a folder account with one without a folder): every row, rule and statement of "from" moves to "into". Tax agencies cannot be merged. Cannot be undone; only when the customer asks to merge / combine two accounts.',
-    parameters: obj({ from: str, into: str }, ['from', 'into']),
+      'Merge account "from" into account "into" (categories, or two bank / card accounts with a Bank feeds folder — never a folder account with one without a folder): every row, rule and statement of "from" moves to "into". name = what the merged account is called (optional, default "into"; for two bank folders the site suggests both last-4s, e.g. "TD 4562 & 5845" or "TD 4562 & BMO 5352"). Tax agencies cannot be merged. Cannot be undone; only when the customer asks to merge / combine two accounts.',
+    parameters: obj({ from: str, into: str, name: str }, ['from', 'into']),
+  },
+  {
+    name: 'rename_account',
+    description: `Rename an account (a category, or a bank / card account and its Bank feeds folder): every row, rule, statement and setting of "from" takes the new name "to"; the connected bank files under it too. A standard chart category becomes the customer's own under the new name and keeps catching new rows. Not for tax agencies, Uncategorized, Owner's Loan, Exchange Gain or Loss or Retained Earnings. A name already in use is refused — merge_accounts instead. Only when the customer asks to rename an account.`,
+    parameters: obj({ from: str, to: str }, ['from', 'to']),
   },
   {
     name: 'create_category',
@@ -431,7 +439,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'retry_statement',
     description:
-      'Read a bank / card statement again from its PDF — one we could not read or that needs review (statementId from list_statements). Free; it takes a few minutes. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it.',
+      'Read a bank / card statement again from its PDF — one we could not read, one that needs review, or one already read that the customer says was read wrong (statementId from list_statements; not a bank-feed month). Free; it takes a few minutes, and the statement is out of the books until it is read. Receipts on a read statement are put back on the same transactions after. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it. For only a wrong opening / closing balance use set_statement_balances instead.',
     parameters: obj(
       {
         statementId: int,
@@ -442,6 +450,29 @@ const WRITE_TOOLS: ToolDefinition[] = [
         },
       },
       ['statementId'],
+    ),
+  },
+  {
+    name: 'set_statement_balances',
+    description:
+      "Set a READ statement's opening and/or closing balance to the figure the customer gives (they say it was read wrong, or the starting balances do not carry over). As printed on the statement — a credit card: the balance owed, positive. The starting balances follow at once; the customer's reason is kept for later re-reads. Repeat the number back and get a yes first. Not for a bank-feed month (its balances come from the bank) or a statement not read yet (use retry_statement with a note). The result says whether opening + the transactions now reach the closing balance — tell the customer.",
+    parameters: obj(
+      {
+        statementId: int,
+        openingBalance: {
+          type: 'number',
+          description: 'The right opening balance; leave out to keep it',
+        },
+        closingBalance: {
+          type: 'number',
+          description: 'The right closing balance; leave out to keep it',
+        },
+        reason: {
+          type: 'string',
+          description: "Why, in the customer's words",
+        },
+      },
+      ['statementId', 'reason'],
     ),
   },
   {
@@ -662,6 +693,7 @@ const REPORT_ISSUE_TOOL: ToolDefinition = {
       },
       attachmentIds: { type: 'array', items: int },
       transactionIds: { type: 'array', items: int },
+      statementIds: { type: 'array', items: int },
     },
     ['complaint', 'whatWentWrong'],
   ),
@@ -1154,6 +1186,7 @@ export class AssistantTools {
           whatWentWrong: s(a.whatWentWrong) ?? '',
           attachmentIds: ids(a.attachmentIds),
           transactionIds: ids(a.transactionIds),
+          statementIds: ids(a.statementIds),
         };
         const outcome: IssueOutcome = this.issueHandler
           ? await this.issueHandler(ctx, report)
@@ -1389,6 +1422,7 @@ export class AssistantTools {
         await this.names.editTransaction(scope, id(a.transactionId), {
           ...values,
           scope: always ? 'ALWAYS' : 'ONCE',
+          replace: a.replace === true,
         });
         const what = [
           values.name && `renamed to ${values.name}`,
@@ -1443,8 +1477,20 @@ export class AssistantTools {
         const from = s(a.from);
         const into = s(a.into);
         if (!from || !into) throw new Error('which two accounts?');
-        await this.accounts.mergeAccounts(scope, from, into);
-        return done(`Merged the account ${from} into ${into}`);
+        const name = s(a.name) ?? into;
+        await this.accounts.mergeAccounts(scope, from, into, name);
+        return done(
+          name === into
+            ? `Merged the account ${from} into ${into}`
+            : `Merged the accounts ${from} and ${into} as ${name}`,
+        );
+      }
+      case 'rename_account': {
+        const from = s(a.from);
+        const to = s(a.to);
+        if (!from || !to) throw new Error('which account, and its new name?');
+        await this.accounts.renameAccount(scope, from, to);
+        return done(`Renamed the account ${from} to ${to}`);
       }
       case 'create_category': {
         const type = s(a.type) as AccountType | null;
@@ -1506,6 +1552,36 @@ export class AssistantTools {
         return done(
           `Reading ${view.label} again${note?.trim() ? ' with your note' : ''}`,
         );
+      }
+      case 'set_statement_balances': {
+        const amount = (v: unknown) =>
+          v === null
+            ? null
+            : typeof v === 'number' && Number.isFinite(v)
+              ? v
+              : undefined;
+        const reason = s(a.reason);
+        if (!reason) throw new Error("say why, in the customer's words");
+        const result = await this.bookkeeping.setBalances(
+          scope,
+          id(a.statementId),
+          {
+            openingBalance: amount(a.openingBalance),
+            closingBalance: amount(a.closingBalance),
+            reason,
+          },
+        );
+        const set = [
+          a.openingBalance !== undefined ? 'opening' : '',
+          a.closingBalance !== undefined ? 'closing' : '',
+        ]
+          .filter(Boolean)
+          .join(' and ');
+        return done(`Set the ${set} balance of ${result.statement.label}`, {
+          ok: true,
+          balancesMatch: result.balancesMatch,
+          expectedClosing: result.expectedClosing,
+        });
       }
       case 'delete_attachment': {
         const view = await this.attachments.get(scope, id(a.attachmentId));

@@ -115,6 +115,25 @@ export function fileContext(a: AttachmentView) {
   };
 }
 
+/** What the "Ask AI" chat of one attachment (and a call about it) knows about the file. */
+export function attachmentContext(file: AttachmentView) {
+  return {
+    id: file.id,
+    filename: file.filename,
+    kind: file.kind,
+    status: file.status,
+    whyNotMatched: file.matchNote ?? file.error,
+    reading: file.reading,
+    total: file.total,
+    texted: file.message,
+    attachedTo: file.transaction,
+    // step9: where it came from, and the other documents read off the same image.
+    source: file.source,
+    cutFromBiggerImage: file.cropped,
+    otherDocumentsOfSameImage: file.siblings,
+  };
+}
+
 export function toMessageView(m: AiMessage): AssistantMessageView {
   return {
     id: m.id,
@@ -383,22 +402,91 @@ export class AssistantService {
         },
       }));
     return this.respond(conversation, text, {
-      attachment: {
-        id: file.id,
-        filename: file.filename,
-        kind: file.kind,
-        status: file.status,
-        whyNotMatched: file.matchNote ?? file.error,
-        reading: file.reading,
-        total: file.total,
-        texted: file.message,
-        attachedTo: file.transaction,
-        // step9: where it came from, and the other documents read off the same image.
-        source: file.source,
-        cutFromBiggerImage: file.cropped,
-        otherDocumentsOfSameImage: file.siblings,
-      },
+      attachment: attachmentContext(file),
     });
+  }
+
+  /**
+   * step2 (2026-11-08): the chat of one statement or one attachment, created when it has no
+   * message yet (its "Call me" button can come first). 404 when not this book's.
+   */
+  async threadFor(
+    scope: BookScope,
+    target: { statementId?: number; attachmentId?: number },
+  ): Promise<AiConversation> {
+    if (target.statementId) {
+      const s = await this.ownStatement(scope, target.statementId);
+      return (
+        (await this.prisma.aiConversation.findFirst({
+          where: { ...scopeWhere(scope), channel: 'BOT', statementId: s.id },
+          orderBy: { id: 'desc' },
+        })) ??
+        this.prisma.aiConversation.create({
+          data: {
+            ...scopeWhere(scope),
+            channel: 'BOT',
+            statementId: s.id,
+            title: `About ${statementLabel(s)}`.slice(0, 120),
+          },
+        })
+      );
+    }
+    if (target.attachmentId) {
+      const file = await this.attachments.get(scope, target.attachmentId);
+      return (
+        (await this.prisma.aiConversation.findFirst({
+          where: {
+            ...scopeWhere(scope),
+            channel: 'BOT',
+            attachmentId: file.id,
+          },
+          orderBy: { id: 'desc' },
+        })) ??
+        this.prisma.aiConversation.create({
+          data: {
+            ...scopeWhere(scope),
+            channel: 'BOT',
+            attachmentId: file.id,
+            title: `About ${file.filename}`.slice(0, 120),
+          },
+        })
+      );
+    }
+    throw new BadRequestException('Say which statement or attachment');
+  }
+
+  /**
+   * step2: a call the customer asked for from a statement's / attachment's chat has ended —
+   * what was said on it (and what the AI did) is added to that chat as one message.
+   */
+  async copyCallToChat(
+    chatId: number,
+    voiceConversationId: number,
+    customerId: number,
+    since: Date,
+  ): Promise<void> {
+    const chat = await this.prisma.aiConversation.findFirst({
+      where: { id: chatId, customerId },
+    });
+    if (!chat) return;
+    const lines = await this.prisma.aiMessage.findMany({
+      where: { conversationId: voiceConversationId, createdAt: { gte: since } },
+      orderBy: { id: 'asc' },
+      take: 200,
+    });
+    if (!lines.length) return;
+    const actions = lines.flatMap(
+      (m) => (m.actions as unknown as AgentAction[] | null) ?? [],
+    );
+    const text = [
+      'Our phone call — what was said:',
+      ...lines.map(
+        (m) => `${m.role === 'USER' ? 'You' : 'AI'}: ${m.text.trim()}`,
+      ),
+    ].join('\n');
+    await this.save(chat, 'ASSISTANT', text, { actions });
+    // An open chat shows the call's words without a reload.
+    changeFeed.bump(customerId);
   }
 
   /** step8: the "Ask AI" thread of one statement we could not read ({ null, [] } before the first message). */
@@ -467,20 +555,58 @@ export class AssistantService {
       },
     });
     if (!s) return undefined;
+    const day = (d: Date | null) => d?.toISOString().slice(0, 10) ?? null;
+    const money = (d: Prisma.Decimal | null) => (d === null ? null : Number(d));
+    // step2: the account's other statements, so a chat about its starting dates can see
+    // which closing does not carry into the next opening (or which month is missing).
+    const sameAccount = s.accountName
+      ? await this.prisma.bankStatement.findMany({
+          where: {
+            ...scopeWhere(scopeOf(conversation)),
+            accountName: s.accountName,
+            deletedAt: null,
+            id: { not: s.id },
+          },
+          orderBy: { periodStart: 'asc' },
+          take: 36,
+          select: {
+            id: true,
+            status: true,
+            source: true,
+            periodStart: true,
+            periodEnd: true,
+            openingBalance: true,
+            closingBalance: true,
+          },
+        })
+      : [];
     return {
       statementId: s.id,
       label: statementLabel(s),
       filename: s.filename,
       status: s.status,
+      source: s.source,
       deleted: !!s.deletedAt,
       whyNotRead: s.error,
+      rawError: s.status === 'FAILED' ? s.errorDetail : null,
       failedChecks: failedChecks(s.verificationDetail),
       account: s.accountNameByCustomer ?? s.accountName,
       accountKind: s.accountKind,
       bank: s.bankName,
-      periodStart: s.periodStart?.toISOString().slice(0, 10) ?? null,
-      periodEnd: s.periodEnd?.toISOString().slice(0, 10) ?? null,
+      periodStart: day(s.periodStart),
+      periodEnd: day(s.periodEnd),
+      openingBalance: money(s.openingBalance),
+      closingBalance: money(s.closingBalance),
       customerNote: s.customerNote,
+      sameAccount: sameAccount.map((o) => ({
+        statementId: o.id,
+        status: o.status,
+        source: o.source,
+        periodStart: day(o.periodStart),
+        periodEnd: day(o.periodEnd),
+        openingBalance: money(o.openingBalance),
+        closingBalance: money(o.closingBalance),
+      })),
     };
   }
 
@@ -838,9 +964,26 @@ export class AssistantService {
    */
   async promptFor(
     conversation: AiConversation,
-    extra: { attachment?: unknown; files?: unknown[]; note?: string } = {},
+    extra: {
+      attachment?: unknown;
+      files?: unknown[];
+      note?: string;
+      /** step2: a call asked for from this chat (a statement's / attachment's) — its id. */
+      about?: number | null;
+    } = {},
   ): Promise<string> {
     const scope: BookScope = scopeOf(conversation);
+    const about = extra.about
+      ? await this.prisma.aiConversation.findFirst({
+          where: { id: extra.about, customerId: conversation.customerId },
+        })
+      : null;
+    const aboutFile = about?.attachmentId
+      ? await this.attachments
+          .get(scopeOf(about), about.attachmentId)
+          .then(attachmentContext)
+          .catch(() => undefined)
+      : undefined;
     const prompt = systemPrompt(
       {
         channel: conversation.channel as Channel,
@@ -850,8 +993,8 @@ export class AssistantService {
         preferredContact: await this.preferredContact(scope.customerId),
         reach: await firmReach(this.prisma, this.config).catch(() => null),
         nameUnknown: await this.nameUnknown(scope.customerId),
-        attachment: extra.attachment,
-        statement: await this.statementContext(conversation),
+        attachment: extra.attachment ?? aboutFile,
+        statement: await this.statementContext(about ?? conversation),
         files: extra.files,
       },
       // step12: the blocks as the strong AI / staff last left them (`AiInstruction`).
@@ -872,6 +1015,15 @@ export class AssistantService {
           `EARLIER CALLS ON THIS PHONE LINE (oldest first):\n${earlier}`,
         );
       }
+    }
+    if (about) {
+      const chat = await this.history?.recentTurns(about.id, 20);
+      parts.push(
+        `THIS CALL IS ABOUT ${about.statementId ? 'THE STATEMENT' : 'THE FILE'} ABOVE: the customer pressed "Call me" (or asked for a call) in its chat. ` +
+          'Explain plainly what is wrong with it, listen to their explanation, then fix it with your tools while on the call ' +
+          '(the same steps as the chat), and say what you did. What is said on this call is added to that chat afterwards.' +
+          (chat ? `\nTHE CHAT SO FAR (oldest first):\n${chat}` : ''),
+      );
     }
     if (extra.note) parts.push(extra.note);
     return parts.join('\n\n');

@@ -61,6 +61,8 @@ import {
   RenameTaxLineDto,
   ResetNameRuleDto,
   ResetAccountTypeDto,
+  MergeAccountsDto,
+  RenameAccountDto,
   MergeDto,
   NameGroupDto,
   SetNameGroupDto,
@@ -244,6 +246,7 @@ export class BookkeepingController {
       name,
       category,
       scope: dto.scope ?? 'ALWAYS',
+      replace: dto.replace,
     });
     return this.tax.names(scope);
   }
@@ -265,6 +268,7 @@ export class BookkeepingController {
       name,
       category,
       scope: dto.scope,
+      replace: dto.replace,
     });
   }
 
@@ -616,9 +620,22 @@ export class BookkeepingController {
   @HttpCode(204)
   mergeAccounts(
     @Book() scope: BookScope,
-    @Body() dto: MergeDto,
+    @Body() dto: MergeAccountsDto,
   ): Promise<void> {
-    return this.accounts.mergeAccounts(scope, dto.from, dto.into);
+    return this.accounts.mergeAccounts(scope, dto.from, dto.into, dto.name);
+  }
+
+  /**
+   * step2 (2026-11-08): rename an account (click its name on the Balance sheet / Income
+   * statement, or a Bank feeds folder). 409 when the name is already an account (merge them).
+   */
+  @Post('accounts/rename')
+  @HttpCode(204)
+  renameAccount(
+    @Book() scope: BookScope,
+    @Body() dto: RenameAccountDto,
+  ): Promise<void> {
+    return this.accounts.renameAccount(scope, dto.from, dto.to);
   }
 
   /** Put a moved account back where the chart (or their own category) puts it. */

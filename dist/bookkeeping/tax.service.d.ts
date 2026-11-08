@@ -128,5 +128,6 @@ export declare class TaxService {
     }>>;
     setNameAgencies(scope: BookScope, name: string, agencyIds: number[]): Promise<NamesView>;
     carryAgencies(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
+    carryNameSettings(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;
 }

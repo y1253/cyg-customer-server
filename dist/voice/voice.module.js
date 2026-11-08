@@ -28,7 +28,11 @@ exports.VoiceModule = VoiceModule = __decorate([
             messaging_module_1.MessagingModule,
             sales_module_1.SalesModule,
         ],
-        controllers: [voice_controller_1.VoiceStatusController, voice_controller_1.VoiceRecordingController],
+        controllers: [
+            voice_controller_1.VoiceStatusController,
+            voice_controller_1.VoiceRecordingController,
+            voice_controller_1.CallMeController,
+        ],
         providers: [voice_calls_service_1.VoiceCallsService, voice_gateway_1.VoiceGateway],
         exports: [voice_calls_service_1.VoiceCallsService],
     })

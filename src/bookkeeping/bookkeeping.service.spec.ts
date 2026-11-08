@@ -56,15 +56,130 @@ describe('BookkeepingService ownership', () => {
     });
   });
 
-  it('retries only a FAILED statement', async () => {
+  it('never retries a statement still being read', async () => {
     const { service } = setup({
       id: 1,
       customerId: 7,
-      status: StatementStatus.DONE,
+      status: StatementStatus.PROCESSING,
+      source: 'UPLOAD',
     });
     await expect(service.retry(BOOK, 1)).rejects.toThrow(
-      'Only a statement that failed',
+      'still waiting or being read',
     );
+  });
+
+  it('step2: re-reads a DONE statement with the note, clearing the old error', async () => {
+    const row = {
+      id: 1,
+      customerId: 7,
+      status: StatementStatus.DONE,
+      source: 'UPLOAD',
+      filename: 'td.pdf',
+    };
+    const { service, prisma } = setup(row);
+    await service.retry(BOOK, 1, ' page 2 is a card ');
+    expect(prisma.bankStatement.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: expect.objectContaining({
+        status: StatementStatus.PENDING,
+        error: null,
+        errorDetail: null,
+        customerNote: 'page 2 is a card',
+      }) as unknown,
+    });
+  });
+
+  it('step2: never re-reads a bank-feed month', async () => {
+    const { service, prisma } = setup({
+      id: 1,
+      customerId: 7,
+      status: StatementStatus.DONE,
+      source: 'PLAID',
+    });
+    await expect(service.retry(BOOK, 1)).rejects.toThrow('bank-feed month');
+    expect(prisma.bankStatement.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('BookkeepingService.setBalances (step2)', () => {
+  function balanceSetup(statement: Record<string, unknown>, net = 0) {
+    const prisma = {
+      bankStatement: {
+        findFirst: jest.fn().mockResolvedValue(statement),
+        update: jest
+          .fn()
+          .mockImplementation(
+            ({ data }: { data: Record<string, unknown> }) => ({
+              ...statement,
+              ...data,
+            }),
+          ),
+      },
+      bankTransaction: {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: net } }),
+      },
+    };
+    const service = new BookkeepingService(
+      prisma as unknown as PrismaService,
+      {} as ObjectStorageService,
+      {} as OpenAiClient,
+      {} as StatementProcessorService,
+      {} as TaxService,
+      {} as StatementImagesService,
+      {} as FxService,
+    );
+    return { service, prisma };
+  }
+  const done = {
+    id: 4,
+    customerId: 7,
+    status: StatementStatus.DONE,
+    source: 'UPLOAD',
+    filename: 'td.pdf',
+    accountName: 'TD 5234',
+    accountKind: 'BANK',
+    openingBalance: 100,
+    closingBalance: 150,
+    customerNote: null,
+  };
+
+  it('writes the balance, keeps the reason for re-reads, and says if it now adds up', async () => {
+    const { service, prisma } = balanceSetup(done, 25);
+    const r = await service.setBalances(BOOK, 4, {
+      openingBalance: 125,
+      reason: 'the opening is $125, not $100',
+    });
+    expect(prisma.bankStatement.update).toHaveBeenCalledWith({
+      where: { id: 4 },
+      data: {
+        openingBalance: '125.00',
+        customerNote:
+          'The opening balance is 125.00 (customer: the opening is $125, not $100)',
+      },
+    });
+    expect(r.balancesMatch).toBe(true);
+    expect(r.expectedClosing).toBe(150);
+  });
+
+  it('refuses a bank-feed month and a statement not read yet', async () => {
+    await expect(
+      balanceSetup({ ...done, source: 'PLAID' }).service.setBalances(BOOK, 4, {
+        openingBalance: 1,
+        reason: 'x',
+      }),
+    ).rejects.toThrow('bank-feed');
+    await expect(
+      balanceSetup({
+        ...done,
+        status: StatementStatus.FAILED,
+      }).service.setBalances(BOOK, 4, { openingBalance: 1, reason: 'x' }),
+    ).rejects.toThrow('retry_statement');
+  });
+
+  it('needs a balance', async () => {
+    await expect(
+      balanceSetup(done).service.setBalances(BOOK, 4, { reason: 'x' }),
+    ).rejects.toThrow('opening or the closing');
   });
 });
 

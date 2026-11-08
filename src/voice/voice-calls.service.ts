@@ -15,6 +15,7 @@ import {
   type PersonTarget,
   type ToolContext,
 } from '../assistant/assistant-tools';
+import { AssistantService } from '../assistant/assistant.service';
 import {
   CustomerOutbox,
   type OutboxChannel,
@@ -131,6 +132,8 @@ export class VoiceCallsService implements OnModuleInit {
     @Optional() private readonly outbox?: CustomerOutbox,
     /** step12d: each call's length and cost (`CommCall`). */
     @Optional() private readonly usage?: CommUsageService,
+    /** step2: the statement / attachment chats a "Call me" is about. */
+    @Optional() private readonly chats?: AssistantService,
   ) {
     this.jwt = new JwtService({
       secret: config.getOrThrow<string>('CUSTOMER_JWT_SECRET'),
@@ -152,8 +155,54 @@ export class VoiceCallsService implements OnModuleInit {
     ctx: ToolContext,
     about: string,
   ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
+    // step2: asked from a statement's / attachment's chat — the call is about that chat.
+    const c = ctx.conversation;
+    const chat = c && (c.statementId || c.attachmentId) ? c.id : null;
+    return this.callMe(ctx.scope, about, chat);
+  }
+
+  /**
+   * step2 (2026-11-08): the "Call me" button of a statement's / attachment's chat. The
+   * chat is created when it has no message yet; the call is about it, and "Calling you…"
+   * is written in it.
+   */
+  async callMeFromChat(
+    scope: BookScope,
+    target: { statementId?: number; attachmentId?: number },
+  ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
+    if (!this.chats) return { ok: false, error: 'Phone calls are not set up.' };
+    const conversation = await this.chats.threadFor(scope, target);
+    const placed = await this.callMe(
+      scope,
+      conversation.title ?? 'this',
+      conversation.id,
+    );
+    await this.chats.save(
+      conversation,
+      'ASSISTANT',
+      placed.ok
+        ? `${placed.summary} — pick up and we'll go through it together. What we say is added here after the call.`
+        : `I could not call you: ${placed.error}`,
+    );
+    return placed;
+  }
+
+  /** Can the customer be called now (the "Call me" button)? Never says why not. */
+  async callMeAvailable(customerId: number): Promise<boolean> {
     const customer = await this.prisma.customer.findFirst({
-      where: { id: ctx.scope.customerId, deletedAt: null },
+      where: { id: customerId, deletedAt: null },
+      select: { phoneE164: true },
+    });
+    return !!customer?.phoneE164 && (await this.canCall());
+  }
+
+  private async callMe(
+    scope: BookScope,
+    about: string,
+    chat: number | null,
+  ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: scope.customerId, deletedAt: null },
       select: { phoneE164: true },
     });
     if (!customer?.phoneE164) {
@@ -165,14 +214,13 @@ export class VoiceCallsService implements OnModuleInit {
     }
     if (!(await this.canCall()))
       return { ok: false, error: 'Phone calls are not set up right now.' };
-    if (await this.overCallLimit(ctx.scope.customerId)) {
+    if (await this.overCallLimit(scope.customerId)) {
       return {
         ok: false,
         error:
           "Today's limit of calls from the assistant is reached — try again tomorrow.",
       };
     }
-    const scope = ctx.scope;
     const peer = customer.phoneE164;
     setTimeout(() => {
       void this.callCustomer({
@@ -180,6 +228,7 @@ export class VoiceCallsService implements OnModuleInit {
         peer,
         purpose: 'REQUESTED',
         script: `They asked you to call them about: ${about}. Start with that.`,
+        about: chat,
       }).then((r) => {
         if ('error' in r)
           this.logger.warn(
@@ -643,6 +692,8 @@ export class VoiceCallsService implements OnModuleInit {
     /** step12c, THIRD_PARTY: the person called. */
     contactId?: number | null;
     contactName?: string | null;
+    /** step2, REQUESTED: the statement / attachment chat the call is about. */
+    about?: number | null;
   }): Promise<{ callSid: string } | { error: string }> {
     const to = asE164(input.peer);
     if (!to) return { error: 'No phone number to call.' };
@@ -663,6 +714,7 @@ export class VoiceCallsService implements OnModuleInit {
       bookId: input.scope.bookId,
       runId: input.runId ?? null,
       script: input.script.slice(0, 1500),
+      ...(input.about ? { about: input.about } : {}),
       ...(input.purpose === 'THIRD_PARTY'
         ? {
             contactId: input.contactId ?? null,

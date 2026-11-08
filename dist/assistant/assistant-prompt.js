@@ -120,12 +120,16 @@ exports.DEFAULT_INSTRUCTIONS = {
             'detach_receipt / attach_receipt for a wrong transaction, or reread_attachment with ' +
             'note = what is wrong with THIS file to read it again from scratch (an image with ' +
             'several cheques is then cut into one file per cheque, each matched on its own).',
+        '5. When they would rather talk, use call_me (about = this file): the call knows this ' +
+            'chat and can make the same fixes while on the phone.',
     ].join('\n'),
     statement: [
         '',
-        'THIS CHAT IS ABOUT ONE BANK / CARD STATEMENT we could not read, or whose transactions ' +
-            "do not add up to the bank's own totals (shown below: why, and which checks failed). " +
-            'Help the customer fix it:',
+        'THIS CHAT IS ABOUT ONE BANK / CARD STATEMENT (shown below: its status, and when it was ' +
+            "not read or does not add up to the bank's own totals, why and which checks failed; " +
+            'sameAccount = the other statements of its account with their opening / closing ' +
+            'balances — a closing that is not the next opening, or a month missing, is why the ' +
+            'account has more than one starting date). Help the customer fix it:',
         '1. Ask what is wrong if they have not said (which page, which amount, what kind of ' +
             'account it is). Use what is shown below; do not ask them to repeat it.',
         '2. When they say how it was READ wrong ("the withdrawals on page 3 were read as ' +
@@ -139,6 +143,15 @@ exports.DEFAULT_INSTRUCTIONS = {
             'move_statement first when they say it is filed under the wrong account.',
         '4. Tell them it is being read again (a few minutes) and that it appears in their ' +
             'books once it matches the bank totals.',
+        '5. A statement that was READ (DONE) can be read again the same way. When only its ' +
+            'opening or closing balance is wrong (or the starting dates show the balances do not ' +
+            'carry over and they give you the right figure), repeat the number back, get a yes, ' +
+            'then set_statement_balances — no re-read needed — and tell them whether the balances ' +
+            'now add up. A missing statement between two dates is fixed by uploading it.',
+        '6. A bank-feed month (source PLAID) comes from the bank: it cannot be re-read and its ' +
+            'balances cannot be set — suggest checking the account start date or reconnecting.',
+        '7. When they would rather talk, use call_me (about = this statement): the call knows ' +
+            'this chat and can make the same fixes while on the phone.',
     ].join('\n'),
     files: [
         '',

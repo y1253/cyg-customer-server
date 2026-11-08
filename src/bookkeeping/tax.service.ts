@@ -902,6 +902,36 @@ export class TaxService {
   }
 
   /**
+   * step2 (2026-11-08): a renamed payee keeps its Names-tab settings (`LedgerName`: group,
+   * "Tax applies") — unless the new name already has its own.
+   */
+  async carryNameSettings(
+    scope: BookScope,
+    oldNames: readonly string[],
+    newName: string,
+  ): Promise<void> {
+    const keys = new Set(oldNames.map(nameTaxKey));
+    const target = nameTaxKey(newName);
+    keys.delete(target);
+    if (!keys.size) return;
+    const rows = await this.prisma.ledgerName.findMany({
+      where: scopeWhere(scope),
+      select: { name: true, group: true, taxExempt: true },
+    });
+    if (rows.some((r) => nameTaxKey(r.name) === target)) return;
+    const from = rows.find((r) => keys.has(nameTaxKey(r.name)));
+    if (!from) return;
+    await this.prisma.ledgerName.create({
+      data: {
+        ...scopeWhere(scope),
+        name: newName,
+        group: from.group,
+        taxExempt: from.taxExempt,
+      },
+    });
+  }
+
+  /**
    * Renames one tax line — the agency's tax on one transaction (or split). Null puts the
    * transaction's own name back. False when the row has no such line. The name is kept in
    * `TransactionTax` (with a snapshot of the line), keyed by row and agency.

@@ -2,7 +2,11 @@ import { withAiUsage } from '../ai/ai-usage.context';
 import { changeFeed } from '../assistant/change-feed';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { StatementStatus, type BankStatement } from '@prisma/client';
+import {
+  AttachmentStatus,
+  StatementStatus,
+  type BankStatement,
+} from '@prisma/client';
 import { RulesService } from '../assistant/rules.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
@@ -14,6 +18,8 @@ import {
   StatementExtractor,
   UnreadableStatementError,
 } from './statement-extractor';
+import { ERROR_DETAIL_MAX, failureReason } from './statement-errors';
+import { relinkPlan, type LinkedRow } from './reread-relink.util';
 import { StatementImagesService } from './statement-images.service';
 import { sweepStaleStaging } from './statement-uploads';
 import { TaxService } from './tax.service';
@@ -131,7 +137,11 @@ export class StatementProcessorService {
         updatedAt: row.updatedAt,
         deletedAt: null,
       },
-      data: { status: StatementStatus.PROCESSING, error: null },
+      data: {
+        status: StatementStatus.PROCESSING,
+        error: null,
+        errorDetail: null,
+      },
     });
     if (claimed.count === 0) return;
 
@@ -196,6 +206,9 @@ export class StatementProcessorService {
         : StatementStatus.DONE;
       const failed = checks.filter((c) => !c.ok && !c.skipped);
       const money = (n: number | null) => (n === null ? null : n.toFixed(2));
+      // step2: the receipts on a statement read before (a re-read of a DONE one) — put
+      // back on the same transactions after its rows are replaced.
+      const linked = await this.linkedReceipts(row.id);
 
       await this.prisma.$transaction([
         // Idempotent: a retry after a crash mid-write replaces, never duplicates.
@@ -242,6 +255,7 @@ export class StatementProcessorService {
           },
         }),
       ]);
+      if (linked.length) await this.relinkReceipts(row.id, linked, !mismatch);
       if (!mismatch) {
         // Cheque / deposit-slip images become attachments on their rows (never fails).
         await this.images.harvest(
@@ -300,12 +314,109 @@ export class StatementProcessorService {
           error: final
             ? err instanceof UnreadableStatementError
               ? message
-              : 'We could not read this statement. Please try again, or upload a clearer copy.'
+              : failureReason(message)
             : null,
+          // step2: the raw reason, shown under "Details" on Bank feeds.
+          errorDetail: final ? message.slice(0, ERROR_DETAIL_MAX) : null,
         },
       })
       .catch(() => undefined);
   }
+
+  /** The receipts (not cut from this statement) on this statement's rows, before a re-read. */
+  private async linkedReceipts(statementId: number): Promise<LinkedRow[]> {
+    const rows = await this.prisma.transactionAttachment.findMany({
+      where: {
+        deletedAt: null,
+        transaction: { statementId },
+        NOT: { sourceRef: { startsWith: `stmt:${statementId}:` } },
+      },
+      select: {
+        id: true,
+        transaction: {
+          select: {
+            amount: true,
+            postingDate: true,
+            pendingDate: true,
+            description: true,
+          },
+        },
+      },
+    });
+    return rows.flatMap((a) =>
+      a.transaction
+        ? [
+            {
+              attachmentId: a.id,
+              amountCents: Math.round(Number(a.transaction.amount) * 100),
+              day: isoDay(
+                a.transaction.postingDate ?? a.transaction.pendingDate,
+              ),
+              description: a.transaction.description,
+            },
+          ]
+        : [],
+    );
+  }
+
+  /**
+   * Put the receipts back on the re-read rows. One with no clear match (or a statement that
+   * now needs review, whose rows are out of the ledger) waits UNMATCHED for the customer.
+   */
+  private async relinkReceipts(
+    statementId: number,
+    linked: LinkedRow[],
+    done: boolean,
+  ): Promise<void> {
+    try {
+      const fresh = done
+        ? await this.prisma.bankTransaction.findMany({
+            where: { statementId, splitOfId: null },
+            select: {
+              id: true,
+              amount: true,
+              postingDate: true,
+              pendingDate: true,
+              description: true,
+            },
+          })
+        : [];
+      const plan = relinkPlan(
+        linked,
+        fresh.map((r) => ({
+          id: r.id,
+          amountCents: Math.round(Number(r.amount) * 100),
+          day: isoDay(r.postingDate ?? r.pendingDate),
+          description: r.description,
+        })),
+      );
+      for (const a of linked) {
+        const transactionId = plan.get(a.attachmentId);
+        await this.prisma.transactionAttachment.update({
+          where: { id: a.attachmentId },
+          data: transactionId
+            ? { transactionId }
+            : {
+                status: AttachmentStatus.UNMATCHED,
+                matchNote:
+                  'Its statement was read again and the transaction changed — pick it again.',
+              },
+        });
+      }
+      this.logger.log(
+        `statement #${statementId}: ${plan.size} of ${linked.length} receipt(s) put back after the re-read`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `statement #${statementId}: receipts not put back: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/** YYYY-MM-DD of a @db.Date column, or null. */
+function isoDay(d: Date | null): string | null {
+  return d ? d.toISOString().slice(0, 10) : null;
 }
 
 /**

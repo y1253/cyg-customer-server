@@ -575,6 +575,30 @@ let TaxService = class TaxService {
             skipDuplicates: true,
         });
     }
+    async carryNameSettings(scope, oldNames, newName) {
+        const keys = new Set(oldNames.map(tax_util_1.nameTaxKey));
+        const target = (0, tax_util_1.nameTaxKey)(newName);
+        keys.delete(target);
+        if (!keys.size)
+            return;
+        const rows = await this.prisma.ledgerName.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { name: true, group: true, taxExempt: true },
+        });
+        if (rows.some((r) => (0, tax_util_1.nameTaxKey)(r.name) === target))
+            return;
+        const from = rows.find((r) => keys.has((0, tax_util_1.nameTaxKey)(r.name)));
+        if (!from)
+            return;
+        await this.prisma.ledgerName.create({
+            data: {
+                ...(0, scope_1.scopeWhere)(scope),
+                name: newName,
+                group: from.group,
+                taxExempt: from.taxExempt,
+            },
+        });
+    }
     async renameLine(scope, transactionId, agencyId, name) {
         const lines = await this.compute(scope, {
             OR: [{ id: transactionId }, { splitOfId: transactionId }],

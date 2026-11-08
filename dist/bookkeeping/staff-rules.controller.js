@@ -45,6 +45,7 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
             name,
             category,
             scope: 'ALWAYS',
+            replace: true,
         });
         this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
         return this.rules.view(staff.scope);

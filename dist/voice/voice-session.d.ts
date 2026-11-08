@@ -19,6 +19,12 @@ export interface VoiceDeps {
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
 }
+export declare function attachmentDoneNote(attachmentId: number, row: {
+    status: string;
+    error: string | null;
+    matchNote: string | null;
+    filename: string;
+}): string;
 export declare function statementDoneNote(statementId: number, row: {
     status: string;
     error: string | null;
@@ -56,6 +62,7 @@ export declare class VoiceSession implements LiveCall {
     private ending;
     private endMarkSent;
     private readonly watched;
+    private readonly watchedFiles;
     private readonly caller;
     private readonly ai;
     private early;
@@ -78,6 +85,7 @@ export declare class VoiceSession implements LiveCall {
     private runTool;
     private watchStatement;
     private unwatch;
+    private watchAttachment;
     private saveAssistant;
     private freshConversation;
     private sendOpenAi;

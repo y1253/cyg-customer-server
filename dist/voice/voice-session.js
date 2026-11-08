@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceSession = void 0;
+exports.attachmentDoneNote = attachmentDoneNote;
 exports.statementDoneNote = statementDoneNote;
 const common_1 = require("@nestjs/common");
 const ws_1 = __importDefault(require("ws"));
@@ -29,13 +30,27 @@ const END_FALLBACK_MS = 12_000;
 const WATCH_EVERY_MS = 15_000;
 const WATCH_FOR_MS = 20 * 60_000;
 function statementIdOf(args) {
+    return idArg(args, 'statementId');
+}
+function idArg(args, key) {
     try {
-        const v = Number(JSON.parse(args).statementId);
+        const v = Number(JSON.parse(args)[key]);
         return Number.isInteger(v) && v > 0 ? v : null;
     }
     catch {
         return null;
     }
+}
+function attachmentDoneNote(attachmentId, row) {
+    const head = `[System note, not from the caller] The file you re-read on this call (#${attachmentId}, "${row.filename}") is finished:`;
+    if (row.status === 'MATCHED') {
+        return `${head} it was read and attached to a transaction (get_attachment ${attachmentId} says which). Tell the caller now, briefly.`;
+    }
+    if (row.status === 'DOCUMENT') {
+        return `${head} it was read as a document, not a payment, so it is kept but not attached. Tell the caller now, briefly.`;
+    }
+    return (`${head} ${row.status === 'FAILED' ? 'it could not be read' : 'it was read but not matched'}` +
+        ` (${row.matchNote ?? row.error ?? 'no reason given'}). Tell the caller now, briefly, and offer to attach it to the right transaction.`);
 }
 function statementDoneNote(statementId, row) {
     const head = `[System note, not from the caller] The statement you re-read on this call (#${statementId}, "${row.filename}") is finished:`;
@@ -79,6 +94,7 @@ class VoiceSession {
     ending = false;
     endMarkSent = false;
     watched = new Map();
+    watchedFiles = new Map();
     caller = new voice_util_1.MuLawTrack();
     ai = new voice_util_1.MuLawTrack();
     early = [];
@@ -140,6 +156,7 @@ class VoiceSession {
             return;
         }
         this.claims = claims;
+        this.startedAt = Date.now();
         if (claims.purpose === 'PROSPECT')
             return this.startProspect();
         const customer = await this.deps.prisma.customer.findFirst({
@@ -208,6 +225,7 @@ class VoiceSession {
             })
             : await this.deps.assistant.promptFor(conversation, {
                 note: await this.callNote(customerName),
+                about: claims.about ?? null,
             });
         this.connectRealtime(model, instructions, thirdParty ? [voice_util_1.END_CALL_TOOL] : (0, assistant_tools_1.toolsFor)('VOICE'), this.opening(customerName, claims));
     }
@@ -241,7 +259,9 @@ class VoiceSession {
             `THIS IS A PHONE CALL with ${customerName} (${claims.peer}).`,
             claims.dir === 'INBOUND'
                 ? 'They called our number.'
-                : 'We called them to deliver a scheduled message; after it, answer their questions.',
+                : claims.purpose === 'REQUESTED'
+                    ? 'We called them because they asked us to (what about is below); help them with it, then answer their questions.'
+                    : 'We called them to deliver a scheduled message; after it, answer their questions.',
             `The call ends after ${this.settings.maxMinutes} minutes.`,
             `Speak ${(0, voice_util_1.languageName)(this.settings.language)} by default. If the caller asks you to ` +
                 'speak another language, or clearly speaks whole sentences in one, switch to it and keep ' +
@@ -492,6 +512,10 @@ class VoiceSession {
         if (name === 'retry_statement' && outcome.action?.ok) {
             this.watchStatement(scope, statementIdOf(args));
         }
+        if ((name === 'reread_attachment' || name === 'retry_attachment') &&
+            outcome.action?.ok) {
+            this.watchAttachment(scope, idArg(args, 'attachmentId'));
+        }
         if (outcome.warning)
             this.turnWarning = outcome.warning;
         if (outcome.attachmentId)
@@ -544,6 +568,45 @@ class VoiceSession {
         if (t)
             clearInterval(t);
         this.watched.delete(statementId);
+    }
+    watchAttachment(scope, attachmentId) {
+        if (!attachmentId || this.closed || this.watchedFiles.has(attachmentId))
+            return;
+        const started = Date.now();
+        const stop = () => {
+            const t = this.watchedFiles.get(attachmentId);
+            if (t)
+                clearInterval(t);
+            this.watchedFiles.delete(attachmentId);
+        };
+        const tick = async () => {
+            if (this.closed)
+                return stop();
+            const row = await this.deps.prisma.transactionAttachment.findFirst({
+                where: {
+                    id: attachmentId,
+                    customerId: scope.customerId,
+                    bookId: scope.bookId,
+                    deletedAt: null,
+                },
+                select: { status: true, error: true, matchNote: true, filename: true },
+            });
+            if (!row)
+                return stop();
+            if (row.status === 'PENDING' || row.status === 'PROCESSING') {
+                if (Date.now() - started > WATCH_FOR_MS)
+                    stop();
+                return;
+            }
+            stop();
+            this.inject(attachmentDoneNote(attachmentId, row));
+        };
+        this.watchedFiles.set(attachmentId, setInterval(() => {
+            void tick().catch((err) => {
+                this.logger.warn(`call ${this.callSid}: attachment #${attachmentId} watch failed: ${err instanceof Error ? err.message : String(err)}`);
+                stop();
+            });
+        }, WATCH_EVERY_MS));
     }
     async saveAssistant(said) {
         const conversation = await this.freshConversation();
@@ -598,6 +661,9 @@ class VoiceSession {
             clearTimeout(this.timer);
         for (const id of [...this.watched.keys()])
             this.unwatch(id);
+        for (const t of this.watchedFiles.values())
+            clearInterval(t);
+        this.watchedFiles.clear();
         this.close();
         if (!this.callSid || !this.claims)
             return;
@@ -619,6 +685,11 @@ class VoiceSession {
                 : null,
         })
             .catch((err) => this.fail(err));
+        if (this.claims.about && this.conversation) {
+            await this.deps.assistant
+                .copyCallToChat(this.claims.about, this.conversation.id, this.claims.sub, new Date(this.startedAt - 2000))
+                .catch((err) => this.fail(err));
+        }
         this.logger.log(`call ${this.callSid} ended`);
     }
 }

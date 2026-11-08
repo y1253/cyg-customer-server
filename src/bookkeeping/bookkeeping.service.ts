@@ -48,6 +48,8 @@ export interface StatementView {
   sizeBytes: number;
   status: StatementStatus;
   error: string | null;
+  /** step2 (2026-11-08): the raw failure behind `error` (FAILED only) — under "Details". */
+  errorDetail: string | null;
   /**
    * step8: the checks against the bank's own figures that FAILED, in words ("Withdrawals:
    * statement $4,812.40, read $4,728.03 (off by $84.37)") — the "Details" of a statement
@@ -243,6 +245,7 @@ function toView(
     sizeBytes: s.sizeBytes,
     status: s.status,
     error: s.error,
+    errorDetail: s.status === 'FAILED' ? s.errorDetail : null,
     checks:
       s.status === 'NEEDS_REVIEW' ? failedChecks(s.verificationDetail) : [],
     customerNote: s.customerNote,
@@ -259,6 +262,33 @@ function toView(
     processedAt: s.processedAt,
     movedByCustomer: s.accountNameByCustomer !== null,
     source: s.source,
+  };
+}
+
+export interface StatementBalancesResult {
+  statement: StatementView;
+  /** opening ± the rows = closing, to the cent (null = a balance is missing). */
+  balancesMatch: boolean | null;
+  /** What opening ± the rows comes to (null = no opening). */
+  expectedClosing: number | null;
+}
+
+/**
+ * step2: does opening + the rows reach the closing balance? A card prints the balance
+ * OWED, so its purchases (negative rows) raise it: opening − net.
+ */
+export function balanceFit(
+  opening: number | null,
+  closing: number | null,
+  net: number,
+  card: boolean,
+): { balancesMatch: boolean | null; expectedClosing: number | null } {
+  if (opening === null) return { balancesMatch: null, expectedClosing: null };
+  const c = (n: number) => Math.round(n * 100);
+  const expected = (c(opening) + (card ? -c(net) : c(net))) / 100;
+  return {
+    balancesMatch: closing === null ? null : c(expected) === c(closing),
+    expectedClosing: expected,
   };
 }
 
@@ -642,9 +672,12 @@ export class BookkeepingService {
   }
 
   /**
-   * Read a statement that failed again. `note` (step8: what the customer said was wrong
-   * with it, from its chat) is kept on the statement and given to this and every later
-   * re-read; an empty note clears it, no note leaves it as it is.
+   * Read a statement again. `note` (step8: what the customer said was wrong with it, from
+   * its chat) is kept on the statement and given to this and every later re-read; an
+   * empty note clears it, no note leaves it as it is. step2 (2026-11-08): a statement that
+   * was read (DONE) can be read again too — its receipts are put back on the same
+   * transactions afterwards (`StatementProcessorService.relinkReceipts`). Never a bank-feed
+   * month (no file; the bank's own data).
    */
   async retry(
     scope: BookScope,
@@ -652,12 +685,18 @@ export class BookkeepingService {
     note?: string,
   ): Promise<StatementView> {
     const s = await this.owned(scope, id);
+    if (s.source === 'PLAID') {
+      throw new BadRequestException(
+        'A bank-feed month comes straight from the bank — it cannot be read again',
+      );
+    }
     if (
       s.status !== StatementStatus.FAILED &&
-      s.status !== StatementStatus.NEEDS_REVIEW
+      s.status !== StatementStatus.NEEDS_REVIEW &&
+      s.status !== StatementStatus.DONE
     ) {
       throw new BadRequestException(
-        'Only a statement that failed can be retried',
+        'This statement is still waiting or being read',
       );
     }
     // A fresh set of full reads: "re-read until it matches" starts over.
@@ -668,6 +707,7 @@ export class BookkeepingService {
         attempts: 0,
         runs: 0,
         error: null,
+        errorDetail: null,
         ...(note === undefined
           ? {}
           : { customerNote: note.trim().slice(0, 4000) || null }),
@@ -675,6 +715,78 @@ export class BookkeepingService {
     });
     this.processor.processSoon();
     return toView(row);
+  }
+
+  /**
+   * step2 (2026-11-08): the customer says a read statement's opening / closing balance is
+   * wrong and gives the right one (its chat or a call). Written as printed (a card: the
+   * balance OWED); the starting-balance rows and chains are computed on read, so the books
+   * follow at once. The reason is added to `customerNote`, so a later re-read keeps it.
+   * Answers whether opening + the rows now reach the closing balance.
+   */
+  async setBalances(
+    scope: BookScope,
+    id: number,
+    input: {
+      openingBalance?: number | null;
+      closingBalance?: number | null;
+      reason: string;
+    },
+  ): Promise<StatementBalancesResult> {
+    const s = await this.owned(scope, id);
+    if (s.source === 'PLAID') {
+      throw new BadRequestException(
+        "A bank-feed month's balances come from the bank itself and cannot be changed. If they look wrong, check the account's start date or reconnect the bank.",
+      );
+    }
+    if (s.status !== StatementStatus.DONE) {
+      throw new BadRequestException(
+        'Only a statement that was read can have its balances set — read it again with retry_statement and a note instead',
+      );
+    }
+    const money = (n: number | null | undefined) =>
+      n === undefined ? undefined : n === null ? null : n.toFixed(2);
+    const opening = money(input.openingBalance);
+    const closing = money(input.closingBalance);
+    if (opening === undefined && closing === undefined) {
+      throw new BadRequestException('Give the opening or the closing balance');
+    }
+    const words = [
+      opening !== undefined
+        ? `opening balance is ${opening ?? 'not printed'}`
+        : '',
+      closing !== undefined
+        ? `closing balance is ${closing ?? 'not printed'}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    const line = `The ${words} (customer: ${input.reason.trim().slice(0, 500)})`;
+    const customerNote = [s.customerNote?.trim(), line]
+      .filter(Boolean)
+      .join('\n')
+      .slice(-4000);
+    const row = await this.prisma.bankStatement.update({
+      where: { id: s.id },
+      data: {
+        ...(opening === undefined ? {} : { openingBalance: opening }),
+        ...(closing === undefined ? {} : { closingBalance: closing }),
+        customerNote,
+      },
+    });
+    const sum = await this.prisma.bankTransaction.aggregate({
+      where: { statementId: s.id, splitOfId: null },
+      _sum: { amount: true },
+    });
+    return {
+      statement: toView(row),
+      ...balanceFit(
+        row.openingBalance === null ? null : Number(row.openingBalance),
+        row.closingBalance === null ? null : Number(row.closingBalance),
+        Number(sum._sum.amount ?? 0),
+        row.accountKind === 'CREDIT_CARD',
+      ),
+    };
   }
 
   /**

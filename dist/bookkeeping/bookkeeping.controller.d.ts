@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeDto, NameGroupDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -84,7 +84,8 @@ export declare class BookkeepingController {
     accountList(scope: BookScope): Promise<AccountView[]>;
     createAccount(scope: BookScope, dto: CreateAccountDto): Promise<AccountView>;
     setAccountType(scope: BookScope, dto: SetAccountTypeDto): Promise<void>;
-    mergeAccounts(scope: BookScope, dto: MergeDto): Promise<void>;
+    mergeAccounts(scope: BookScope, dto: MergeAccountsDto): Promise<void>;
+    renameAccount(scope: BookScope, dto: RenameAccountDto): Promise<void>;
     resetAccountType(scope: BookScope, dto: ResetAccountTypeDto): Promise<void>;
     setAccountCurrency(scope: BookScope, dto: SetAccountCurrencyDto): Promise<void>;
     resetAccountCurrency(scope: BookScope, dto: ResetAccountTypeDto): Promise<void>;

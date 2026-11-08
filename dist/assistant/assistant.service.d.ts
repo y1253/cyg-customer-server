@@ -64,6 +64,29 @@ export declare function fileContext(a: AttachmentView): {
     } | null;
     note: string | null;
 };
+export declare function attachmentContext(file: AttachmentView): {
+    id: number;
+    filename: string;
+    kind: import("@prisma/client").$Enums.AttachmentKind;
+    status: import("@prisma/client").$Enums.AttachmentStatus;
+    whyNotMatched: string | null;
+    reading: import("../bookkeeping/attachment-extractor").AttachmentReading | null;
+    total: number | null;
+    texted: string | null;
+    attachedTo: {
+        id: number;
+        name: string | null;
+        description: string;
+        amount: number;
+        date: string | null;
+        statementId: number;
+        statementLabel: string;
+        splitCount: number;
+    } | null;
+    source: string;
+    cutFromBiggerImage: boolean;
+    otherDocumentsOfSameImage: number[];
+};
 export declare function toMessageView(m: AiMessage): AssistantMessageView;
 export interface LoopResult {
     text: string;
@@ -100,6 +123,11 @@ export declare class AssistantService {
         messages: AssistantMessageView[];
     }>;
     attachmentChat(scope: BookScope, attachmentId: number, text: string): Promise<ChatResult>;
+    threadFor(scope: BookScope, target: {
+        statementId?: number;
+        attachmentId?: number;
+    }): Promise<AiConversation>;
+    copyCallToChat(chatId: number, voiceConversationId: number, customerId: number, since: Date): Promise<void>;
     statementThread(scope: BookScope, statementId: number): Promise<{
         conversationId: number | null;
         messages: AssistantMessageView[];
@@ -124,6 +152,7 @@ export declare class AssistantService {
         attachment?: unknown;
         files?: unknown[];
         note?: string;
+        about?: number | null;
     }): Promise<string>;
     isOverLimit(customerId: number): Promise<boolean>;
     private overLimit;

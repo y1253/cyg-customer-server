@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = exports.EXCEPTION = void 0;
+exports.RULE_CONFLICT = exports.byContainsPriority = exports.isBankCharge = exports.nameKey = exports.descriptionContains = exports.containsKey = exports.CONTAINS_MIN = exports.RULE_MATCH_TYPES = exports.EXCEPTION = void 0;
 exports.descriptionKey = descriptionKey;
 exports.cleanName = cleanName;
 exports.descriptionName = descriptionName;
@@ -14,6 +14,8 @@ exports.nameMemoryWrites = nameMemoryWrites;
 exports.memoryWrites = memoryWrites;
 exports.containsRuleFor = containsRuleFor;
 exports.indexRules = indexRules;
+exports.findLinkConflicts = findLinkConflicts;
+exports.linkConflictMessage = linkConflictMessage;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.EXCEPTION = 'EXCEPTION';
 exports.RULE_MATCH_TYPES = [
@@ -187,6 +189,7 @@ function resolveRow(row, ctx) {
             category = (0, chart_of_accounts_1.normalizeAccount)(exception.category, ctx.customAccounts);
         source = 'customer';
     }
+    category = ctx.renamed?.get(category.toLowerCase()) ?? category;
     const finalName = fallbackName(name, category, row.description);
     const fromDescription = !!finalName && finalName === descriptionName(row.description);
     return {
@@ -280,6 +283,8 @@ function memoryWrites(rows, memory) {
     }
     return { creates: [...creates.values()], fills: [...fills.values()] };
 }
+const byContainsPriority = (a, b) => b.matchKey.length - a.matchKey.length || a.matchKey.localeCompare(b.matchKey);
+exports.byContainsPriority = byContainsPriority;
 function containsRuleFor(description, rules) {
     return rules?.find((r) => (0, exports.descriptionContains)(description, r.matchKey));
 }
@@ -301,8 +306,7 @@ function indexRules(rules) {
         else
             nameRules.set(r.matchKey, r);
     }
-    containsRules.sort((a, b) => b.matchKey.length - a.matchKey.length ||
-        a.matchKey.localeCompare(b.matchKey));
+    containsRules.sort(exports.byContainsPriority);
     for (const r of nameRules.values()) {
         if (!r.category || !cleanName(r.name))
             continue;
@@ -315,5 +319,98 @@ function indexRules(rules) {
             nameCategories.set(r.matchKey, r.category);
     }
     return { descRules, nameRules, containsRules, nameCategories, exceptions };
+}
+exports.RULE_CONFLICT = 'RULE_CONFLICT';
+function findLinkConflicts(input) {
+    const { key, rules } = input;
+    const target = (0, exports.nameKey)(input.name);
+    const other = (r) => !!cleanName(r.name) && (0, exports.nameKey)(r.name) !== target;
+    const textOf = (r) => r.includeChars?.trim() || r.matchKey;
+    const contains = rules
+        .filter((r) => r.matchType === 'CONTAINS' && r.matchKey)
+        .sort(exports.byContainsPriority);
+    const out = [];
+    const seen = new Set();
+    const push = (c) => {
+        const k = `${c.matchType}:${c.ruleId ?? c.text}`;
+        if (seen.has(k))
+            return;
+        seen.add(k);
+        out.push(c);
+    };
+    if (input.matchType === 'DESCRIPTION') {
+        const printed = input.descriptions.filter((d) => descriptionKey(d) === key);
+        const exact = rules.find((r) => r.matchType === 'DESCRIPTION' && r.matchKey === key);
+        if (exact && cleanName(exact.name)) {
+            if (other(exact)) {
+                push({
+                    matchType: 'DESCRIPTION',
+                    text: printed[0] ?? key,
+                    name: cleanName(exact.name),
+                    ruleId: exact.id,
+                    remove: false,
+                });
+            }
+            return out;
+        }
+        for (const d of printed) {
+            const r = containsRuleFor(d, contains);
+            if (r && other(r)) {
+                push({
+                    matchType: 'CONTAINS',
+                    text: textOf(r),
+                    name: cleanName(r.name),
+                    ruleId: r.id,
+                    remove: false,
+                });
+            }
+        }
+        return out;
+    }
+    for (const r of contains) {
+        if (!other(r))
+            continue;
+        const longer = r.matchKey !== key && r.matchKey.includes(key);
+        if (longer || key.includes(r.matchKey)) {
+            push({
+                matchType: 'CONTAINS',
+                text: textOf(r),
+                name: cleanName(r.name),
+                ruleId: r.id,
+                remove: longer,
+            });
+        }
+    }
+    const exact = new Map(rules
+        .filter((r) => r.matchType === 'DESCRIPTION' && other(r))
+        .map((r) => [r.matchKey, r]));
+    if (!exact.size)
+        return out;
+    for (const d of input.descriptions) {
+        if (!(0, exports.descriptionContains)(d, key))
+            continue;
+        const r = exact.get(descriptionKey(d));
+        if (r) {
+            push({
+                matchType: 'DESCRIPTION',
+                text: d,
+                name: cleanName(r.name),
+                ruleId: r.id,
+                remove: true,
+            });
+        }
+    }
+    return out;
+}
+function linkConflictMessage(conflicts, name) {
+    const names = [...new Set(conflicts.map((c) => c.name))];
+    const shown = conflicts
+        .slice(0, 5)
+        .map((c) => `"${c.text}" → ${c.name}`)
+        .join('; ');
+    const more = conflicts.length > 5 ? ` and ${conflicts.length - 5} more` : '';
+    return (`Already linked to ${names.length > 1 ? 'other names' : names[0]}: ${shown}${more}. ` +
+        `Confirm to take it away from ${names.join(', ')} and link it to ${name}, ` +
+        `or change only this transaction instead.`);
 }
 //# sourceMappingURL=name-memory.util.js.map

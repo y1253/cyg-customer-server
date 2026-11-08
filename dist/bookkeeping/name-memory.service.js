@@ -86,7 +86,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     }
     async contextFor(scope, descriptions, names = []) {
         const keys = [...new Set(descriptions.map(name_memory_util_1.descriptionKey).filter(Boolean))];
-        const [memoryRows, rules, customAccounts] = await Promise.all([
+        const [memoryRows, rules, customAccounts, renamed] = await Promise.all([
             keys.length
                 ? this.prisma.descriptionMemory.findMany({
                     where: { descriptionKey: { in: keys } },
@@ -100,6 +100,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 : Promise.resolve([]),
             this.rulesOf(scope),
             this.customAccountsOf(scope),
+            this.renamedAccountsOf(scope),
         ]);
         const memory = new Map(memoryRows.map((m) => [
             m.descriptionKey,
@@ -116,7 +117,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 nameKeys.add((0, name_memory_util_1.nameKey)(clean));
         }
         const nameMemory = await this.nameMemoryFor([...nameKeys]);
-        return { memory, ...(0, name_memory_util_1.indexRules)(rules), customAccounts, nameMemory };
+        return {
+            memory,
+            ...(0, name_memory_util_1.indexRules)(rules),
+            customAccounts,
+            nameMemory,
+            renamed,
+        };
     }
     async nameMemoryFor(keys) {
         if (!keys.length)
@@ -147,6 +154,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 ? r.matchType
                 : 'NAME',
         }));
+    }
+    async renamedAccountsOf(scope) {
+        const rows = await this.prisma.customerAccount.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), replaces: { not: null } },
+            select: { name: true, replaces: true },
+        });
+        return new Map(rows.flatMap((r) => r.replaces ? [[r.replaces.toLowerCase(), r.name]] : []));
     }
     async customAccountsOf(scope) {
         const rows = await this.prisma.customerAccount.findMany({
@@ -408,6 +422,11 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const category = input.category
             ? (0, chart_of_accounts_1.normalizeAccount)(input.category, await this.customAccountsOf(scope))
             : null;
+        if (name &&
+            input.matchType !== 'NAME' &&
+            (input.matchType === 'CONTAINS' || (input.scope ?? 'ALWAYS') === 'ALWAYS')) {
+            await this.guardLinks(scope, input.matchType, matchKey, name, input.replace);
+        }
         const where = {
             ...(0, scope_1.scopeWhere)(scope),
             matchType: input.matchType,
@@ -436,6 +455,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 category: row.offsetAccount,
             }));
             await this.tax.carryAgencies(scope, [...names], name);
+            await this.tax.carryNameSettings(scope, [...names], name);
             const adopt = category ?? target;
             if (adopt)
                 await this.setNameCategory(scope, name, adopt);
@@ -488,14 +508,63 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             return { name: row.name, category: own ?? category };
         });
     }
+    async guardLinks(scope, matchType, key, name, replace) {
+        if (replace && matchType === 'DESCRIPTION')
+            return;
+        if (matchType === 'CONTAINS' && key.length < name_memory_util_1.CONTAINS_MIN)
+            return;
+        const [rules, rows] = await Promise.all([
+            this.rulesOf(scope),
+            this.prisma.bankTransaction.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: null },
+                select: { description: true },
+            }),
+        ]);
+        const conflicts = (0, name_memory_util_1.findLinkConflicts)({
+            matchType,
+            key,
+            name,
+            rules,
+            descriptions: [...new Set(rows.map((r) => r.description))],
+        });
+        if (!conflicts.length)
+            return;
+        if (!replace) {
+            throw new common_1.ConflictException({
+                code: name_memory_util_1.RULE_CONFLICT,
+                message: (0, name_memory_util_1.linkConflictMessage)(conflicts, name),
+                conflicts: conflicts.map(({ matchType: type, text, name: from }) => ({
+                    matchType: type,
+                    text,
+                    name: from,
+                })),
+            });
+        }
+        const ids = conflicts.flatMap((c) => c.remove && c.ruleId ? [c.ruleId] : []);
+        if (ids.length) {
+            await this.prisma.customerNameRule.deleteMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), id: { in: ids } },
+            });
+        }
+    }
     async containsRows(scope, key) {
-        const exact = new Set((await this.prisma.customerNameRule.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), matchType: 'DESCRIPTION' },
-            select: { matchKey: true },
-        })).map((r) => r.matchKey));
+        const rules = await this.prisma.customerNameRule.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                matchType: { in: ['DESCRIPTION', 'CONTAINS'] },
+            },
+            select: { matchType: true, matchKey: true },
+        });
+        const exact = new Set(rules.filter((r) => r.matchType === 'DESCRIPTION').map((r) => r.matchKey));
+        const contains = [
+            ...rules.filter((r) => r.matchType === 'CONTAINS' && r.matchKey !== key),
+            { matchKey: key },
+        ].sort(name_memory_util_1.byContainsPriority);
         const rows = await this.matchingRows(scope, 'DESCRIPTION', '', new Set(), false, true);
         return rows.filter((r) => (0, name_memory_util_1.descriptionContains)(r.description, key) &&
-            !exact.has((0, name_memory_util_1.descriptionKey)(r.description)));
+            !exact.has((0, name_memory_util_1.descriptionKey)(r.description)) &&
+            contains.find((c) => (0, name_memory_util_1.descriptionContains)(r.description, c.matchKey))
+                ?.matchKey === key);
     }
     async applyEdit(scope, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
@@ -530,6 +599,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             if (!key) {
                 throw new common_1.BadRequestException('This transaction has no description to remember. Apply the name to this row only.');
             }
+            await this.guardLinks(scope, 'DESCRIPTION', key, name, input.replace);
             if (row.manualEdit) {
                 await this.writeRows(scope, [matched], (r) => ({
                     name,
@@ -543,6 +613,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 name,
                 category,
                 scope: 'ALWAYS',
+                replace: true,
             });
             return;
         }
@@ -733,7 +804,18 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             });
         }
         else {
-            await this.prisma.customerNameRule.create({ data: create });
+            try {
+                await this.prisma.customerNameRule.create({ data: create });
+            }
+            catch (e) {
+                if (e.code !== 'P2002')
+                    throw e;
+                throw new common_1.ConflictException({
+                    code: name_memory_util_1.RULE_CONFLICT,
+                    message: 'This was just changed by another save. Refresh the page and try again.',
+                    conflicts: [],
+                });
+            }
         }
     }
     async matchingRows(scope, matchType, matchKey, names, includeManual, all = false) {

@@ -83,6 +83,12 @@ export interface VoiceTokenClaims {
   /** step12c, THIRD_PARTY: the person called (`peer` is their phone), and their name. */
   contactId?: number | null;
   contactName?: string | null;
+  /**
+   * step2 (2026-11-08), REQUESTED: the chat the customer asked for the call from — one
+   * statement's or one attachment's. The call knows it (`promptFor` `about`) and its
+   * transcript is added to it when the call ends.
+   */
+  about?: number | null;
 }
 
 /** Chat-completions tools → the Realtime API's flat function shape. */

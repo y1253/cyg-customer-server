@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NameGroupDto = exports.SetNameGroupDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -107,6 +107,7 @@ class SaveNameRuleDto {
     name;
     category;
     scope;
+    replace;
 }
 exports.SaveNameRuleDto = SaveNameRuleDto;
 __decorate([
@@ -138,6 +139,11 @@ __decorate([
     (0, class_validator_1.IsIn)(['ALWAYS', 'ONCE']),
     __metadata("design:type", String)
 ], SaveNameRuleDto.prototype, "scope", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], SaveNameRuleDto.prototype, "replace", void 0);
 class ResetNameRuleDto {
     matchType;
     matchKey;
@@ -188,6 +194,7 @@ class EditTransactionDto {
     name;
     category;
     scope;
+    replace;
 }
 exports.EditTransactionDto = EditTransactionDto;
 __decorate([
@@ -207,6 +214,11 @@ __decorate([
     (0, class_validator_1.IsIn)(['ALWAYS', 'ONCE']),
     __metadata("design:type", String)
 ], EditTransactionDto.prototype, "scope", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], EditTransactionDto.prototype, "replace", void 0);
 class CreateAccountDto {
     name;
     type;
@@ -383,6 +395,36 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
 ], MergeDto.prototype, "into", void 0);
+class MergeAccountsDto extends MergeDto {
+    name;
+}
+exports.MergeAccountsDto = MergeAccountsDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], MergeAccountsDto.prototype, "name", void 0);
+class RenameAccountDto {
+    from;
+    to;
+}
+exports.RenameAccountDto = RenameAccountDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], RenameAccountDto.prototype, "from", void 0);
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], RenameAccountDto.prototype, "to", void 0);
 class SetNameGroupDto {
     name;
     group;

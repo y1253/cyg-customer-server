@@ -73,12 +73,40 @@ const WATCH_FOR_MS = 20 * 60_000;
 
 /** `retry_statement`'s statementId argument. */
 function statementIdOf(args: string): number | null {
+  return idArg(args, 'statementId');
+}
+
+/** A positive integer argument of a tool call, or null. */
+function idArg(args: string, key: string): number | null {
   try {
-    const v = Number((JSON.parse(args) as { statementId?: unknown }).statementId);
+    const v = Number((JSON.parse(args) as Record<string, unknown>)[key]);
     return Number.isInteger(v) && v > 0 ? v : null;
   } catch {
     return null;
   }
+}
+
+/** step2: the note the model gets when a file re-read on this call is finished. Pure. */
+export function attachmentDoneNote(
+  attachmentId: number,
+  row: {
+    status: string;
+    error: string | null;
+    matchNote: string | null;
+    filename: string;
+  },
+): string {
+  const head = `[System note, not from the caller] The file you re-read on this call (#${attachmentId}, "${row.filename}") is finished:`;
+  if (row.status === 'MATCHED') {
+    return `${head} it was read and attached to a transaction (get_attachment ${attachmentId} says which). Tell the caller now, briefly.`;
+  }
+  if (row.status === 'DOCUMENT') {
+    return `${head} it was read as a document, not a payment, so it is kept but not attached. Tell the caller now, briefly.`;
+  }
+  return (
+    `${head} ${row.status === 'FAILED' ? 'it could not be read' : 'it was read but not matched'}` +
+    ` (${row.matchNote ?? row.error ?? 'no reason given'}). Tell the caller now, briefly, and offer to attach it to the right transaction.`
+  );
 }
 
 /** The note the model gets when a statement re-read on this call is finished. Pure. */
@@ -156,6 +184,8 @@ export class VoiceSession implements LiveCall {
   private endMarkSent = false;
   /** Statements re-read on this call, watched so the AI can say when they are done. */
   private readonly watched = new Map<number, NodeJS.Timeout>();
+  /** step2: files re-read on this call (`reread_attachment`), watched the same way. */
+  private readonly watchedFiles = new Map<number, NodeJS.Timeout>();
   /** Fallback recording when SignalWire would not record: left = caller, right = AI. */
   private readonly caller = new MuLawTrack();
   private readonly ai = new MuLawTrack();
@@ -245,6 +275,7 @@ export class VoiceSession implements LiveCall {
       return;
     }
     this.claims = claims;
+    this.startedAt = Date.now();
     if (claims.purpose === 'PROSPECT') return this.startProspect();
     const customer = await this.deps.prisma.customer.findFirst({
       where: { id: claims.sub, deletedAt: null },
@@ -344,6 +375,8 @@ export class VoiceSession implements LiveCall {
         })
       : await this.deps.assistant.promptFor(conversation, {
           note: await this.callNote(customerName),
+          // step2: a "Call me" from a statement's / attachment's chat — the call knows it.
+          about: claims.about ?? null,
         });
     this.connectRealtime(
       model,
@@ -394,7 +427,9 @@ export class VoiceSession implements LiveCall {
       `THIS IS A PHONE CALL with ${customerName} (${claims.peer}).`,
       claims.dir === 'INBOUND'
         ? 'They called our number.'
-        : 'We called them to deliver a scheduled message; after it, answer their questions.',
+        : claims.purpose === 'REQUESTED'
+          ? 'We called them because they asked us to (what about is below); help them with it, then answer their questions.'
+          : 'We called them to deliver a scheduled message; after it, answer their questions.',
       `The call ends after ${this.settings!.maxMinutes} minutes.`,
       // ⚠️ "Switch at once" switched to Hebrew over a garbled noise transcribed as a foreign
       // word (2026-10-28): a phone line's noise transcribes as fragments of any language.
@@ -725,6 +760,12 @@ export class VoiceSession implements LiveCall {
     if (name === 'retry_statement' && outcome.action?.ok) {
       this.watchStatement(scope, statementIdOf(args));
     }
+    if (
+      (name === 'reread_attachment' || name === 'retry_attachment') &&
+      outcome.action?.ok
+    ) {
+      this.watchAttachment(scope, idArg(args, 'attachmentId'));
+    }
     if (outcome.warning) this.turnWarning = outcome.warning;
     if (outcome.attachmentId) this.turnTouched.push(outcome.attachmentId);
     this.sendOpenAi({
@@ -783,6 +824,48 @@ export class VoiceSession implements LiveCall {
     const t = this.watched.get(statementId);
     if (t) clearInterval(t);
     this.watched.delete(statementId);
+  }
+
+  /** step2: like `watchStatement`, for a file read again on this call. */
+  private watchAttachment(scope: BookScope, attachmentId: number | null): void {
+    if (!attachmentId || this.closed || this.watchedFiles.has(attachmentId))
+      return;
+    const started = Date.now();
+    const stop = () => {
+      const t = this.watchedFiles.get(attachmentId);
+      if (t) clearInterval(t);
+      this.watchedFiles.delete(attachmentId);
+    };
+    const tick = async (): Promise<void> => {
+      if (this.closed) return stop();
+      const row = await this.deps.prisma.transactionAttachment.findFirst({
+        where: {
+          id: attachmentId,
+          customerId: scope.customerId,
+          bookId: scope.bookId,
+          deletedAt: null,
+        },
+        select: { status: true, error: true, matchNote: true, filename: true },
+      });
+      if (!row) return stop();
+      if (row.status === 'PENDING' || row.status === 'PROCESSING') {
+        if (Date.now() - started > WATCH_FOR_MS) stop();
+        return;
+      }
+      stop();
+      this.inject(attachmentDoneNote(attachmentId, row));
+    };
+    this.watchedFiles.set(
+      attachmentId,
+      setInterval(() => {
+        void tick().catch((err: unknown) => {
+          this.logger.warn(
+            `call ${this.callSid}: attachment #${attachmentId} watch failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          stop();
+        });
+      }, WATCH_EVERY_MS),
+    );
   }
 
   /** The AI's sentence, with what it changed while answering. */
@@ -851,6 +934,8 @@ export class VoiceSession implements LiveCall {
     liveCalls.remove(this);
     if (this.timer) clearTimeout(this.timer);
     for (const id of [...this.watched.keys()]) this.unwatch(id);
+    for (const t of this.watchedFiles.values()) clearInterval(t);
+    this.watchedFiles.clear();
     this.close();
     if (!this.callSid || !this.claims) return;
     if (this.prospect) {
@@ -880,6 +965,17 @@ export class VoiceSession implements LiveCall {
             : null,
       })
       .catch((err: unknown) => this.fail(err));
+    // step2: a call asked for from a statement's / attachment's chat — its words go there.
+    if (this.claims.about && this.conversation) {
+      await this.deps.assistant
+        .copyCallToChat(
+          this.claims.about,
+          this.conversation.id,
+          this.claims.sub,
+          new Date(this.startedAt - 2000),
+        )
+        .catch((err: unknown) => this.fail(err));
+    }
     this.logger.log(`call ${this.callSid} ended`);
   }
 }
