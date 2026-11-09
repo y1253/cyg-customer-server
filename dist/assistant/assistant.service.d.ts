@@ -86,6 +86,7 @@ export declare function attachmentContext(file: AttachmentView): {
     source: string;
     cutFromBiggerImage: boolean;
     otherDocumentsOfSameImage: number[];
+    howItWasRead: import("../bookkeeping/attachment-extractor").ReadingPipeline | null;
 };
 export declare function toMessageView(m: AiMessage): AssistantMessageView;
 export interface LoopResult {

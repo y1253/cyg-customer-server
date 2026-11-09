@@ -36,6 +36,8 @@ const statement_images_service_1 = require("./statement-images.service");
 const statement_processor_service_1 = require("./statement-processor.service");
 const tax_service_1 = require("./tax.service");
 const communications_service_1 = require("./communications.service");
+const document_pipeline_1 = require("./pipeline/document-pipeline");
+const ocr_service_1 = require("./pipeline/ocr.service");
 let BookkeepingModule = class BookkeepingModule {
 };
 exports.BookkeepingModule = BookkeepingModule;
@@ -56,11 +58,13 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             book_scope_guard_1.BookScopeGuard,
             communications_service_1.CommunicationsService,
             customer_accounts_service_1.CustomerAccountsService,
+            document_pipeline_1.DocumentPipeline,
             file_links_1.FileLinkService,
             fx_service_1.FxService,
             instructions_service_1.InstructionsService,
             export_service_1.LedgerExportService,
             name_memory_service_1.NameMemoryService,
+            ocr_service_1.OcrService,
             openai_client_1.OpenAiClient,
             product_categorizer_1.ProductCategorizer,
             product_memory_service_1.ProductMemoryService,

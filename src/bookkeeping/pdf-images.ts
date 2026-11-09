@@ -118,6 +118,12 @@ type MupdfPage = ReturnType<InstanceType<Mupdf['Document']>['loadPage']>;
  * One box of a page as a PNG, at `scale` pixels per point. The pixmap starts at 0,0
  * (mupdf's draw device ignores its origin), so the page is shifted onto it: scale, then move
  * the box's corner to the origin. step9: also cuts each cheque out of an image (`crop.ts`).
+ *
+ * ⚠️ step2 (2026-11-08): the matrix goes to `run` ONLY — the draw device gets the identity.
+ * `fz_new_draw_device(transform, …)` applies its own transform to everything drawn, so
+ * passing the matrix to both applied it TWICE: at scale 2 every cheque came out 4× zoomed
+ * and shifted — its number and payee cut off, and a slice of the NEXT cheque at its edge
+ * (the "two cheques on one transaction" of step2.md). Verified by rendering both ways.
  */
 export function renderClip(
   mupdf: Mupdf,
@@ -145,7 +151,7 @@ export function renderClip(
   );
   try {
     pix.clear(255);
-    const device = new mupdf.DrawDevice(matrix, pix);
+    const device = new mupdf.DrawDevice(mupdf.Matrix.identity, pix);
     try {
       p.run(device, matrix);
       device.close();

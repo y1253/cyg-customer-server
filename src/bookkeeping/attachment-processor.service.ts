@@ -26,13 +26,14 @@ import {
   TIP_SLACK,
   chequeAmountMatch,
   chequeNumberMatch,
+  chequeNumberOnlyMatch,
   obviousMatch,
   shortlist,
   statementOf,
   type MatchCandidate,
   type MatchQuery,
 } from './attachment-match.util';
-import type { AttachmentClass } from './attachment-uploads';
+import { XLSX_MIME, type AttachmentClass } from './attachment-uploads';
 import { NameMemoryService } from './name-memory.service';
 import { cleanName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
@@ -43,6 +44,13 @@ import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { cropImage } from './crop';
 import { cropPlan } from './crop.util';
+import { chequeRegions } from './cheque-split';
+import { DocumentPipeline, type Prepared } from './pipeline/document-pipeline';
+import {
+  looksLikeChequeBack,
+  looksLikeChequeText,
+  type OcrResult,
+} from './pipeline/ocr.util';
 
 const CONCURRENCY = 2;
 /** A row name that says nothing about who was paid ("Cheque", "CHQ 123", "Check #55"). */
@@ -165,7 +173,47 @@ export function classOf(mimeType: string): AttachmentClass {
   if (mimeType.startsWith('audio/')) return 'audio';
   if (mimeType.startsWith('text/plain')) return 'text';
   if (mimeType === 'application/pdf') return 'pdf';
+  if (mimeType.startsWith('text/csv') || mimeType === XLSX_MIME) return 'sheet';
   return 'image';
+}
+
+/**
+ * step2 (2026-11-08): the reader is told an image is ONE cheque when code cut it out of a
+ * bigger image (`cheque-split.ts`), so it never splits it again.
+ */
+export const ONE_CHEQUE_HINT =
+  '\n\nThis image is ONE cheque, cut out of a bigger image (a statement page or a photo of ' +
+  'several cheques): return exactly one document, box null.';
+
+/** Digits of a cheque number without leading zeros ("001042" → "1042"). */
+const chequeDigits = (n: string | null | undefined): string =>
+  (n ?? '').replace(/\D/g, '').replace(/^0+/, '');
+
+/**
+ * step2: a cheque follows its NUMBER (user's rule) — the number OCR read off the printed
+ * top-right / MICR line replaces a different one the AI read (logged on `pipeline`).
+ */
+export function withOcrChequeNumber(
+  reading: AttachmentReading,
+  prepared: Prepared | null,
+): AttachmentReading {
+  const ocr = prepared?.chequeNumber;
+  if (!ocr || reading.kind !== 'CHECK') return reading;
+  if (chequeDigits(ocr) === chequeDigits(reading.checkNumber)) return reading;
+  return {
+    ...reading,
+    checkNumber: ocr,
+    pipeline: reading.pipeline && {
+      ...reading.pipeline,
+      ocrChequeNumber: ocr,
+    },
+  };
+}
+
+/** step2: the cheques code cut out of one image, each with its OCR (null = OCR failed). */
+interface CodeSplit {
+  crops: Buffer[];
+  ocrs: Array<OcrResult | null>;
 }
 
 /** step9: where a file's documents are stored — one crop each, or all on the original. */
@@ -207,6 +255,8 @@ export class AttachmentProcessorService {
     private readonly names: NameMemoryService,
     /** step11: the book's learned rules, read before every AI step. Optional for specs. */
     @Optional() private readonly rules?: RulesService,
+    /** step2: the local reading pipeline (OCR, PDF text, spreadsheets). Optional for specs. */
+    @Optional() private readonly pipeline?: DocumentPipeline,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -293,19 +343,41 @@ export class AttachmentProcessorService {
         ? (sniffImageMime(file) ?? row.mimeType)
         : row.mimeType;
       const note = customerNoteOf(row.extracted);
-      const readings = await this.extractor.read(
+      const hints =
+        ((await this.rules?.promptBlock(
+          scope,
+          undefined,
+          'ATTACHMENT_READER',
+        )) ?? '') + readerHints(row.source, note);
+      // step2: several cheques in one image are cut apart by CODE first, each read alone.
+      const split =
+        cls === 'image' ? await this.codeSplit(row, file, mime) : null;
+      if (split) {
+        await this.readSplit(row, scope, split, {
+          originalKey,
+          originalMime: mime,
+          originalSize: file.length,
+          hints,
+          note,
+        });
+        return;
+      }
+      // step2: the local pipeline reads first; the AI reads its text, or the file when
+      // the pipeline could not read it well.
+      const prepared = (await this.pipeline?.prepare(file, mime, cls)) ?? null;
+      let readings = await this.extractor.read(
         file,
         row.filename,
         mime,
         cls,
         day(row.createdAt)!,
         row.message,
-        ((await this.rules?.promptBlock(
-          scope,
-          undefined,
-          'ATTACHMENT_READER',
-        )) ?? '') + readerHints(row.source, note),
+        hints,
+        prepared,
       );
+      if (readings.length === 1) {
+        readings = [withOcrChequeNumber(readings[0], prepared)];
+      }
       const sibling = siblingOf(row.sourceRef);
       if (sibling) {
         // A sibling read again keeps ITS document of the file (the first one if the file
@@ -351,6 +423,140 @@ export class AttachmentProcessorService {
     } catch (err) {
       await this.recordFailure(row, err);
     }
+  }
+
+  /**
+   * step2 (2026-11-08): the cheques of one image, found by code (`cheque-split.ts`): each cut
+   * into its own file, each OCR'd, and a cheque's BACK (an endorsement, no amount, no number)
+   * dropped — it belongs to the front beside it. Null when fewer than two cheques remain, or
+   * the pipeline is off: the step9 path (the AI's boxes) decides then. A sibling row whose
+   * index is past what the image now holds also goes that way.
+   */
+  private async codeSplit(
+    row: TransactionAttachment,
+    file: Buffer,
+    mime: string,
+  ): Promise<CodeSplit | null> {
+    if (!this.pipeline?.enabled()) return null;
+    const boxes = await chequeRegions(file, mime);
+    if (boxes.length < 2) return null;
+    let crops: Buffer[];
+    try {
+      crops = await cropImage(file, mime, boxes);
+    } catch (err) {
+      this.logger.warn(
+        `attachment #${row.id}: cheques found but not cut: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+    const kept: CodeSplit = { crops: [], ocrs: [] };
+    for (const crop of crops) {
+      const ocr = await this.pipeline.readImage(crop);
+      if (ocr && looksLikeChequeBack(ocr)) continue;
+      // Only cut when every piece reads as a cheque: anything else (a piece of text, a
+      // deposit slip, OCR off) leaves the decision to the AI's boxes, as before.
+      if (!ocr || !looksLikeChequeText(ocr)) {
+        this.logger.log(
+          `attachment #${row.id}: ${boxes.length} regions found, but one does not read as a cheque — not cut by code`,
+        );
+        return null;
+      }
+      kept.crops.push(crop);
+      kept.ocrs.push(ocr);
+    }
+    const sibling = siblingOf(row.sourceRef);
+    if (
+      kept.crops.length < 2 ||
+      (sibling && sibling.index >= kept.crops.length)
+    ) {
+      return null;
+    }
+    this.logger.log(
+      `attachment #${row.id}: ${kept.crops.length} cheques found by code` +
+        (crops.length > kept.crops.length
+          ? ` (${crops.length - kept.crops.length} back(s) left with their front)`
+          : ''),
+    );
+    return kept;
+  }
+
+  /**
+   * step2: read each cheque of a code split on its own (one AI call each — the pipeline's text
+   * when OCR read it surely, else the crop on the vision model) and file them like the step9
+   * crops: the row keeps cheque 0, siblings take the rest. A sibling read again reads only its
+   * own cheque.
+   */
+  private async readSplit(
+    row: TransactionAttachment,
+    scope: BookScope,
+    split: CodeSplit,
+    ctx: {
+      originalKey: string;
+      originalMime: string;
+      originalSize: number;
+      hints: string;
+      note: string | null;
+    },
+  ): Promise<void> {
+    const sibling = siblingOf(row.sourceRef);
+    const readOne = async (i: number): Promise<AttachmentReading> => {
+      const prepared = this.pipeline?.fromOcr(split.ocrs[i]) ?? null;
+      const [reading] = await this.extractor.read(
+        split.crops[i],
+        row.filename,
+        'image/png',
+        'image',
+        day(row.createdAt)!,
+        row.message,
+        ctx.hints + ONE_CHEQUE_HINT,
+        prepared,
+      );
+      return withOcrChequeNumber({ ...reading, box: null }, prepared);
+    };
+    const files = {
+      originalKey: ctx.originalKey,
+      originalMime: ctx.originalMime,
+      originalSize: ctx.originalSize,
+    };
+    if (sibling) {
+      const reading = await readOne(sibling.index);
+      const self = await this.storeOwnFile(row, scope, {
+        ...files,
+        crop: split.crops[sibling.index],
+      });
+      const parent = await this.prisma.transactionAttachment.findUnique({
+        where: { id: sibling.rowId },
+        select: { sourceRef: true },
+      });
+      await this.finish(
+        self,
+        scope,
+        'image',
+        reading,
+        statementOf(parent?.sourceRef),
+        ctx.note,
+      );
+      return;
+    }
+    const readings: AttachmentReading[] = [];
+    for (let i = 0; i < split.crops.length; i++)
+      readings.push(await readOne(i));
+    const self = await this.storeOwnFile(row, scope, {
+      ...files,
+      crop: split.crops[0],
+    });
+    await this.finish(
+      self,
+      scope,
+      'image',
+      readings[0],
+      statementOf(row.sourceRef),
+      ctx.note,
+    );
+    await this.fileSiblings(self, scope, 'image', readings, {
+      ...files,
+      crops: split.crops,
+    });
   }
 
   /**
@@ -719,6 +925,29 @@ export class AttachmentProcessorService {
         transactionId: byNumber.id,
         note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
       };
+    }
+    // step2: a cheque cut out of a statement follows its NUMBER even when its amount was
+    // read differently (handwriting): the ONE cheque row of that statement printing it.
+    if (statementId && q.kind === 'CHECK' && reading.checkNumber) {
+      const rows = await this.candidates(
+        scope,
+        { ...q, total: null, date: null },
+        statementId,
+      );
+      const byNumberOnly = chequeNumberOnlyMatch(reading.checkNumber, rows);
+      if (byNumberOnly) {
+        const bank = Math.abs(byNumberOnly.amount);
+        const read =
+          total != null && cents(total) !== cents(bank) ? total : null;
+        return {
+          transactionId: byNumberOnly.id,
+          note:
+            `Matched by cheque number ${reading.checkNumber} (${byNumberOnly.name ?? byNumberOnly.description}).` +
+            (read != null
+              ? ` The amount read off the cheque ($${read.toFixed(2)}) is not the bank's ($${bank.toFixed(2)}) — the bank's is what counts.`
+              : ''),
+        };
+      }
     }
     // A cheque cut out of a statement: that statement's one cheque row at its amount.
     const byAmount =

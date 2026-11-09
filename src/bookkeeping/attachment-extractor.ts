@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient, type ChatContent } from '../ai/openai.client';
 import type { AttachmentClass } from './attachment-uploads';
 import type { MatchCandidate } from './attachment-match.util';
 import { ACCOUNT_NAMES } from './chart-of-accounts';
+import type { PipelineSource, Prepared } from './pipeline/document-pipeline';
 
 /**
  * What a file IS (step11b), decided before anything is matched. Only a payment record
@@ -60,6 +61,21 @@ export interface AttachmentReading {
   box?: DocumentBox | null;
   /** Audio only: what was said. */
   transcript?: string;
+  /**
+   * step2 (2026-11-08): how this file was read — the local pipeline's source (null = none),
+   * which model read it (`text` = the pipeline's text alone, `vision` = the file itself),
+   * OCR's confidence and why the text was not enough on its own.
+   */
+  pipeline?: ReadingPipeline;
+}
+
+export interface ReadingPipeline {
+  source: PipelineSource | null;
+  model: 'text' | 'vision' | 'audio';
+  confidence: number | null;
+  reason: string | null;
+  /** The cheque number OCR read, when it differs from the AI's and replaced it. */
+  ocrChequeNumber?: string | null;
 }
 
 /** step9: a document's rectangle on its image, fractions 0–1 of the image size. */
@@ -187,13 +203,32 @@ single payment amount is clearly the point of it.
   and height (0,0 = top-left, 1,1 = bottom-right), drawn around the whole document and
   nothing of the next one — each document is cut out on its own from it. The front and the
   back of the SAME cheque printed side by side are ONE document: its box is the front.
-  null when the file shows only one document, or for a PDF, a transcript or a text.`;
+  null when the file shows only one document, or for a PDF, a transcript or a text.
+  Two cheques with DIFFERENT cheque numbers are always two documents, even when they look
+  alike or touch each other.`;
 
 const DOCUMENT_PROMPT =
   'A small-business owner sent this file to their bookkeeper. It may be a receipt, an ' +
   'invoice, one or more cheques, a deposit slip, a statement, or something else entirely ' +
   '(a letter, a request, a screenshot). Copy what is printed; never guess a number that ' +
   'is not there.' +
+  READ_RULES;
+
+/**
+ * step2: the file's TEXT, read by the local pipeline (PaddleOCR, the PDF's own text layer,
+ * the spreadsheet's cells) — the text model reads it instead of the vision model reading
+ * the file. `[unsure NN%]` marks an OCR line the model should doubt.
+ */
+const TEXT_DOCUMENT_PROMPT =
+  'A small-business owner sent this file to their bookkeeper. You do NOT see the file: you ' +
+  "get the text read off it (by OCR, by the PDF's own text layer, or a spreadsheet's " +
+  'cells), laid out as printed, columns kept with spaces. It may be a receipt, an invoice, ' +
+  'one or more cheques (handwriting included), a deposit slip, a statement, a list, or ' +
+  'something else entirely (a letter, a request). Copy what is there; never guess a number ' +
+  'that is not in the text. A line marked [unsure NN%] may be misread — use it only when ' +
+  'the rest of the text agrees. A spreadsheet that lists many payments or transactions is ' +
+  "ONE document (DOCUMENT, or BANK_STATEMENT when it is a bank's export): say in the summary " +
+  'what it lists, how many rows and for which period. box is always null here.' +
   READ_RULES;
 
 const AUDIO_PROMPT =
@@ -247,6 +282,8 @@ const PICK_PROMPT =
  */
 @Injectable()
 export class AttachmentExtractor {
+  private readonly logger = new Logger(AttachmentExtractor.name);
+
   constructor(
     private readonly openai: OpenAiClient,
     private readonly config: ConfigService,
@@ -275,6 +312,8 @@ export class AttachmentExtractor {
     message?: string | null,
     /** The book's learned "house rules" (`RulesService.promptBlock`), '' for none. */
     rules = '',
+    /** step2: what the local pipeline read first (`DocumentPipeline.prepare`); null = none. */
+    prepared: Prepared | null = null,
   ): Promise<AttachmentReading[]> {
     if (cls === 'text') {
       const words = file.toString('utf8').trim();
@@ -303,16 +342,83 @@ export class AttachmentExtractor {
         AUDIO_PROMPT + rules,
         `TODAY: ${today}\n\nTranscript:\n"""\n${transcript.slice(0, 8000)}\n"""${senderNote(message)}`,
       );
-      return readings.map((r) => ({ ...r, transcript }));
+      return readings.map((r) => ({
+        ...r,
+        transcript,
+        pipeline: {
+          source: null,
+          model: 'audio',
+          confidence: null,
+          reason: null,
+        },
+      }));
+    }
+    // step2: the pipeline's text first, on the text model — only when it read the file well.
+    if (prepared?.ok || cls === 'sheet') {
+      if (!prepared?.ok) {
+        throw new UnreadableAttachmentError(
+          'We could not open this spreadsheet. Save it again as .xlsx or .csv and send it again.',
+        );
+      }
+      try {
+        const readings = await this.ask(
+          this.textModel(),
+          TEXT_DOCUMENT_PROMPT + rules,
+          `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`,
+        );
+        if (cls === 'sheet' && readings.length > MAX_SHEET_PAYMENTS) {
+          return [sheetAsDocument(readings, prepared)];
+        }
+        if (cls === 'sheet' || !tooThin(readings)) {
+          return readings.map((r) => ({
+            ...r,
+            box: null,
+            pipeline: pipelineOf(prepared, 'text', null),
+          }));
+        }
+        this.logger.log(
+          `"${filename}": its text gave no amount or date — the vision model reads the file`,
+        );
+      } catch (err) {
+        if (cls === 'sheet') throw err;
+        this.logger.warn(
+          `"${filename}": reading its text failed (${err instanceof Error ? err.message : String(err)}) — the vision model reads the file`,
+        );
+      }
     }
     const dataUrl = `data:${mime};base64,${file.toString('base64')}`;
+    // The pipeline's text, when it read anything, is a hint (never the truth) for the
+    // vision model — OCR is best at printed numbers, the model at what is unclear.
+    const hint = prepared?.text.trim()
+      ? "\n\nText a local OCR / the PDF's text layer read off it (may be incomplete or " +
+        `misread; trust the file):\n"""\n${prepared.text.slice(0, 6000)}\n"""`
+      : '';
     const user: ChatContent = [
-      { type: 'text', text: `Read this document.${senderNote(message)}` },
+      {
+        type: 'text',
+        text: `Read this document.${senderNote(message)}${hint}`,
+      },
       cls === 'pdf'
         ? { type: 'file', file: { filename, file_data: dataUrl } }
         : { type: 'image_url', image_url: { url: dataUrl } },
     ];
-    return this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
+    const readings = await this.ask(
+      this.visionModel(),
+      DOCUMENT_PROMPT + rules,
+      user,
+    );
+    return readings.map((r) => ({
+      ...r,
+      pipeline: pipelineOf(
+        prepared,
+        'vision',
+        prepared
+          ? prepared.ok
+            ? 'its text was not enough'
+            : prepared.reason
+          : null,
+      ),
+    }));
   }
 
   /** The AI's pick among code's shortlist. An id outside the list is dropped by the caller. */
@@ -379,6 +485,70 @@ export class AttachmentExtractor {
     });
     return cleanReadings(JSON.parse(reply));
   }
+}
+
+/**
+ * A spreadsheet the model read as more payments than this is kept as ONE document: filing a
+ * long export row by row would hit `MAX_DOCUMENTS_PER_FILE` and silently drop the rest. The
+ * customer (or the assistant) decides what to do with it. A short bills list is filed.
+ */
+export const MAX_SHEET_PAYMENTS = 3;
+
+/** A long spreadsheet as one DOCUMENT, saying what it lists. */
+export function sheetAsDocument(
+  readings: readonly AttachmentReading[],
+  prepared: Prepared,
+): AttachmentReading {
+  const totals = readings.map((r) => r.total).filter((t): t is number => !!t);
+  const dates = readings
+    .map((r) => r.date)
+    .filter((d): d is string => !!d)
+    .sort();
+  const period = dates.length
+    ? ` from ${dates[0]} to ${dates[dates.length - 1]}`
+    : '';
+  return {
+    ...cleanReading({} as AttachmentReading),
+    documentType: 'DOCUMENT',
+    kind: 'OTHER',
+    summary:
+      `A spreadsheet listing ${readings.length >= MAX_DOCUMENTS_PER_FILE ? 'many' : readings.length} payments${period}` +
+      (totals.length ? ` (${totals.length} amounts read)` : '') +
+      ' — ask the assistant what to do with it.',
+    pipeline: pipelineOf(prepared, 'text', null),
+  };
+}
+
+/** How a reading was made, for `AttachmentReading.pipeline`. */
+function pipelineOf(
+  prepared: Prepared | null,
+  model: 'text' | 'vision',
+  reason: string | null,
+): ReadingPipeline {
+  return {
+    source: prepared?.source ?? null,
+    model,
+    confidence:
+      prepared?.confidence != null
+        ? Math.round(prepared.confidence * 1000) / 1000
+        : null,
+    reason,
+  };
+}
+
+/**
+ * A text reading that found nothing to file: every payment document without an amount AND
+ * without a date — the text was not enough, so the file goes to the vision model (user's
+ * rule: what the pipeline cannot read goes to the model).
+ */
+export function tooThin(readings: readonly AttachmentReading[]): boolean {
+  return readings.every(
+    (r) =>
+      isPaymentDocument(r.documentType) &&
+      r.total == null &&
+      r.subtotal == null &&
+      !r.date,
+  );
 }
 
 const positive = (n: unknown): number | null =>

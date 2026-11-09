@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ATTACHMENT_UPLOAD_OPTIONS = exports.MAX_FILES_PER_REQUEST = exports.MAX_ATTACHMENT_BYTES = void 0;
+exports.ATTACHMENT_UPLOAD_OPTIONS = exports.XLSX_MIME = exports.MAX_FILES_PER_REQUEST = exports.MAX_ATTACHMENT_BYTES = void 0;
 exports.attachmentType = attachmentType;
 const crypto_1 = require("crypto");
 const fs_1 = require("fs");
@@ -11,6 +11,7 @@ const statement_uploads_1 = require("./statement-uploads");
 Object.defineProperty(exports, "MAX_FILES_PER_REQUEST", { enumerable: true, get: function () { return statement_uploads_1.MAX_FILES_PER_REQUEST; } });
 exports.MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const STAGING_DIR = (0, path_1.join)(process.env.UPLOADS_DIR?.trim() || (0, path_1.join)(process.cwd(), 'uploads'), 'bookkeeping-staging');
+exports.XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const KNOWN = {
     '.pdf': { cls: 'pdf', mime: 'application/pdf' },
     '.jpg': { cls: 'image', mime: 'image/jpeg' },
@@ -25,6 +26,8 @@ const KNOWN = {
     '.webm': { cls: 'audio', mime: 'audio/webm' },
     '.ogg': { cls: 'audio', mime: 'audio/ogg' },
     '.oga': { cls: 'audio', mime: 'audio/ogg' },
+    '.xlsx': { cls: 'sheet', mime: exports.XLSX_MIME },
+    '.csv': { cls: 'sheet', mime: 'text/csv' },
 };
 function attachmentType(filename) {
     const ext = (0, path_1.extname)(filename).toLowerCase();
@@ -44,9 +47,12 @@ exports.ATTACHMENT_UPLOAD_OPTIONS = {
         if (attachmentType(file.originalname))
             return cb(null, true);
         const heic = /\.hei[cf]$/i.test(file.originalname);
+        const xls = /\.xls$/i.test(file.originalname);
         cb(new common_1.BadRequestException(heic
             ? `"${file.originalname}" is an iPhone HEIC photo. Save it as JPG (or set the camera to "Most Compatible") and upload it again.`
-            : `"${file.originalname}" can't be added. Upload a photo (JPG, PNG), a PDF or a voice note (MP3, M4A, WAV, WEBM, OGG).`), false);
+            : xls
+                ? `"${file.originalname}" is an old Excel file. Open it and save it as .xlsx (or .csv), then upload it again.`
+                : `"${file.originalname}" can't be added. Upload a photo (JPG, PNG), a PDF, a spreadsheet (XLSX, CSV) or a voice note (MP3, M4A, WAV, WEBM, OGG).`), false);
     },
 };
 //# sourceMappingURL=attachment-uploads.js.map

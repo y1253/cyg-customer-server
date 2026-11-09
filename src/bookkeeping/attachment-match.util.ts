@@ -129,6 +129,22 @@ export const looksLikeCheque = (description: string): boolean =>
   /\b(cheque|check|chq|chk)\b/i.test(description);
 
 /**
+ * step2 (2026-11-08): a cheque cut out of a statement follows its NUMBER — the ONE cheque
+ * row of that statement ("CHEQUE 1042") printing it, whatever amount was read off the image
+ * (a handwritten amount is the likeliest misread). `list` = that statement's rows, any amount.
+ */
+export function chequeNumberOnlyMatch(
+  checkNumber: string | null | undefined,
+  list: readonly MatchCandidate[],
+): MatchCandidate | null {
+  return chequeNumberMatch(
+    checkNumber,
+    null,
+    list.filter((r) => looksLikeCheque(r.description)),
+  );
+}
+
+/**
  * A cheque image cut out of a statement whose number could not be matched: the ONE
  * cheque row of that statement at the exact amount (not already holding it) is its row —
  * no AI. Null when none or several qualify.

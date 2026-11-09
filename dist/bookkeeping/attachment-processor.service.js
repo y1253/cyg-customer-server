@@ -13,7 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 var AttachmentProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AttachmentProcessorService = exports.siblingRef = void 0;
+exports.AttachmentProcessorService = exports.ONE_CHEQUE_HINT = exports.siblingRef = void 0;
 exports.siblingName = siblingName;
 exports.readingTotal = readingTotal;
 exports.siblingOf = siblingOf;
@@ -22,6 +22,7 @@ exports.sniffImageMime = sniffImageMime;
 exports.customerNoteOf = customerNoteOf;
 exports.readerHints = readerHints;
 exports.classOf = classOf;
+exports.withOcrChequeNumber = withOcrChequeNumber;
 const crypto_1 = require("crypto");
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const change_feed_1 = require("../assistant/change-feed");
@@ -33,6 +34,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_extractor_1 = require("./attachment-extractor");
 const attachment_match_util_1 = require("./attachment-match.util");
+const attachment_uploads_1 = require("./attachment-uploads");
 const name_memory_service_1 = require("./name-memory.service");
 const name_memory_util_1 = require("./name-memory.util");
 const product_memory_service_1 = require("./product-memory.service");
@@ -43,6 +45,9 @@ const queue_retry_1 = require("./queue-retry");
 const scope_1 = require("./scope");
 const crop_1 = require("./crop");
 const crop_util_1 = require("./crop.util");
+const cheque_split_1 = require("./cheque-split");
+const document_pipeline_1 = require("./pipeline/document-pipeline");
+const ocr_util_1 = require("./pipeline/ocr.util");
 const CONCURRENCY = 2;
 const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
@@ -130,7 +135,27 @@ function classOf(mimeType) {
         return 'text';
     if (mimeType === 'application/pdf')
         return 'pdf';
+    if (mimeType.startsWith('text/csv') || mimeType === attachment_uploads_1.XLSX_MIME)
+        return 'sheet';
     return 'image';
+}
+exports.ONE_CHEQUE_HINT = '\n\nThis image is ONE cheque, cut out of a bigger image (a statement page or a photo of ' +
+    'several cheques): return exactly one document, box null.';
+const chequeDigits = (n) => (n ?? '').replace(/\D/g, '').replace(/^0+/, '');
+function withOcrChequeNumber(reading, prepared) {
+    const ocr = prepared?.chequeNumber;
+    if (!ocr || reading.kind !== 'CHECK')
+        return reading;
+    if (chequeDigits(ocr) === chequeDigits(reading.checkNumber))
+        return reading;
+    return {
+        ...reading,
+        checkNumber: ocr,
+        pipeline: reading.pipeline && {
+            ...reading.pipeline,
+            ocrChequeNumber: ocr,
+        },
+    };
 }
 let AttachmentProcessorService = AttachmentProcessorService_1 = class AttachmentProcessorService {
     prisma;
@@ -140,9 +165,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     products;
     names;
     rules;
+    pipeline;
     logger = new common_1.Logger(AttachmentProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, splits, products, names, rules) {
+    constructor(prisma, storage, extractor, splits, products, names, rules, pipeline) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
@@ -150,6 +176,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         this.products = products;
         this.names = names;
         this.rules = rules;
+        this.pipeline = pipeline;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -223,7 +250,23 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                 ? (sniffImageMime(file) ?? row.mimeType)
                 : row.mimeType;
             const note = customerNoteOf(row.extracted);
-            const readings = await this.extractor.read(file, row.filename, mime, cls, day(row.createdAt), row.message, ((await this.rules?.promptBlock(scope, undefined, 'ATTACHMENT_READER')) ?? '') + readerHints(row.source, note));
+            const hints = ((await this.rules?.promptBlock(scope, undefined, 'ATTACHMENT_READER')) ?? '') + readerHints(row.source, note);
+            const split = cls === 'image' ? await this.codeSplit(row, file, mime) : null;
+            if (split) {
+                await this.readSplit(row, scope, split, {
+                    originalKey,
+                    originalMime: mime,
+                    originalSize: file.length,
+                    hints,
+                    note,
+                });
+                return;
+            }
+            const prepared = (await this.pipeline?.prepare(file, mime, cls)) ?? null;
+            let readings = await this.extractor.read(file, row.filename, mime, cls, day(row.createdAt), row.message, hints, prepared);
+            if (readings.length === 1) {
+                readings = [withOcrChequeNumber(readings[0], prepared)];
+            }
             const sibling = siblingOf(row.sourceRef);
             if (sibling) {
                 const reading = readings[sibling.index] ?? readings[0];
@@ -252,6 +295,81 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         catch (err) {
             await this.recordFailure(row, err);
         }
+    }
+    async codeSplit(row, file, mime) {
+        if (!this.pipeline?.enabled())
+            return null;
+        const boxes = await (0, cheque_split_1.chequeRegions)(file, mime);
+        if (boxes.length < 2)
+            return null;
+        let crops;
+        try {
+            crops = await (0, crop_1.cropImage)(file, mime, boxes);
+        }
+        catch (err) {
+            this.logger.warn(`attachment #${row.id}: cheques found but not cut: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+        const kept = { crops: [], ocrs: [] };
+        for (const crop of crops) {
+            const ocr = await this.pipeline.readImage(crop);
+            if (ocr && (0, ocr_util_1.looksLikeChequeBack)(ocr))
+                continue;
+            if (!ocr || !(0, ocr_util_1.looksLikeChequeText)(ocr)) {
+                this.logger.log(`attachment #${row.id}: ${boxes.length} regions found, but one does not read as a cheque — not cut by code`);
+                return null;
+            }
+            kept.crops.push(crop);
+            kept.ocrs.push(ocr);
+        }
+        const sibling = siblingOf(row.sourceRef);
+        if (kept.crops.length < 2 ||
+            (sibling && sibling.index >= kept.crops.length)) {
+            return null;
+        }
+        this.logger.log(`attachment #${row.id}: ${kept.crops.length} cheques found by code` +
+            (crops.length > kept.crops.length
+                ? ` (${crops.length - kept.crops.length} back(s) left with their front)`
+                : ''));
+        return kept;
+    }
+    async readSplit(row, scope, split, ctx) {
+        const sibling = siblingOf(row.sourceRef);
+        const readOne = async (i) => {
+            const prepared = this.pipeline?.fromOcr(split.ocrs[i]) ?? null;
+            const [reading] = await this.extractor.read(split.crops[i], row.filename, 'image/png', 'image', day(row.createdAt), row.message, ctx.hints + exports.ONE_CHEQUE_HINT, prepared);
+            return withOcrChequeNumber({ ...reading, box: null }, prepared);
+        };
+        const files = {
+            originalKey: ctx.originalKey,
+            originalMime: ctx.originalMime,
+            originalSize: ctx.originalSize,
+        };
+        if (sibling) {
+            const reading = await readOne(sibling.index);
+            const self = await this.storeOwnFile(row, scope, {
+                ...files,
+                crop: split.crops[sibling.index],
+            });
+            const parent = await this.prisma.transactionAttachment.findUnique({
+                where: { id: sibling.rowId },
+                select: { sourceRef: true },
+            });
+            await this.finish(self, scope, 'image', reading, (0, attachment_match_util_1.statementOf)(parent?.sourceRef), ctx.note);
+            return;
+        }
+        const readings = [];
+        for (let i = 0; i < split.crops.length; i++)
+            readings.push(await readOne(i));
+        const self = await this.storeOwnFile(row, scope, {
+            ...files,
+            crop: split.crops[0],
+        });
+        await this.finish(self, scope, 'image', readings[0], (0, attachment_match_util_1.statementOf)(row.sourceRef), ctx.note);
+        await this.fileSiblings(self, scope, 'image', readings, {
+            ...files,
+            crops: split.crops,
+        });
     }
     async finish(row, scope, cls, reading, statementId, customerNote = null) {
         const kind = kindFor(cls, reading);
@@ -517,6 +635,21 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
                 note: `Matched by cheque number ${reading.checkNumber} (${byNumber.name ?? byNumber.description}).`,
             };
         }
+        if (statementId && q.kind === 'CHECK' && reading.checkNumber) {
+            const rows = await this.candidates(scope, { ...q, total: null, date: null }, statementId);
+            const byNumberOnly = (0, attachment_match_util_1.chequeNumberOnlyMatch)(reading.checkNumber, rows);
+            if (byNumberOnly) {
+                const bank = Math.abs(byNumberOnly.amount);
+                const read = total != null && (0, reconcile_util_1.cents)(total) !== (0, reconcile_util_1.cents)(bank) ? total : null;
+                return {
+                    transactionId: byNumberOnly.id,
+                    note: `Matched by cheque number ${reading.checkNumber} (${byNumberOnly.name ?? byNumberOnly.description}).` +
+                        (read != null
+                            ? ` The amount read off the cheque ($${read.toFixed(2)}) is not the bank's ($${bank.toFixed(2)}) — the bank's is what counts.`
+                            : ''),
+                };
+            }
+        }
         const byAmount = statementId && q.kind === 'CHECK' ? (0, attachment_match_util_1.chequeAmountMatch)(total, list) : null;
         if (byAmount) {
             return {
@@ -744,12 +877,14 @@ __decorate([
 exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProcessorService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(6, (0, common_1.Optional)()),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         attachment_extractor_1.AttachmentExtractor,
         splits_service_1.SplitsService,
         product_memory_service_1.ProductMemoryService,
         name_memory_service_1.NameMemoryService,
-        rules_service_1.RulesService])
+        rules_service_1.RulesService,
+        document_pipeline_1.DocumentPipeline])
 ], AttachmentProcessorService);
 //# sourceMappingURL=attachment-processor.service.js.map

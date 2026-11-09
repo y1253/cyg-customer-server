@@ -12,14 +12,41 @@
  * flagged and writes them as PNGs (default dir: next to the PDF). `--image-pages=3,4` does
  * only that, for those 1-based pages, with no OpenAI call at all.
  * (`--use-system-ca` only on the office network, whose TLS proxy re-signs api.openai.com.)
+ *
+ * step2 (2026-11-08) — the local reading pipeline, no OpenAI call unless said:
+ * `--cheques` on an IMAGE (or a PDF: every page's item images): the cheques code finds
+ * (`cheque-split.ts`), each crop written as a PNG, its PaddleOCR text, cheque number and
+ * whether the text alone would be read (`ocrGate`). Needs `PADDLE_OCR_MODEL_DIR` (or the
+ * library's download).
+ * `--prepare` on any attachment (photo, PDF, .xlsx, .csv): what `DocumentPipeline.prepare`
+ * hands the AI — the text, its source, and whether it goes text-only.
+ * `--page-text` on a statement: each page's laid-out text layer and `pdfTextQuality`.
+ * `--text-pipeline` on a statement: reads it TWICE (the PDF, then its text layer —
+ * `STATEMENT_TEXT_PIPELINE=1`) and prints both verifications and call counts side by side.
+ * Turn the env switch on in production only when the hard statements still verify.
  */
 import 'dotenv/config';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import type { ConfigService } from '@nestjs/config';
 import { OpenAiClient, type ChatRequest } from '../src/ai/openai.client';
+import { classOf } from '../src/bookkeeping/attachment-processor.service';
+import { attachmentType } from '../src/bookkeeping/attachment-uploads';
+import { chequeRegions } from '../src/bookkeeping/cheque-split';
+import { cropImage } from '../src/bookkeeping/crop';
 import { buildLedgerRows } from '../src/bookkeeping/ledger.util';
 import { itemImages, type ImagePage } from '../src/bookkeeping/pdf-images';
+import { DocumentPipeline } from '../src/bookkeeping/pipeline/document-pipeline';
+import { OcrService } from '../src/bookkeeping/pipeline/ocr.service';
+import {
+  chequeNumberFromOcr,
+  looksLikeChequeBack,
+  ocrGate,
+} from '../src/bookkeeping/pipeline/ocr.util';
+import {
+  pdfPageTexts,
+  pdfTextQuality,
+} from '../src/bookkeeping/pipeline/pdf-text';
 import { describeCheck } from '../src/bookkeeping/reconcile.util';
 import { StatementExtractor } from '../src/bookkeeping/statement-extractor';
 
@@ -34,6 +61,13 @@ async function main(): Promise<void> {
   const imagesDir =
     imagesArg?.split('=')[1] ||
     join(dirname(file), `${basename(file, '.pdf')}-images`);
+  const config0 = {
+    get: (k: string) => process.env[k],
+  } as unknown as ConfigService;
+  if (process.argv.includes('--cheques')) return cheques(file, config0);
+  if (process.argv.includes('--prepare')) return prepare(file, config0);
+  if (process.argv.includes('--page-text')) return pageText(file);
+  if (process.argv.includes('--text-pipeline')) return compare(file);
   if (onlyPages) {
     const pages = onlyPages
       .split('=')[1]
@@ -89,6 +123,129 @@ async function main(): Promise<void> {
         credit: r.creditAccount,
       })),
     );
+  }
+}
+
+/** step2: the cheques code finds in an image (or a PDF's item images), with their OCR. */
+async function cheques(file: string, config: ConfigService): Promise<void> {
+  const bytes = readFileSync(file);
+  const sources: Array<{ name: string; png: Buffer; mime: string }> = [];
+  if (file.toLowerCase().endsWith('.pdf')) {
+    const count = (await pdfPageTexts(bytes))?.length ?? 0;
+    const pages = Array.from({ length: count }, (_, page) => ({
+      page,
+      hasRows: false,
+    }));
+    for (const img of await itemImages(bytes, pages)) {
+      sources.push({
+        name: `p${img.page + 1}-${img.index + 1}`,
+        png: img.png,
+        mime: 'image/png',
+      });
+    }
+  } else {
+    const type = attachmentType(file);
+    sources.push({
+      name: basename(file).replace(/\.[^.]+$/, ''),
+      png: bytes,
+      mime: type?.mime ?? 'image/png',
+    });
+  }
+  const ocr = new OcrService(config);
+  const dir = join(
+    dirname(file),
+    `${basename(file).replace(/\.[^.]+$/, '')}-cheques`,
+  );
+  mkdirSync(dir, { recursive: true });
+  for (const src of sources) {
+    const boxes = await chequeRegions(src.png, src.mime);
+    console.log(
+      `\n${src.name}: ${boxes.length} cheque region(s) found by code`,
+    );
+    const crops = boxes.length
+      ? await cropImage(src.png, src.mime, boxes)
+      : [src.png];
+    for (const [i, crop] of crops.entries()) {
+      const path = join(dir, `${src.name}-${i + 1}.png`);
+      writeFileSync(path, crop);
+      const started = Date.now();
+      const r = await ocr.read(crop);
+      if (!r) {
+        console.log(`  #${i + 1} ${path}: OCR read nothing`);
+        continue;
+      }
+      const gate = ocrGate(r);
+      console.log(
+        `  #${i + 1} ${path} (${Date.now() - started} ms, conf ${r.confidence.toFixed(2)}): ` +
+          `number=${chequeNumberFromOcr(r) ?? '—'} back=${looksLikeChequeBack(r)} ` +
+          `text-only=${gate.ok ? 'yes' : `no (${gate.reason})`}`,
+      );
+      for (const l of r.lines)
+        console.log(`      ${l.confidence.toFixed(2)}  ${l.text}`);
+    }
+  }
+  await ocr.onModuleDestroy();
+}
+
+/** step2: what the local pipeline hands the AI for one attachment. */
+async function prepare(file: string, config: ConfigService): Promise<void> {
+  const type = attachmentType(file);
+  if (!type) throw new Error(`not an attachment type: ${file}`);
+  const ocr = new OcrService(config);
+  const pipeline = new DocumentPipeline(ocr, config);
+  const started = Date.now();
+  const p = await pipeline.prepare(
+    readFileSync(file),
+    type.mime,
+    classOf(type.mime),
+  );
+  console.log(`${Date.now() - started} ms`);
+  if (!p) console.log('nothing prepared — the AI reads the file as before');
+  else {
+    console.log(
+      `source=${p.source} ok=${p.ok} confidence=${p.confidence ?? '—'} ` +
+        `cheque=${p.cheque} number=${p.chequeNumber ?? '—'} reason=${p.reason ?? '—'}`,
+    );
+    console.log(p.text);
+  }
+  await ocr.onModuleDestroy();
+}
+
+/** step2: each statement page's laid-out text layer, judged. */
+async function pageText(file: string): Promise<void> {
+  const pages = await pdfPageTexts(readFileSync(file));
+  if (!pages) throw new Error('mupdf could not open the PDF');
+  pages.forEach((t, i) => {
+    const q = pdfTextQuality(t);
+    console.log(
+      `\n===== page ${i + 1}: ${q.ok ? 'TEXT' : `PDF (${q.reason})`} =====`,
+    );
+    console.log(t);
+  });
+}
+
+/** step2: the same statement read from the PDF and from its text layer. */
+async function compare(file: string): Promise<void> {
+  const pdf = readFileSync(file);
+  for (const textMode of [false, true]) {
+    const config = {
+      get: (k: string) =>
+        k === 'STATEMENT_TEXT_PIPELINE'
+          ? textMode
+            ? '1'
+            : '0'
+          : process.env[k],
+    } as unknown as ConfigService;
+    const ex = new StatementExtractor(new OpenAiClient(config), config);
+    const started = Date.now();
+    const out = await ex.extract(pdf, basename(file));
+    console.log(
+      `\n${textMode ? 'TEXT LAYER' : 'PDF       '}: ${out.verification.verification} after ` +
+        `${out.rereads} re-read(s), ${out.calls} call(s), ${out.transactions.length} rows, ` +
+        `${Date.now() - started} ms, image pages ${out.imagePages.map((p) => p.page + 1).join(',') || 'none'}`,
+    );
+    for (const c of out.verification.checks.filter((c) => !c.ok && !c.skipped))
+      console.log(`    FAIL ${describeCheck(c)}`);
   }
 }
 

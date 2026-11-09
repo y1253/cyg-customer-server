@@ -16,8 +16,14 @@ const STAGING_DIR = join(
   'bookkeeping-staging',
 );
 
-/** `text`: a text message's words (SMS intake only, never uploaded). */
-export type AttachmentClass = 'pdf' | 'image' | 'audio' | 'text';
+/**
+ * `text`: a text message's words (SMS intake only, never uploaded). `sheet` (step2,
+ * 2026-11-08): a spreadsheet (.xlsx / .csv), read as text by `pipeline/sheet-text.ts`.
+ */
+export type AttachmentClass = 'pdf' | 'image' | 'audio' | 'text' | 'sheet';
+
+export const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /** Extension → what the file is and the type it is stored and served as. */
 const KNOWN: Record<string, { cls: AttachmentClass; mime: string }> = {
@@ -34,6 +40,8 @@ const KNOWN: Record<string, { cls: AttachmentClass; mime: string }> = {
   '.webm': { cls: 'audio', mime: 'audio/webm' },
   '.ogg': { cls: 'audio', mime: 'audio/ogg' },
   '.oga': { cls: 'audio', mime: 'audio/ogg' },
+  '.xlsx': { cls: 'sheet', mime: XLSX_MIME },
+  '.csv': { cls: 'sheet', mime: 'text/csv' },
 };
 
 /**
@@ -70,11 +78,14 @@ export const ATTACHMENT_UPLOAD_OPTIONS: MulterOptions = {
   fileFilter: (_req, file, cb) => {
     if (attachmentType(file.originalname)) return cb(null, true);
     const heic = /\.hei[cf]$/i.test(file.originalname);
+    const xls = /\.xls$/i.test(file.originalname);
     cb(
       new BadRequestException(
         heic
           ? `"${file.originalname}" is an iPhone HEIC photo. Save it as JPG (or set the camera to "Most Compatible") and upload it again.`
-          : `"${file.originalname}" can't be added. Upload a photo (JPG, PNG), a PDF or a voice note (MP3, M4A, WAV, WEBM, OGG).`,
+          : xls
+            ? `"${file.originalname}" is an old Excel file. Open it and save it as .xlsx (or .csv), then upload it again.`
+            : `"${file.originalname}" can't be added. Upload a photo (JPG, PNG), a PDF, a spreadsheet (XLSX, CSV) or a voice note (MP3, M4A, WAV, WEBM, OGG).`,
       ),
       false,
     );

@@ -43,12 +43,19 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                 refs.push(sourceRef);
                 const existing = await this.prisma.transactionAttachment.findUnique({
                     where: { sourceRef },
-                    select: { storageKey: true },
+                    select: { storageKey: true, sourceStorageKey: true },
                 });
-                const storageKey = existing?.storageKey ??
+                const storageKey = existing?.sourceStorageKey ??
+                    existing?.storageKey ??
                     `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}.png`;
                 await this.storage.putBuffer(storageKey, image.png, 'image/png');
+                if (existing?.sourceStorageKey && existing.storageKey !== storageKey) {
+                    await this.storage.delete(existing.storageKey).catch(() => undefined);
+                }
                 const queued = {
+                    storageKey,
+                    sourceStorageKey: null,
+                    mimeType: 'image/png',
                     status: client_1.AttachmentStatus.PENDING,
                     transactionId: null,
                     extracted: client_1.Prisma.DbNull,

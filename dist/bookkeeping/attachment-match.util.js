@@ -4,6 +4,7 @@ exports.statementImageRef = exports.looksLikeCheque = exports.MAX_FOR_AI = expor
 exports.shortlist = shortlist;
 exports.obviousMatch = obviousMatch;
 exports.chequeNumberMatch = chequeNumberMatch;
+exports.chequeNumberOnlyMatch = chequeNumberOnlyMatch;
 exports.chequeAmountMatch = chequeAmountMatch;
 exports.statementOf = statementOf;
 const reconcile_util_1 = require("./reconcile.util");
@@ -78,6 +79,9 @@ function chequeNumberMatch(checkNumber, total, list) {
 }
 const looksLikeCheque = (description) => /\b(cheque|check|chq|chk)\b/i.test(description);
 exports.looksLikeCheque = looksLikeCheque;
+function chequeNumberOnlyMatch(checkNumber, list) {
+    return chequeNumberMatch(checkNumber, null, list.filter((r) => (0, exports.looksLikeCheque)(r.description)));
+}
 function chequeAmountMatch(total, list) {
     if (total == null || total <= 0)
         return null;

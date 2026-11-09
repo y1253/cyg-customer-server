@@ -1,7 +1,8 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
 import type { ExtractedTransaction } from './ledger.util';
-import type { ImagePage } from './pdf-images';
+import { type PageContent } from './page-content.util';
+import { type ImagePage } from './pdf-images';
 import { type ReconcileResult, type StatedFigures } from './reconcile.util';
 import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
@@ -135,6 +136,7 @@ export declare class StatementExtractor {
     private readonly logger;
     constructor(openai: OpenAiClient, config: ConfigService);
     model(): string;
+    textPipeline(): boolean;
     verifyModel(): string;
     extract(pdf: Buffer, filename: string, opts?: {
         pagesPerChunk?: number;
@@ -145,6 +147,7 @@ export declare class StatementExtractor {
     private pool;
     private readChunk;
 }
+export declare function showsItemImages(content: PageContent): boolean;
 export declare function emptyReading(): PageReading;
 export declare function dropSpuriousPages(pages: readonly PageReading[]): {
     pages: number[];

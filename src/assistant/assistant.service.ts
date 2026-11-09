@@ -131,6 +131,9 @@ export function attachmentContext(file: AttachmentView) {
     source: file.source,
     cutFromBiggerImage: file.cropped,
     otherDocumentsOfSameImage: file.siblings,
+    // step2 (2026-11-08): how it was read — the local pipeline (OCR / the PDF's text /
+    // the spreadsheet) and which model; `ocrChequeNumber` = OCR's number replaced the AI's.
+    howItWasRead: file.reading?.pipeline ?? null,
   };
 }
 

@@ -5,8 +5,13 @@ import { OpenAiClient } from '../ai/openai.client';
 import { ACCOUNT_NAMES, UNCATEGORIZED } from './chart-of-accounts';
 import type { ExtractedTransaction } from './ledger.util';
 import { decryptForReading } from './pdf-decrypt';
-import { pageContents, pagesToSkip } from './page-content.util';
-import type { ImagePage } from './pdf-images';
+import {
+  pageContents,
+  pagesToSkip,
+  type PageContent,
+} from './page-content.util';
+import { itemBoxes, type Box, type ImagePage } from './pdf-images';
+import { pdfPageTexts, pdfTextQuality } from './pipeline/pdf-text';
 import {
   describeCheck,
   perPageBoxes,
@@ -255,6 +260,18 @@ export class StatementExtractor {
     );
   }
 
+  /**
+   * step2 (2026-11-08): `STATEMENT_TEXT_PIPELINE=1` = a page's FIRST read is its own text
+   * layer (laid out as printed, `pipeline/pdf-text.ts`) instead of the PDF itself, when that
+   * layer is real. Everything else stays: re-reads, the "is it a statement?" retry and a
+   * failed first read always send the PDF page (what the text could not settle goes to the
+   * model), and reconcile / sign repair / the saved PDF are untouched. Off by default until
+   * `bookkeeping-probe.ts --text-pipeline` shows the hard statements still verify.
+   */
+  textPipeline(): boolean {
+    return this.config.get<string>('STATEMENT_TEXT_PIPELINE')?.trim() === '1';
+  }
+
   /** The stronger model the re-reads escalate to. */
   verifyModel(): string {
     return (
@@ -290,8 +307,18 @@ export class StatementExtractor {
     const totalPages = chunks.reduce((n, c) => n + c.pages, 0);
     // Pages with nothing a transaction could be read from (blank, notices, a lone QR code)
     // are never sent: the model invents rows on them (`page-content.util.ts`).
+    const textMode = this.textPipeline() && pagesPerChunk === 1;
     const contents =
-      pagesPerChunk === 1 && chunks.length > 1 ? await pageContents(pdf) : null;
+      pagesPerChunk === 1 && (chunks.length > 1 || textMode)
+        ? await pageContents(pdf)
+        : null;
+    // step2: each page's own text, when it is real (a scan / broken fonts → the PDF).
+    const texts = textMode ? await pdfPageTexts(pdf) : null;
+    const textOf = (i: number): string | null => {
+      const t = texts && texts.length === chunks.length ? texts[i] : null;
+      return t && pdfTextQuality(t).ok ? t : null;
+    };
+    const asText = new Set<number>();
     const skipped =
       contents && contents.length === chunks.length
         ? pagesToSkip(contents)
@@ -302,14 +329,16 @@ export class StatementExtractor {
       );
     }
     let calls = 0;
-    const read = (
+    const read = async (
       i: number,
       model: string,
       context: PageContext | null,
       hint: string | null,
+      /** step2: the page's text layer instead of the PDF (first reads only). */
+      text: string | null = null,
     ): Promise<PageReading> => {
       calls++;
-      return this.readChunk(
+      const reading = await this.readChunk(
         chunks[i],
         i,
         pagesPerChunk,
@@ -319,7 +348,15 @@ export class StatementExtractor {
         context,
         hint,
         SYSTEM_PROMPT + (opts.rules ?? ''),
+        text,
       );
+      if (text == null) return reading;
+      asText.add(i);
+      // The model saw no images: whether the page shows cheques is decided by code.
+      return {
+        ...reading,
+        hasItemImages: contents?.[i] ? showsItemImages(contents[i]) : false,
+      };
     };
     // A first read that fails (a reply cut off at the token cap — gpt-4.1 looping on one
     // page, Madam recovery #327 — a timeout, bad JSON) is retried ONCE on the other model
@@ -329,7 +366,7 @@ export class StatementExtractor {
       context: PageContext | null,
     ): Promise<PageReading> => {
       try {
-        return await read(i, this.model(), context, null);
+        return await read(i, this.model(), context, null, textOf(i));
       } catch (err) {
         this.logger.warn(
           `"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`,
@@ -449,6 +486,14 @@ export class StatementExtractor {
 
     this.logger.log(
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
+        (textMode
+          ? `page(s) first read from their text layer: ${
+              [...asText]
+                .sort((a, b) => a - b)
+                .map((i) => i + 1)
+                .join(',') || 'none'
+            }, `
+          : '') +
         `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
         (result.signFixes
           ? `, ${result.signFixes} sign(s) fixed from the printed totals / running balance`
@@ -484,6 +529,8 @@ export class StatementExtractor {
     context: PageContext | null,
     hint: string | null,
     system: string = SYSTEM_PROMPT,
+    /** step2: the page's own text layer, sent INSTEAD of the PDF; null = the PDF. */
+    text: string | null = null,
   ): Promise<PageReading> {
     const from = index * pagesPerChunk + 1;
     const lines = [
@@ -495,25 +542,49 @@ export class StatementExtractor {
       );
     }
     if (hint) lines.push('', hint);
+    if (text != null) {
+      lines.push(
+        '',
+        "You get this page's TEXT LAYER, not the PDF: every line as printed, columns kept with " +
+          'spaces (a Withdrawals / Deposits / Balance column stays in its place). Read it exactly ' +
+          'as you would read the page. hasItemImages is decided by us — return false.',
+        `"""\n${text}\n"""`,
+      );
+    }
     const reply = await this.openai.chat({
       model,
       system,
-      user: [
-        { type: 'text', text: lines.join('\n') },
-        {
-          type: 'file',
-          file: {
-            filename,
-            file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
-          },
-        },
-      ],
+      user:
+        text != null
+          ? [{ type: 'text', text: lines.join('\n') }]
+          : [
+              { type: 'text', text: lines.join('\n') },
+              {
+                type: 'file',
+                file: {
+                  filename,
+                  file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
+                },
+              },
+            ],
       jsonSchema: { name: 'bank_statement_page', schema: EXTRACTION_SCHEMA },
       maxTokens: MAX_OUTPUT_TOKENS,
       timeoutMs: CHUNK_TIMEOUT_MS,
     });
     return parseExtraction(reply);
   }
+}
+
+/**
+ * step2: a page read from its text shows cheque / deposit images when it holds one big enough
+ * to be a cheque (`itemBoxes`, the harvest's own rule) — leaving out a background drawn over
+ * (nearly) the whole page (BMO draws every page on one).
+ */
+export function showsItemImages(content: PageContent): boolean {
+  const area = (b: Box) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  const page = area(content.bounds);
+  const images = content.images.filter((b) => area(b) < page * 0.8);
+  return itemBoxes(images, content.bounds).length > 0;
 }
 
 /** An error's message, for a log line. */
@@ -561,9 +632,7 @@ const MAX_DROP_CANDIDATES = 10;
  * rows cannot be removed while BOTH money totals still match to the cent. Only the rows are
  * left out — the page's printed figures still count.
  */
-export function dropSpuriousPages(
-  pages: readonly PageReading[],
-): {
+export function dropSpuriousPages(pages: readonly PageReading[]): {
   pages: number[];
   readings: PageReading[];
   result: ReturnType<typeof assemble>;
@@ -571,7 +640,8 @@ export function dropSpuriousPages(
   const candidates = pages
     .map((p, i) => (p.transactions.length ? i : -1))
     .filter((i) => i >= 0);
-  if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES) return null;
+  if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES)
+    return null;
   const subsets: number[][] = [];
   for (let mask = 1; mask < 1 << candidates.length; mask++) {
     subsets.push(candidates.filter((_, b) => mask & (1 << b)));

@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var StatementExtractor_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementExtractor = exports.SYSTEM_PROMPT = exports.NAME_RULE = exports.EXTRACTION_SCHEMA = exports.UnreadableStatementError = exports.MAX_REREADS = exports.PAGES_PER_CHUNK = void 0;
+exports.showsItemImages = showsItemImages;
 exports.emptyReading = emptyReading;
 exports.dropSpuriousPages = dropSpuriousPages;
 exports.assemble = assemble;
@@ -28,6 +29,8 @@ const openai_client_1 = require("../ai/openai.client");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const pdf_decrypt_1 = require("./pdf-decrypt");
 const page_content_util_1 = require("./page-content.util");
+const pdf_images_1 = require("./pdf-images");
+const pdf_text_1 = require("./pipeline/pdf-text");
 const reconcile_util_1 = require("./reconcile.util");
 const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
@@ -165,6 +168,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
     model() {
         return (this.config.get('OPENAI_BOOKKEEPING_MODEL')?.trim() || 'gpt-4o');
     }
+    textPipeline() {
+        return this.config.get('STATEMENT_TEXT_PIPELINE')?.trim() === '1';
+    }
     verifyModel() {
         return (this.config.get('OPENAI_BOOKKEEPING_VERIFY_MODEL')?.trim() ||
             'gpt-4.1');
@@ -173,7 +179,16 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         const pagesPerChunk = opts.pagesPerChunk ?? exports.PAGES_PER_CHUNK;
         const chunks = await splitPdf(pdf, pagesPerChunk);
         const totalPages = chunks.reduce((n, c) => n + c.pages, 0);
-        const contents = pagesPerChunk === 1 && chunks.length > 1 ? await (0, page_content_util_1.pageContents)(pdf) : null;
+        const textMode = this.textPipeline() && pagesPerChunk === 1;
+        const contents = pagesPerChunk === 1 && (chunks.length > 1 || textMode)
+            ? await (0, page_content_util_1.pageContents)(pdf)
+            : null;
+        const texts = textMode ? await (0, pdf_text_1.pdfPageTexts)(pdf) : null;
+        const textOf = (i) => {
+            const t = texts && texts.length === chunks.length ? texts[i] : null;
+            return t && (0, pdf_text_1.pdfTextQuality)(t).ok ? t : null;
+        };
+        const asText = new Set();
         const skipped = contents && contents.length === chunks.length
             ? (0, page_content_util_1.pagesToSkip)(contents)
             : new Set();
@@ -181,13 +196,20 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             this.logger.log(`"${filename}": skipped page(s) ${[...skipped].map((i) => i + 1).join(',')} — nothing to read`);
         }
         let calls = 0;
-        const read = (i, model, context, hint) => {
+        const read = async (i, model, context, hint, text = null) => {
             calls++;
-            return this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''));
+            const reading = await this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''), text);
+            if (text == null)
+                return reading;
+            asText.add(i);
+            return {
+                ...reading,
+                hasItemImages: contents?.[i] ? showsItemImages(contents[i]) : false,
+            };
         };
         const firstRead = async (i, context) => {
             try {
-                return await read(i, this.model(), context, null);
+                return await read(i, this.model(), context, null, textOf(i));
             }
             catch (err) {
                 this.logger.warn(`"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`);
@@ -274,6 +296,12 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             await opts.onRound?.(rereads);
         }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
+            (textMode
+                ? `page(s) first read from their text layer: ${[...asText]
+                    .sort((a, b) => a - b)
+                    .map((i) => i + 1)
+                    .join(',') || 'none'}, `
+                : '') +
             `${result.verification.verification} after ${rereads} re-read(s), ${calls} call(s)` +
             (result.signFixes
                 ? `, ${result.signFixes} sign(s) fixed from the printed totals / running balance`
@@ -291,7 +319,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         };
         await Promise.all(Array.from({ length: Math.min(PAGE_CONCURRENCY, items.length) }, worker));
     }
-    async readChunk(chunk, index, pagesPerChunk, totalPages, filename, model, context, hint, system = exports.SYSTEM_PROMPT) {
+    async readChunk(chunk, index, pagesPerChunk, totalPages, filename, model, context, hint, system = exports.SYSTEM_PROMPT, text = null) {
         const from = index * pagesPerChunk + 1;
         const lines = [
             `Statement "${filename}", page${chunk.pages > 1 ? 's' : ''} ${from}${chunk.pages > 1 ? `-${from + chunk.pages - 1}` : ''} of ${totalPages}.`,
@@ -301,19 +329,26 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         }
         if (hint)
             lines.push('', hint);
+        if (text != null) {
+            lines.push('', "You get this page's TEXT LAYER, not the PDF: every line as printed, columns kept with " +
+                'spaces (a Withdrawals / Deposits / Balance column stays in its place). Read it exactly ' +
+                'as you would read the page. hasItemImages is decided by us — return false.', `"""\n${text}\n"""`);
+        }
         const reply = await this.openai.chat({
             model,
             system,
-            user: [
-                { type: 'text', text: lines.join('\n') },
-                {
-                    type: 'file',
-                    file: {
-                        filename,
-                        file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
+            user: text != null
+                ? [{ type: 'text', text: lines.join('\n') }]
+                : [
+                    { type: 'text', text: lines.join('\n') },
+                    {
+                        type: 'file',
+                        file: {
+                            filename,
+                            file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
+                        },
                     },
-                },
-            ],
+                ],
             jsonSchema: { name: 'bank_statement_page', schema: exports.EXTRACTION_SCHEMA },
             maxTokens: MAX_OUTPUT_TOKENS,
             timeoutMs: CHUNK_TIMEOUT_MS,
@@ -327,6 +362,12 @@ exports.StatementExtractor = StatementExtractor = StatementExtractor_1 = __decor
     __metadata("design:paramtypes", [openai_client_1.OpenAiClient,
         config_1.ConfigService])
 ], StatementExtractor);
+function showsItemImages(content) {
+    const area = (b) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+    const page = area(content.bounds);
+    const images = content.images.filter((b) => area(b) < page * 0.8);
+    return (0, pdf_images_1.itemBoxes)(images, content.bounds).length > 0;
+}
 function errorText(err) {
     return err instanceof Error ? err.message : String(err);
 }

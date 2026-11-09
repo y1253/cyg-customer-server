@@ -77,6 +77,7 @@ function attachmentContext(file) {
         source: file.source,
         cutFromBiggerImage: file.cropped,
         otherDocumentsOfSameImage: file.siblings,
+        howItWasRead: file.reading?.pipeline ?? null,
     };
 }
 function toMessageView(m) {

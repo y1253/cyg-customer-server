@@ -8,8 +8,11 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var AttachmentExtractor_1;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AttachmentExtractor = exports.MAX_DOCUMENTS_PER_FILE = exports.UnreadableAttachmentError = exports.isPaymentDocument = exports.DOCUMENT_TYPES = void 0;
+exports.MAX_SHEET_PAYMENTS = exports.AttachmentExtractor = exports.MAX_DOCUMENTS_PER_FILE = exports.UnreadableAttachmentError = exports.isPaymentDocument = exports.DOCUMENT_TYPES = void 0;
+exports.sheetAsDocument = sheetAsDocument;
+exports.tooThin = tooThin;
 exports.cleanReadings = cleanReadings;
 exports.cleanReading = cleanReading;
 exports.cleanBox = cleanBox;
@@ -141,11 +144,23 @@ single payment amount is clearly the point of it.
   and height (0,0 = top-left, 1,1 = bottom-right), drawn around the whole document and
   nothing of the next one — each document is cut out on its own from it. The front and the
   back of the SAME cheque printed side by side are ONE document: its box is the front.
-  null when the file shows only one document, or for a PDF, a transcript or a text.`;
+  null when the file shows only one document, or for a PDF, a transcript or a text.
+  Two cheques with DIFFERENT cheque numbers are always two documents, even when they look
+  alike or touch each other.`;
 const DOCUMENT_PROMPT = 'A small-business owner sent this file to their bookkeeper. It may be a receipt, an ' +
     'invoice, one or more cheques, a deposit slip, a statement, or something else entirely ' +
     '(a letter, a request, a screenshot). Copy what is printed; never guess a number that ' +
     'is not there.' +
+    READ_RULES;
+const TEXT_DOCUMENT_PROMPT = 'A small-business owner sent this file to their bookkeeper. You do NOT see the file: you ' +
+    "get the text read off it (by OCR, by the PDF's own text layer, or a spreadsheet's " +
+    'cells), laid out as printed, columns kept with spaces. It may be a receipt, an invoice, ' +
+    'one or more cheques (handwriting included), a deposit slip, a statement, a list, or ' +
+    'something else entirely (a letter, a request). Copy what is there; never guess a number ' +
+    'that is not in the text. A line marked [unsure NN%] may be misread — use it only when ' +
+    'the rest of the text agrees. A spreadsheet that lists many payments or transactions is ' +
+    "ONE document (DOCUMENT, or BANK_STATEMENT when it is a bank's export): say in the summary " +
+    'what it lists, how many rows and for which period. box is always null here.' +
     READ_RULES;
 const AUDIO_PROMPT = 'You read a transcript of a voice note a small-business owner recorded about a ' +
     'purchase or payment ("paid Home Depot 45 dollars for lumber yesterday"). Fill in only ' +
@@ -183,9 +198,10 @@ const PICK_PROMPT = 'You match a receipt, cheque or voice note to the bank trans
     'the vendor, then the amount (a card tip may make the charge a little higher), then the ' +
     'date. confident = true only when one candidate clearly fits better than all others. ' +
     'transactionId = null when none fits. reason: one short sentence a customer can read.';
-let AttachmentExtractor = class AttachmentExtractor {
+let AttachmentExtractor = AttachmentExtractor_1 = class AttachmentExtractor {
     openai;
     config;
+    logger = new common_1.Logger(AttachmentExtractor_1.name);
     constructor(openai, config) {
         this.openai = openai;
         this.config = config;
@@ -197,7 +213,7 @@ let AttachmentExtractor = class AttachmentExtractor {
         return (this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
             'gpt-4.1-mini');
     }
-    async read(file, filename, mime, cls, today, message, rules = '') {
+    async read(file, filename, mime, cls, today, message, rules = '', prepared = null) {
         if (cls === 'text') {
             const words = file.toString('utf8').trim();
             if (words.replace(/[^\p{L}\p{N}]/gu, '').length < 3) {
@@ -211,16 +227,64 @@ let AttachmentExtractor = class AttachmentExtractor {
                 throw new UnreadableAttachmentError('We could not hear anything in this recording. Record it again, closer to the microphone.');
             }
             const readings = await this.ask(this.textModel(), AUDIO_PROMPT + rules, `TODAY: ${today}\n\nTranscript:\n"""\n${transcript.slice(0, 8000)}\n"""${senderNote(message)}`);
-            return readings.map((r) => ({ ...r, transcript }));
+            return readings.map((r) => ({
+                ...r,
+                transcript,
+                pipeline: {
+                    source: null,
+                    model: 'audio',
+                    confidence: null,
+                    reason: null,
+                },
+            }));
+        }
+        if (prepared?.ok || cls === 'sheet') {
+            if (!prepared?.ok) {
+                throw new UnreadableAttachmentError('We could not open this spreadsheet. Save it again as .xlsx or .csv and send it again.');
+            }
+            try {
+                const readings = await this.ask(this.textModel(), TEXT_DOCUMENT_PROMPT + rules, `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`);
+                if (cls === 'sheet' && readings.length > exports.MAX_SHEET_PAYMENTS) {
+                    return [sheetAsDocument(readings, prepared)];
+                }
+                if (cls === 'sheet' || !tooThin(readings)) {
+                    return readings.map((r) => ({
+                        ...r,
+                        box: null,
+                        pipeline: pipelineOf(prepared, 'text', null),
+                    }));
+                }
+                this.logger.log(`"${filename}": its text gave no amount or date — the vision model reads the file`);
+            }
+            catch (err) {
+                if (cls === 'sheet')
+                    throw err;
+                this.logger.warn(`"${filename}": reading its text failed (${err instanceof Error ? err.message : String(err)}) — the vision model reads the file`);
+            }
         }
         const dataUrl = `data:${mime};base64,${file.toString('base64')}`;
+        const hint = prepared?.text.trim()
+            ? "\n\nText a local OCR / the PDF's text layer read off it (may be incomplete or " +
+                `misread; trust the file):\n"""\n${prepared.text.slice(0, 6000)}\n"""`
+            : '';
         const user = [
-            { type: 'text', text: `Read this document.${senderNote(message)}` },
+            {
+                type: 'text',
+                text: `Read this document.${senderNote(message)}${hint}`,
+            },
             cls === 'pdf'
                 ? { type: 'file', file: { filename, file_data: dataUrl } }
                 : { type: 'image_url', image_url: { url: dataUrl } },
         ];
-        return this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
+        const readings = await this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
+        return readings.map((r) => ({
+            ...r,
+            pipeline: pipelineOf(prepared, 'vision', prepared
+                ? prepared.ok
+                    ? 'its text was not enough'
+                    : prepared.reason
+                : null),
+        }));
     }
     async pick(reading, candidates, message, rules = '') {
         const about = {
@@ -267,11 +331,47 @@ let AttachmentExtractor = class AttachmentExtractor {
     }
 };
 exports.AttachmentExtractor = AttachmentExtractor;
-exports.AttachmentExtractor = AttachmentExtractor = __decorate([
+exports.AttachmentExtractor = AttachmentExtractor = AttachmentExtractor_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [openai_client_1.OpenAiClient,
         config_1.ConfigService])
 ], AttachmentExtractor);
+exports.MAX_SHEET_PAYMENTS = 3;
+function sheetAsDocument(readings, prepared) {
+    const totals = readings.map((r) => r.total).filter((t) => !!t);
+    const dates = readings
+        .map((r) => r.date)
+        .filter((d) => !!d)
+        .sort();
+    const period = dates.length
+        ? ` from ${dates[0]} to ${dates[dates.length - 1]}`
+        : '';
+    return {
+        ...cleanReading({}),
+        documentType: 'DOCUMENT',
+        kind: 'OTHER',
+        summary: `A spreadsheet listing ${readings.length >= exports.MAX_DOCUMENTS_PER_FILE ? 'many' : readings.length} payments${period}` +
+            (totals.length ? ` (${totals.length} amounts read)` : '') +
+            ' — ask the assistant what to do with it.',
+        pipeline: pipelineOf(prepared, 'text', null),
+    };
+}
+function pipelineOf(prepared, model, reason) {
+    return {
+        source: prepared?.source ?? null,
+        model,
+        confidence: prepared?.confidence != null
+            ? Math.round(prepared.confidence * 1000) / 1000
+            : null,
+        reason,
+    };
+}
+function tooThin(readings) {
+    return readings.every((r) => (0, exports.isPaymentDocument)(r.documentType) &&
+        r.total == null &&
+        r.subtotal == null &&
+        !r.date);
+}
 const positive = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0
     ? Math.round(n * 100) / 100
     : null;

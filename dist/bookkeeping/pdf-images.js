@@ -94,7 +94,7 @@ function renderClip(mupdf, p, box, scale) {
     ], false);
     try {
         pix.clear(255);
-        const device = new mupdf.DrawDevice(matrix, pix);
+        const device = new mupdf.DrawDevice(mupdf.Matrix.identity, pix);
         try {
             p.run(device, matrix);
             device.close();

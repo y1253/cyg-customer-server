@@ -63,13 +63,24 @@ export class StatementImagesService {
         refs.push(sourceRef);
         const existing = await this.prisma.transactionAttachment.findUnique({
           where: { sourceRef },
-          select: { storageKey: true },
+          select: { storageKey: true, sourceStorageKey: true },
         });
+        // step2 (2026-11-08): a row that was cut into cheques points at its CROP; the image
+        // itself is its `sourceStorageKey`. The new image goes there, the row points back at
+        // it uncut, and the old crop is removed — it used to overwrite the crop's key with
+        // the whole image while the reader kept reading the stale original.
         const storageKey =
+          existing?.sourceStorageKey ??
           existing?.storageKey ??
           `${storagePrefix(scope)}/attachments/${randomUUID()}.png`;
         await this.storage.putBuffer(storageKey, image.png, 'image/png');
+        if (existing?.sourceStorageKey && existing.storageKey !== storageKey) {
+          await this.storage.delete(existing.storageKey).catch(() => undefined);
+        }
         const queued = {
+          storageKey,
+          sourceStorageKey: null,
+          mimeType: 'image/png',
           status: AttachmentStatus.PENDING,
           transactionId: null,
           extracted: Prisma.DbNull,

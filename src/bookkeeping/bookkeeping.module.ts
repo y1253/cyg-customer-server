@@ -27,6 +27,8 @@ import { StatementImagesService } from './statement-images.service';
 import { StatementProcessorService } from './statement-processor.service';
 import { TaxService } from './tax.service';
 import { CommunicationsService } from './communications.service';
+import { DocumentPipeline } from './pipeline/document-pipeline';
+import { OcrService } from './pipeline/ocr.service';
 
 @Module({
   imports: [CustomerAuthModule],
@@ -44,11 +46,13 @@ import { CommunicationsService } from './communications.service';
     BookScopeGuard,
     CommunicationsService,
     CustomerAccountsService,
+    DocumentPipeline,
     FileLinkService,
     FxService,
     InstructionsService,
     LedgerExportService,
     NameMemoryService,
+    OcrService,
     OpenAiClient,
     ProductCategorizer,
     ProductMemoryService,
