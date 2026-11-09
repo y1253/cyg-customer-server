@@ -11,12 +11,14 @@ export interface OcrLine {
     confidence: number;
     boxes: OcrBox[];
 }
+export type OcrEngineName = 'tesseract' | 'paddle';
 export interface OcrResult {
     text: string;
     confidence: number;
     lines: OcrLine[];
     width: number;
     height: number;
+    engine?: OcrEngineName;
 }
 export declare const MIN_LINE_CONFIDENCE = 0.85;
 export declare const MIN_TEXT_CONFIDENCE = 0.88;

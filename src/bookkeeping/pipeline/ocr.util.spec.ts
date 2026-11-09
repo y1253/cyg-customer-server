@@ -146,6 +146,18 @@ describe('ocrGate — when OCR text may stand in for the file', () => {
     expect(ocrGate(blurry)).toMatchObject({ ok: false });
   });
 
+  it('Tesseract: a printed receipt goes as text, a cheque always to the model', () => {
+    expect(ocrGate({ ...receipt, engine: 'tesseract' })).toEqual({
+      ok: true,
+      cheque: false,
+    });
+    expect(ocrGate({ ...cheque(), engine: 'tesseract' })).toEqual({
+      ok: false,
+      cheque: true,
+      reason: 'cheque handwriting (Tesseract)',
+    });
+  });
+
   it('a cheque goes as text only with its number, amount AND payee read surely', () => {
     expect(ocrGate(cheque())).toEqual({ ok: true, cheque: true });
     expect(ocrGate(cheque({ payee: 0.7 }))).toMatchObject({

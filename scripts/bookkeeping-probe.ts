@@ -15,7 +15,7 @@
  *
  * step2 (2026-11-08) — the local reading pipeline, no OpenAI call unless said:
  * `--cheques` on an IMAGE (or a PDF: every page's item images): the cheques code finds
- * (`cheque-split.ts`), each crop written as a PNG, its PaddleOCR text, cheque number and
+ * (`cheque-split.ts`), each crop written as a PNG, its OCR text (`OCR_ENGINE`), cheque number and
  * whether the text alone would be read (`ocrGate`). Needs `PADDLE_OCR_MODEL_DIR` (or the
  * library's download).
  * `--prepare` on any attachment (photo, PDF, .xlsx, .csv): what `DocumentPipeline.prepare`

@@ -1,11 +1,22 @@
-import { join } from 'path';
-import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { copyFileSync, existsSync, mkdirSync } from 'fs';
+import { tmpdir } from 'os';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { OcrLine, OcrResult } from './ocr.util';
+import type { OcrEngineName, OcrLine, OcrResult } from './ocr.util';
 
 /**
- * step2 (2026-11-08): PaddleOCR, run IN this process through its ONNX port
+ * step2 (2026-11-08): local OCR, the first reader of every photo and of a scanned PDF page.
+ *
+ * Two engines, picked by `OCR_ENGINE` (step2c, 2026-11-09):
+ * - `tesseract` (DEFAULT) — tesseract.js (WASM, far less RAM), English + French LSTM models
+ *   shipped in `@tesseract.js-data/{eng,fra}` (nothing downloads). Printed text only: it cannot
+ *   read handwriting, so `ocrGate` never lets a cheque it read go text-only (the handwritten
+ *   amount / payee go to the vision model) — user's choice on the 1.9 GB host: "use Tesseract,
+ *   and for handwriting or anything it can't read pass to the model".
+ * - `paddle` — PaddleOCR (below), reads handwriting but needs ~1.2 GB; for a bigger host.
+ *
+ * PaddleOCR, run IN this process through its ONNX port
  * (`ppu-paddle-ocr` + `onnxruntime-node`, CPU) — the first reader of every photo and of a
  * scanned PDF page. PP-OCRv6 *medium* by default: server grade, 50+ languages (English and
  * French), and it reads handwriting, which is what a cheque's payee and amount are.
@@ -23,7 +34,7 @@ import type { OcrLine, OcrResult } from './ocr.util';
 @Injectable()
 export class OcrService implements OnModuleDestroy {
   private readonly logger = new Logger(OcrService.name);
-  private engine: Promise<OcrEngine | null> | null = null;
+  private engine: Promise<Engine | null> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly config: ConfigService) {}
@@ -31,6 +42,14 @@ export class OcrService implements OnModuleDestroy {
   /** `OCR=0` turns local OCR off (every image goes to the AI as before step2). */
   enabled(): boolean {
     return this.config.get<string>('OCR')?.trim() !== '0';
+  }
+
+  /** `OCR_ENGINE`: tesseract (default) or paddle. */
+  engineName(): OcrEngineName {
+    return this.config.get<string>('OCR_ENGINE')?.trim().toLowerCase() ===
+      'paddle'
+      ? 'paddle'
+      : 'tesseract';
   }
 
   async read(image: Buffer, timeoutMs = 90_000): Promise<OcrResult | null> {
@@ -54,12 +73,8 @@ export class OcrService implements OnModuleDestroy {
     const started = Date.now();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const bytes = image.buffer.slice(
-        image.byteOffset,
-        image.byteOffset + image.byteLength,
-      ) as ArrayBuffer;
       const result = await Promise.race([
-        engine.recognize(bytes, { noCache: true }),
+        engine.recognize(image),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error(`timed out after ${timeoutMs} ms`)),
@@ -67,22 +82,9 @@ export class OcrService implements OnModuleDestroy {
           );
         }),
       ]);
-      const lines: OcrLine[] = (result.lines ?? []).map((line) => ({
-        text: line.map((b) => b.text).join(' '),
-        confidence: line.length
-          ? Math.min(...line.map((b) => b.confidence))
-          : 0,
-        boxes: line.map((b) => ({
-          text: b.text,
-          confidence: b.confidence,
-          x: b.box.x,
-          y: b.box.y,
-          width: b.box.width,
-          height: b.box.height,
-        })),
-      }));
+      const { lines } = result;
       this.logger.debug(
-        `read ${lines.length} line(s) in ${Date.now() - started} ms`,
+        `${engine.name} read ${lines.length} line(s) in ${Date.now() - started} ms`,
       );
       const size = await imageSize(image);
       if (!size) return null;
@@ -90,6 +92,7 @@ export class OcrService implements OnModuleDestroy {
         text: lines.map((l) => l.text).join('\n'),
         confidence: Number.isFinite(result.confidence) ? result.confidence : 0,
         lines,
+        engine: engine.name,
         ...size,
       };
     } catch (err) {
@@ -103,11 +106,14 @@ export class OcrService implements OnModuleDestroy {
   }
 
   /** The engine, loaded once. A failed load is retried on the next file. */
-  private load(): Promise<OcrEngine | null> {
+  private load(): Promise<Engine | null> {
     if (!this.engine) {
-      this.engine = this.create().catch((err: unknown) => {
+      const name = this.engineName();
+      this.engine = (
+        name === 'paddle' ? this.createPaddle() : this.createTesseract()
+      ).catch((err: unknown) => {
         this.logger.error(
-          `PaddleOCR could not start: ${err instanceof Error ? err.message : String(err)}`,
+          `${name} OCR could not start: ${err instanceof Error ? err.message : String(err)}`,
         );
         this.engine = null;
         return null;
@@ -116,7 +122,69 @@ export class OcrService implements OnModuleDestroy {
     return this.engine;
   }
 
-  private async create(): Promise<OcrEngine> {
+  /**
+   * tesseract.js: one worker, English + French LSTM (`4.0.0_best_int`, LSTM-only) read from
+   * the installed data packages — no CDN, no cache files written next to the process.
+   * ⚠️ Both files are copied into ONE folder (`langPath` is a single folder per worker); the
+   * library's in-memory `{ code, data }` languages are broken in 7.0.0 (init is handed the bytes
+   * as the language name).
+   */
+  private async createTesseract(): Promise<Engine> {
+    const tesseract = await import('tesseract.js');
+    const langPath = join(tmpdir(), 'cyg-tessdata');
+    mkdirSync(langPath, { recursive: true });
+    for (const code of ['eng', 'fra']) {
+      const file = `${code}.traineddata.gz`;
+      copyFileSync(
+        join(
+          dirname(require.resolve(`@tesseract.js-data/${code}/package.json`)),
+          '4.0.0_best_int',
+          file,
+        ),
+        join(langPath, file),
+      );
+    }
+    const started = Date.now();
+    const worker = await tesseract.createWorker(
+      'eng+fra',
+      tesseract.OEM.LSTM_ONLY,
+      { langPath, cacheMethod: 'none', gzip: true },
+    );
+    this.logger.log(`Tesseract ready (eng+fra) in ${Date.now() - started} ms`);
+    return {
+      name: 'tesseract',
+      async recognize(image) {
+        const { data } = await worker.recognize(image, {}, { blocks: true });
+        const lines: OcrLine[] = [];
+        for (const block of data.blocks ?? []) {
+          for (const para of block.paragraphs) {
+            for (const line of para.lines) {
+              const words = line.words.filter((w) => w.text.trim());
+              if (!words.length) continue;
+              lines.push({
+                text: words.map((w) => w.text).join(' '),
+                confidence: Math.min(...words.map((w) => w.confidence)) / 100,
+                boxes: words.map((w) => ({
+                  text: w.text,
+                  confidence: w.confidence / 100,
+                  x: w.bbox.x0,
+                  y: w.bbox.y0,
+                  width: w.bbox.x1 - w.bbox.x0,
+                  height: w.bbox.y1 - w.bbox.y0,
+                })),
+              });
+            }
+          }
+        }
+        return { confidence: data.confidence / 100, lines };
+      },
+      async destroy() {
+        await worker.terminate();
+      },
+    };
+  }
+
+  private async createPaddle(): Promise<Engine> {
     const lib = await import('ppu-paddle-ocr');
     const dir = this.config.get<string>('PADDLE_OCR_MODEL_DIR')?.trim();
     const files = dir
@@ -141,7 +209,33 @@ export class OcrService implements OnModuleDestroy {
     this.logger.log(
       `PaddleOCR ready (PP-OCRv6 medium${local ? `, ${dir}` : ''}) in ${Date.now() - started} ms`,
     );
-    return service as unknown as OcrEngine;
+    const paddle = service as unknown as PaddleEngine;
+    return {
+      name: 'paddle',
+      async recognize(image) {
+        const bytes = image.buffer.slice(
+          image.byteOffset,
+          image.byteOffset + image.byteLength,
+        ) as ArrayBuffer;
+        const result = await paddle.recognize(bytes, { noCache: true });
+        const lines: OcrLine[] = (result.lines ?? []).map((line) => ({
+          text: line.map((b) => b.text).join(' '),
+          confidence: line.length
+            ? Math.min(...line.map((b) => b.confidence))
+            : 0,
+          boxes: line.map((b) => ({
+            text: b.text,
+            confidence: b.confidence,
+            x: b.box.x,
+            y: b.box.y,
+            width: b.box.width,
+            height: b.box.height,
+          })),
+        }));
+        return { confidence: result.confidence, lines };
+      },
+      destroy: () => paddle.destroy(),
+    };
   }
 }
 
@@ -162,8 +256,15 @@ export async function imageSize(
   }
 }
 
+/** A loaded engine, its output already in our shape (confidences 0–1, image pixels). */
+interface Engine {
+  name: OcrEngineName;
+  recognize(image: Buffer): Promise<{ confidence: number; lines: OcrLine[] }>;
+  destroy(): Promise<void>;
+}
+
 /** The slice of `PaddleOcrService` used here. */
-interface OcrEngine {
+interface PaddleEngine {
   recognize(
     image: ArrayBuffer,
     options?: { noCache?: boolean },

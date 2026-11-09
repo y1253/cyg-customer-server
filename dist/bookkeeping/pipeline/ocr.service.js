@@ -14,6 +14,7 @@ exports.OcrService = void 0;
 exports.imageSize = imageSize;
 const path_1 = require("path");
 const fs_1 = require("fs");
+const os_1 = require("os");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 let OcrService = OcrService_1 = class OcrService {
@@ -26,6 +27,12 @@ let OcrService = OcrService_1 = class OcrService {
     }
     enabled() {
         return this.config.get('OCR')?.trim() !== '0';
+    }
+    engineName() {
+        return this.config.get('OCR_ENGINE')?.trim().toLowerCase() ===
+            'paddle'
+            ? 'paddle'
+            : 'tesseract';
     }
     async read(image, timeoutMs = 90_000) {
         if (!this.enabled())
@@ -45,28 +52,14 @@ let OcrService = OcrService_1 = class OcrService {
         const started = Date.now();
         let timer;
         try {
-            const bytes = image.buffer.slice(image.byteOffset, image.byteOffset + image.byteLength);
             const result = await Promise.race([
-                engine.recognize(bytes, { noCache: true }),
+                engine.recognize(image),
                 new Promise((_, reject) => {
                     timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs} ms`)), timeoutMs);
                 }),
             ]);
-            const lines = (result.lines ?? []).map((line) => ({
-                text: line.map((b) => b.text).join(' '),
-                confidence: line.length
-                    ? Math.min(...line.map((b) => b.confidence))
-                    : 0,
-                boxes: line.map((b) => ({
-                    text: b.text,
-                    confidence: b.confidence,
-                    x: b.box.x,
-                    y: b.box.y,
-                    width: b.box.width,
-                    height: b.box.height,
-                })),
-            }));
-            this.logger.debug(`read ${lines.length} line(s) in ${Date.now() - started} ms`);
+            const { lines } = result;
+            this.logger.debug(`${engine.name} read ${lines.length} line(s) in ${Date.now() - started} ms`);
             const size = await imageSize(image);
             if (!size)
                 return null;
@@ -74,6 +67,7 @@ let OcrService = OcrService_1 = class OcrService {
                 text: lines.map((l) => l.text).join('\n'),
                 confidence: Number.isFinite(result.confidence) ? result.confidence : 0,
                 lines,
+                engine: engine.name,
                 ...size,
             };
         }
@@ -88,15 +82,60 @@ let OcrService = OcrService_1 = class OcrService {
     }
     load() {
         if (!this.engine) {
-            this.engine = this.create().catch((err) => {
-                this.logger.error(`PaddleOCR could not start: ${err instanceof Error ? err.message : String(err)}`);
+            const name = this.engineName();
+            this.engine = (name === 'paddle' ? this.createPaddle() : this.createTesseract()).catch((err) => {
+                this.logger.error(`${name} OCR could not start: ${err instanceof Error ? err.message : String(err)}`);
                 this.engine = null;
                 return null;
             });
         }
         return this.engine;
     }
-    async create() {
+    async createTesseract() {
+        const tesseract = await import('tesseract.js');
+        const langPath = (0, path_1.join)((0, os_1.tmpdir)(), 'cyg-tessdata');
+        (0, fs_1.mkdirSync)(langPath, { recursive: true });
+        for (const code of ['eng', 'fra']) {
+            const file = `${code}.traineddata.gz`;
+            (0, fs_1.copyFileSync)((0, path_1.join)((0, path_1.dirname)(require.resolve(`@tesseract.js-data/${code}/package.json`)), '4.0.0_best_int', file), (0, path_1.join)(langPath, file));
+        }
+        const started = Date.now();
+        const worker = await tesseract.createWorker('eng+fra', tesseract.OEM.LSTM_ONLY, { langPath, cacheMethod: 'none', gzip: true });
+        this.logger.log(`Tesseract ready (eng+fra) in ${Date.now() - started} ms`);
+        return {
+            name: 'tesseract',
+            async recognize(image) {
+                const { data } = await worker.recognize(image, {}, { blocks: true });
+                const lines = [];
+                for (const block of data.blocks ?? []) {
+                    for (const para of block.paragraphs) {
+                        for (const line of para.lines) {
+                            const words = line.words.filter((w) => w.text.trim());
+                            if (!words.length)
+                                continue;
+                            lines.push({
+                                text: words.map((w) => w.text).join(' '),
+                                confidence: Math.min(...words.map((w) => w.confidence)) / 100,
+                                boxes: words.map((w) => ({
+                                    text: w.text,
+                                    confidence: w.confidence / 100,
+                                    x: w.bbox.x0,
+                                    y: w.bbox.y0,
+                                    width: w.bbox.x1 - w.bbox.x0,
+                                    height: w.bbox.y1 - w.bbox.y0,
+                                })),
+                            });
+                        }
+                    }
+                }
+                return { confidence: data.confidence / 100, lines };
+            },
+            async destroy() {
+                await worker.terminate();
+            },
+        };
+    }
+    async createPaddle() {
         const lib = await import('ppu-paddle-ocr');
         const dir = this.config.get('PADDLE_OCR_MODEL_DIR')?.trim();
         const files = dir
@@ -117,7 +156,30 @@ let OcrService = OcrService_1 = class OcrService {
         const started = Date.now();
         await service.initialize();
         this.logger.log(`PaddleOCR ready (PP-OCRv6 medium${local ? `, ${dir}` : ''}) in ${Date.now() - started} ms`);
-        return service;
+        const paddle = service;
+        return {
+            name: 'paddle',
+            async recognize(image) {
+                const bytes = image.buffer.slice(image.byteOffset, image.byteOffset + image.byteLength);
+                const result = await paddle.recognize(bytes, { noCache: true });
+                const lines = (result.lines ?? []).map((line) => ({
+                    text: line.map((b) => b.text).join(' '),
+                    confidence: line.length
+                        ? Math.min(...line.map((b) => b.confidence))
+                        : 0,
+                    boxes: line.map((b) => ({
+                        text: b.text,
+                        confidence: b.confidence,
+                        x: b.box.x,
+                        y: b.box.y,
+                        width: b.box.width,
+                        height: b.box.height,
+                    })),
+                }));
+                return { confidence: result.confidence, lines };
+            },
+            destroy: () => paddle.destroy(),
+        };
     }
 };
 exports.OcrService = OcrService;

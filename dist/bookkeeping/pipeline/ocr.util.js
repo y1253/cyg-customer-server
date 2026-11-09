@@ -100,6 +100,8 @@ function ocrGate(r) {
             cheque,
             reason: `low confidence ${r.confidence.toFixed(2)}`,
         };
+    if (cheque && r.engine === 'tesseract')
+        return { ok: false, cheque, reason: 'cheque handwriting (Tesseract)' };
     if (sideBySide(r))
         return { ok: false, cheque, reason: 'documents side by side' };
     if (cheque && severalCheques(r))

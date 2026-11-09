@@ -21,14 +21,19 @@ export interface OcrLine {
   boxes: OcrBox[];
 }
 
+/** Which engine read it (`OCR_ENGINE`). Tesseract reads printed text only, no handwriting. */
+export type OcrEngineName = 'tesseract' | 'paddle';
+
 export interface OcrResult {
   text: string;
-  /** PaddleOCR's own average over every box, 0–1. */
+  /** The engine's own average over the whole read, 0–1. */
   confidence: number;
   lines: OcrLine[];
   /** The image's size in pixels (the boxes' space). */
   width: number;
   height: number;
+  /** Unset = paddle (results built before step2c). */
+  engine?: OcrEngineName;
 }
 
 /** Below this a line (or the whole read) is a guess, not a reading. */
@@ -187,6 +192,10 @@ export function ocrGate(r: OcrResult | null): OcrVerdict {
       cheque,
       reason: `low confidence ${r.confidence.toFixed(2)}`,
     };
+  // A cheque's amount and payee are handwritten, and Tesseract cannot read handwriting (it
+  // can be sure of a wrong guess): the vision model reads the cheque, this text is a hint.
+  if (cheque && r.engine === 'tesseract')
+    return { ok: false, cheque, reason: 'cheque handwriting (Tesseract)' };
   if (sideBySide(r))
     return { ok: false, cheque, reason: 'documents side by side' };
   if (cheque && severalCheques(r))
