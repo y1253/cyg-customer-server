@@ -107,5 +107,8 @@
     "@prisma/engines@6.19.3": true,
     "prisma@6.19.3": true,
     "unrs-resolver@1.11.1": true
+  },
+  "overrides": {
+    "wasm-feature-detect": "1.9.0"
   }
 }

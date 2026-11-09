@@ -1,6 +1,7 @@
 import { dirname, join } from 'path';
 import { copyFileSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
+import { pathToFileURL } from 'url';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { OcrEngineName, OcrLine, OcrResult } from './ocr.util';
@@ -130,6 +131,18 @@ export class OcrService implements OnModuleDestroy {
    * as the language name).
    */
   private async createTesseract(): Promise<Engine> {
+    // ⚠️ tesseract.js puts no 'error' listener on its worker thread: a module that fails to
+    // load INSIDE the worker kills this whole process. Load the worker's own dependencies here
+    // first, where a failure is a caught error (→ no OCR, files go to the model). Seen
+    // 2026-11-09: wasm-feature-detect 1.10 does not parse on the host's Node 20 — pinned to
+    // 1.9.0 by `overrides` in package.json.
+    await import(
+      pathToFileURL(
+        require.resolve('wasm-feature-detect', {
+          paths: [dirname(require.resolve('tesseract.js'))],
+        }),
+      ).href
+    );
     const tesseract = await import('tesseract.js');
     const langPath = join(tmpdir(), 'cyg-tessdata');
     mkdirSync(langPath, { recursive: true });

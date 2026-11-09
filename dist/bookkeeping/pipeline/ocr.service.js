@@ -15,6 +15,7 @@ exports.imageSize = imageSize;
 const path_1 = require("path");
 const fs_1 = require("fs");
 const os_1 = require("os");
+const url_1 = require("url");
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 let OcrService = OcrService_1 = class OcrService {
@@ -92,6 +93,9 @@ let OcrService = OcrService_1 = class OcrService {
         return this.engine;
     }
     async createTesseract() {
+        await import((0, url_1.pathToFileURL)(require.resolve('wasm-feature-detect', {
+            paths: [(0, path_1.dirname)(require.resolve('tesseract.js'))],
+        })).href);
         const tesseract = await import('tesseract.js');
         const langPath = (0, path_1.join)((0, os_1.tmpdir)(), 'cyg-tessdata');
         (0, fs_1.mkdirSync)(langPath, { recursive: true });
