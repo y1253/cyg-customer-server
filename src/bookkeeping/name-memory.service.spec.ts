@@ -103,6 +103,7 @@ function fakePrisma(rows: Tx[], existingRule: object | null = null) {
 const fakeTax = () => ({
   carryAgencies: jest.fn().mockResolvedValue(undefined),
   carryNameSettings: jest.fn().mockResolvedValue(undefined),
+  mergeNameFields: jest.fn().mockResolvedValue(undefined),
 });
 
 /** The general book of customer 7. */

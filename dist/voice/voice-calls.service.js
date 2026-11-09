@@ -77,6 +77,9 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             : `I could not call you: ${placed.error}`);
         return placed;
     }
+    async callMeFromWebsite(scope) {
+        return this.callMe(scope, 'nothing in particular yet — they pressed "Call me" on the website. Greet them and ask how you can help', null);
+    }
     async callMeAvailable(customerId) {
         const customer = await this.prisma.customer.findFirst({
             where: { id: customerId, deletedAt: null },

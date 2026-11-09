@@ -98,3 +98,14 @@ export declare class SetNameGroupDto {
 export declare class NameGroupDto {
     name: string;
 }
+export declare const NAME_FIELD_KINDS: readonly ["PHONE", "EMAIL", "ADDRESS", "WEBSITE", "NOTE", "TEXT"];
+export type NameFieldKind = (typeof NAME_FIELD_KINDS)[number];
+export declare class NameFieldDto {
+    kind: NameFieldKind;
+    label: string;
+    value: string;
+}
+export declare class SetNameFieldsDto {
+    name: string;
+    fields: NameFieldDto[];
+}

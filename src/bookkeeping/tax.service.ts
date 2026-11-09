@@ -4,11 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  Prisma,
   StatementStatus,
-  type Prisma,
   type TaxAgency,
   type TaxAgencyRate,
 } from '@prisma/client';
+import { toE164 } from '../customer-auth/phone-number.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   ACCOUNT_NAMES,
@@ -26,10 +27,13 @@ import {
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
-import type {
-  AgencyRateDto,
-  CreateAgencyDto,
-  UpdateAgencyDto,
+import {
+  NAME_FIELD_KINDS,
+  type AgencyRateDto,
+  type CreateAgencyDto,
+  type NameFieldDto,
+  type NameFieldKind,
+  type UpdateAgencyDto,
 } from './dto/agency.dto';
 import {
   nameTaxKey,
@@ -101,6 +105,28 @@ export interface NameView {
    * `NamesView.unrecognized`.
    */
   unclarified?: true;
+  /** step2 (2026-11-09): the customer's own profile fields for this name (phone, email, …). */
+  fields: NameField[];
+}
+
+/** step2 (2026-11-09): one field of a name's profile — `LedgerName.fields`. */
+export interface NameField {
+  kind: NameFieldKind;
+  label: string;
+  value: string;
+}
+
+/** The stored JSON, read defensively (a hand-edited row never breaks the Names tab). */
+export function parseNameFields(raw: unknown): NameField[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((f: unknown) => {
+    const o = f as Partial<NameField> | null;
+    if (!o || typeof o.value !== 'string' || !o.value) return [];
+    const kind = (NAME_FIELD_KINDS as readonly string[]).includes(o.kind ?? '')
+      ? o.kind!
+      : 'TEXT';
+    return [{ kind, label: typeof o.label === 'string' ? o.label : '', value: o.value }];
+  });
 }
 
 /** step9: one description under a name on the Names tab. */
@@ -497,8 +523,11 @@ export class TaxService {
     ]);
     const [placed, ownGroups] = await Promise.all([
       this.prisma.ledgerName.findMany({
-        where: { ...scopeWhere(scope), group: { not: null } },
-        select: { name: true, group: true },
+        where: {
+          ...scopeWhere(scope),
+          OR: [{ group: { not: null } }, { fields: { not: Prisma.DbNull } }],
+        },
+        select: { name: true, group: true, fields: true },
       }),
       this.prisma.customerNameGroup.findMany({
         where: { ...scopeWhere(scope), deletedAt: null },
@@ -515,6 +544,9 @@ export class TaxService {
       placed
         .filter((l) => l.group && validGroups.has(l.group))
         .map((l) => [nameKey(l.name), l.group!]),
+    );
+    const fieldsOf = new Map(
+      placed.map((l) => [nameKey(l.name), parseNameFields(l.fields)]),
     );
     const rulesById = new Map(rules.map((r) => [r.id, r]));
     const { descriptionsOf, exceptionOf } = groupDescriptions(
@@ -581,6 +613,7 @@ export class TaxService {
           rows: categories.reduce((n, [, c]) => n + c, 0),
           total: (totalOf.get(key) ?? 0) / 100,
           agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
+          fields: fieldsOf.get(key) ?? [],
           descriptions: descriptionsOf.get(key) ?? [],
           followsContains: rules
             .filter(
@@ -654,6 +687,7 @@ export class TaxService {
         rows: nameless.length,
         total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
         agencyIds: agenciesOf.get(nameTaxKey(null)) ?? [],
+        fields: [],
         descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
           key: u.key,
           description: u.sampleDescription,
@@ -732,6 +766,93 @@ export class TaxService {
         data: { ...scopeWhere(scope), name, group },
       });
     }
+  }
+
+  /**
+   * step2 (2026-11-09): a name's profile — the whole list ([] clears it). A phone is stored
+   * in E.164 (400 when it is not one), an email lower-cased; empty values are dropped.
+   * The customer's reference only: the AI's contacts (`AiContact`) are separate.
+   */
+  async setNameFields(
+    scope: BookScope,
+    rawName: string,
+    input: NameFieldDto[],
+  ): Promise<void> {
+    const name = rawName.trim();
+    if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
+      throw new BadRequestException('Pick a name');
+    const fields = input.flatMap((f): NameField[] => {
+      const value = f.value.trim();
+      if (!value) return [];
+      if (f.kind === 'PHONE') {
+        const e164 = toE164(value);
+        if (!e164)
+          throw new BadRequestException(
+            `“${value}” is not a phone number (add the country code if outside Canada / the US)`,
+          );
+        return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
+      }
+      if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+        throw new BadRequestException(`“${value}” is not an email address`);
+      return [
+        {
+          kind: f.kind,
+          label: f.label.trim(),
+          value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
+        },
+      ];
+    });
+    const data = fields.length
+      ? (fields as unknown as Prisma.InputJsonValue)
+      : Prisma.DbNull;
+    const existing = await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name },
+      select: { id: true },
+    });
+    if (existing) {
+      await this.prisma.ledgerName.update({
+        where: { id: existing.id },
+        data: { fields: data },
+      });
+    } else if (fields.length) {
+      await this.prisma.ledgerName.create({
+        data: { ...scopeWhere(scope), name, fields: data },
+      });
+    }
+  }
+
+  /**
+   * step2 (2026-11-09): a merged name's profile fields join the target's (a field the
+   * target already has, same kind and value, is not repeated). Before the source row goes.
+   */
+  async mergeNameFields(
+    scope: BookScope,
+    source: string,
+    target: string,
+  ): Promise<void> {
+    const rows = await this.prisma.ledgerName.findMany({
+      where: { ...scopeWhere(scope), name: { in: [source, target] } },
+      select: { id: true, name: true, fields: true },
+    });
+    const from = rows.find((r) => nameKey(r.name) === nameKey(source));
+    const extra = parseNameFields(from?.fields);
+    if (!extra.length) return;
+    const into = rows.find((r) => nameKey(r.name) === nameKey(target));
+    const own = parseNameFields(into?.fields);
+    const seen = new Set(own.map((f) => `${f.kind}|${f.value.toLowerCase()}`));
+    const fields = [
+      ...own,
+      ...extra.filter((f) => !seen.has(`${f.kind}|${f.value.toLowerCase()}`)),
+    ] as unknown as Prisma.InputJsonValue;
+    if (into)
+      await this.prisma.ledgerName.update({
+        where: { id: into.id },
+        data: { fields },
+      });
+    else
+      await this.prisma.ledgerName.create({
+        data: { ...scopeWhere(scope), name: target, fields },
+      });
   }
 
   /** step9: a new Names-tab group of the customer's own ("Employees"). */
@@ -916,7 +1037,7 @@ export class TaxService {
     if (!keys.size) return;
     const rows = await this.prisma.ledgerName.findMany({
       where: scopeWhere(scope),
-      select: { name: true, group: true, taxExempt: true },
+      select: { name: true, group: true, taxExempt: true, fields: true },
     });
     if (rows.some((r) => nameTaxKey(r.name) === target)) return;
     const from = rows.find((r) => keys.has(nameTaxKey(r.name)));
@@ -927,6 +1048,7 @@ export class TaxService {
         name: newName,
         group: from.group,
         taxExempt: from.taxExempt,
+        fields: (from.fields as Prisma.InputJsonValue | null) ?? Prisma.DbNull,
       },
     });
   }

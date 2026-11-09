@@ -3,7 +3,7 @@ import { type TypeContext } from './chart-of-accounts';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import { type BookScope } from './scope';
-import type { CreateAgencyDto, UpdateAgencyDto } from './dto/agency.dto';
+import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
 export interface AgencyView {
     id: number;
@@ -43,7 +43,14 @@ export interface NameView {
         matchKey: string;
     } | null;
     unclarified?: true;
+    fields: NameField[];
 }
+export interface NameField {
+    kind: NameFieldKind;
+    label: string;
+    value: string;
+}
+export declare function parseNameFields(raw: unknown): NameField[];
 export interface NameDescriptionView {
     key: string;
     description: string;
@@ -118,6 +125,8 @@ export declare class TaxService {
     private compute;
     names(scope: BookScope): Promise<NamesView>;
     setNameGroup(scope: BookScope, rawName: string, group: string | null): Promise<void>;
+    setNameFields(scope: BookScope, rawName: string, input: NameFieldDto[]): Promise<void>;
+    mergeNameFields(scope: BookScope, source: string, target: string): Promise<void>;
     createNameGroup(scope: BookScope, rawName: string): Promise<NameGroupView>;
     renameNameGroup(scope: BookScope, id: number, rawName: string): Promise<void>;
     deleteNameGroup(scope: BookScope, id: number): Promise<void>;

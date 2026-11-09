@@ -22,6 +22,7 @@ export type CommPurpose =
   | 'STRONG_AI'
   | 'FEATURE_DONE'
   | 'BANK_ALERT'
+  | 'WELCOME'
   | 'OTHER';
 
 /** A provider's list prices in USD (null = unknown). */

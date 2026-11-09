@@ -396,3 +396,44 @@ export class NameGroupDto {
   @MaxLength(64)
   name!: string;
 }
+
+/** step2 (2026-11-09): one field of a name's profile (its phone, email, address, …). */
+export const NAME_FIELD_KINDS = [
+  'PHONE',
+  'EMAIL',
+  'ADDRESS',
+  'WEBSITE',
+  'NOTE',
+  'TEXT',
+] as const;
+export type NameFieldKind = (typeof NAME_FIELD_KINDS)[number];
+
+export class NameFieldDto {
+  @IsIn(NAME_FIELD_KINDS)
+  kind!: NameFieldKind;
+
+  @Transform(trim)
+  @IsString()
+  @MaxLength(64)
+  label!: string;
+
+  @Transform(trim)
+  @IsString()
+  @MaxLength(500)
+  value!: string;
+}
+
+/** step2 (2026-11-09): a name's whole profile — [] clears it. */
+export class SetNameFieldsDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name!: string;
+
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => NameFieldDto)
+  fields!: NameFieldDto[];
+}

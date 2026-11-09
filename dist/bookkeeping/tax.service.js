@@ -10,8 +10,10 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TaxService = exports.BUILTIN_GROUPS = void 0;
+exports.parseNameFields = parseNameFields;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
+const phone_number_util_1 = require("../customer-auth/phone-number.util");
 const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const customer_accounts_service_1 = require("./customer-accounts.service");
@@ -19,7 +21,21 @@ const name_memory_util_1 = require("./name-memory.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
+const agency_dto_1 = require("./dto/agency.dto");
 const tax_util_1 = require("./tax.util");
+function parseNameFields(raw) {
+    if (!Array.isArray(raw))
+        return [];
+    return raw.flatMap((f) => {
+        const o = f;
+        if (!o || typeof o.value !== 'string' || !o.value)
+            return [];
+        const kind = agency_dto_1.NAME_FIELD_KINDS.includes(o.kind ?? '')
+            ? o.kind
+            : 'TEXT';
+        return [{ kind, label: typeof o.label === 'string' ? o.label : '', value: o.value }];
+    });
+}
 exports.BUILTIN_GROUPS = [
     { key: 'SUPPLIER', label: 'Suppliers' },
     { key: 'CUSTOMER', label: 'Customers' },
@@ -261,8 +277,11 @@ let TaxService = class TaxService {
         ]);
         const [placed, ownGroups] = await Promise.all([
             this.prisma.ledgerName.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), group: { not: null } },
-                select: { name: true, group: true },
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    OR: [{ group: { not: null } }, { fields: { not: client_1.Prisma.DbNull } }],
+                },
+                select: { name: true, group: true, fields: true },
             }),
             this.prisma.customerNameGroup.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
@@ -278,6 +297,7 @@ let TaxService = class TaxService {
         const groupOf = new Map(placed
             .filter((l) => l.group && validGroups.has(l.group))
             .map((l) => [(0, name_memory_util_1.nameKey)(l.name), l.group]));
+        const fieldsOf = new Map(placed.map((l) => [(0, name_memory_util_1.nameKey)(l.name), parseNameFields(l.fields)]));
         const rulesById = new Map(rules.map((r) => [r.id, r]));
         const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
         const shareOf = rowShares([...named, ...nameless]);
@@ -329,6 +349,7 @@ let TaxService = class TaxService {
                 rows: categories.reduce((n, [, c]) => n + c, 0),
                 total: (totalOf.get(key) ?? 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(name)) ?? [],
+                fields: fieldsOf.get(key) ?? [],
                 descriptions: descriptionsOf.get(key) ?? [],
                 followsContains: rules
                     .filter((r) => r.matchType === 'CONTAINS' && r.name && (0, name_memory_util_1.nameKey)(r.name) === key)
@@ -384,6 +405,7 @@ let TaxService = class TaxService {
                 rows: nameless.length,
                 total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(null)) ?? [],
+                fields: [],
                 descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
                     key: u.key,
                     description: u.sampleDescription,
@@ -446,6 +468,75 @@ let TaxService = class TaxService {
                 data: { ...(0, scope_1.scopeWhere)(scope), name, group },
             });
         }
+    }
+    async setNameFields(scope, rawName, input) {
+        const name = rawName.trim();
+        if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            throw new common_1.BadRequestException('Pick a name');
+        const fields = input.flatMap((f) => {
+            const value = f.value.trim();
+            if (!value)
+                return [];
+            if (f.kind === 'PHONE') {
+                const e164 = (0, phone_number_util_1.toE164)(value);
+                if (!e164)
+                    throw new common_1.BadRequestException(`“${value}” is not a phone number (add the country code if outside Canada / the US)`);
+                return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
+            }
+            if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+                throw new common_1.BadRequestException(`“${value}” is not an email address`);
+            return [
+                {
+                    kind: f.kind,
+                    label: f.label.trim(),
+                    value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
+                },
+            ];
+        });
+        const data = fields.length
+            ? fields
+            : client_1.Prisma.DbNull;
+        const existing = await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
+            select: { id: true },
+        });
+        if (existing) {
+            await this.prisma.ledgerName.update({
+                where: { id: existing.id },
+                data: { fields: data },
+            });
+        }
+        else if (fields.length) {
+            await this.prisma.ledgerName.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), name, fields: data },
+            });
+        }
+    }
+    async mergeNameFields(scope, source, target) {
+        const rows = await this.prisma.ledgerName.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: { in: [source, target] } },
+            select: { id: true, name: true, fields: true },
+        });
+        const from = rows.find((r) => (0, name_memory_util_1.nameKey)(r.name) === (0, name_memory_util_1.nameKey)(source));
+        const extra = parseNameFields(from?.fields);
+        if (!extra.length)
+            return;
+        const into = rows.find((r) => (0, name_memory_util_1.nameKey)(r.name) === (0, name_memory_util_1.nameKey)(target));
+        const own = parseNameFields(into?.fields);
+        const seen = new Set(own.map((f) => `${f.kind}|${f.value.toLowerCase()}`));
+        const fields = [
+            ...own,
+            ...extra.filter((f) => !seen.has(`${f.kind}|${f.value.toLowerCase()}`)),
+        ];
+        if (into)
+            await this.prisma.ledgerName.update({
+                where: { id: into.id },
+                data: { fields },
+            });
+        else
+            await this.prisma.ledgerName.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), name: target, fields },
+            });
     }
     async createNameGroup(scope, rawName) {
         const name = rawName.trim().slice(0, 64);
@@ -583,7 +674,7 @@ let TaxService = class TaxService {
             return;
         const rows = await this.prisma.ledgerName.findMany({
             where: (0, scope_1.scopeWhere)(scope),
-            select: { name: true, group: true, taxExempt: true },
+            select: { name: true, group: true, taxExempt: true, fields: true },
         });
         if (rows.some((r) => (0, tax_util_1.nameTaxKey)(r.name) === target))
             return;
@@ -596,6 +687,7 @@ let TaxService = class TaxService {
                 name: newName,
                 group: from.group,
                 taxExempt: from.taxExempt,
+                fields: from.fields ?? client_1.Prisma.DbNull,
             },
         });
     }

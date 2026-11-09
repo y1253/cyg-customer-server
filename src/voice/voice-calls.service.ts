@@ -187,6 +187,20 @@ export class VoiceCallsService implements OnModuleInit {
     return placed;
   }
 
+  /**
+   * step2 (2026-11-09): the chat bubble's "Call me" on the website — not about one chat, so
+   * the AI opens by asking how it can help.
+   */
+  async callMeFromWebsite(
+    scope: BookScope,
+  ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
+    return this.callMe(
+      scope,
+      'nothing in particular yet — they pressed "Call me" on the website. Greet them and ask how you can help',
+      null,
+    );
+  }
+
   /** Can the customer be called now (the "Call me" button)? Never says why not. */
   async callMeAvailable(customerId: number): Promise<boolean> {
     const customer = await this.prisma.customer.findFirst({

@@ -65,6 +65,7 @@ import {
   RenameAccountDto,
   MergeDto,
   NameGroupDto,
+  SetNameFieldsDto,
   SetNameGroupDto,
   SetAccountCurrencyDto,
   ResetProductRuleDto,
@@ -190,6 +191,16 @@ export class BookkeepingController {
     @Body() dto: SetNameGroupDto,
   ): Promise<NamesView> {
     await this.tax.setNameGroup(scope, dto.name, dto.group ?? null);
+    return this.tax.names(scope);
+  }
+
+  /** step2 (2026-11-09): a name's own profile fields (phone, email, address, …). */
+  @Put('names/fields')
+  async setNameFields(
+    @Book() scope: BookScope,
+    @Body() dto: SetNameFieldsDto,
+  ): Promise<NamesView> {
+    await this.tax.setNameFields(scope, dto.name, dto.fields);
     return this.tax.names(scope);
   }
 

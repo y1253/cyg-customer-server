@@ -77,6 +77,13 @@ export declare class VoiceCallsService implements OnModuleInit {
         ok: false;
         error: string;
     }>;
+    callMeFromWebsite(scope: BookScope): Promise<{
+        ok: true;
+        summary: string;
+    } | {
+        ok: false;
+        error: string;
+    }>;
     callMeAvailable(customerId: number): Promise<boolean>;
     private callMe;
     callPersonNow(ctx: ToolContext, person: PersonTarget, message: string): Promise<{

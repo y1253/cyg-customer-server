@@ -1158,6 +1158,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await this.writeRows(scope, rows, () => ({ name: target, category }));
     if (category !== UNCATEGORIZED)
       await this.setNameCategory(scope, target, category);
+    // step2 (2026-11-09): its profile fields (phone, email, …) join the target's.
+    await this.tax.mergeNameFields(scope, source, target);
     // The tax follows the target only: the merged name's own choices go.
     await this.prisma.ledgerNameAgency.deleteMany({
       where: { ...scopeWhere(scope), name: source },

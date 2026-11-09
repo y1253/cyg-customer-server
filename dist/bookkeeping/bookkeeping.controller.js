@@ -97,6 +97,10 @@ let BookkeepingController = class BookkeepingController {
         await this.tax.setNameGroup(scope, dto.name, dto.group ?? null);
         return this.tax.names(scope);
     }
+    async setNameFields(scope, dto) {
+        await this.tax.setNameFields(scope, dto.name, dto.fields);
+        return this.tax.names(scope);
+    }
     async createNameGroup(scope, dto) {
         await this.tax.createNameGroup(scope, dto.name);
         return this.tax.names(scope);
@@ -367,6 +371,14 @@ __decorate([
     __metadata("design:paramtypes", [Object, agency_dto_1.SetNameGroupDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "setNameGroup", null);
+__decorate([
+    (0, common_1.Put)('names/fields'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.SetNameFieldsDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setNameFields", null);
 __decorate([
     (0, common_1.Post)('name-groups'),
     __param(0, (0, book_scope_guard_1.Book)()),

@@ -732,6 +732,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.writeRows(scope, rows, () => ({ name: target, category }));
         if (category !== chart_of_accounts_1.UNCATEGORIZED)
             await this.setNameCategory(scope, target, category);
+        await this.tax.mergeNameFields(scope, source, target);
         await this.prisma.ledgerNameAgency.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });

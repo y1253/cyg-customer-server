@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -454,4 +454,53 @@ __decorate([
     (0, class_validator_1.MaxLength)(64),
     __metadata("design:type", String)
 ], NameGroupDto.prototype, "name", void 0);
+exports.NAME_FIELD_KINDS = [
+    'PHONE',
+    'EMAIL',
+    'ADDRESS',
+    'WEBSITE',
+    'NOTE',
+    'TEXT',
+];
+class NameFieldDto {
+    kind;
+    label;
+    value;
+}
+exports.NameFieldDto = NameFieldDto;
+__decorate([
+    (0, class_validator_1.IsIn)(exports.NAME_FIELD_KINDS),
+    __metadata("design:type", String)
+], NameFieldDto.prototype, "kind", void 0);
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(64),
+    __metadata("design:type", String)
+], NameFieldDto.prototype, "label", void 0);
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(500),
+    __metadata("design:type", String)
+], NameFieldDto.prototype, "value", void 0);
+class SetNameFieldsDto {
+    name;
+    fields;
+}
+exports.SetNameFieldsDto = SetNameFieldsDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SetNameFieldsDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(30),
+    (0, class_validator_1.ValidateNested)({ each: true }),
+    (0, class_transformer_1.Type)(() => NameFieldDto),
+    __metadata("design:type", Array)
+], SetNameFieldsDto.prototype, "fields", void 0);
 //# sourceMappingURL=agency.dto.js.map

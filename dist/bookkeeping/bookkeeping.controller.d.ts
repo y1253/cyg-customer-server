@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -49,6 +49,7 @@ export declare class BookkeepingController {
         description: string;
     }[]>;
     setNameGroup(scope: BookScope, dto: SetNameGroupDto): Promise<NamesView>;
+    setNameFields(scope: BookScope, dto: SetNameFieldsDto): Promise<NamesView>;
     createNameGroup(scope: BookScope, dto: NameGroupDto): Promise<NamesView>;
     renameNameGroup(scope: BookScope, id: number, dto: NameGroupDto): Promise<NamesView>;
     deleteNameGroup(scope: BookScope, id: number): Promise<NamesView>;

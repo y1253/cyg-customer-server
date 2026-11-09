@@ -9,6 +9,7 @@ import {
   CallMeController,
   VoiceRecordingController,
   VoiceStatusController,
+  WelcomeTextController,
 } from './voice.controller';
 import { VoiceGateway } from './voice.gateway';
 
@@ -25,6 +26,7 @@ import { VoiceGateway } from './voice.gateway';
     VoiceStatusController,
     VoiceRecordingController,
     CallMeController,
+    WelcomeTextController,
   ],
   providers: [VoiceCallsService, VoiceGateway],
   exports: [VoiceCallsService],
