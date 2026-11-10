@@ -4,6 +4,7 @@ import {
   UNCATEGORIZED,
   type AccountType,
 } from './chart-of-accounts';
+import type { StartReason } from './opening-balance.util';
 
 /** How a row with no payee is listed by name (never stored — the DB keeps null). */
 export const UNCLARIFIED_NAME = 'Unclarified name';
@@ -70,9 +71,10 @@ export interface ReportLine {
   foreignAmount?: number;
   /**
    * Balance sheet, statement accounts only: the dates its books start (each "Starting
-   * balance" row up to the sheet's date). More than one = a break in the chain.
+   * balance" row up to the sheet's date). More than one = a break in the chain; each
+   * later one says why (`StartReason`).
    */
-  starts?: Array<{ date: string | null }>;
+  starts?: Array<{ date: string | null; reason?: StartReason }>;
 }
 
 export interface ReportsView {

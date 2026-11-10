@@ -171,7 +171,8 @@ export class ReportsService {
       const list = (starts.get(line.name) ?? []).filter(
         (s) => !to || !s.date || s.date <= to,
       );
-      if (list.length) line.starts = list.map((s) => ({ date: s.date }));
+      if (list.length)
+        line.starts = list.map((s) => ({ date: s.date, reason: s.reason }));
     }
     return view;
   }

@@ -27,6 +27,8 @@ const attachments_service_1 = require("../bookkeeping/attachments.service");
 const scope_1 = require("../bookkeeping/scope");
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
 const statement_label_1 = require("../bookkeeping/statement-label");
+const opening_balance_query_1 = require("../bookkeeping/opening-balance.query");
+const opening_balance_util_1 = require("../bookkeeping/opening-balance.util");
 const prisma_service_1 = require("../prisma/prisma.service");
 const assistant_tools_1 = require("./assistant-tools");
 const assistant_prompt_1 = require("./assistant-prompt");
@@ -383,6 +385,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             return undefined;
         const day = (d) => d?.toISOString().slice(0, 10) ?? null;
         const money = (d) => (d === null ? null : Number(d));
+        const chainDay = (o) => (o.periodStart ?? o.periodEnd)?.getTime() ?? -Infinity;
         const sameAccount = s.accountName
             ? await this.prisma.bankStatement.findMany({
                 where: {
@@ -391,7 +394,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     deletedAt: null,
                     id: { not: s.id },
                 },
-                orderBy: { periodStart: 'asc' },
+                orderBy: { periodEnd: 'desc' },
                 take: 36,
                 select: {
                     id: true,
@@ -403,6 +406,10 @@ let AssistantService = AssistantService_1 = class AssistantService {
                     closingBalance: true,
                 },
             })
+            : [];
+        sameAccount.sort((a, b) => chainDay(a) - chainDay(b) || a.id - b.id);
+        const startingDates = s.accountName
+            ? ((0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(await (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, (0, scope_1.scopeOf)(conversation)))).get(s.accountName) ?? [])
             : [];
         return {
             statementId: s.id,
@@ -431,6 +438,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
                 openingBalance: money(o.openingBalance),
                 closingBalance: money(o.closingBalance),
             })),
+            startingDates,
         };
     }
     async conversations(scope) {

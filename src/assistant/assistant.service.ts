@@ -19,6 +19,11 @@ import {
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { failedChecks } from '../bookkeeping/bookkeeping.service';
 import { statementLabel } from '../bookkeeping/statement-label';
+import { loadOpeningStatements } from '../bookkeeping/opening-balance.query';
+import {
+  openingRows,
+  startsByAccount,
+} from '../bookkeeping/opening-balance.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AssistantTools,
@@ -564,6 +569,12 @@ export class AssistantService {
     const money = (d: Prisma.Decimal | null) => (d === null ? null : Number(d));
     // step2: the account's other statements, so a chat about its starting dates can see
     // which closing does not carry into the next opening (or which month is missing).
+    // In chain order: a statement that printed only its last day (BMO) sits by that day —
+    // `orderBy: periodStart` put them first and the AI blamed the wrong month (2026-11-10).
+    const chainDay = (o: {
+      periodStart: Date | null;
+      periodEnd: Date | null;
+    }) => (o.periodStart ?? o.periodEnd)?.getTime() ?? -Infinity;
     const sameAccount = s.accountName
       ? await this.prisma.bankStatement.findMany({
           where: {
@@ -572,7 +583,7 @@ export class AssistantService {
             deletedAt: null,
             id: { not: s.id },
           },
-          orderBy: { periodStart: 'asc' },
+          orderBy: { periodEnd: 'desc' },
           take: 36,
           select: {
             id: true,
@@ -584,6 +595,16 @@ export class AssistantService {
             closingBalance: true,
           },
         })
+      : [];
+    sameAccount.sort((a, b) => chainDay(a) - chainDay(b) || a.id - b.id);
+    // Each later start says why the chain broke there: MISSING (no statement from–to) or
+    // MISMATCH (the previous closing is not this opening) — the same rows the folder shows.
+    const startingDates = s.accountName
+      ? (startsByAccount(
+          openingRows(
+            await loadOpeningStatements(this.prisma, scopeOf(conversation)),
+          ),
+        ).get(s.accountName) ?? [])
       : [];
     return {
       statementId: s.id,
@@ -612,6 +633,7 @@ export class AssistantService {
         openingBalance: money(o.openingBalance),
         closingBalance: money(o.closingBalance),
       })),
+      startingDates,
     };
   }
 

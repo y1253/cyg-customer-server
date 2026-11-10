@@ -230,7 +230,10 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         ]);
         const starts = new Map([...(0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(opening)).values()]
             .flat()
-            .map((s) => [s.statementId, { date: s.date, amount: s.amount }]));
+            .map((s) => [
+            s.statementId,
+            { date: s.date, amount: s.amount, reason: s.reason },
+        ]));
         return rows.map((r) => ({
             ...toView(r, currencies),
             startingBalance: starts.get(r.id) ?? null,

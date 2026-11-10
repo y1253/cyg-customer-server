@@ -6,6 +6,7 @@ export interface OpeningStatement {
     openingBalance: number | null;
     closingBalance: number | null;
     periodStart: Date | null;
+    periodEnd?: Date | null;
     net: number;
 }
 export interface OpeningRow {
@@ -17,7 +18,21 @@ export interface OpeningRow {
     offsetAccount: string;
     debitAccount: string;
     creditAccount: string;
+    periodEnd: Date | null;
+    reason?: StartReason;
 }
+export type StartReason = {
+    kind: 'MISSING';
+    previousStatementId: number;
+    from: string;
+    to: string | null;
+} | {
+    kind: 'MISMATCH';
+    previousStatementId: number;
+    previousEnd: string | null;
+    previousClosing: number | null;
+    opening: number;
+};
 export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[] & {
     bridges?: OpeningStatement[];
@@ -26,6 +41,7 @@ export interface StartingBalance {
     statementId: number;
     date: string | null;
     amount: number;
+    reason?: StartReason;
 }
 export declare function startsByAccount(rows: OpeningRow[]): Map<string, StartingBalance[]>;
 export declare const CREDIT_CARD = "CREDIT_CARD";

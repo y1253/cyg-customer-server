@@ -1,4 +1,5 @@
 import { type AccountType } from './chart-of-accounts';
+import type { StartReason } from './opening-balance.util';
 export declare const UNCLARIFIED_NAME = "Unclarified name";
 export interface ReportRow {
     amount: number;
@@ -36,6 +37,7 @@ export interface ReportLine {
     foreignAmount?: number;
     starts?: Array<{
         date: string | null;
+        reason?: StartReason;
     }>;
 }
 export interface ReportsView {

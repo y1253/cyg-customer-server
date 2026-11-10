@@ -260,6 +260,102 @@ describe('openingRows', () => {
   });
 });
 
+describe('statements that print only their last day (BMO 6454, 2026-11-10)', () => {
+  const ended = (s: OpeningStatement, periodEnd: string): OpeningStatement => ({
+    ...s,
+    periodEnd: new Date(`${periodEnd}T00:00:00Z`),
+  });
+  const bmo = 'BMO 6454';
+
+  it('chains them by their end date instead of putting them first', () => {
+    // Jan and Feb printed no start; sorted first, March's predecessor became January.
+    expect(
+      ids([
+        ended(st(328, '2025-03-01', 905.16, 891.25, bmo, -13.91), '2025-03-31'),
+        ended(st(317, null, 100, 905.16, bmo, 805.16), '2025-02-28'),
+        ended(st(320, null, 0, 100, bmo, 100), '2025-01-31'),
+        ended(
+          st(309, '2025-04-01', 891.25, -287.46, bmo, -1178.71),
+          '2025-04-30',
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('dates a real start of an undated statement by its last day', () => {
+    const rows = openingRows([
+      ended(st(1, null, 500, 600, bmo, 100), '2025-01-31'),
+    ]);
+    expect(startsByAccount(rows).get(bmo)).toEqual([
+      { statementId: 1, date: '2025-01-31', amount: 500 },
+    ]);
+  });
+});
+
+describe('why an account starts again', () => {
+  const ended = (s: OpeningStatement, periodEnd: string): OpeningStatement => ({
+    ...s,
+    periodEnd: new Date(`${periodEnd}T00:00:00Z`),
+  });
+  const reasons = (list: OpeningStatement[]) =>
+    openingRows(list).map((r) => r.reason);
+
+  it('MISSING when a month between the two is not there', () => {
+    expect(
+      reasons([
+        ended(st(1, '2026-05-01', 48.04, 656.71), '2026-05-31'),
+        ended(st(2, '2026-07-01', 669.97, 861.38), '2026-07-31'),
+      ]),
+    ).toEqual([
+      undefined,
+      {
+        kind: 'MISSING',
+        previousStatementId: 1,
+        from: '2026-06-01',
+        to: '2026-06-30',
+      },
+    ]);
+  });
+
+  it('MISMATCH when the periods touch but the balances do not carry over', () => {
+    expect(
+      reasons([
+        ended(st(1, '2025-05-01', 100, 200), '2025-05-30'),
+        ended(st(2, '2025-05-31', 250, 300), '2025-06-30'),
+      ])[1],
+    ).toEqual({
+      kind: 'MISMATCH',
+      previousStatementId: 1,
+      previousEnd: '2025-05-30',
+      previousClosing: 200,
+      opening: 250,
+    });
+  });
+
+  it('MISSING for an undated statement ending two months after the previous one', () => {
+    expect(
+      reasons([
+        ended(st(1, '2026-01-01', 100, 200), '2026-01-31'),
+        ended(st(2, null, 900, 950), '2026-03-31'),
+      ])[1],
+    ).toEqual({
+      kind: 'MISSING',
+      previousStatementId: 1,
+      from: '2026-02-01',
+      to: null,
+    });
+  });
+
+  it('uses opening + Σ rows when the previous statement printed no closing', () => {
+    expect(
+      reasons([
+        ended(st(1, '2026-01-01', 100, null, 'TD 1', 50), '2026-01-31'),
+        ended(st(2, '2026-02-01', 400, null, 'TD 1'), '2026-02-28'),
+      ])[1],
+    ).toMatchObject({ kind: 'MISMATCH', previousClosing: 150, opening: 400 });
+  });
+});
+
 describe('startsByAccount', () => {
   it('lists each account’s starting balances oldest first', () => {
     const rows = openingRows([
@@ -270,7 +366,18 @@ describe('startsByAccount', () => {
     const starts = startsByAccount(rows);
     expect(starts.get('Chase 4362')).toEqual([
       { statementId: 1, date: '2026-01-01', amount: 1000 },
-      { statementId: 3, date: '2026-03-01', amount: 1750 },
+      {
+        statementId: 3,
+        date: '2026-03-01',
+        amount: 1750,
+        reason: {
+          kind: 'MISMATCH',
+          previousStatementId: 1,
+          previousEnd: null,
+          previousClosing: 1200,
+          opening: 1750,
+        },
+      },
     ]);
     expect(starts.get('TD 1111')).toHaveLength(1);
   });

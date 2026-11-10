@@ -30,6 +30,7 @@ import {
   OPENING_POSITION,
   openingRows,
   startsByAccount,
+  type StartReason,
 } from './opening-balance.util';
 import { statementLabel } from './statement-label';
 import { statementPdf } from './statement-pdf';
@@ -81,7 +82,12 @@ export interface StatementView {
    * Set when this statement STARTS its account's books (a "Starting balance" row in the
    * ledger): the first one, or one after a break in the chain. Only `list()` fills it.
    */
-  startingBalance?: { date: string | null; amount: number } | null;
+  startingBalance?: {
+    date: string | null;
+    amount: number;
+    /** Why the account starts again here (absent on its first start). */
+    reason?: StartReason;
+  } | null;
 }
 
 export interface TransactionView {
@@ -425,7 +431,10 @@ export class BookkeepingService {
     const starts = new Map(
       [...startsByAccount(openingRows(opening)).values()]
         .flat()
-        .map((s) => [s.statementId, { date: s.date, amount: s.amount }]),
+        .map((s) => [
+          s.statementId,
+          { date: s.date, amount: s.amount, reason: s.reason },
+        ]),
     );
     return rows.map((r) => ({
       ...toView(r, currencies),

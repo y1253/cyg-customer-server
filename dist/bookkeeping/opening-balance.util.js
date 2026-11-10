@@ -16,12 +16,14 @@ function openingRows(statements, bridges = statements.bridges ?? []) {
         const bank = s.accountName ?? 'Bank account';
         byAccount.set(bank, [...(byAccount.get(bank) ?? []), s]);
     }
-    const time = (d) => d?.getTime() ?? -Infinity;
     const out = [];
     for (const [bankAccount, list] of byAccount) {
-        list.sort((a, b) => time(a.periodStart) - time(b.periodStart) || a.id - b.id);
+        list.sort((a, b) => chainTime(a) - chainTime(b) || a.id - b.id);
         let carried = [];
+        let previous;
         for (const s of list) {
+            const before = previous;
+            previous = s;
             const continues = s.openingBalance !== null && carried.includes((0, reconcile_util_1.cents)(s.openingBalance));
             if (s.bridgeOnly) {
                 carried =
@@ -44,19 +46,57 @@ function openingRows(statements, bridges = statements.bridges ?? []) {
                 description: exports.STARTING_BALANCE,
                 offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
                 ...(0, ledger_util_1.doubleEntry)(amount, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
+                periodEnd: s.periodEnd ?? null,
+                ...(before && { reason: breakReason(before, s) }),
             });
         }
     }
     return out;
 }
+const chainTime = (s) => (s.periodStart ?? s.periodEnd)?.getTime() ?? -Infinity;
+const DAY_MS = 86_400_000;
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const GAP_TOLERANCE_DAYS = 3;
+const MONTH_DAYS = 35;
+function breakReason(previous, s) {
+    const prevEnd = previous.periodEnd ?? null;
+    if (prevEnd) {
+        const expected = prevEnd.getTime() + DAY_MS;
+        const gap = s.periodStart
+            ? s.periodStart.getTime() - expected > GAP_TOLERANCE_DAYS * DAY_MS
+            : !!s.periodEnd &&
+                s.periodEnd.getTime() - prevEnd.getTime() > MONTH_DAYS * DAY_MS;
+        if (gap)
+            return {
+                kind: 'MISSING',
+                previousStatementId: previous.id,
+                from: isoDay(new Date(expected)),
+                to: s.periodStart
+                    ? isoDay(new Date(s.periodStart.getTime() - DAY_MS))
+                    : null,
+            };
+    }
+    const computed = previous.openingBalance === null
+        ? null
+        : ((0, reconcile_util_1.cents)(previous.openingBalance) + (0, reconcile_util_1.cents)(previous.net)) / 100;
+    return {
+        kind: 'MISMATCH',
+        previousStatementId: previous.id,
+        previousEnd: prevEnd ? isoDay(prevEnd) : null,
+        previousClosing: previous.closingBalance ?? computed,
+        opening: s.openingBalance ?? 0,
+    };
+}
 function startsByAccount(rows) {
     const out = new Map();
     for (const r of rows) {
         const list = out.get(r.bankAccount) ?? [];
+        const day = r.postingDate ?? r.periodEnd;
         list.push({
             statementId: r.statementId,
-            date: r.postingDate?.toISOString().slice(0, 10) ?? null,
+            date: day ? isoDay(day) : null,
             amount: r.amount,
+            ...(r.reason && { reason: r.reason }),
         });
         out.set(r.bankAccount, list);
     }

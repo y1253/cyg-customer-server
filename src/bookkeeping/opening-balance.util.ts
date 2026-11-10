@@ -16,6 +16,11 @@ export interface OpeningStatement {
   openingBalance: number | null;
   closingBalance: number | null;
   periodStart: Date | null;
+  /**
+   * Its last day. Orders the chain when no start was printed: BMO prints only "for the
+   * period ending …", and sorting those statements first broke BMO 6454's chain (2026-11-10).
+   */
+  periodEnd?: Date | null;
   /** Σ amount of the statement's own (AI-read) rows. */
   net: number;
 }
@@ -32,7 +37,34 @@ export interface OpeningRow {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  /** The statement's last day — the date a start is shown with when it printed no start. */
+  periodEnd: Date | null;
+  /** Why the account starts again here; absent on its first start (that one is normal). */
+  reason?: StartReason;
 }
+
+/**
+ * Why a statement after the first gets its own Starting balance — the only two causes:
+ * - MISSING: no statement covers `from` – `to` (YYYY-MM-DD; `to` null = up to this one,
+ *   which printed no start). Upload the missing statement.
+ * - MISMATCH: the periods touch, but this opening is not where the previous statement
+ *   ended (`previousClosing`: its printed closing, else opening + Σ rows). One of the two
+ *   balances, or the previous statement's rows, was read wrong.
+ */
+export type StartReason =
+  | {
+      kind: 'MISSING';
+      previousStatementId: number;
+      from: string;
+      to: string | null;
+    }
+  | {
+      kind: 'MISMATCH';
+      previousStatementId: number;
+      previousEnd: string | null;
+      previousClosing: number | null;
+      opening: number;
+    };
 
 export const STARTING_BALANCE = 'Starting balance';
 
@@ -40,7 +72,8 @@ export const STARTING_BALANCE = 'Starting balance';
  * The printed starting balance of each statement as a ledger row, offset to Owner's Loan.
  *
  * Statements are chained per bank account (`accountName`, the same "Bank account"
- * fallback `processOne` uses), in `periodStart` order — never upload order: a statement
+ * fallback `processOne` uses), in `periodStart` order (`periodEnd` when no start was
+ * printed — BMO, 2026-11-10) — never upload order: a statement
  * whose opening balance equals, to the cent, the ending balance of the PREVIOUS statement
  * of that account continues it and gets no row. The ending balance is any of `endingsOf`:
  * the printed `closingBalance` or opening ± Σ rows (TD has no labelled closing line; "−"
@@ -76,14 +109,14 @@ export function openingRows(
     byAccount.set(bank, [...(byAccount.get(bank) ?? []), s]);
   }
 
-  const time = (d: Date | null) => d?.getTime() ?? -Infinity;
   const out: OpeningRow[] = [];
   for (const [bankAccount, list] of byAccount) {
-    list.sort(
-      (a, b) => time(a.periodStart) - time(b.periodStart) || a.id - b.id,
-    );
+    list.sort((a, b) => chainTime(a) - chainTime(b) || a.id - b.id);
     let carried: number[] = [];
+    let previous: OpeningStatement | undefined;
     for (const s of list) {
+      const before = previous;
+      previous = s;
       const continues =
         s.openingBalance !== null && carried.includes(cents(s.openingBalance));
       if (s.bridgeOnly) {
@@ -108,18 +141,74 @@ export function openingRows(
         description: STARTING_BALANCE,
         offsetAccount: OWNERS_LOAN,
         ...doubleEntry(amount, bankAccount, OWNERS_LOAN),
+        periodEnd: s.periodEnd ?? null,
+        ...(before && { reason: breakReason(before, s) }),
       });
     }
   }
   return out;
 }
 
+/**
+ * Where a statement sits in its account's chain: its first day, else its last (periods
+ * never overlap, so an end date still falls between its neighbours' start dates); no
+ * period at all → first.
+ */
+const chainTime = (s: OpeningStatement): number =>
+  (s.periodStart ?? s.periodEnd)?.getTime() ?? -Infinity;
+
+const DAY_MS = 86_400_000;
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+/** Days a period may skip before the next one and still count as continuous (BMO / TD
+ * periods end on the 29th or 30th and the next starts the 30th or 31st). */
+const GAP_TOLERANCE_DAYS = 3;
+/** With no start printed: a statement ending more than this after the previous one's end
+ * covers more than one month, so one is missing. */
+const MONTH_DAYS = 35;
+
+/** Why `s` does not continue `previous` (see `StartReason`). */
+function breakReason(
+  previous: OpeningStatement,
+  s: OpeningStatement,
+): StartReason {
+  const prevEnd = previous.periodEnd ?? null;
+  if (prevEnd) {
+    const expected = prevEnd.getTime() + DAY_MS;
+    const gap = s.periodStart
+      ? s.periodStart.getTime() - expected > GAP_TOLERANCE_DAYS * DAY_MS
+      : !!s.periodEnd &&
+        s.periodEnd.getTime() - prevEnd.getTime() > MONTH_DAYS * DAY_MS;
+    if (gap)
+      return {
+        kind: 'MISSING',
+        previousStatementId: previous.id,
+        from: isoDay(new Date(expected)),
+        to: s.periodStart
+          ? isoDay(new Date(s.periodStart.getTime() - DAY_MS))
+          : null,
+      };
+  }
+  const computed =
+    previous.openingBalance === null
+      ? null
+      : (cents(previous.openingBalance) + cents(previous.net)) / 100;
+  return {
+    kind: 'MISMATCH',
+    previousStatementId: previous.id,
+    previousEnd: prevEnd ? isoDay(prevEnd) : null,
+    previousClosing: previous.closingBalance ?? computed,
+    opening: s.openingBalance ?? 0,
+  };
+}
+
 /** Where an account's books start: one Starting balance row, as the customer sees it. */
 export interface StartingBalance {
   statementId: number;
-  /** YYYY-MM-DD, or null when the statement printed no period. */
+  /** YYYY-MM-DD: the statement's first day, else its last; null when it printed no period. */
   date: string | null;
   amount: number;
+  /** Why the account starts again here; absent on its first start. */
+  reason?: StartReason;
 }
 
 /**
@@ -133,10 +222,12 @@ export function startsByAccount(
   const out = new Map<string, StartingBalance[]>();
   for (const r of rows) {
     const list = out.get(r.bankAccount) ?? [];
+    const day = r.postingDate ?? r.periodEnd;
     list.push({
       statementId: r.statementId,
-      date: r.postingDate?.toISOString().slice(0, 10) ?? null,
+      date: day ? isoDay(day) : null,
       amount: r.amount,
+      ...(r.reason && { reason: r.reason }),
     });
     out.set(r.bankAccount, list);
   }

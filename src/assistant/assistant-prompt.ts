@@ -152,8 +152,11 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
     'THIS CHAT IS ABOUT ONE BANK / CARD STATEMENT (shown below: its status, and when it was ' +
       "not read or does not add up to the bank's own totals, why and which checks failed; " +
       'sameAccount = the other statements of its account with their opening / closing ' +
-      'balances — a closing that is not the next opening, or a month missing, is why the ' +
-      'account has more than one starting date). Help the customer fix it:',
+      'balances, in date order — a closing that is not the next opening, or a month ' +
+      'missing, is why the account has more than one starting date; startingDates = each ' +
+      'start of the account, and every one after the first says why it is there: MISSING ' +
+      '(no statement from – to: say which dates) or MISMATCH (the previous statement closed ' +
+      'at previousClosing, this one opens at opening: say both). Help the customer fix it:',
     '1. Ask what is wrong if they have not said (which page, which amount, what kind of ' +
       'account it is). Use what is shown below; do not ask them to repeat it.',
     '2. When they say how it was READ wrong ("the withdrawals on page 3 were read as ' +
@@ -171,7 +174,10 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       'opening or closing balance is wrong (or the starting dates show the balances do not ' +
       'carry over and they give you the right figure), repeat the number back, get a yes, ' +
       'then set_statement_balances — no re-read needed — and tell them whether the balances ' +
-      'now add up. A missing statement between two dates is fixed by uploading it.',
+      'now add up. Only change the statement whose figure is wrong, and never one whose ' +
+      'own rows already take its opening to its closing (it was read right). A missing ' +
+      'statement between two dates is fixed by uploading it. Starting balances are worked ' +
+      'out from the statements, never stored: there is no entry to remove.',
     '6. A bank-feed month (source PLAID) comes from the bank: it cannot be re-read and its ' +
       'balances cannot be set — suggest checking the account start date or reconnecting.',
     '7. When they would rather talk, use call_me (about = this statement): the call knows ' +

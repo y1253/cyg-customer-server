@@ -3,6 +3,7 @@ import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { type StartReason } from './opening-balance.util';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
@@ -33,6 +34,7 @@ export interface StatementView {
     startingBalance?: {
         date: string | null;
         amount: number;
+        reason?: StartReason;
     } | null;
 }
 export interface TransactionView {
