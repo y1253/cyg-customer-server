@@ -2,7 +2,33 @@ import {
   MAX_DOCUMENTS_PER_FILE,
   cleanReadings,
   isPaymentDocument,
+  isRefusal,
 } from './attachment-extractor';
+
+describe('isRefusal (step2d)', () => {
+  it("spots the vision model's short refusals", () => {
+    expect(isRefusal("I'm sorry, I can't assist with that.")).toBe(true);
+    expect(isRefusal('I’m sorry, but I cannot help with this request.')).toBe(
+      true,
+    );
+    expect(isRefusal('Sorry, I am unable to read this image.')).toBe(true);
+  });
+
+  it('never takes a reading for a refusal', () => {
+    expect(
+      isRefusal(
+        'The message says: "איך וויל זאלסט מיר טעקסטען" — "I want you to text me".',
+      ),
+    ).toBe(false);
+    expect(
+      isRefusal(
+        "Sorry I'm late, can't make it today — see you tomorrow. (Translation of the text message.)".repeat(
+          2,
+        ),
+      ),
+    ).toBe(false);
+  });
+});
 
 const doc = (extra: Record<string, unknown>) => ({
   documentType: 'CHECK',

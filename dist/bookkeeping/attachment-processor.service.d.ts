@@ -52,7 +52,9 @@ export declare class AttachmentProcessorService {
     private recordFailure;
     private match;
     lookAt(scope: BookScope, attachmentId: number, question: string): Promise<{
-        answer: string;
+        answer: string | null;
+        writtenOnIt: string | null;
+        note?: string;
     } | {
         error: string;
     }>;

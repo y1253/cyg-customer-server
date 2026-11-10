@@ -140,12 +140,12 @@ exports.READ_TOOLS = [
     },
     {
         name: 'look_at_file',
-        description: "Look at a picture or PDF of this book again with the vision model and get the answer to your question about it: every word on it (any language — Yiddish, Hebrew too), a translation, what a letter / request / screenshot asks. Use it whenever the customer wants to know what a file says and its reading has no text, or for anything the reading left out. Nothing is changed. Takes a few seconds.",
+        description: "Look at a picture or PDF of this book again with the vision model and get the answer to your question about it: what it says (any language — Yiddish, Hebrew too), a translation, what a letter / request / screenshot asks. A file's writtenOnIt / reading.text already holds its words — answer from those first (translate them yourself) and call this only when they are missing or the customer needs more. The result repeats writtenOnIt. You CAN read pictures: never tell the customer you cannot read or translate one. Nothing is changed. Takes a few seconds.",
         parameters: obj({
             attachmentId: int,
             question: {
                 type: 'string',
-                description: 'What you want to know, e.g. "Copy every word and translate it to English"',
+                description: 'What you want to know, e.g. "Translate it to English" or "What is the total?"',
             },
         }, ['attachmentId', 'question']),
     },

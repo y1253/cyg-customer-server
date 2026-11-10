@@ -287,3 +287,28 @@ describe('agentBody', () => {
     expect(body.tool_choice).toBeUndefined();
   });
 });
+
+describe('fileContext (step2d)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { fileContext } = require('./assistant.service') as typeof import('./assistant.service');
+  const view = (reading: Record<string, unknown> | null) =>
+    ({
+      id: 291,
+      filename: 'Text 1.png',
+      kind: 'OTHER',
+      status: 'DOCUMENT',
+      reading,
+      total: null,
+      transaction: null,
+      matchNote: 'A text message in Yiddish.',
+      error: null,
+    }) as unknown as Parameters<typeof fileContext>[0];
+
+  it("hands the assistant a document's own words", () => {
+    const words = 'איך וויל זאלסט מיר טעקסטען יעדער טאג';
+    expect(
+      fileContext(view({ documentType: 'DOCUMENT', text: words })).writtenOnIt,
+    ).toBe(words);
+    expect(fileContext(view(null)).writtenOnIt).toBeNull();
+  });
+});

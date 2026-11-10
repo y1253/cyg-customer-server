@@ -44,6 +44,7 @@ export interface DocumentBox {
 export declare class UnreadableAttachmentError extends Error {
 }
 export declare const MAX_DOCUMENTS_PER_FILE = 10;
+export declare function isRefusal(reply: string): boolean;
 export declare class AttachmentExtractor {
     private readonly openai;
     private readonly config;
@@ -52,7 +53,7 @@ export declare class AttachmentExtractor {
     private visionModel;
     private textModel;
     read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null, rules?: string, prepared?: Prepared | null): Promise<AttachmentReading[]>;
-    lookAt(file: Buffer, filename: string, mime: string, cls: 'image' | 'pdf', question: string): Promise<string>;
+    lookAt(file: Buffer, filename: string, mime: string, cls: 'image' | 'pdf', question: string): Promise<string | null>;
     pick(reading: AttachmentReading, candidates: readonly MatchCandidate[], message?: string | null, rules?: string): Promise<{
         transactionId: number | null;
         confident: boolean;

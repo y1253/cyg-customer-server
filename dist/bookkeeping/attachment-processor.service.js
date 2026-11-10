@@ -689,10 +689,19 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     async lookAt(scope, attachmentId, question) {
         const row = await this.prisma.transactionAttachment.findFirst({
             where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
-            select: { filename: true, mimeType: true, storageKey: true },
+            select: {
+                filename: true,
+                mimeType: true,
+                storageKey: true,
+                extracted: true,
+            },
         });
-        if (!row)
-            return { error: 'No such file in this book.' };
+        if (!row) {
+            return {
+                error: 'No such file in this book — find its id with list_attachments (newest first).',
+            };
+        }
+        const writtenOnIt = row.extracted?.text ?? null;
         const cls = classOf(row.mimeType);
         if (cls !== 'image' && cls !== 'pdf') {
             return {
@@ -702,7 +711,13 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         const file = await this.storage.getBuffer(row.storageKey);
         const mime = cls === 'image' ? (sniffImageMime(file) ?? row.mimeType) : row.mimeType;
         const answer = await this.extractor.lookAt(file, row.filename, mime, cls, question);
-        return { answer };
+        return answer
+            ? { answer, writtenOnIt }
+            : {
+                answer: null,
+                writtenOnIt,
+                note: 'The picture reader declined this time; answer from writtenOnIt (translate it yourself).',
+            };
     }
     async candidatesFor(scope, attachmentId, hints = {}, limit = 30) {
         const a = await this.prisma.transactionAttachment.findFirst({

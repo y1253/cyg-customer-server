@@ -1002,12 +1002,28 @@ export class AttachmentProcessorService {
     scope: BookScope,
     attachmentId: number,
     question: string,
-  ): Promise<{ answer: string } | { error: string }> {
+  ): Promise<
+    | { answer: string | null; writtenOnIt: string | null; note?: string }
+    | { error: string }
+  > {
     const row = await this.prisma.transactionAttachment.findFirst({
       where: { id: attachmentId, ...scopeWhere(scope), deletedAt: null },
-      select: { filename: true, mimeType: true, storageKey: true },
+      select: {
+        filename: true,
+        mimeType: true,
+        storageKey: true,
+        extracted: true,
+      },
     });
-    if (!row) return { error: 'No such file in this book.' };
+    if (!row) {
+      return {
+        error:
+          'No such file in this book — find its id with list_attachments (newest first).',
+      };
+    }
+    // What the reader already wrote down: the answer even when the vision model declines.
+    const writtenOnIt =
+      (row.extracted as unknown as AttachmentReading | null)?.text ?? null;
     const cls = classOf(row.mimeType);
     if (cls !== 'image' && cls !== 'pdf') {
       return {
@@ -1024,7 +1040,13 @@ export class AttachmentProcessorService {
       cls,
       question,
     );
-    return { answer };
+    return answer
+      ? { answer, writtenOnIt }
+      : {
+          answer: null,
+          writtenOnIt,
+          note: 'The picture reader declined this time; answer from writtenOnIt (translate it yourself).',
+        };
   }
 
   /**
