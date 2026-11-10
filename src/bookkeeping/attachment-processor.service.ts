@@ -994,6 +994,40 @@ export class AttachmentProcessorService {
   }
 
   /**
+   * step2d (2026-11-09): the assistant's `look_at_file` — the vision model looks at a stored
+   * image / PDF of this book again and answers `question` (what it says, a translation). The
+   * file itself (a crop when it was cut from a bigger image); nothing is stored or changed.
+   */
+  async lookAt(
+    scope: BookScope,
+    attachmentId: number,
+    question: string,
+  ): Promise<{ answer: string } | { error: string }> {
+    const row = await this.prisma.transactionAttachment.findFirst({
+      where: { id: attachmentId, ...scopeWhere(scope), deletedAt: null },
+      select: { filename: true, mimeType: true, storageKey: true },
+    });
+    if (!row) return { error: 'No such file in this book.' };
+    const cls = classOf(row.mimeType);
+    if (cls !== 'image' && cls !== 'pdf') {
+      return {
+        error:
+          'Only a picture or a PDF can be looked at — use get_attachment for what was read off it.',
+      };
+    }
+    const file = await this.storage.getBuffer(row.storageKey);
+    const mime = cls === 'image' ? (sniffImageMime(file) ?? row.mimeType) : row.mimeType;
+    const answer = await this.extractor.lookAt(
+      file,
+      row.filename,
+      mime,
+      cls,
+      question,
+    );
+    return { answer };
+  }
+
+  /**
    * step11 "Ask AI": a WIDER search than the automatic matcher, steered by what the customer
    * said ("it's the Amazon charge on Mar 3"). Every hint is optional; with none, the
    * reading's own amount (±25%) and date (±45 days) are used. DONE parent rows of this book

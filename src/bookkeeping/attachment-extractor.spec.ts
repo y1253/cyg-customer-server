@@ -35,6 +35,19 @@ describe('cleanReadings (step11b)', () => {
     expect(cleanReadings(doc({}))[0].total).toBe(100);
   });
 
+  it("keeps a DOCUMENT's own words, in its own script — never a payment's (step2d)", () => {
+    const words = 'Me: שלום, קענסטו מיר שיקן די רעכענונג?';
+    const [letter, cheque] = cleanReadings({
+      documents: [
+        doc({ documentType: 'DOCUMENT', text: `  ${words}  ` }),
+        doc({ text: 'Pay to the order of Rona' }),
+      ],
+    });
+    expect(letter.text).toBe(words);
+    expect(cheque.text).toBeUndefined();
+    expect(cleanReadings(doc({ documentType: 'DOCUMENT', text: '' }))[0]).not.toHaveProperty('text');
+  });
+
   it('caps the number of documents', () => {
     const many = Array.from({ length: 30 }, () => doc({}));
     expect(cleanReadings({ documents: many })).toHaveLength(

@@ -63,6 +63,7 @@ export declare function fileContext(a: AttachmentView): {
         date: string | null;
     } | null;
     note: string | null;
+    writtenOnIt: string | null;
 };
 export declare function attachmentContext(file: AttachmentView): {
     id: number;

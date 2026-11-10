@@ -60,6 +60,7 @@ function fileContext(a) {
             }
             : null,
         note: a.matchNote ?? a.error,
+        writtenOnIt: a.reading?.text?.slice(0, 3000) ?? null,
         ...(a.reading?.transcript ? { voiceNote: true } : {}),
     };
 }

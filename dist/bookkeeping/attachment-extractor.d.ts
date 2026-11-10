@@ -25,6 +25,7 @@ export interface AttachmentReading {
     category?: string | null;
     box?: DocumentBox | null;
     transcript?: string;
+    text?: string | null;
     pipeline?: ReadingPipeline;
 }
 export interface ReadingPipeline {
@@ -51,6 +52,7 @@ export declare class AttachmentExtractor {
     private visionModel;
     private textModel;
     read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null, rules?: string, prepared?: Prepared | null): Promise<AttachmentReading[]>;
+    lookAt(file: Buffer, filename: string, mime: string, cls: 'image' | 'pdf', question: string): Promise<string>;
     pick(reading: AttachmentReading, candidates: readonly MatchCandidate[], message?: string | null, rules?: string): Promise<{
         transactionId: number | null;
         confident: boolean;

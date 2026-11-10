@@ -686,6 +686,24 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             note: `${pick.reason ? `${pick.reason} ` : ''}Choose the transaction yourself.`,
         };
     }
+    async lookAt(scope, attachmentId, question) {
+        const row = await this.prisma.transactionAttachment.findFirst({
+            where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { filename: true, mimeType: true, storageKey: true },
+        });
+        if (!row)
+            return { error: 'No such file in this book.' };
+        const cls = classOf(row.mimeType);
+        if (cls !== 'image' && cls !== 'pdf') {
+            return {
+                error: 'Only a picture or a PDF can be looked at — use get_attachment for what was read off it.',
+            };
+        }
+        const file = await this.storage.getBuffer(row.storageKey);
+        const mime = cls === 'image' ? (sniffImageMime(file) ?? row.mimeType) : row.mimeType;
+        const answer = await this.extractor.lookAt(file, row.filename, mime, cls, question);
+        return { answer };
+    }
     async candidatesFor(scope, attachmentId, hints = {}, limit = 30) {
         const a = await this.prisma.transactionAttachment.findFirst({
             where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },

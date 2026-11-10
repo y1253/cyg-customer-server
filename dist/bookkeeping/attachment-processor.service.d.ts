@@ -51,6 +51,11 @@ export declare class AttachmentProcessorService {
     private nameFromCheque;
     private recordFailure;
     private match;
+    lookAt(scope: BookScope, attachmentId: number, question: string): Promise<{
+        answer: string;
+    } | {
+        error: string;
+    }>;
     candidatesFor(scope: BookScope, attachmentId: number, hints?: {
         from?: string | null;
         to?: string | null;

@@ -110,6 +110,8 @@ export function fileContext(a: AttachmentView) {
         }
       : null,
     note: a.matchNote ?? a.error,
+    // step2d: a letter / request / screenshot's own words (any language).
+    writtenOnIt: a.reading?.text?.slice(0, 3000) ?? null,
     // step12: a voice note's words are the customer's message itself (`spokenMessage`).
     ...(a.reading?.transcript ? { voiceNote: true } : {}),
   };

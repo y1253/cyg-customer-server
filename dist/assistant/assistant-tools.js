@@ -139,6 +139,17 @@ exports.READ_TOOLS = [
         parameters: obj({ attachmentId: int }, ['attachmentId']),
     },
     {
+        name: 'look_at_file',
+        description: "Look at a picture or PDF of this book again with the vision model and get the answer to your question about it: every word on it (any language — Yiddish, Hebrew too), a translation, what a letter / request / screenshot asks. Use it whenever the customer wants to know what a file says and its reading has no text, or for anything the reading left out. Nothing is changed. Takes a few seconds.",
+        parameters: obj({
+            attachmentId: int,
+            question: {
+                type: 'string',
+                description: 'What you want to know, e.g. "Copy every word and translate it to English"',
+            },
+        }, ['attachmentId', 'question']),
+    },
+    {
         name: 'find_match_candidates',
         description: "Search transactions an attachment could belong to, wider than the automatic matcher. Use the customer's hints (date range, amount, a word from the payee or description).",
         parameters: obj({ attachmentId: int, from: day, to: day, amount: num, text: str }, ['attachmentId']),
@@ -820,6 +831,10 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
             case 'get_attachment':
                 return {
                     content: json(await this.attachments.get(scope, id(a.attachmentId))),
+                };
+            case 'look_at_file':
+                return {
+                    content: json(await this.processor.lookAt(scope, id(a.attachmentId), s(a.question) ?? 'What does it say?')),
                 };
             case 'find_match_candidates':
                 return {
