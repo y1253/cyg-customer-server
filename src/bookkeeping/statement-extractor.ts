@@ -86,6 +86,8 @@ export interface ExtractedStatement {
   balanceFixes: number;
   /** step8: cheque-image captions read as rows and left out (`dropChequeCaptions`). */
   captionRows?: number;
+  /** Opening / closing balances worked out from the running balance (`balancesFromRunning`). */
+  derivedBalances?: number;
   /**
    * The pages that show images of cheques / deposit slips (`hasItemImages`) — cut out and
    * attached to their rows after the statement is saved (`StatementImagesService`).
@@ -227,8 +229,8 @@ export const SYSTEM_PROMPT = [
   '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one. An OVERDRAWN balance (printed with a trailing "-", "OD", "DR" or in brackets, e.g. "1,468.82-") is NEGATIVE: -1468.82. Never put a total, a subtotal or the new/closing balance in balanceAfter — a credit-card statement usually prints no running balance at all, so null on every row.',
   '',
   "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
-  '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"). Never the balance printed after a transaction.',
-  '- closingBalance: the ending balance from its own labelled line ("Ending balance", "Closing balance", "New balance"), null if these pages print none. Never copy the running balance of the last row as the closing balance.',
+  '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"; in French "Solde précédent", "Solde total précédent", "Solde antérieur"). An overdrawn one ("608.42OD", "1,468.82-") is NEGATIVE. Never the balance printed after a transaction.',
+  '- closingBalance: the ending balance from its own labelled line ("Ending balance", "Closing balance", "New balance"; in French "Nouveau solde", "Solde de clôture", or on a card "Solde total"), null if these pages print none. Never copy the running balance of the last row as the closing balance.',
   '- Some banks print a Credits/Debits summary box on every page that totals only that page — copy the box printed on THESE pages as it is.',
   '- totalDeposits: the summary total of ALL money in for this account and period ("Deposits and additions", "Total credits"), as a positive number.',
   '- totalWithdrawals: the summary total of ALL money out ("Withdrawals and subtractions", "Total debits", or "Checks paid" + "Electronic withdrawals" + "Fees" when printed as separate lines — add those lines up), as a positive number.',
@@ -615,15 +617,13 @@ export class StatementExtractor {
       }
     }
 
-    // step2 (2026-11-11, user's decision): no opening or closing balance read = nothing
-    // proves the rows (UNVERIFIED, released with no message). Every page once more on the
-    // stronger model, asking for them; kept when it adds up better, or fills a balance
-    // without losing a check. Still none → the customer sees "Couldn't check".
-    if (
-      result.verification.verification !== 'MISMATCH' &&
-      !hasBalanceCheck(result.verification) &&
-      maxRereads > 0
-    ) {
+    // step2 (2026-11-11, user's decision): nothing proves the rows (UNVERIFIED — no
+    // balances, totals or running balance to check them). Every page once more on the
+    // stronger model, asking for the balances; kept when it adds up better, or fills a
+    // balance without losing a check. Still none → the customer sees "Couldn't check".
+    // Only UNVERIFIED: a TD statement proved by its per-page totals and running balance has
+    // no closing line to find — this pass doubled its calls for nothing.
+    if (result.verification.verification === 'UNVERIFIED' && maxRereads > 0) {
       const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
       this.logger.warn(
         `"${filename}": no ${result.stated.openingBalance === null ? 'opening' : 'closing'} balance read — re-reading page(s) ${targets.map((t) => t + 1).join(',')} with ${this.verifyModel()}`,
@@ -643,10 +643,13 @@ export class StatementExtractor {
         }
       });
       const candidate = assemble(trial);
+      // Never trade a reading that adds up for one that does not: more passing checks made
+      // `better` keep a MISMATCH over VERIFIED and set #574 aside with no re-read round.
       if (
-        better(candidate.verification, result.verification) ||
-        (hasBalanceCheck(candidate.verification) &&
-          !better(result.verification, candidate.verification))
+        candidate.verification.verification !== 'MISMATCH' &&
+        (better(candidate.verification, result.verification) ||
+          (hasBalanceCheck(candidate.verification) &&
+            !better(result.verification, candidate.verification)))
       ) {
         trial.forEach((p, i) => (pages[i] = p));
         result = candidate;
@@ -673,6 +676,9 @@ export class StatementExtractor {
           : '') +
         (result.captionRows
           ? `, ${result.captionRows} cheque-image caption(s) left out`
+          : '') +
+        (result.derivedBalances
+          ? `, ${result.derivedBalances} balance(s) taken from the running balance`
           : ''),
     );
     return { ...result, calls, rereads };
@@ -793,14 +799,27 @@ const MAX_DROP_CANDIDATES = 10;
  * every real row. Re-reading never fixed it. Leaving the page out does, and it is safe: real
  * rows cannot be removed while BOTH money totals still match to the cent. Only the rows are
  * left out — the page's printed figures still count.
+ *
+ * ⚠️ A page whose OWN Credits/Debits box (TD prints one per page) matches its rows is proven
+ * and never dropped: an emptied page's box no longer counts (`reconcileStatement` takes a
+ * page with no rows for a summary), so dropping pages 2–4 of a TD statement "matched"
+ * (#574, 2026-11-11 — 70 real rows set aside over one misplaced running balance).
  */
 export function dropSpuriousPages(pages: readonly PageReading[]): {
   pages: number[];
   readings: PageReading[];
   result: ReturnType<typeof assemble>;
 } | null {
+  const copies = (drop: number[]) =>
+    pages.map((p, i) => ({
+      ...p,
+      transactions: drop.includes(i)
+        ? []
+        : p.transactions.map((t) => ({ ...t })),
+    }));
+  const proven = provenPages(assemble(copies([])).verification);
   const candidates = pages
-    .map((p, i) => (p.transactions.length ? i : -1))
+    .map((p, i) => (p.transactions.length && !proven.has(i) ? i : -1))
     .filter((i) => i >= 0);
   if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES)
     return null;
@@ -811,18 +830,30 @@ export function dropSpuriousPages(pages: readonly PageReading[]): {
   subsets.sort((a, b) => a.length - b.length);
   for (const drop of subsets) {
     // `assemble` writes repaired signs / balances onto the rows: work on copies.
-    const trial = pages.map((p, i) => ({
-      ...p,
-      transactions: drop.includes(i)
-        ? []
-        : p.transactions.map((t) => ({ ...t })),
-    }));
+    const trial = copies(drop);
     const result = assemble(trial);
     if (result.verification.verification === 'VERIFIED') {
       return { pages: drop, readings: trial, result };
     }
   }
   return null;
+}
+
+/** Pages whose own deposits AND withdrawals box matches their rows (per-page boxes only). */
+export function provenPages(v: ReconcileResult): Set<number> {
+  const byPage = new Map<number, { dep: boolean; wd: boolean; bad: boolean }>();
+  for (const c of v.checks) {
+    if (c.page == null || c.skipped) continue;
+    if (c.name !== 'deposits' && c.name !== 'withdrawals') continue;
+    const e = byPage.get(c.page) ?? { dep: false, wd: false, bad: false };
+    if (!c.ok) e.bad = true;
+    else if (c.name === 'deposits') e.dep = true;
+    else e.wd = true;
+    byPage.set(c.page, e);
+  }
+  return new Set(
+    [...byPage].filter(([, e]) => e.dep && e.wd && !e.bad).map(([p]) => p),
+  );
 }
 
 /**
@@ -914,6 +945,21 @@ export function assemble(
     stated,
     pages.map((p, page) => ({ stated: p.stated, rows: rows(page) })),
   );
+  // TD prints no closing-balance line (and the model sometimes skips "BALANCE FORWARD"):
+  // fill what is missing from the running balance once the reading is proven. The checks
+  // stay as they were — the figures are for the starting-balance chain, not a new proof.
+  const derived = balancesFromRunning(finite, verification);
+  let derivedBalances = 0;
+  if (derived) {
+    if (stated.openingBalance === null && derived.opening !== null) {
+      stated.openingBalance = derived.opening;
+      derivedBalances++;
+    }
+    if (stated.closingBalance === null && derived.closing !== null) {
+      stated.closingBalance = derived.closing;
+      derivedBalances++;
+    }
+  }
   const said = pages.map((p) => p.accountKind).filter(Boolean);
   return {
     accountName: first((p) => p.accountName),
@@ -931,6 +977,7 @@ export function assemble(
     signFixes: totalsFlips + repair.flips,
     balanceFixes: balances.fixes,
     captionRows,
+    derivedBalances,
     // One page per chunk (`PAGES_PER_CHUNK`), so a reading's index is its PDF page.
     imagePages: pages.flatMap((p, page) =>
       p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : [],
@@ -975,6 +1022,47 @@ export function closingOf(
       ends.some((e) => e !== undefined && c(e) === c(v)),
     ) ?? candidates[candidates.length - 1]
   );
+}
+
+/**
+ * The opening and closing balance a VERIFIED reading's running balance implies, for a
+ * statement that prints no "closing balance" line — TD's last row just carries the final
+ * running balance ("OVERDRAFT INTEREST 2.32 FEB29 2,261.00OD"), and the prompt forbids
+ * copying it (2026-11-11: 16 TD statements "couldn't be checked" in book 2, every row right).
+ * Oldest-first or newest-first, by the rows' dates. closing = the printed balance on the
+ * last row in time (null when that row prints none); opening = the first printed balance
+ * less the rows up to it. Null unless the reading is VERIFIED with a passing running
+ * balance. Pure; also used on stored rows (`scripts/derive-statement-balances.ts`).
+ */
+export function balancesFromRunning(
+  rows: ReadonlyArray<{
+    amount: number;
+    balanceAfter: number | null;
+    postingDate?: string | null;
+  }>,
+  verification: Pick<ReconcileResult, 'verification' | 'checks' | 'balanceSign'>,
+): { opening: number | null; closing: number | null } | null {
+  if (verification.verification !== 'VERIFIED') return null;
+  const running = verification.checks.find(
+    (c) => c.name === 'runningBalance' && c.page == null,
+  );
+  if (!running?.ok || !rows.length) return null;
+  const first = rows[0].postingDate ?? '';
+  const last = rows[rows.length - 1].postingDate ?? '';
+  const ordered = first && last && first > last ? [...rows].reverse() : rows;
+  const c = (n: number) => Math.round(n * 100);
+  const sign = verification.balanceSign;
+  const end = ordered[ordered.length - 1].balanceAfter;
+  const closing = end === null ? null : end;
+  const k = ordered.findIndex((r) => r.balanceAfter !== null);
+  let opening: number | null = null;
+  if (k >= 0) {
+    const upTo = ordered
+      .slice(0, k + 1)
+      .reduce((t, r) => t + c(r.amount), 0);
+    opening = (c(ordered[k].balanceAfter!) - sign * upTo) / 100;
+  }
+  return { opening, closing };
 }
 
 /**

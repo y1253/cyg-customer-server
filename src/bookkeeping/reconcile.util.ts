@@ -443,6 +443,10 @@ function runningBalance(
       return;
     }
     if (prev !== null) {
+      if (prev + amounts[i] !== balance && copiedTooEarly(printed, amounts, i, prev)) {
+        prev += amounts[i];
+        return;
+      }
       links++;
       if (prev + amounts[i] !== balance) {
         broken++;
@@ -453,6 +457,27 @@ function runningBalance(
     prev = balance; // re-anchor on what the bank printed, so one bad row is one failure
   });
   return { links, broken, suspect, at };
+}
+
+/**
+ * Row i's printed balance is the NEXT printed one, copied a row too early — the model put the
+ * day's balance on the last two rows of a TD day (#574 2026-11-11: "100.57" on the fee row
+ * and on "ESSO 40.00", two breaks of +40 / −40 over rows that were all right). True when the
+ * next printed balance is the same figure and the rows from the last anchor reach it.
+ */
+function copiedTooEarly(
+  printed: Array<number | null>,
+  amounts: number[],
+  i: number,
+  prev: number,
+): boolean {
+  let run = prev + amounts[i];
+  for (let j = i + 1; j < printed.length; j++) {
+    run += amounts[j];
+    if (printed[j] === null) continue;
+    return printed[j] === printed[i] && run === printed[j];
+  }
+  return false;
 }
 
 /** How many checks pass — used to keep the better of two readings of a page. */

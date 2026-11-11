@@ -289,3 +289,28 @@ describe('perPageBoxes', () => {
     expect(perPageBoxes([{ ...NONE, totalDeposits: 1 }, NONE])).toBe(false);
   });
 });
+
+describe('running balance: one balance copied a row too early (#574, 2026-11-11)', () => {
+  // TD Dec 2024 page 3: DEC24 146.57, then DEC27 rows to "ESSO 40.00 … 100.57" — the model
+  // also put 100.57 on the fee row above it.
+  const rows = (feeBalance: number | null): ReconcileRow[] => [
+    { amount: 500, balanceAfter: null, page: 0 },
+    { amount: -500, balanceAfter: null, page: 0 },
+    { amount: -1.5, balanceAfter: null, page: 0 },
+    { amount: -4.5, balanceAfter: feeBalance, page: 0 },
+    { amount: -40, balanceAfter: 100.57, page: 0 },
+  ];
+  const stated = { ...NONE, openingBalance: 146.57 };
+
+  it('is not two breaks', () => {
+    const r = reconcile(stated, rows(100.57));
+    const running = r.checks.find((c) => c.name === 'runningBalance');
+    expect(running?.ok).toBe(true);
+    expect(r.verification).not.toBe('MISMATCH');
+  });
+
+  it('a different wrong figure still breaks', () => {
+    const r = reconcile(stated, rows(120));
+    expect(r.checks.find((c) => c.name === 'runningBalance')?.ok).toBe(false);
+  });
+});

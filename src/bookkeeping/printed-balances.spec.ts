@@ -59,6 +59,17 @@ describe('2026-11-11: balances a statement prints are never silently left unread
     });
   });
 
+  it('French labels and amounts (BMO Mastercard, Quebec)', () => {
+    expect(
+      printedBalanceLines(
+        'Solde total précédent, 9 déc. 2023 21 265,51 $\nNouveau solde 24 348,87 $\nSolde total 24 348,87 $',
+      ),
+    ).toEqual({
+      opening: ['Solde total précédent, 9 déc. 2023 21 265,51 $'],
+      closing: ['Nouveau solde 24 348,87 $'],
+    });
+  });
+
   it('missingBalances: the printed lines whose figure was read as null, and their pages', () => {
     const printed = [
       printedBalanceLines(CHASE_PAGE),

@@ -105,6 +105,20 @@ describe('statementProblem (step2, 2026-11-11)', () => {
     expect(p?.text).toContain("couldn't read this statement's closing balance");
   });
 
+  it('none for a statement proved by its totals / running balance with no closing line (TD)', () => {
+    expect(
+      statementProblem(
+        done({
+          closingBalance: null,
+          verificationDetail: [
+            { name: 'deposits', expected: 5, actual: 5, ok: true, skipped: null },
+            { name: 'runningBalance', expected: 9, actual: 9, ok: true, skipped: null },
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('never for a bank-feed month or a statement still being read', () => {
     expect(
       statementProblem(done({ source: 'PLAID', verificationDetail: [] })),

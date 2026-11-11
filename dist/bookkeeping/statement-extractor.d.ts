@@ -25,6 +25,7 @@ export interface ExtractedStatement {
     signFixes: number;
     balanceFixes: number;
     captionRows?: number;
+    derivedBalances?: number;
     imagePages: ImagePage[];
 }
 export interface PageReading {
@@ -158,8 +159,17 @@ export declare function dropSpuriousPages(pages: readonly PageReading[]): {
     readings: PageReading[];
     result: ReturnType<typeof assemble>;
 } | null;
+export declare function provenPages(v: ReconcileResult): Set<number>;
 export declare function assemble(readings: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
 export declare function closingOf(pages: PageReading[], openingBalance?: number | null): number | null;
+export declare function balancesFromRunning(rows: ReadonlyArray<{
+    amount: number;
+    balanceAfter: number | null;
+    postingDate?: string | null;
+}>, verification: Pick<ReconcileResult, 'verification' | 'checks' | 'balanceSign'>): {
+    opening: number | null;
+    closing: number | null;
+} | null;
 export declare function missingBalances(stated: Pick<StatedFigures, 'openingBalance' | 'closingBalance'>, printed: readonly PrintedBalances[]): {
     lines: string[];
     pages: number[];

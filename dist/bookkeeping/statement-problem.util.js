@@ -51,9 +51,7 @@ function statementProblem(s) {
             text: `No statement from ${longDay(r.from)} ${to}.${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
         };
     }
-    if (s.source !== 'PLAID' &&
-        Array.isArray(s.verificationDetail) &&
-        !storedChecks(s.verificationDetail).some((c) => c.name === 'balance')) {
+    if (s.source !== 'PLAID' && s.verification === 'UNVERIFIED') {
         const which = s.openingBalance === null && s.closingBalance === null
             ? 'opening or closing balance'
             : s.openingBalance === null
@@ -62,7 +60,7 @@ function statementProblem(s) {
         return {
             kind: 'NO_BALANCES',
             title: exports.PROBLEM_TITLES.NO_BALANCES,
-            text: `We couldn't read this statement's ${which}, even with our strongest reader, so its transactions could not be checked against it. They are in your books as read — tell the AI the balances printed on it to check them.`,
+            text: `We couldn't read this statement's ${which}, so nothing checked its transactions. They are in your books as read — tell the AI the balances printed on it to check them.`,
         };
     }
     return null;

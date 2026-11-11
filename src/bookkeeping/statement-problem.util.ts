@@ -11,8 +11,8 @@ import { describeCheck, type Check } from './reconcile.util';
  *   ended, although their periods touch — both were re-read once on the strong model
  *   (`StatementContinuityService`); the books start again here.
  * - MISSING: a gap in the periods before it; the books start again here.
- * - NO_BALANCES: no opening or closing balance could be read, even on the strong model, so
- *   nothing checks its rows (in the books as read).
+ * - NO_BALANCES: nothing proved its rows (UNVERIFIED — no balances, totals or running
+ *   balance to check them against), even on the strong model (in the books as read).
  * Computed on READ, never stored, so a move / delete / retry never leaves a stale one.
  */
 export type ProblemKind = 'BALANCE' | 'MISMATCH' | 'MISSING' | 'NO_BALANCES';
@@ -94,12 +94,10 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
       text: `No statement from ${longDay(r.from)} ${to}.${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
     };
   }
-  // A bank-feed month has no printed balances to read — it is built from them.
-  if (
-    s.source !== 'PLAID' &&
-    Array.isArray(s.verificationDetail) &&
-    !storedChecks(s.verificationDetail).some((c) => c.name === 'balance')
-  ) {
+  // A bank-feed month has no printed balances to read — it is built from them. Only
+  // UNVERIFIED: a statement proved by its printed totals or running balance IS checked, even
+  // without a closing-balance line (TD prints none — 16 false alarms in book 2, 2026-11-11).
+  if (s.source !== 'PLAID' && s.verification === 'UNVERIFIED') {
     const which =
       s.openingBalance === null && s.closingBalance === null
         ? 'opening or closing balance'
@@ -109,7 +107,7 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
     return {
       kind: 'NO_BALANCES',
       title: PROBLEM_TITLES.NO_BALANCES,
-      text: `We couldn't read this statement's ${which}, even with our strongest reader, so its transactions could not be checked against it. They are in your books as read — tell the AI the balances printed on it to check them.`,
+      text: `We couldn't read this statement's ${which}, so nothing checked its transactions. They are in your books as read — tell the AI the balances printed on it to check them.`,
     };
   }
   return null;

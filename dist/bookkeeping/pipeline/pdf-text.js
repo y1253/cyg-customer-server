@@ -109,9 +109,9 @@ function piecesOf(json) {
     }
     return out;
 }
-const OPENING_LABEL = /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b/i;
-const CLOSING_LABEL = /\b(new balance|closing balance|ending balance)\b/i;
-const AMOUNT = /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}/;
+const OPENING_LABEL = /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b|(?<!\p{L})(solde (?:total )?précédent|solde antérieur|solde reporté|solde d'ouverture)(?!\p{L})/iu;
+const CLOSING_LABEL = /\b(new balance|closing balance|ending balance)\b|(?<!\p{L})(nouveau solde|solde de clôture|solde de fermeture)(?!\p{L})/iu;
+const AMOUNT = /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}|\d{1,3}(?:[ \u00a0\u202f]\d{3})*,\d{2}(?!\d)/;
 function printedBalanceLines(text) {
     const out = { opening: [], closing: [] };
     for (const line of text.split('\n')) {

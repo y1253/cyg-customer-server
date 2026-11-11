@@ -14,8 +14,10 @@ exports.StatementExtractor = exports.SYSTEM_PROMPT = exports.NAME_RULE = exports
 exports.showsItemImages = showsItemImages;
 exports.emptyReading = emptyReading;
 exports.dropSpuriousPages = dropSpuriousPages;
+exports.provenPages = provenPages;
 exports.assemble = assemble;
 exports.closingOf = closingOf;
+exports.balancesFromRunning = balancesFromRunning;
 exports.missingBalances = missingBalances;
 exports.hasBalanceCheck = hasBalanceCheck;
 exports.rereadRound = rereadRound;
@@ -142,8 +144,8 @@ exports.SYSTEM_PROMPT = [
     '- balanceAfter: the running balance printed ON THAT ROW, else null. Some statements print a balance only on the last row of each day — fill it on those rows only, null on the others. Never compute one. An OVERDRAWN balance (printed with a trailing "-", "OD", "DR" or in brackets, e.g. "1,468.82-") is NEGATIVE: -1468.82. Never put a total, a subtotal or the new/closing balance in balanceAfter — a credit-card statement usually prints no running balance at all, so null on every row.',
     '',
     "The bank's own figures — COPY them exactly as printed on these pages, never calculate them (null when not printed here). Many statements print none of these; null is normal and fine:",
-    '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"). Never the balance printed after a transaction.',
-    '- closingBalance: the ending balance from its own labelled line ("Ending balance", "Closing balance", "New balance"), null if these pages print none. Never copy the running balance of the last row as the closing balance.',
+    '- openingBalance: the balance BEFORE the first transaction on these pages, from its own line ("Beginning balance", "Previous balance", "Balance forward"; in French "Solde précédent", "Solde total précédent", "Solde antérieur"). An overdrawn one ("608.42OD", "1,468.82-") is NEGATIVE. Never the balance printed after a transaction.',
+    '- closingBalance: the ending balance from its own labelled line ("Ending balance", "Closing balance", "New balance"; in French "Nouveau solde", "Solde de clôture", or on a card "Solde total"), null if these pages print none. Never copy the running balance of the last row as the closing balance.',
     '- Some banks print a Credits/Debits summary box on every page that totals only that page — copy the box printed on THESE pages as it is.',
     '- totalDeposits: the summary total of ALL money in for this account and period ("Deposits and additions", "Total credits"), as a positive number.',
     '- totalWithdrawals: the summary total of ALL money out ("Withdrawals and subtractions", "Total debits", or "Checks paid" + "Electronic withdrawals" + "Fees" when printed as separate lines — add those lines up), as a positive number.',
@@ -383,9 +385,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                 };
             }
         }
-        if (result.verification.verification !== 'MISMATCH' &&
-            !hasBalanceCheck(result.verification) &&
-            maxRereads > 0) {
+        if (result.verification.verification === 'UNVERIFIED' && maxRereads > 0) {
             const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
             this.logger.warn(`"${filename}": no ${result.stated.openingBalance === null ? 'opening' : 'closing'} balance read — re-reading page(s) ${targets.map((t) => t + 1).join(',')} with ${this.verifyModel()}`);
             const hint = [
@@ -402,9 +402,10 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                 }
             });
             const candidate = assemble(trial);
-            if (better(candidate.verification, result.verification) ||
-                (hasBalanceCheck(candidate.verification) &&
-                    !better(result.verification, candidate.verification))) {
+            if (candidate.verification.verification !== 'MISMATCH' &&
+                (better(candidate.verification, result.verification) ||
+                    (hasBalanceCheck(candidate.verification) &&
+                        !better(result.verification, candidate.verification)))) {
                 trial.forEach((p, i) => (pages[i] = p));
                 result = candidate;
             }
@@ -426,6 +427,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                 : '') +
             (result.captionRows
                 ? `, ${result.captionRows} cheque-image caption(s) left out`
+                : '') +
+            (result.derivedBalances
+                ? `, ${result.derivedBalances} balance(s) taken from the running balance`
                 : ''));
         return { ...result, calls, rereads };
     }
@@ -509,8 +513,15 @@ function emptyReading() {
 }
 const MAX_DROP_CANDIDATES = 10;
 function dropSpuriousPages(pages) {
+    const copies = (drop) => pages.map((p, i) => ({
+        ...p,
+        transactions: drop.includes(i)
+            ? []
+            : p.transactions.map((t) => ({ ...t })),
+    }));
+    const proven = provenPages(assemble(copies([])).verification);
     const candidates = pages
-        .map((p, i) => (p.transactions.length ? i : -1))
+        .map((p, i) => (p.transactions.length && !proven.has(i) ? i : -1))
         .filter((i) => i >= 0);
     if (!candidates.length || candidates.length > MAX_DROP_CANDIDATES)
         return null;
@@ -520,18 +531,31 @@ function dropSpuriousPages(pages) {
     }
     subsets.sort((a, b) => a.length - b.length);
     for (const drop of subsets) {
-        const trial = pages.map((p, i) => ({
-            ...p,
-            transactions: drop.includes(i)
-                ? []
-                : p.transactions.map((t) => ({ ...t })),
-        }));
+        const trial = copies(drop);
         const result = assemble(trial);
         if (result.verification.verification === 'VERIFIED') {
             return { pages: drop, readings: trial, result };
         }
     }
     return null;
+}
+function provenPages(v) {
+    const byPage = new Map();
+    for (const c of v.checks) {
+        if (c.page == null || c.skipped)
+            continue;
+        if (c.name !== 'deposits' && c.name !== 'withdrawals')
+            continue;
+        const e = byPage.get(c.page) ?? { dep: false, wd: false, bad: false };
+        if (!c.ok)
+            e.bad = true;
+        else if (c.name === 'deposits')
+            e.dep = true;
+        else
+            e.wd = true;
+        byPage.set(c.page, e);
+    }
+    return new Set([...byPage].filter(([, e]) => e.dep && e.wd && !e.bad).map(([p]) => p));
 }
 function assemble(readings) {
     const { pages, dropped: captionRows } = (0, cheque_caption_util_1.dropChequeCaptions)(readings);
@@ -588,6 +612,18 @@ function assemble(readings) {
         page: t.page,
     }));
     const verification = (0, reconcile_util_1.reconcileStatement)(stated, pages.map((p, page) => ({ stated: p.stated, rows: rows(page) })));
+    const derived = balancesFromRunning(finite, verification);
+    let derivedBalances = 0;
+    if (derived) {
+        if (stated.openingBalance === null && derived.opening !== null) {
+            stated.openingBalance = derived.opening;
+            derivedBalances++;
+        }
+        if (stated.closingBalance === null && derived.closing !== null) {
+            stated.closingBalance = derived.closing;
+            derivedBalances++;
+        }
+    }
     const said = pages.map((p) => p.accountKind).filter(Boolean);
     return {
         accountName: first((p) => p.accountName),
@@ -604,6 +640,7 @@ function assemble(readings) {
         signFixes: totalsFlips + repair.flips,
         balanceFixes: balances.fixes,
         captionRows,
+        derivedBalances,
         imagePages: pages.flatMap((p, page) => p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : []),
         verification,
     };
@@ -625,6 +662,29 @@ function closingOf(pages, openingBalance = null) {
         .filter((v) => v !== null);
     const ends = [printed[printed.length - 1], printed[0]];
     return (candidates.find((v) => ends.some((e) => e !== undefined && c(e) === c(v))) ?? candidates[candidates.length - 1]);
+}
+function balancesFromRunning(rows, verification) {
+    if (verification.verification !== 'VERIFIED')
+        return null;
+    const running = verification.checks.find((c) => c.name === 'runningBalance' && c.page == null);
+    if (!running?.ok || !rows.length)
+        return null;
+    const first = rows[0].postingDate ?? '';
+    const last = rows[rows.length - 1].postingDate ?? '';
+    const ordered = first && last && first > last ? [...rows].reverse() : rows;
+    const c = (n) => Math.round(n * 100);
+    const sign = verification.balanceSign;
+    const end = ordered[ordered.length - 1].balanceAfter;
+    const closing = end === null ? null : end;
+    const k = ordered.findIndex((r) => r.balanceAfter !== null);
+    let opening = null;
+    if (k >= 0) {
+        const upTo = ordered
+            .slice(0, k + 1)
+            .reduce((t, r) => t + c(r.amount), 0);
+        opening = (c(ordered[k].balanceAfter) - sign * upTo) / 100;
+    }
+    return { opening, closing };
 }
 function missingBalances(stated, printed) {
     const lines = [];

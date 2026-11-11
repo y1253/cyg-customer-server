@@ -2,6 +2,7 @@ import type { ConfigService } from '@nestjs/config';
 import { PDFDocument } from 'pdf-lib';
 import type { ChatRequest, OpenAiClient } from '../ai/openai.client';
 import {
+  balancesFromRunning,
   dropSpuriousPages,
   emptyReading,
   EXTRACTION_SCHEMA,
@@ -273,5 +274,76 @@ describe('dropSpuriousPages', () => {
     const p1 = page([row(10)], { totalDeposits: 25 });
     const p2 = page([row(10)]);
     expect(dropSpuriousPages([p1, p2])).toBeNull();
+  });
+
+  it('TD: never drops a page whose own Credits/Debits box matches its rows (#574)', () => {
+    // A bad running balance on page 3 — emptying pages 2 and 3 used to "add up", because a
+    // page with no rows has its box taken for a summary.
+    const p1 = page([row(100, 100), row(-30, 70)], {
+      openingBalance: 0,
+      totalDeposits: 100,
+      totalWithdrawals: 30,
+    });
+    const p2 = page([row(50, 120), row(-20, 100)], {
+      totalDeposits: 50,
+      totalWithdrawals: 20,
+    });
+    const p3 = page([row(-10, 93), row(5, 95)], {
+      totalDeposits: 5,
+      totalWithdrawals: 10,
+    });
+    expect(dropSpuriousPages([p1, p2, p3])).toBeNull();
+  });
+});
+
+describe('balancesFromRunning (TD prints no closing line, 2026-11-11)', () => {
+  const r = (amount: number, balanceAfter: number | null, postingDate = '2024-02-01') => ({
+    amount,
+    balanceAfter,
+    postingDate,
+  });
+  const ok = {
+    verification: 'VERIFIED' as const,
+    balanceSign: 1 as const,
+    checks: [
+      { name: 'runningBalance' as const, expected: 3, actual: 3, ok: true, skipped: null },
+    ],
+  };
+  // 2-2024.pdf page 1: BALANCE FORWARD 608.42OD, then 7 rows to 520.28 …
+  const td = [
+    r(-40, null),
+    r(3000, null),
+    r(200, null),
+    r(23, null),
+    r(-825.35, null),
+    r(-1200, null),
+    r(-28.95, 520.28),
+    r(1800, null, '2024-02-29'),
+    r(-4081.28, -1761.0, '2024-02-29'),
+  ];
+
+  it('opening = first printed balance less the rows to it; closing = the last row', () => {
+    expect(balancesFromRunning(td, ok)).toEqual({ opening: -608.42, closing: -1761 });
+  });
+
+  it('newest-first statements read from the other end', () => {
+    expect(balancesFromRunning([...td].reverse(), ok)).toEqual({
+      opening: -608.42,
+      closing: -1761,
+    });
+  });
+
+  it('no closing when the last row prints no balance', () => {
+    expect(balancesFromRunning([...td, r(-5, null, '2024-02-29')], ok)?.closing).toBeNull();
+  });
+
+  it('nothing unless the reading is VERIFIED with a passing running balance', () => {
+    expect(balancesFromRunning(td, { ...ok, verification: 'UNVERIFIED' })).toBeNull();
+    expect(
+      balancesFromRunning(td, {
+        ...ok,
+        checks: [{ ...ok.checks[0], actual: 2, ok: false }],
+      }),
+    ).toBeNull();
   });
 });

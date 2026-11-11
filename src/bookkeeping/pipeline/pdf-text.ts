@@ -157,11 +157,15 @@ export interface PrintedBalances {
   closing: string[];
 }
 
+// French too (2026-11-11): BMO's Quebec Mastercard prints "Solde total précédent" and
+// "Nouveau solde"; "Solde total" alone is left out — it also heads other boxes.
 const OPENING_LABEL =
-  /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b/i;
-const CLOSING_LABEL = /\b(new balance|closing balance|ending balance)\b/i;
+  /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b|(?<!\p{L})(solde (?:total )?précédent|solde antérieur|solde reporté|solde d'ouverture)(?!\p{L})/iu;
+const CLOSING_LABEL =
+  /\b(new balance|closing balance|ending balance)\b|(?<!\p{L})(nouveau solde|solde de clôture|solde de fermeture)(?!\p{L})/iu;
 /** A money amount with cents: "$2,629.30", "-$1,213.66", "100.00", "1,468.82-". */
-const AMOUNT = /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}/;
+const AMOUNT =
+  /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}|\d{1,3}(?:[ \u00a0\u202f]\d{3})*,\d{2}(?!\d)/;
 
 /**
  * The opening / closing balance lines a statement page's text layer prints: a label AND an

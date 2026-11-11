@@ -212,6 +212,10 @@ function runningBalance(printed, amounts, pages, opening) {
             return;
         }
         if (prev !== null) {
+            if (prev + amounts[i] !== balance && copiedTooEarly(printed, amounts, i, prev)) {
+                prev += amounts[i];
+                return;
+            }
             links++;
             if (prev + amounts[i] !== balance) {
                 broken++;
@@ -222,6 +226,16 @@ function runningBalance(printed, amounts, pages, opening) {
         prev = balance;
     });
     return { links, broken, suspect, at };
+}
+function copiedTooEarly(printed, amounts, i, prev) {
+    let run = prev + amounts[i];
+    for (let j = i + 1; j < printed.length; j++) {
+        run += amounts[j];
+        if (printed[j] === null)
+            continue;
+        return printed[j] === printed[i] && run === printed[j];
+    }
+    return false;
 }
 const score = (r) => r.checks.filter((c) => c.ok && !c.skipped).length;
 exports.score = score;
