@@ -6,6 +6,7 @@ import { StatementExtractor } from './statement-extractor';
 import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
+import { type BookScope } from './scope';
 export { claimableAt, MAX_ATTEMPTS };
 export declare class StatementProcessorService {
     private readonly prisma;
@@ -19,6 +20,7 @@ export declare class StatementProcessorService {
     private sweeping;
     constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined);
     processSoon(): void;
+    recheckChains(scope: BookScope, accountNames: Array<string | null> | null): Promise<void>;
     cleanStaging(): Promise<void>;
     sweep(): Promise<void>;
     private runSweep;
@@ -28,7 +30,6 @@ export declare class StatementProcessorService {
     private linkedReceipts;
     private relinkReceipts;
 }
-export declare function needsReviewMessage(rereads: number, problems: string[]): string;
 export declare function withCustomerNote(rules: string, note: string | null): string;
 export declare function customerBalances(note: string | null): {
     opening: number | null;

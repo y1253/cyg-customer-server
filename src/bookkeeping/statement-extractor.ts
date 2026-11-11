@@ -308,6 +308,13 @@ export class StatementExtractor {
       onRound?: (rereads: number) => Promise<void> | void;
       /** The book's learned "house rules" (`RulesService.promptBlock`), appended to the prompt. */
       rules?: string;
+      /**
+       * step2 (2026-11-11): read every page with the stronger model from the start — the
+       * re-read of a statement whose balances do not carry over to / from its neighbour.
+       */
+      strong?: boolean;
+      /** step2: given with every first read (the neighbours' balances, `chainHint`). */
+      hint?: string | null;
     } = {},
   ): Promise<ExtractedStatement> {
     const pagesPerChunk = opts.pagesPerChunk ?? PAGES_PER_CHUNK;
@@ -378,13 +385,15 @@ export class StatementExtractor {
       i: number,
       context: PageContext | null,
     ): Promise<PageReading> => {
+      const first = opts.strong ? this.verifyModel() : this.model();
+      const other = opts.strong ? this.model() : this.verifyModel();
       try {
-        return await read(i, this.model(), context, null);
+        return await read(i, first, context, opts.hint ?? null);
       } catch (err) {
         this.logger.warn(
-          `"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`,
+          `"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${other}`,
         );
-        return read(i, this.verifyModel(), context, null);
+        return read(i, other, context, opts.hint ?? null);
       }
     };
 
@@ -604,6 +613,45 @@ export class StatementExtractor {
           },
         };
       }
+    }
+
+    // step2 (2026-11-11, user's decision): no opening or closing balance read = nothing
+    // proves the rows (UNVERIFIED, released with no message). Every page once more on the
+    // stronger model, asking for them; kept when it adds up better, or fills a balance
+    // without losing a check. Still none → the customer sees "Couldn't check".
+    if (
+      result.verification.verification !== 'MISMATCH' &&
+      !hasBalanceCheck(result.verification) &&
+      maxRereads > 0
+    ) {
+      const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
+      this.logger.warn(
+        `"${filename}": no ${result.stated.openingBalance === null ? 'opening' : 'closing'} balance read — re-reading page(s) ${targets.map((t) => t + 1).join(',')} with ${this.verifyModel()}`,
+      );
+      const hint = [
+        'A previous reading of this statement found no opening and / or closing balance, so its transactions could not be checked.',
+        'Look for them: "Previous balance" / "Opening balance" / "Balance forward" / "Starting balance" is openingBalance, "New balance" / "Closing balance" / "Ending balance" is closingBalance — copy them exactly as printed (null only if this page truly prints none). Re-read every transaction line too.',
+      ].join('\n');
+      const trial = [...pages];
+      await this.pool(targets, async (i) => {
+        try {
+          trial[i] = await read(i, this.verifyModel(), i === 0 ? null : context, hint);
+        } catch (err) {
+          this.logger.warn(
+            `"${filename}" page ${i + 1}: balance re-read failed (${errorText(err)})`,
+          );
+        }
+      });
+      const candidate = assemble(trial);
+      if (
+        better(candidate.verification, result.verification) ||
+        (hasBalanceCheck(candidate.verification) &&
+          !better(result.verification, candidate.verification))
+      ) {
+        trial.forEach((p, i) => (pages[i] = p));
+        result = candidate;
+      }
+      rereads++;
     }
 
     this.logger.log(
@@ -955,6 +1003,11 @@ export function missingBalances(
  * Re-read round `n` (0-based): the suspect pages on the base model, then on the stronger
  * one, then every page on it; after that suspect pages and every page alternate.
  */
+/** step2: the statement's opening + net = closing was checked (both balances were read). */
+export function hasBalanceCheck(v: ReconcileResult): boolean {
+  return v.checks.some((c) => c.name === 'balance');
+}
+
 export function rereadRound(n: number): {
   verifyModel: boolean;
   allPages: boolean;

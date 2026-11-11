@@ -170,7 +170,7 @@ describe('StatementExtractor asks again for a printed balance it did not read', 
     expect(check?.printed).toContain('Previous Balance $633.66');
   });
 
-  it('a page that prints no balance stays UNVERIFIED with no extra call', async () => {
+  it('a page that prints no balance is asked once more, then stays UNVERIFIED', async () => {
     const plain = 'Wise   EUR statement   1 May - 31 Dec 2025\n'.repeat(3);
     texts.mockResolvedValue([plain]);
     contents.mockResolvedValue([
@@ -178,7 +178,8 @@ describe('StatementExtractor asks again for a printed balance it did not read', 
     ]);
     const { ex, chat } = extractor([reading({})]);
     const out = await ex.extract(await pdf(1), 'wise.pdf');
-    expect(chat).toHaveBeenCalledTimes(1);
+    // step2 (2026-11-11): the one balance read on the strong model, nothing more.
+    expect(chat).toHaveBeenCalledTimes(2);
     expect(out.verification.verification).toBe('UNVERIFIED');
   });
 });

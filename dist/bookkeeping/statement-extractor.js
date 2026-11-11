@@ -17,6 +17,7 @@ exports.dropSpuriousPages = dropSpuriousPages;
 exports.assemble = assemble;
 exports.closingOf = closingOf;
 exports.missingBalances = missingBalances;
+exports.hasBalanceCheck = hasBalanceCheck;
 exports.rereadRound = rereadRound;
 exports.signHint = signHint;
 exports.better = better;
@@ -214,12 +215,14 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             };
         };
         const firstRead = async (i, context) => {
+            const first = opts.strong ? this.verifyModel() : this.model();
+            const other = opts.strong ? this.model() : this.verifyModel();
             try {
-                return await read(i, this.model(), context, null);
+                return await read(i, first, context, opts.hint ?? null);
             }
             catch (err) {
-                this.logger.warn(`"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`);
-                return read(i, this.verifyModel(), context, null);
+                this.logger.warn(`"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${other}`);
+                return read(i, other, context, opts.hint ?? null);
             }
         };
         const pages = new Array(chunks.length);
@@ -379,6 +382,33 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                     },
                 };
             }
+        }
+        if (result.verification.verification !== 'MISMATCH' &&
+            !hasBalanceCheck(result.verification) &&
+            maxRereads > 0) {
+            const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
+            this.logger.warn(`"${filename}": no ${result.stated.openingBalance === null ? 'opening' : 'closing'} balance read — re-reading page(s) ${targets.map((t) => t + 1).join(',')} with ${this.verifyModel()}`);
+            const hint = [
+                'A previous reading of this statement found no opening and / or closing balance, so its transactions could not be checked.',
+                'Look for them: "Previous balance" / "Opening balance" / "Balance forward" / "Starting balance" is openingBalance, "New balance" / "Closing balance" / "Ending balance" is closingBalance — copy them exactly as printed (null only if this page truly prints none). Re-read every transaction line too.',
+            ].join('\n');
+            const trial = [...pages];
+            await this.pool(targets, async (i) => {
+                try {
+                    trial[i] = await read(i, this.verifyModel(), i === 0 ? null : context, hint);
+                }
+                catch (err) {
+                    this.logger.warn(`"${filename}" page ${i + 1}: balance re-read failed (${errorText(err)})`);
+                }
+            });
+            const candidate = assemble(trial);
+            if (better(candidate.verification, result.verification) ||
+                (hasBalanceCheck(candidate.verification) &&
+                    !better(result.verification, candidate.verification))) {
+                trial.forEach((p, i) => (pages[i] = p));
+                result = candidate;
+            }
+            rereads++;
         }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
             (textMode
@@ -612,6 +642,9 @@ function missingBalances(stated, printed) {
                 lines.push(l);
     });
     return { lines, pages: [...pages].sort((a, b) => a - b) };
+}
+function hasBalanceCheck(v) {
+    return v.checks.some((c) => c.name === 'balance');
 }
 function rereadRound(n) {
     if (n === 0)

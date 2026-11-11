@@ -75,6 +75,7 @@ function listStatements(rows, q = {}) {
             closingBalance: r.closingBalance ?? null,
             ...(r.verification && { verification: r.verification }),
             ...(r.error && { error: r.error }),
+            ...(r.problem && { problem: `${r.problem.title}: ${r.problem.text}` }),
         })),
     };
 }

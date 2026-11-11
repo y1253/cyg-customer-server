@@ -37,6 +37,11 @@ import { statementLabel } from './statement-label';
 import { statementPdf } from './statement-pdf';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
+import {
+  statementProblem,
+  type StatementProblem,
+} from './statement-problem.util';
+import { changeFeed } from '../assistant/change-feed';
 import { TaxService } from './tax.service';
 import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
@@ -97,6 +102,12 @@ export interface StatementView {
     /** Why the account starts again here (absent on its first start). */
     reason?: StartReason;
   } | null;
+  /**
+   * step2 (2026-11-11): what is wrong with it, said plainly — its own rows don't match its
+   * balance, it doesn't carry over from the previous statement, statements are missing
+   * before it, or no balance could be read (`statementProblem`). Null = nothing.
+   */
+  problem: StatementProblem | null;
 }
 
 export interface TransactionView {
@@ -253,6 +264,12 @@ function withTaxLines(
 function toView(
   s: BankStatement,
   currencies: ReadonlyMap<string, string> = new Map(),
+  /** `list()` only: where the account's chain breaks at this statement. */
+  extra: {
+    reason?: StartReason;
+    rechecked?: boolean;
+    rechecking?: boolean;
+  } = {},
 ): StatementView {
   return {
     id: s.id,
@@ -280,6 +297,14 @@ function toView(
     processedAt: s.processedAt,
     movedByCustomer: s.accountNameByCustomer !== null,
     source: s.source,
+    problem: statementProblem({
+      ...s,
+      openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
+      closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+      reason: extra.reason,
+      rechecked: extra.rechecked,
+      rechecking: extra.rechecking,
+    }),
   };
 }
 
@@ -482,10 +507,32 @@ export class BookkeepingService {
           { date: s.date, amount: s.amount, reason: s.reason },
         ]),
     );
-    return rows.map((r) => ({
-      ...toView(r, currencies),
-      startingBalance: starts.get(r.id) ?? null,
-    }));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const busy = (r?: BankStatement) =>
+      r?.status === StatementStatus.PENDING ||
+      r?.status === StatementStatus.PROCESSING;
+    return rows.map((r) => {
+      const start = starts.get(r.id);
+      const reason = start?.reason;
+      const previous =
+        reason?.kind === 'MISMATCH'
+          ? byId.get(reason.previousStatementId)
+          : undefined;
+      return {
+        ...toView(r, currencies, {
+          reason,
+          rechecked:
+            r.chainRereadAt !== null && previous?.chainRereadAt != null,
+          // The strong re-read of the pair is queued or running (the earlier one, or
+          // this one coming back for its turn).
+          rechecking:
+            busy(previous) ||
+            (r.chainRereadAt !== null &&
+              (r.processedAt === null || r.processedAt < r.chainRereadAt)),
+        }),
+        startingBalance: start ?? null,
+      };
+    });
   }
 
   async transactions(
@@ -930,6 +977,8 @@ export class BookkeepingService {
       data: { deletedAt: new Date() },
     });
     await this.images.removeFor(scope, s.id);
+    // step2: its neighbours may no longer carry over.
+    await this.processor.recheckChains(scope, [s.accountName]);
   }
 
   /**
@@ -1029,6 +1078,10 @@ export class BookkeepingService {
     this.logger.log(
       `${bookLabel(scope)}: statement #${s.id} moved "${old}" -> "${name}"`,
     );
+    // step2 (2026-11-11): both folders' chains changed — every open page refreshes, and a
+    // balance that no longer carries over in either one is re-read on the strong model.
+    changeFeed.bump(scope.customerId);
+    await this.processor.recheckChains(scope, [old, name]);
     return toView(row);
   }
 

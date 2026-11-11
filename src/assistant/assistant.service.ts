@@ -18,6 +18,7 @@ import {
 } from '../bookkeeping/attachments.service';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { failedChecks } from '../bookkeeping/bookkeeping.service';
+import { statementProblem } from '../bookkeeping/statement-problem.util';
 import { statementLabel } from '../bookkeeping/statement-label';
 import { loadOpeningStatements } from '../bookkeeping/opening-balance.query';
 import {
@@ -627,6 +628,14 @@ export class AssistantService {
       // UNVERIFIED = its rows were never checked against the bank (2026-11-11).
       verification: s.verification,
       customerNote: s.customerNote,
+      // step2 (2026-11-11): the problem the customer sees on its row, in their words.
+      problem: statementProblem({
+        ...s,
+        openingBalance: money(s.openingBalance),
+        closingBalance: money(s.closingBalance),
+        reason: startingDates.find((d) => d.statementId === s.id)?.reason,
+        rechecked: s.chainRereadAt !== null,
+      }),
       sameAccount: sameAccount.map((o) => ({
         statementId: o.id,
         status: o.status,

@@ -6,6 +6,7 @@ import { ObjectStorageService } from '../storage/object-storage.service';
 import { type StartReason } from './opening-balance.util';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
+import { type StatementProblem } from './statement-problem.util';
 import { TaxService } from './tax.service';
 import { type BookScope } from './scope';
 import { FxService } from './fx.service';
@@ -39,6 +40,7 @@ export interface StatementView {
         amount: number;
         reason?: StartReason;
     } | null;
+    problem: StatementProblem | null;
 }
 export interface TransactionView {
     key: string;

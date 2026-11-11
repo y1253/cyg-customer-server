@@ -145,6 +145,8 @@ export declare class StatementExtractor {
         maxRereads?: number;
         onRound?: (rereads: number) => Promise<void> | void;
         rules?: string;
+        strong?: boolean;
+        hint?: string | null;
     }): Promise<ExtractedStatement>;
     private pool;
     private readChunk;
@@ -162,6 +164,7 @@ export declare function missingBalances(stated: Pick<StatedFigures, 'openingBala
     lines: string[];
     pages: number[];
 };
+export declare function hasBalanceCheck(v: ReconcileResult): boolean;
 export declare function rereadRound(n: number): {
     verifyModel: boolean;
     allPages: boolean;

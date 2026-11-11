@@ -26,6 +26,7 @@ const attachment_processor_service_1 = require("../bookkeeping/attachment-proces
 const attachments_service_1 = require("../bookkeeping/attachments.service");
 const scope_1 = require("../bookkeeping/scope");
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
+const statement_problem_util_1 = require("../bookkeeping/statement-problem.util");
 const statement_label_1 = require("../bookkeeping/statement-label");
 const opening_balance_query_1 = require("../bookkeeping/opening-balance.query");
 const opening_balance_util_1 = require("../bookkeeping/opening-balance.util");
@@ -431,6 +432,13 @@ let AssistantService = AssistantService_1 = class AssistantService {
             closingBalance: money(s.closingBalance),
             verification: s.verification,
             customerNote: s.customerNote,
+            problem: (0, statement_problem_util_1.statementProblem)({
+                ...s,
+                openingBalance: money(s.openingBalance),
+                closingBalance: money(s.closingBalance),
+                reason: startingDates.find((d) => d.statementId === s.id)?.reason,
+                rechecked: s.chainRereadAt !== null,
+            }),
             sameAccount: sameAccount.map((o) => ({
                 statementId: o.id,
                 status: o.status,

@@ -12,7 +12,6 @@ import {
   StatementExtractor,
   UnreadableStatementError,
 } from './statement-extractor';
-import { needsReviewMessage } from './statement-processor.service';
 
 /** A blank PDF with `n` pages — the fake model doesn't look at it. */
 async function pdf(n: number): Promise<Buffer> {
@@ -104,12 +103,37 @@ describe('StatementExtractor re-reads', () => {
     expect(out.rereads).toBe(3);
   });
 
-  it('a statement with no totals is released as UNVERIFIED without a single re-read', async () => {
+  it('a statement with no balances is read ONCE more on the strong model, then released as UNVERIFIED', async () => {
     const { ex, chat } = extractor(() => reply({}));
     const out = await ex.extract(await pdf(2), 's.pdf');
     expect(out.verification.verification).toBe('UNVERIFIED');
+    // step2 (2026-11-11): one round asking for the balances, never the MISMATCH loop.
+    expect(out.rereads).toBe(1);
+    expect(chat).toHaveBeenCalledTimes(4); // one per page, then each page on gpt-4.1
+    expect(chat.mock.calls[2][0].model).toBe('gpt-4.1');
+  });
+
+  it('a statement whose balances were read gets no extra read', async () => {
+    const { ex, chat } = extractor(() =>
+      reply({ openingBalance: 0, closingBalance: 0, transactions: [] }),
+    );
+    const out = await ex.extract(await pdf(1), 's.pdf');
     expect(out.rereads).toBe(0);
-    expect(chat).toHaveBeenCalledTimes(2); // one per page
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('a strong read starts on the stronger model with the hint', async () => {
+    const { ex, chat } = extractor(() => reply({}));
+    await ex.extract(await pdf(1), 's.pdf', {
+      strong: true,
+      hint: 'The previous statement ends at $200.00.',
+      maxRereads: 0,
+    });
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat.mock.calls[0][0].model).toBe('gpt-4.1');
+    expect(JSON.stringify(chat.mock.calls[0][0])).toContain(
+      'The previous statement ends at $200.00.',
+    );
   });
 
   it('a re-read that marks a total "partial" ends the loop instead of re-reading 10 times', async () => {
@@ -120,7 +144,8 @@ describe('StatementExtractor re-reads', () => {
     );
     const out = await ex.extract(await pdf(1), 's.pdf');
     expect(out.verification.verification).not.toBe('MISMATCH');
-    expect(out.rereads).toBe(1);
+    // The partial re-read, then (no balances read) the one round asking for them.
+    expect(out.rereads).toBe(2);
   });
 
   it('escalates: suspect pages, then the stronger model, then every page', () => {
@@ -128,20 +153,6 @@ describe('StatementExtractor re-reads', () => {
     expect(rereadRound(1)).toEqual({ verifyModel: true, allPages: false });
     expect(rereadRound(2)).toEqual({ verifyModel: true, allPages: true });
     expect(rereadRound(3)).toEqual({ verifyModel: true, allPages: false });
-  });
-});
-
-describe('needsReviewMessage', () => {
-  it('says how many times it was checked and exactly what is off', () => {
-    expect(
-      needsReviewMessage(10, [
-        'Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)',
-      ]),
-    ).toBe(
-      "We re-checked this statement 10 times and it still doesn't match the bank's totals " +
-        '(Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)). ' +
-        "Nothing from it is in your ledger. Try again, or contact us and we'll look at it.",
-    );
   });
 });
 
@@ -193,7 +204,9 @@ describe('the "is this a statement?" gate (2026-10-11 BMO incident)', () => {
     const { ex, chat } = extractor(() => reply({ isBankStatement: false }));
     const out = await ex.extract(await pdf(1), 'July 12, 2026.pdf');
     expect(out.transactions).toHaveLength(1);
-    expect(chat).toHaveBeenCalledTimes(1);
+    // Only the step2 balance read (no balances printed in the reply) — no gate retry.
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(chat.mock.calls[1][0].model).toBe('gpt-4.1');
   });
 
   it('asks the stronger model once before giving up, and uses its reading', async () => {
@@ -202,7 +215,8 @@ describe('the "is this a statement?" gate (2026-10-11 BMO incident)', () => {
     );
     const out = await ex.extract(await pdf(1), 'scan.pdf');
     expect(out.transactions).toHaveLength(1);
-    expect(chat).toHaveBeenCalledTimes(2);
+    // The gate retry, then the step2 balance read.
+    expect(chat).toHaveBeenCalledTimes(3);
     expect(chat.mock.calls[1][0].model).toBe('gpt-4.1');
   });
 

@@ -11,6 +11,11 @@ export interface StatementRow {
     openingBalance?: number | null;
     closingBalance?: number | null;
     verification?: string | null;
+    problem?: {
+        kind: string;
+        title: string;
+        text: string;
+    } | null;
 }
 export interface StatementQuery {
     account?: string | null;
@@ -24,6 +29,7 @@ export declare const MAX_STATEMENT_LIMIT = 100;
 export declare const NOT_SORTED = "Not sorted yet";
 export declare function listStatements(rows: StatementRow[], q?: StatementQuery): {
     statements: {
+        problem?: string | undefined;
         error?: string | undefined;
         verification?: string | undefined;
         id: number;

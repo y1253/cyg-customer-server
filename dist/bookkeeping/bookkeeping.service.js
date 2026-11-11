@@ -31,6 +31,8 @@ const statement_label_1 = require("./statement-label");
 const statement_pdf_1 = require("./statement-pdf");
 const statement_processor_service_1 = require("./statement-processor.service");
 const statement_images_service_1 = require("./statement-images.service");
+const statement_problem_util_1 = require("./statement-problem.util");
+const change_feed_1 = require("../assistant/change-feed");
 const tax_service_1 = require("./tax.service");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
@@ -104,7 +106,7 @@ function withTaxLines(p, lines) {
         })),
     ];
 }
-function toView(s, currencies = new Map()) {
+function toView(s, currencies = new Map(), extra = {}) {
     return {
         id: s.id,
         filename: s.filename,
@@ -130,6 +132,14 @@ function toView(s, currencies = new Map()) {
         processedAt: s.processedAt,
         movedByCustomer: s.accountNameByCustomer !== null,
         source: s.source,
+        problem: (0, statement_problem_util_1.statementProblem)({
+            ...s,
+            openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
+            closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+            reason: extra.reason,
+            rechecked: extra.rechecked,
+            rechecking: extra.rechecking,
+        }),
     };
 }
 function balanceFit(opening, closing, net, card) {
@@ -264,10 +274,26 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             s.statementId,
             { date: s.date, amount: s.amount, reason: s.reason },
         ]));
-        return rows.map((r) => ({
-            ...toView(r, currencies),
-            startingBalance: starts.get(r.id) ?? null,
-        }));
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const busy = (r) => r?.status === client_1.StatementStatus.PENDING ||
+            r?.status === client_1.StatementStatus.PROCESSING;
+        return rows.map((r) => {
+            const start = starts.get(r.id);
+            const reason = start?.reason;
+            const previous = reason?.kind === 'MISMATCH'
+                ? byId.get(reason.previousStatementId)
+                : undefined;
+            return {
+                ...toView(r, currencies, {
+                    reason,
+                    rechecked: r.chainRereadAt !== null && previous?.chainRereadAt != null,
+                    rechecking: busy(previous) ||
+                        (r.chainRereadAt !== null &&
+                            (r.processedAt === null || r.processedAt < r.chainRereadAt)),
+                }),
+                startingBalance: start ?? null,
+            };
+        });
     }
     async transactions(scope, statementIds) {
         const [rows, statements, taxes, attached] = await Promise.all([
@@ -591,6 +617,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             data: { deletedAt: new Date() },
         });
         await this.images.removeFor(scope, s.id);
+        await this.processor.recheckChains(scope, [s.accountName]);
     }
     async moveStatement(scope, id, rawName) {
         const s = await this.owned(scope, id);
@@ -669,6 +696,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             return updated;
         });
         this.logger.log(`${(0, scope_1.bookLabel)(scope)}: statement #${s.id} moved "${old}" -> "${name}"`);
+        change_feed_1.changeFeed.bump(scope.customerId);
+        await this.processor.recheckChains(scope, [old, name]);
         return toView(row);
     }
     async owned(scope, id) {

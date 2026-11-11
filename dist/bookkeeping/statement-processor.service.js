@@ -14,7 +14,6 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var StatementProcessorService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
-exports.needsReviewMessage = needsReviewMessage;
 exports.withCustomerNote = withCustomerNote;
 exports.customerBalances = customerBalances;
 const ai_usage_context_1 = require("../ai/ai-usage.context");
@@ -29,6 +28,8 @@ const account_identity_util_1 = require("./account-identity.util");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
 const reconcile_util_1 = require("./reconcile.util");
+const statement_continuity_1 = require("./statement-continuity");
+const statement_problem_util_1 = require("./statement-problem.util");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_errors_1 = require("./statement-errors");
 const reread_relink_util_1 = require("./reread-relink.util");
@@ -63,6 +64,14 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
+    }
+    async recheckChains(scope, accountNames) {
+        const queued = await (0, statement_continuity_1.queueChainRereads)(this.prisma, scope, accountNames);
+        if (!queued)
+            return;
+        this.logger.log(`book ${scope.bookId}: ${queued} statement(s) queued for a strong re-read — their balances do not carry over`);
+        change_feed_1.changeFeed.bump(scope.customerId);
+        this.processSoon();
     }
     async cleanStaging() {
         const removed = await (0, statement_uploads_1.sweepStaleStaging)(6 * 60 * 60_000);
@@ -140,8 +149,15 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const learned = (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
                 '';
             const rules = withCustomerNote(learned, row.customerNote);
+            const strong = row.chainRereadAt !== null &&
+                (row.processedAt === null || row.processedAt < row.chainRereadAt);
+            const hint = strong
+                ? await (0, statement_continuity_1.loadChainHint)(this.prisma, scope, row)
+                : null;
             const extracted = await this.extractor.extract(pdf, row.filename, {
                 rules,
+                strong,
+                hint,
                 onRound: async () => {
                     await this.prisma.bankStatement.updateMany({
                         where: { id: row.id, status: client_1.StatementStatus.PROCESSING },
@@ -159,6 +175,14 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
+            if (strong && RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']) {
+                await this.prisma.bankStatement.update({
+                    where: { id: row.id },
+                    data: { status: client_1.StatementStatus.DONE, runs, processedAt: new Date() },
+                });
+                this.logger.warn(`statement #${row.id}: strong re-read came out ${verification}, worse than the stored ${row.verification} — kept the earlier reading`);
+                return;
+            }
             const mismatch = verification === 'MISMATCH';
             const status = mismatch
                 ? client_1.StatementStatus.NEEDS_REVIEW
@@ -205,7 +229,12 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                         transactionCount: rows.length,
                         processedAt: new Date(),
                         error: mismatch
-                            ? needsReviewMessage(extracted.rereads, failed.map(reconcile_util_1.describeCheck))
+                            ? (0, statement_problem_util_1.needsReviewText)({
+                                rereads: extracted.rereads,
+                                checks,
+                                openingBalance: extracted.stated.openingBalance,
+                                amounts: extracted.transactions.map((t) => t.amount),
+                            })
                             : null,
                     },
                 }),
@@ -221,12 +250,26 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                     periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
                 }, pdf, extracted.imagePages);
             }
+            if (!mismatch)
+                await this.recheckChains(scope, [bank]);
             const level = mismatch ? 'warn' : 'log';
             this.logger[level](`statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
                 `${extracted.rereads} re-read(s), ${extracted.calls} OpenAI call(s), ${Date.now() - started}ms` +
                 (mismatch ? ` — ${failed.map(reconcile_util_1.describeCheck).join('; ')}` : ''));
         }
         catch (err) {
+            if (row.chainRereadAt !== null &&
+                (row.processedAt === null || row.processedAt < row.chainRereadAt) &&
+                row.verification !== null) {
+                this.logger.warn(`statement #${row.id}: strong re-read failed (${err instanceof Error ? err.message : String(err)}) — kept the earlier reading`);
+                await this.prisma.bankStatement
+                    .update({
+                    where: { id: row.id },
+                    data: { status: client_1.StatementStatus.DONE, processedAt: new Date() },
+                })
+                    .catch(() => undefined);
+                return;
+            }
             await this.recordFailure(row, err);
         }
     }
@@ -360,11 +403,7 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
 function isoDay(d) {
     return d ? d.toISOString().slice(0, 10) : null;
 }
-function needsReviewMessage(rereads, problems) {
-    const what = problems.length ? ` (${problems.join('; ')})` : '';
-    return (`We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +
-        "Nothing from it is in your ledger. Try again, or contact us and we'll look at it.");
-}
+const RANK = { MISMATCH: 0, UNVERIFIED: 1, VERIFIED: 2 };
 function withCustomerNote(rules, note) {
     const text = note?.trim();
     if (!text)

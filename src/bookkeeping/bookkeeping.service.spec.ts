@@ -24,7 +24,10 @@ function setup(found: unknown = null) {
     prisma as unknown as PrismaService,
     {} as ObjectStorageService,
     {} as OpenAiClient,
-    { processSoon: jest.fn() } as unknown as StatementProcessorService,
+    {
+      processSoon: jest.fn(),
+      recheckChains: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StatementProcessorService,
     {} as TaxService,
     {
       removeFor: jest.fn().mockResolvedValue(undefined),
@@ -234,7 +237,9 @@ describe('BookkeepingService.moveStatement', () => {
       prisma as unknown as PrismaService,
       {} as ObjectStorageService,
       {} as OpenAiClient,
-      {} as StatementProcessorService,
+      {
+        recheckChains: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StatementProcessorService,
       {} as TaxService,
       {} as StatementImagesService,
       {} as FxService,

@@ -22,6 +22,8 @@ export interface StatementRow {
   openingBalance?: number | null;
   closingBalance?: number | null;
   verification?: string | null;
+  /** step2 (2026-11-11): what is wrong with it, as the customer sees it on Bank feeds. */
+  problem?: { kind: string; title: string; text: string } | null;
 }
 
 export interface StatementQuery {
@@ -129,6 +131,7 @@ export function listStatements(rows: StatementRow[], q: StatementQuery = {}) {
       closingBalance: r.closingBalance ?? null,
       ...(r.verification && { verification: r.verification }),
       ...(r.error && { error: r.error }),
+      ...(r.problem && { problem: `${r.problem.title}: ${r.problem.text}` }),
     })),
   };
 }

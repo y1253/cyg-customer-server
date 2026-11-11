@@ -14,6 +14,8 @@ import { canonicalAccountName } from './account-identity.util';
 import { buildLedgerRows, parseIsoDate } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
 import { describeCheck } from './reconcile.util';
+import { loadChainHint, queueChainRereads } from './statement-continuity';
+import { needsReviewText } from './statement-problem.util';
 import {
   StatementExtractor,
   UnreadableStatementError,
@@ -61,6 +63,24 @@ export class StatementProcessorService {
   /** Kick the queue now, without waiting. Never throws. */
   processSoon(): void {
     void this.sweep().catch(() => undefined);
+  }
+
+  /**
+   * step2 (2026-11-11): re-read on the strong model both sides of every balance that does
+   * not carry over in these accounts (`queueChainRereads`) — after a statement is read,
+   * moved or deleted. Never throws.
+   */
+  async recheckChains(
+    scope: BookScope,
+    accountNames: Array<string | null> | null,
+  ): Promise<void> {
+    const queued = await queueChainRereads(this.prisma, scope, accountNames);
+    if (!queued) return;
+    this.logger.log(
+      `book ${scope.bookId}: ${queued} statement(s) queued for a strong re-read — their balances do not carry over`,
+    );
+    changeFeed.bump(scope.customerId);
+    this.processSoon();
   }
 
   /** Staged uploads are deleted by the upload itself; this catches an aborted request or a restart. */
@@ -157,8 +177,18 @@ export class StatementProcessorService {
         (await this.rules?.promptBlock(scope, undefined, 'STATEMENT_READER')) ??
         '';
       const rules = withCustomerNote(learned, row.customerNote);
+      // step2: queued because its balances do not carry over to / from a neighbour — this
+      // run reads it on the strong model, told where the neighbours end and start.
+      const strong =
+        row.chainRereadAt !== null &&
+        (row.processedAt === null || row.processedAt < row.chainRereadAt);
+      const hint = strong
+        ? await loadChainHint(this.prisma, scope, row)
+        : null;
       const extracted = await this.extractor.extract(pdf, row.filename, {
         rules,
+        strong,
+        hint,
         onRound: async () => {
           await this.prisma.bankStatement.updateMany({
             where: { id: row.id, status: StatementStatus.PROCESSING },
@@ -197,6 +227,18 @@ export class StatementProcessorService {
       const rows = buildLedgerRows(lines, bank, customAccounts);
       const { verification, checks } = extracted.verification;
       const runs = row.runs + 1;
+      // step2: the strong re-read of a statement that was in the books never takes it out
+      // or makes it worse — the earlier reading stays when this one checks out less well.
+      if (strong && RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']) {
+        await this.prisma.bankStatement.update({
+          where: { id: row.id },
+          data: { status: StatementStatus.DONE, runs, processedAt: new Date() },
+        });
+        this.logger.warn(
+          `statement #${row.id}: strong re-read came out ${verification}, worse than the stored ${row.verification} — kept the earlier reading`,
+        );
+        return;
+      }
       const mismatch = verification === 'MISMATCH';
       // Still off after every re-read → set aside with a readable reason. Its rows never
       // reach a customer: the ledger and the exports read DONE statements only. A
@@ -257,7 +299,12 @@ export class StatementProcessorService {
             transactionCount: rows.length,
             processedAt: new Date(),
             error: mismatch
-              ? needsReviewMessage(extracted.rereads, failed.map(describeCheck))
+              ? needsReviewText({
+                  rereads: extracted.rereads,
+                  checks,
+                  openingBalance: extracted.stated.openingBalance,
+                  amounts: extracted.transactions.map((t) => t.amount),
+                })
               : null,
           },
         }),
@@ -277,6 +324,9 @@ export class StatementProcessorService {
           extracted.imagePages,
         );
       }
+      // step2: does it carry over from / to its neighbours? Both sides of a break are
+      // re-read once on the strong model.
+      if (!mismatch) await this.recheckChains(scope, [bank]);
       const level = mismatch ? 'warn' : 'log';
       this.logger[level](
         `statement #${row.id} ${status} (${verification}, run ${runs}): ${rows.length} transactions, ` +
@@ -284,6 +334,23 @@ export class StatementProcessorService {
           (mismatch ? ` — ${failed.map(describeCheck).join('; ')}` : ''),
       );
     } catch (err) {
+      // step2: a failed strong re-read leaves the statement as it was (in the books).
+      if (
+        row.chainRereadAt !== null &&
+        (row.processedAt === null || row.processedAt < row.chainRereadAt) &&
+        row.verification !== null
+      ) {
+        this.logger.warn(
+          `statement #${row.id}: strong re-read failed (${err instanceof Error ? err.message : String(err)}) — kept the earlier reading`,
+        );
+        await this.prisma.bankStatement
+          .update({
+            where: { id: row.id },
+            data: { status: StatementStatus.DONE, processedAt: new Date() },
+          })
+          .catch(() => undefined);
+        return;
+      }
       await this.recordFailure(row, err);
     }
   }
@@ -426,21 +493,8 @@ function isoDay(d: Date | null): string | null {
   return d ? d.toISOString().slice(0, 10) : null;
 }
 
-/**
- * The customer-facing reason a statement was set aside:
- * "We re-checked this statement 10 times and it still doesn't match the bank's totals
- * (Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)). …"
- */
-export function needsReviewMessage(
-  rereads: number,
-  problems: string[],
-): string {
-  const what = problems.length ? ` (${problems.join('; ')})` : '';
-  return (
-    `We re-checked this statement ${rereads} time${rereads === 1 ? '' : 's'} and it still doesn't match the bank's totals${what}. ` +
-    "Nothing from it is in your ledger. Try again, or contact us and we'll look at it."
-  );
-}
+/** How well a reading checked out — a strong re-read may never go down (step2). */
+const RANK: Record<string, number> = { MISMATCH: 0, UNVERIFIED: 1, VERIFIED: 2 };
 
 /**
  * step8: what the customer said was wrong with THIS statement (its chat on Bank feeds) goes
