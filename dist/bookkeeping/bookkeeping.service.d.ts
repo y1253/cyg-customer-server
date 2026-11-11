@@ -27,6 +27,9 @@ export interface StatementView {
     periodStart: string | null;
     periodEnd: string | null;
     transactionCount: number;
+    openingBalance: number | null;
+    closingBalance: number | null;
+    verification: string | null;
     createdAt: Date;
     processedAt: Date | null;
     movedByCustomer: boolean;
@@ -69,6 +72,7 @@ export interface TransactionView {
 }
 export interface StatementBalancesResult {
     statement: StatementView;
+    advice?: string;
     balancesMatch: boolean | null;
     expectedClosing: number | null;
 }
@@ -76,6 +80,10 @@ export declare function balanceFit(opening: number | null, closing: number | nul
     balancesMatch: boolean | null;
     expectedClosing: number | null;
 };
+export declare function withBalanceCheck(detail: Prisma.JsonValue | null, fit: {
+    balancesMatch: boolean | null;
+    expectedClosing: number | null;
+}, closing: number | null): Prisma.InputJsonValue;
 export declare function failedChecks(detail: Prisma.JsonValue | null): string[];
 export declare function appendNote(had: string | null, note: string): string;
 export declare class BookkeepingService {

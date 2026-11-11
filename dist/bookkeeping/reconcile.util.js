@@ -30,7 +30,11 @@ function reconcile(stated, rows) {
     }
     const asPrinted = balanceChecks(stated, rows, amounts, net, 1);
     const owed = balanceChecks(stated, rows, amounts, net, -1);
-    const owes = fit(owed) > fit(asPrinted);
+    const decided = owed.selfConsistent !== asPrinted.selfConsistent &&
+        (owed.selfConsistent === true || asPrinted.selfConsistent === true);
+    const owes = decided
+        ? owed.selfConsistent === true
+        : fit(owed) > fit(asPrinted);
     const balances = owes ? owed : asPrinted;
     if (balances.running &&
         balances.balance?.ok &&
@@ -228,6 +232,7 @@ const CHECK_LABEL = {
     depositCount: 'Number of deposits',
     withdrawalCount: 'Number of withdrawals',
     runningBalance: 'Running balance',
+    printedFigures: 'Printed balances',
 };
 function describeCheck(c) {
     const text = describe(c);
@@ -266,6 +271,10 @@ function describe(c) {
             return (`Running balance breaks on ${c.expected - c.actual} of ${c.expected} rows` +
                 (where.length ? ` (${where.join('; ')})` : ''));
         }
+        case 'printedFigures':
+            return c.ok
+                ? 'Printed balances ✓'
+                : `The statement prints its balances (${(c.printed ?? []).join('; ') || 'opening / closing'}) but they could not be read, so its transactions could not be checked`;
     }
 }
 //# sourceMappingURL=reconcile.util.js.map

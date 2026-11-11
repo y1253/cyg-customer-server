@@ -30,3 +30,7 @@ export declare class StatementProcessorService {
 }
 export declare function needsReviewMessage(rereads: number, problems: string[]): string;
 export declare function withCustomerNote(rules: string, note: string | null): string;
+export declare function customerBalances(note: string | null): {
+    opening: number | null;
+    closing: number | null;
+};

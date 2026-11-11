@@ -12,6 +12,7 @@ var BookkeepingService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingService = void 0;
 exports.balanceFit = balanceFit;
+exports.withBalanceCheck = withBalanceCheck;
 exports.failedChecks = failedChecks;
 exports.appendNote = appendNote;
 const crypto_1 = require("crypto");
@@ -25,6 +26,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const opening_balance_query_1 = require("./opening-balance.query");
 const opening_balance_util_1 = require("./opening-balance.util");
+const reconcile_util_1 = require("./reconcile.util");
 const statement_label_1 = require("./statement-label");
 const statement_pdf_1 = require("./statement-pdf");
 const statement_processor_service_1 = require("./statement-processor.service");
@@ -121,6 +123,9 @@ function toView(s, currencies = new Map()) {
         periodStart: day(s.periodStart),
         periodEnd: day(s.periodEnd),
         transactionCount: s.transactionCount,
+        openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
+        closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+        verification: s.verification,
         createdAt: s.createdAt,
         processedAt: s.processedAt,
         movedByCustomer: s.accountNameByCustomer !== null,
@@ -136,6 +141,22 @@ function balanceFit(opening, closing, net, card) {
         balancesMatch: closing === null ? null : c(expected) === c(closing),
         expectedClosing: expected,
     };
+}
+function withBalanceCheck(detail, fit, closing) {
+    const others = (Array.isArray(detail) ? detail : []).filter((c) => {
+        const check = c;
+        return !(check?.name === 'balance' && check.page == null);
+    });
+    if (fit.balancesMatch === null || closing === null)
+        return others;
+    const check = {
+        name: 'balance',
+        expected: (0, reconcile_util_1.cents)(closing),
+        actual: (0, reconcile_util_1.cents)(fit.expectedClosing ?? 0),
+        ok: fit.balancesMatch,
+        skipped: null,
+    };
+    return [...others, { ...check, text: (0, reconcile_util_1.describeCheck)(check) }];
 }
 function failedChecks(detail) {
     if (!Array.isArray(detail))
@@ -481,10 +502,23 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 deletedAt: null,
                 id: { not: s.id },
                 source: { not: 'PLAID' },
-                status: { in: [client_1.StatementStatus.FAILED, client_1.StatementStatus.NEEDS_REVIEW] },
-                OR: [
-                    { accountNameByCustomer: account },
-                    { accountNameByCustomer: null, accountName: account },
+                AND: [
+                    {
+                        OR: [
+                            {
+                                status: {
+                                    in: [client_1.StatementStatus.FAILED, client_1.StatementStatus.NEEDS_REVIEW],
+                                },
+                            },
+                            { status: client_1.StatementStatus.DONE, verification: 'UNVERIFIED' },
+                        ],
+                    },
+                    {
+                        OR: [
+                            { accountNameByCustomer: account },
+                            { accountNameByCustomer: null, accountName: account },
+                        ],
+                    },
                 ],
             },
             select: { id: true },
@@ -533,9 +567,21 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             where: { statementId: s.id, splitOfId: null },
             _sum: { amount: true },
         });
+        const fit = balanceFit(row.openingBalance === null ? null : Number(row.openingBalance), row.closingBalance === null ? null : Number(row.closingBalance), Number(sum._sum.amount ?? 0), row.accountKind === 'CREDIT_CARD');
+        const checked = await this.prisma.bankStatement.update({
+            where: { id: s.id },
+            data: {
+                verificationDetail: withBalanceCheck(row.verificationDetail, fit, row.closingBalance === null ? null : Number(row.closingBalance)),
+            },
+        });
         return {
-            statement: toView(row),
-            ...balanceFit(row.openingBalance === null ? null : Number(row.openingBalance), row.closingBalance === null ? null : Number(row.closingBalance), Number(sum._sum.amount ?? 0), row.accountKind === 'CREDIT_CARD'),
+            statement: toView(checked),
+            ...fit,
+            ...(fit.balancesMatch !== true && {
+                advice: fit.balancesMatch === false
+                    ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
+                    : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.',
+            }),
         };
     }
     async remove(scope, id) {

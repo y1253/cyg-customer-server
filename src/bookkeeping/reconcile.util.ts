@@ -62,7 +62,13 @@ export type CheckName =
   | 'balance'
   | 'depositCount'
   | 'withdrawalCount'
-  | 'runningBalance';
+  | 'runningBalance'
+  /**
+   * 2026-11-11: the page prints its opening / closing balance (`printedBalanceLines`) but
+   * the reader copied neither, so nothing could be checked. Added by the extractor, never
+   * by `reconcile`; `expected` = figures printed, `actual` = figures read.
+   */
+  | 'printedFigures';
 
 export interface Check {
   name: CheckName;
@@ -81,6 +87,8 @@ export interface Check {
   page?: number;
   /** runningBalance only: where it breaks, in row order — the re-read hint names them. */
   breaks?: RunningBreak[];
+  /** printedFigures only: the printed lines that were not read ("New Balance $2,629.30"). */
+  printed?: string[];
 }
 
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
@@ -135,7 +143,16 @@ export function reconcile(
   // purchases (negative rows) RAISE the printed balance. Keep the sign that fits better.
   const asPrinted = balanceChecks(stated, rows, amounts, net, 1);
   const owed = balanceChecks(stated, rows, amounts, net, -1);
-  const owes = fit(owed) > fit(asPrinted);
+  // The bank's OWN figures (opening ± totals = closing) adding up in only one sign decide it:
+  // the rows can't. Every row of a Chase card read with the wrong sign passed the balance
+  // "as printed" while its totals were skipped as "counting something else" (Madam recovery
+  // #286 / #288, 2026-11-11) — payments became expenses in the books.
+  const decided =
+    owed.selfConsistent !== asPrinted.selfConsistent &&
+    (owed.selfConsistent === true || asPrinted.selfConsistent === true);
+  const owes = decided
+    ? owed.selfConsistent === true
+    : fit(owed) > fit(asPrinted);
   const balances = owes ? owed : asPrinted;
   // Balances on the rows that break on EVERY link while opening + net = closing holds to
   // the cent are not a running balance: a card's "new purchases" subtotal copied onto its
@@ -443,6 +460,7 @@ const CHECK_LABEL: Record<CheckName, string> = {
   depositCount: 'Number of deposits',
   withdrawalCount: 'Number of withdrawals',
   runningBalance: 'Running balance',
+  printedFigures: 'Printed balances',
 };
 
 /** "Withdrawals: statement $4,812.40, read $4,728.03 (off by $84.37)" — for prompts and the UI. */
@@ -489,5 +507,9 @@ function describe(c: Check): string {
         (where.length ? ` (${where.join('; ')})` : '')
       );
     }
+    case 'printedFigures':
+      return c.ok
+        ? 'Printed balances ✓'
+        : `The statement prints its balances (${(c.printed ?? []).join('; ') || 'opening / closing'}) but they could not be read, so its transactions could not be checked`;
   }
 }

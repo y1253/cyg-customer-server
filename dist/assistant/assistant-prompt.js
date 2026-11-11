@@ -163,7 +163,15 @@ exports.DEFAULT_INSTRUCTIONS = {
             'now add up. Only change the statement whose figure is wrong, and never one whose ' +
             'own rows already take its opening to its closing (it was read right). A missing ' +
             'statement between two dates is fixed by uploading it. Starting balances are worked ' +
-            'out from the statements, never stored: there is no entry to remove.',
+            'out from the statements, never stored: there is no entry to remove — never set an ' +
+            'opening to 0 (or any figure the statement does not print) to make one go away.',
+        '5b. verification UNVERIFIED = its transactions were NEVER checked against the bank ' +
+            "(we had no printed balance to check them with). When such a statement's opening or " +
+            'closing is missing, the transactions are suspect too: read it again with ' +
+            'retry_statement, note = the balances the customer reads off it ("Previous Balance ' +
+            '$633.66, New Balance $2,629.30"), instead of set_statement_balances. When ' +
+            'set_statement_balances answers with advice, follow it and tell the customer the ' +
+            'balances do not prove the transactions yet — never say it is fixed.',
         '6. A bank-feed month (source PLAID) comes from the bank: it cannot be re-read and its ' +
             'balances cannot be set — suggest checking the account start date or reconnecting.',
         '7. When they would rather talk, use call_me (about = this statement): the call knows ' +

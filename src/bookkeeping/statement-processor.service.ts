@@ -209,6 +209,7 @@ export class StatementProcessorService {
       // step2: the receipts on a statement read before (a re-read of a DONE one) — put
       // back on the same transactions after its rows are replaced.
       const linked = await this.linkedReceipts(row.id);
+      const customerSet = customerBalances(row.customerNote);
 
       await this.prisma.$transaction([
         // Idempotent: a retry after a crash mid-write replaces, never duplicates.
@@ -236,8 +237,14 @@ export class StatementProcessorService {
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
             periodEnd: parseIsoDate(extracted.periodEnd),
-            openingBalance: money(extracted.stated.openingBalance),
-            closingBalance: money(extracted.stated.closingBalance),
+            // The balances the customer set (`setBalances`) stand when the reader
+            // finds none — a re-read used to wipe them (2026-11-11).
+            openingBalance: money(
+              extracted.stated.openingBalance ?? customerSet.opening,
+            ),
+            closingBalance: money(
+              extracted.stated.closingBalance ?? customerSet.closing,
+            ),
             statedDeposits: money(extracted.stated.totalDeposits),
             statedWithdrawals: money(extracted.stated.totalWithdrawals),
             statedDepositCount: extracted.stated.depositCount,
@@ -444,4 +451,30 @@ export function withCustomerNote(rules: string, note: string | null): string {
   if (!text) return rules;
   // Like every other block appended to the reader's prompt, it starts on a fresh paragraph.
   return `${rules}\n\nThe customer says about THIS statement (follow it when reading it):\n${text}`;
+}
+
+/**
+ * The opening / closing balance the customer gave for this statement — the LAST
+ * "The opening balance is X and closing balance is Y (customer: …)" line `setBalances`
+ * wrote into its note ("not printed" or never set = null). Pure.
+ */
+export function customerBalances(note: string | null): {
+  opening: number | null;
+  closing: number | null;
+} {
+  const out: { opening: number | null; closing: number | null } = {
+    opening: null,
+    closing: null,
+  };
+  for (const line of (note ?? '').split('\n')) {
+    if (!/^The (opening|closing) balance is /.test(line)) continue;
+    const head = line.split(' (customer:')[0];
+    for (const key of ['opening', 'closing'] as const) {
+      const m = new RegExp(
+        `${key} balance is (-?\\d+(?:\\.\\d+)?|not printed)`,
+      ).exec(head);
+      if (m) out[key] = m[1] === 'not printed' ? null : Number(m[1]);
+    }
+  }
+  return out;
 }

@@ -71,6 +71,9 @@ function listStatements(rows, q = {}) {
             periodStart: day(r.periodStart),
             periodEnd: day(r.periodEnd),
             transactions: r.transactionCount,
+            openingBalance: r.openingBalance ?? null,
+            closingBalance: r.closingBalance ?? null,
+            ...(r.verification && { verification: r.verification }),
             ...(r.error && { error: r.error }),
         })),
     };

@@ -32,6 +32,7 @@ import {
   startsByAccount,
   type StartReason,
 } from './opening-balance.util';
+import { cents, describeCheck, type Check } from './reconcile.util';
 import { statementLabel } from './statement-label';
 import { statementPdf } from './statement-pdf';
 import { StatementProcessorService } from './statement-processor.service';
@@ -72,6 +73,14 @@ export interface StatementView {
   periodStart: string | null;
   periodEnd: string | null;
   transactionCount: number;
+  /**
+   * 2026-11-11: the bank's printed balances as read (null = not read) and whether its rows
+   * were checked against them — VERIFIED, UNVERIFIED (nothing printed was read to check
+   * against) or MISMATCH. The AI told a caller an unchecked statement "matches the bank".
+   */
+  openingBalance: number | null;
+  closingBalance: number | null;
+  verification: string | null;
   createdAt: Date;
   processedAt: Date | null;
   /** The customer filed it under this account themselves (it survives a Retry). */
@@ -264,6 +273,9 @@ function toView(
     periodStart: day(s.periodStart),
     periodEnd: day(s.periodEnd),
     transactionCount: s.transactionCount,
+    openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
+    closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+    verification: s.verification,
     createdAt: s.createdAt,
     processedAt: s.processedAt,
     movedByCustomer: s.accountNameByCustomer !== null,
@@ -273,6 +285,8 @@ function toView(
 
 export interface StatementBalancesResult {
   statement: StatementView;
+  /** For the AI: what to do when the balances do not prove the rows (2026-11-11). */
+  advice?: string;
   /** opening ± the rows = closing, to the cent (null = a balance is missing). */
   balancesMatch: boolean | null;
   /** What opening ± the rows comes to (null = no opening). */
@@ -296,6 +310,30 @@ export function balanceFit(
     balancesMatch: closing === null ? null : c(expected) === c(closing),
     expectedClosing: expected,
   };
+}
+
+/**
+ * The stored checks with the whole-statement "Ending balance" check re-judged from
+ * `balanceFit` (dropped when a balance is missing). Pure.
+ */
+export function withBalanceCheck(
+  detail: Prisma.JsonValue | null,
+  fit: { balancesMatch: boolean | null; expectedClosing: number | null },
+  closing: number | null,
+): Prisma.InputJsonValue {
+  const others = (Array.isArray(detail) ? detail : []).filter((c) => {
+    const check = c as { name?: string; page?: number } | null;
+    return !(check?.name === 'balance' && check.page == null);
+  }) as Prisma.InputJsonValue[];
+  if (fit.balancesMatch === null || closing === null) return others;
+  const check: Check = {
+    name: 'balance',
+    expected: cents(closing),
+    actual: cents(fit.expectedClosing ?? 0),
+    ok: fit.balancesMatch,
+    skipped: null,
+  };
+  return [...others, { ...check, text: describeCheck(check) }];
 }
 
 /** The failed (not skipped) checks' words, as the processor stored them. */
@@ -750,7 +788,8 @@ export class BookkeepingService {
 
   /**
    * step8 (2026-11-11): "fix every CIBC 7522 statement" — the statement itself plus every
-   * other FAILED / NEEDS_REVIEW uploaded statement of the same account (folder) in this book.
+   * other FAILED / NEEDS_REVIEW (or DONE but UNVERIFIED) uploaded statement of the same
+   * account (folder) in this book.
    */
   async sameAccountToRetry(scope: BookScope, id: number): Promise<number[]> {
     const s = await this.owned(scope, id);
@@ -762,10 +801,25 @@ export class BookkeepingService {
         deletedAt: null,
         id: { not: s.id },
         source: { not: 'PLAID' },
-        status: { in: [StatementStatus.FAILED, StatementStatus.NEEDS_REVIEW] },
-        OR: [
-          { accountNameByCustomer: account },
-          { accountNameByCustomer: null, accountName: account },
+        AND: [
+          {
+            // 2026-11-11: a DONE statement whose rows were never checked (UNVERIFIED) is as
+            // suspect as a failed one — Madam recovery's Chase 4148 months were all wrong.
+            OR: [
+              {
+                status: {
+                  in: [StatementStatus.FAILED, StatementStatus.NEEDS_REVIEW],
+                },
+              },
+              { status: StatementStatus.DONE, verification: 'UNVERIFIED' },
+            ],
+          },
+          {
+            OR: [
+              { accountNameByCustomer: account },
+              { accountNameByCustomer: null, accountName: account },
+            ],
+          },
         ],
       },
       select: { id: true },
@@ -835,14 +889,33 @@ export class BookkeepingService {
       where: { statementId: s.id, splitOfId: null },
       _sum: { amount: true },
     });
+    const fit = balanceFit(
+      row.openingBalance === null ? null : Number(row.openingBalance),
+      row.closingBalance === null ? null : Number(row.closingBalance),
+      Number(sum._sum.amount ?? 0),
+      row.accountKind === 'CREDIT_CARD',
+    );
+    // 2026-11-11: the stored "Ending balance ✓" is re-judged with the new figures — #317
+    // kept its tick after the AI set an opening the statement does not print.
+    const checked = await this.prisma.bankStatement.update({
+      where: { id: s.id },
+      data: {
+        verificationDetail: withBalanceCheck(
+          row.verificationDetail,
+          fit,
+          row.closingBalance === null ? null : Number(row.closingBalance),
+        ),
+      },
+    });
     return {
-      statement: toView(row),
-      ...balanceFit(
-        row.openingBalance === null ? null : Number(row.openingBalance),
-        row.closingBalance === null ? null : Number(row.closingBalance),
-        Number(sum._sum.amount ?? 0),
-        row.accountKind === 'CREDIT_CARD',
-      ),
+      statement: toView(checked),
+      ...fit,
+      ...(fit.balancesMatch !== true && {
+        advice:
+          fit.balancesMatch === false
+            ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
+            : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.',
+      }),
     };
   }
 

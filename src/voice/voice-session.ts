@@ -155,11 +155,28 @@ export function attachmentDoneNote(
 /** The note the model gets when a statement re-read on this call is finished. Pure. */
 export function statementDoneNote(
   statementId: number,
-  row: { status: string; error: string | null; filename: string },
+  row: {
+    status: string;
+    error: string | null;
+    filename: string;
+    verification?: string | null;
+    openingBalance?: number | null;
+    closingBalance?: number | null;
+  },
 ): string {
   const head = `[System note, not from the caller] The statement you re-read on this call (#${statementId}, "${row.filename}") is finished:`;
+  const money = (n: number | null | undefined) =>
+    n == null ? 'not read' : `$${n.toFixed(2)}`;
+  const balances = `opening ${money(row.openingBalance)}, closing ${money(row.closingBalance)}`;
+  if (row.status === 'DONE' && row.verification === 'VERIFIED') {
+    return `${head} it was read and matches the bank's own figures (${balances}) — its transactions are in the books. Tell the caller now, briefly.`;
+  }
+  // 2026-11-11: "now matches the bank's totals" was said of #280, read with no closing.
   if (row.status === 'DONE') {
-    return `${head} it was read and now matches the bank's totals — its transactions are in the books. Tell the caller now, briefly.`;
+    return (
+      `${head} it was read and its transactions are in the books, but they could NOT be checked against the bank's figures (${balances}). ` +
+      'Tell the caller now, briefly and exactly that — never say it matches or is fixed. If they read you a balance that is "not read" above, offer to read it again with that figure in the note.'
+    );
   }
   return (
     `${head} it still could not be read (${row.status}). The reason: ${row.error ?? 'unknown'}. ` +
@@ -873,7 +890,14 @@ export class VoiceSession implements LiveCall {
           bookId: scope.bookId,
           deletedAt: null,
         },
-        select: { status: true, error: true, filename: true },
+        select: {
+          status: true,
+          error: true,
+          filename: true,
+          verification: true,
+          openingBalance: true,
+          closingBalance: true,
+        },
       });
       if (!row) return this.unwatch(statementId);
       if (row.status === 'PENDING' || row.status === 'PROCESSING') {
@@ -881,7 +905,15 @@ export class VoiceSession implements LiveCall {
         return;
       }
       this.unwatch(statementId);
-      this.inject(statementDoneNote(statementId, row));
+      this.inject(
+        statementDoneNote(statementId, {
+          ...row,
+          openingBalance:
+            row.openingBalance === null ? null : Number(row.openingBalance),
+          closingBalance:
+            row.closingBalance === null ? null : Number(row.closingBalance),
+        }),
+      );
     };
     this.watched.set(
       statementId,

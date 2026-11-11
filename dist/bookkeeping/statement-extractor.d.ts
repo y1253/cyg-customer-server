@@ -3,6 +3,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import type { ExtractedTransaction } from './ledger.util';
 import { type PageContent } from './page-content.util';
 import { type ImagePage } from './pdf-images';
+import { type PrintedBalances } from './pipeline/pdf-text';
 import { type ReconcileResult, type StatedFigures } from './reconcile.util';
 import { UnreadableStatementError } from './statement-errors';
 export declare const PAGES_PER_CHUNK = 1;
@@ -157,6 +158,10 @@ export declare function dropSpuriousPages(pages: readonly PageReading[]): {
 } | null;
 export declare function assemble(readings: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
 export declare function closingOf(pages: PageReading[], openingBalance?: number | null): number | null;
+export declare function missingBalances(stated: Pick<StatedFigures, 'openingBalance' | 'closingBalance'>, printed: readonly PrintedBalances[]): {
+    lines: string[];
+    pages: number[];
+};
 export declare function rereadRound(n: number): {
     verifyModel: boolean;
     allPages: boolean;

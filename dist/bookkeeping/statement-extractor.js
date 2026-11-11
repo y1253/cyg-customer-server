@@ -16,6 +16,7 @@ exports.emptyReading = emptyReading;
 exports.dropSpuriousPages = dropSpuriousPages;
 exports.assemble = assemble;
 exports.closingOf = closingOf;
+exports.missingBalances = missingBalances;
 exports.rereadRound = rereadRound;
 exports.signHint = signHint;
 exports.better = better;
@@ -323,6 +324,62 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             }
             rereads++;
         }
+        if (texts && result.verification.verification !== 'MISMATCH') {
+            const printed = chunks.map((_, i) => {
+                const t = textOf(i);
+                return t && !skipped.has(i)
+                    ? (0, pdf_text_1.printedBalanceLines)(t)
+                    : { opening: [], closing: [] };
+            });
+            const missing = missingBalances(result.stated, printed);
+            if (missing.pages.length && maxRereads > 0) {
+                this.logger.warn(`"${filename}": prints ${missing.lines.join('; ')} but it was not read — re-reading page(s) ${missing.pages.map((i) => i + 1).join(',')}`);
+                const hint = [
+                    'A previous reading of this page left out figures the page PRINTS:',
+                    ...missing.lines.map((l) => `- "${l}"`),
+                    'Copy them: "Previous balance" / "Opening balance" / "Balance forward" is openingBalance, "New balance" / "Closing balance" / "Ending balance" is closingBalance — exactly as printed. Re-read every transaction line too.',
+                ].join('\n');
+                for (const i of missing.pages) {
+                    try {
+                        const trial = [...pages];
+                        trial[i] = await read(i, this.verifyModel(), i === 0 ? null : context, hint);
+                        const candidate = assemble(trial);
+                        const filled = missingBalances(candidate.stated, printed).lines.length <
+                            missingBalances(result.stated, printed).lines.length;
+                        if (better(candidate.verification, result.verification) ||
+                            (filled && !better(result.verification, candidate.verification))) {
+                            pages[i] = trial[i];
+                            result = candidate;
+                        }
+                    }
+                    catch (err) {
+                        this.logger.warn(`"${filename}" page ${i + 1}: balance re-read failed (${errorText(err)})`);
+                    }
+                }
+                rereads++;
+            }
+            const still = missingBalances(result.stated, printed);
+            if (still.lines.length && result.verification.verification === 'UNVERIFIED') {
+                result = {
+                    ...result,
+                    verification: {
+                        ...result.verification,
+                        verification: 'MISMATCH',
+                        checks: [
+                            ...result.verification.checks,
+                            {
+                                name: 'printedFigures',
+                                expected: still.lines.length,
+                                actual: 0,
+                                ok: false,
+                                skipped: null,
+                                printed: still.lines,
+                            },
+                        ],
+                    },
+                };
+            }
+        }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
             (textMode
                 ? `page(s) read with their text layer as tool results: ${[...withText]
@@ -538,6 +595,23 @@ function closingOf(pages, openingBalance = null) {
         .filter((v) => v !== null);
     const ends = [printed[printed.length - 1], printed[0]];
     return (candidates.find((v) => ends.some((e) => e !== undefined && c(e) === c(v))) ?? candidates[candidates.length - 1]);
+}
+function missingBalances(stated, printed) {
+    const lines = [];
+    const pages = new Set();
+    printed.forEach((p, i) => {
+        const gone = [
+            ...(stated.openingBalance === null ? p.opening : []),
+            ...(stated.closingBalance === null ? p.closing : []),
+        ];
+        if (!gone.length)
+            return;
+        pages.add(i);
+        for (const l of gone)
+            if (!lines.includes(l))
+                lines.push(l);
+    });
+    return { lines, pages: [...pages].sort((a, b) => a - b) };
 }
 function rereadRound(n) {
     if (n === 0)

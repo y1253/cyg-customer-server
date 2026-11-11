@@ -38,6 +38,9 @@ export declare function statementDoneNote(statementId: number, row: {
     status: string;
     error: string | null;
     filename: string;
+    verification?: string | null;
+    openingBalance?: number | null;
+    closingBalance?: number | null;
 }): string;
 export declare class VoiceSession implements LiveCall {
     private readonly ws;

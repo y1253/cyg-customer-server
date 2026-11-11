@@ -18,6 +18,10 @@ export interface StatementRow {
   transactionCount: number;
   error: string | null;
   createdAt: Date | string;
+  /** 2026-11-11: printed balances as read, and whether the rows were checked against them. */
+  openingBalance?: number | null;
+  closingBalance?: number | null;
+  verification?: string | null;
 }
 
 export interface StatementQuery {
@@ -121,6 +125,9 @@ export function listStatements(rows: StatementRow[], q: StatementQuery = {}) {
       periodStart: day(r.periodStart),
       periodEnd: day(r.periodEnd),
       transactions: r.transactionCount,
+      openingBalance: r.openingBalance ?? null,
+      closingBalance: r.closingBalance ?? null,
+      ...(r.verification && { verification: r.verification }),
       ...(r.error && { error: r.error }),
     })),
   };

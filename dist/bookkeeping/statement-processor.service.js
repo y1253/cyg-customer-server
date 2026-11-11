@@ -16,6 +16,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementProcessorService = exports.MAX_ATTEMPTS = exports.claimableAt = void 0;
 exports.needsReviewMessage = needsReviewMessage;
 exports.withCustomerNote = withCustomerNote;
+exports.customerBalances = customerBalances;
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const change_feed_1 = require("../assistant/change-feed");
 const common_1 = require("@nestjs/common");
@@ -165,6 +166,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const failed = checks.filter((c) => !c.ok && !c.skipped);
             const money = (n) => (n === null ? null : n.toFixed(2));
             const linked = await this.linkedReceipts(row.id);
+            const customerSet = customerBalances(row.customerNote);
             await this.prisma.$transaction([
                 this.prisma.bankTransaction.deleteMany({
                     where: { statementId: row.id },
@@ -189,8 +191,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                         bankName: extracted.bankName,
                         periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
                         periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
-                        openingBalance: money(extracted.stated.openingBalance),
-                        closingBalance: money(extracted.stated.closingBalance),
+                        openingBalance: money(extracted.stated.openingBalance ?? customerSet.opening),
+                        closingBalance: money(extracted.stated.closingBalance ?? customerSet.closing),
                         statedDeposits: money(extracted.stated.totalDeposits),
                         statedWithdrawals: money(extracted.stated.totalWithdrawals),
                         statedDepositCount: extracted.stated.depositCount,
@@ -368,5 +370,22 @@ function withCustomerNote(rules, note) {
     if (!text)
         return rules;
     return `${rules}\n\nThe customer says about THIS statement (follow it when reading it):\n${text}`;
+}
+function customerBalances(note) {
+    const out = {
+        opening: null,
+        closing: null,
+    };
+    for (const line of (note ?? '').split('\n')) {
+        if (!/^The (opening|closing) balance is /.test(line))
+            continue;
+        const head = line.split(' (customer:')[0];
+        for (const key of ['opening', 'closing']) {
+            const m = new RegExp(`${key} balance is (-?\\d+(?:\\.\\d+)?|not printed)`).exec(head);
+            if (m)
+                out[key] = m[1] === 'not printed' ? null : Number(m[1]);
+        }
+    }
+    return out;
 }
 //# sourceMappingURL=statement-processor.service.js.map

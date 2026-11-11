@@ -481,7 +481,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'retry_statement',
     description:
-      'Read a bank / card statement again from its PDF — one we could not read, one that needs review, or one already read that the customer says was read wrong (statementId from list_statements; not a bank-feed month). Free; it takes a few minutes, and the statement is out of the books until it is read. Receipts on a read statement are put back on the same transactions after. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it. For only a wrong opening / closing balance use set_statement_balances instead. The recent words of the customer in this conversation are always passed to the reader too. sameAccount: true = also read again EVERY other statement of the same account that we could not read (failed / needs review), with the same note — use it whenever the customer asks to fix "all" the statements of that account; never say you fixed others without it.',
+      'Read a bank / card statement again from its PDF — one we could not read, one that needs review, or one already read that the customer says was read wrong (statementId from list_statements; not a bank-feed month). Free; it takes a few minutes, and the statement is out of the books until it is read. Receipts on a read statement are put back on the same transactions after. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it. For only a wrong opening / closing balance use set_statement_balances instead. The recent words of the customer in this conversation are always passed to the reader too. sameAccount: true = also read again EVERY other statement of the same account that we could not read (failed / needs review) or whose transactions were never checked (verification UNVERIFIED), with the same note — use it whenever the customer asks to fix "all" the statements of that account; never say you fixed others without it.',
     parameters: obj(
       {
         statementId: int,
@@ -498,7 +498,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'set_statement_balances',
     description:
-      "Set a READ statement's opening and/or closing balance to the figure the customer gives (they say it was read wrong, or the starting balances do not carry over). As printed on the statement — a credit card: the balance owed, positive. The starting balances follow at once; the customer's reason is kept for later re-reads. Repeat the number back and get a yes first. Not for a bank-feed month (its balances come from the bank) or a statement not read yet (use retry_statement with a note). The result says whether opening + the transactions now reach the closing balance — tell the customer.",
+      "Set a READ statement's opening and/or closing balance to the figure the customer gives (they say it was read wrong, or the starting balances do not carry over). As printed on the statement — a credit card: the balance owed, positive. The starting balances follow at once; the customer's reason is kept for later re-reads. Repeat the number back and get a yes first. Not for a bank-feed month (its balances come from the bank) or a statement not read yet (use retry_statement with a note). The result says whether opening + the transactions now reach the closing balance — tell the customer; when it gives advice, follow it. Never to make a Starting balance go away (set an opening the statement does not print), and not for a statement with verification UNVERIFIED whose balances were not read — its transactions are suspect too: retry_statement with the printed balances in the note.",
     parameters: obj(
       {
         statementId: int,
@@ -1738,6 +1738,7 @@ export class AssistantTools {
           ok: true,
           balancesMatch: result.balancesMatch,
           expectedClosing: result.expectedClosing,
+          ...(result.advice && { advice: result.advice }),
         });
       }
       case 'delete_attachment': {

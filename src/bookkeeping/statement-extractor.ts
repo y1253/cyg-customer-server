@@ -11,7 +11,12 @@ import {
   type PageContent,
 } from './page-content.util';
 import { itemBoxes, type Box, type ImagePage } from './pdf-images';
-import { pdfPageTexts, pdfTextQuality } from './pipeline/pdf-text';
+import {
+  pdfPageTexts,
+  pdfTextQuality,
+  printedBalanceLines,
+  type PrintedBalances,
+} from './pipeline/pdf-text';
 import { pageTextHint } from './pipeline/tool-results';
 import { dropChequeCaptions } from './cheque-caption.util';
 import {
@@ -533,6 +538,74 @@ export class StatementExtractor {
       rereads++;
     }
 
+    // 2026-11-11 (Madam recovery, Chase 4148): a page printing "Previous Balance $633.66 …
+    // New Balance $2,629.30" was read with no closing (and on 10-27 with neither), so nothing
+    // checked the rows and wrong ones went into the books as UNVERIFIED. Ask once more, naming
+    // the printed line; a statement that still has nothing to check against while it prints
+    // its balances is set aside (MISMATCH), never released unchecked.
+    if (texts && result.verification.verification !== 'MISMATCH') {
+      const printed = chunks.map((_, i) => {
+        const t = textOf(i);
+        return t && !skipped.has(i)
+          ? printedBalanceLines(t)
+          : { opening: [], closing: [] };
+      });
+      const missing = missingBalances(result.stated, printed);
+      if (missing.pages.length && maxRereads > 0) {
+        this.logger.warn(
+          `"${filename}": prints ${missing.lines.join('; ')} but it was not read — re-reading page(s) ${missing.pages.map((i) => i + 1).join(',')}`,
+        );
+        const hint = [
+          'A previous reading of this page left out figures the page PRINTS:',
+          ...missing.lines.map((l) => `- "${l}"`),
+          'Copy them: "Previous balance" / "Opening balance" / "Balance forward" is openingBalance, "New balance" / "Closing balance" / "Ending balance" is closingBalance — exactly as printed. Re-read every transaction line too.',
+        ].join('\n');
+        for (const i of missing.pages) {
+          try {
+            const trial = [...pages];
+            trial[i] = await read(i, this.verifyModel(), i === 0 ? null : context, hint);
+            const candidate = assemble(trial);
+            const filled =
+              missingBalances(candidate.stated, printed).lines.length <
+              missingBalances(result.stated, printed).lines.length;
+            if (
+              better(candidate.verification, result.verification) ||
+              (filled && !better(result.verification, candidate.verification))
+            ) {
+              pages[i] = trial[i];
+              result = candidate;
+            }
+          } catch (err) {
+            this.logger.warn(
+              `"${filename}" page ${i + 1}: balance re-read failed (${errorText(err)})`,
+            );
+          }
+        }
+        rereads++;
+      }
+      const still = missingBalances(result.stated, printed);
+      if (still.lines.length && result.verification.verification === 'UNVERIFIED') {
+        result = {
+          ...result,
+          verification: {
+            ...result.verification,
+            verification: 'MISMATCH',
+            checks: [
+              ...result.verification.checks,
+              {
+                name: 'printedFigures',
+                expected: still.lines.length,
+                actual: 0,
+                ok: false,
+                skipped: null,
+                printed: still.lines,
+              },
+            ],
+          },
+        };
+      }
+    }
+
     this.logger.log(
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
         (textMode
@@ -849,6 +922,28 @@ export function closingOf(
       ends.some((e) => e !== undefined && c(e) === c(v)),
     ) ?? candidates[candidates.length - 1]
   );
+}
+
+/**
+ * The balances a statement PRINTS (`printedBalanceLines`, per page) that its reading left
+ * null: the printed lines and the pages they are on. Pure.
+ */
+export function missingBalances(
+  stated: Pick<StatedFigures, 'openingBalance' | 'closingBalance'>,
+  printed: readonly PrintedBalances[],
+): { lines: string[]; pages: number[] } {
+  const lines: string[] = [];
+  const pages = new Set<number>();
+  printed.forEach((p, i) => {
+    const gone = [
+      ...(stated.openingBalance === null ? p.opening : []),
+      ...(stated.closingBalance === null ? p.closing : []),
+    ];
+    if (!gone.length) return;
+    pages.add(i);
+    for (const l of gone) if (!lines.includes(l)) lines.push(l);
+  });
+  return { lines, pages: [...pages].sort((a, b) => a - b) };
 }
 
 /**

@@ -4,6 +4,7 @@ exports.layoutRows = layoutRows;
 exports.pdfTextQuality = pdfTextQuality;
 exports.pdfPageTexts = pdfPageTexts;
 exports.piecesOf = piecesOf;
+exports.printedBalanceLines = printedBalanceLines;
 function layoutRows(pieces) {
     const list = pieces.filter((p) => p.text.trim());
     if (!list.length)
@@ -104,6 +105,29 @@ function piecesOf(json) {
                 width: box.w,
                 size: line.font?.size ?? box.h ?? 10,
             });
+        }
+    }
+    return out;
+}
+const OPENING_LABEL = /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b/i;
+const CLOSING_LABEL = /\b(new balance|closing balance|ending balance)\b/i;
+const AMOUNT = /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}/;
+function printedBalanceLines(text) {
+    const out = { opening: [], closing: [] };
+    for (const line of text.split('\n')) {
+        for (const [key, label] of [
+            ['opening', OPENING_LABEL],
+            ['closing', CLOSING_LABEL],
+        ]) {
+            const m = label.exec(line);
+            if (!m)
+                continue;
+            const rest = line.slice(m.index);
+            if (!AMOUNT.test(rest.slice(m[0].length)))
+                continue;
+            const shown = rest.replace(/\s+/g, ' ').trim().slice(0, 80);
+            if (!out[key].includes(shown))
+                out[key].push(shown);
         }
     }
     return out;

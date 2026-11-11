@@ -593,6 +593,7 @@ export class AssistantService {
             periodEnd: true,
             openingBalance: true,
             closingBalance: true,
+            verification: true,
           },
         })
       : [];
@@ -623,6 +624,8 @@ export class AssistantService {
       periodEnd: day(s.periodEnd),
       openingBalance: money(s.openingBalance),
       closingBalance: money(s.closingBalance),
+      // UNVERIFIED = its rows were never checked against the bank (2026-11-11).
+      verification: s.verification,
       customerNote: s.customerNote,
       sameAccount: sameAccount.map((o) => ({
         statementId: o.id,
@@ -632,6 +635,7 @@ export class AssistantService {
         periodEnd: day(o.periodEnd),
         openingBalance: money(o.openingBalance),
         closingBalance: money(o.closingBalance),
+        verification: o.verification,
       })),
       startingDates,
     };

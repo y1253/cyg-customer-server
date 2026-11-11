@@ -8,6 +8,9 @@ export interface StatementRow {
     transactionCount: number;
     error: string | null;
     createdAt: Date | string;
+    openingBalance?: number | null;
+    closingBalance?: number | null;
+    verification?: string | null;
 }
 export interface StatementQuery {
     account?: string | null;
@@ -22,6 +25,7 @@ export declare const NOT_SORTED = "Not sorted yet";
 export declare function listStatements(rows: StatementRow[], q?: StatementQuery): {
     statements: {
         error?: string | undefined;
+        verification?: string | undefined;
         id: number;
         label: string;
         status: string;
@@ -29,6 +33,8 @@ export declare function listStatements(rows: StatementRow[], q?: StatementQuery)
         periodStart: string | null;
         periodEnd: string | null;
         transactions: number;
+        openingBalance: number | null;
+        closingBalance: number | null;
     }[];
     note?: string | undefined;
     total: number;

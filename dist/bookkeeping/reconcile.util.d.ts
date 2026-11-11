@@ -20,7 +20,7 @@ export type RunningBreak = {
     printed: number;
     expected: number;
 };
-export type CheckName = 'deposits' | 'withdrawals' | 'balance' | 'depositCount' | 'withdrawalCount' | 'runningBalance';
+export type CheckName = 'deposits' | 'withdrawals' | 'balance' | 'depositCount' | 'withdrawalCount' | 'runningBalance' | 'printedFigures';
 export interface Check {
     name: CheckName;
     expected: number;
@@ -29,6 +29,7 @@ export interface Check {
     skipped: string | null;
     page?: number;
     breaks?: RunningBreak[];
+    printed?: string[];
 }
 export type Verification = 'VERIFIED' | 'UNVERIFIED' | 'MISMATCH';
 export interface ReconcileResult {

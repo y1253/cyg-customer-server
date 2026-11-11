@@ -148,3 +148,42 @@ export function piecesOf(json: string): TextPiece[] {
   }
   return out;
 }
+
+/** The labelled balance lines a statement page prints (`printedBalanceLines`). */
+export interface PrintedBalances {
+  /** "Previous Balance $633.66", "Opening balance 100.00", … — from the label on. */
+  opening: string[];
+  /** "New Balance $2,629.30", "Closing balance …", … */
+  closing: string[];
+}
+
+const OPENING_LABEL =
+  /\b(previous (?:statement )?balance|opening balance|beginning balance|starting balance|balance forward)\b/i;
+const CLOSING_LABEL = /\b(new balance|closing balance|ending balance)\b/i;
+/** A money amount with cents: "$2,629.30", "-$1,213.66", "100.00", "1,468.82-". */
+const AMOUNT = /\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}/;
+
+/**
+ * The opening / closing balance lines a statement page's text layer prints: a label AND an
+ * amount after it on the same row ("New Balance" alone, a heading, does not count). Madam
+ * recovery's Chase card statements print "Previous Balance $633.66 … New Balance
+ * $2,629.30" on page 1, yet were read with neither (2026-11-11) — the reader is asked again
+ * when one of these was printed but not copied. Each line from its label on, 80 chars. Pure.
+ */
+export function printedBalanceLines(text: string): PrintedBalances {
+  const out: PrintedBalances = { opening: [], closing: [] };
+  for (const line of text.split('\n')) {
+    for (const [key, label] of [
+      ['opening', OPENING_LABEL],
+      ['closing', CLOSING_LABEL],
+    ] as const) {
+      const m = label.exec(line);
+      if (!m) continue;
+      const rest = line.slice(m.index);
+      if (!AMOUNT.test(rest.slice(m[0].length))) continue;
+      const shown = rest.replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (!out[key].includes(shown)) out[key].push(shown);
+    }
+  }
+  return out;
+}

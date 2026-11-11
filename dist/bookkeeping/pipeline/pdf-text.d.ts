@@ -13,3 +13,8 @@ export interface TextQuality {
 export declare function pdfTextQuality(text: string): TextQuality;
 export declare function pdfPageTexts(pdf: Buffer): Promise<string[] | null>;
 export declare function piecesOf(json: string): TextPiece[];
+export interface PrintedBalances {
+    opening: string[];
+    closing: string[];
+}
+export declare function printedBalanceLines(text: string): PrintedBalances;
