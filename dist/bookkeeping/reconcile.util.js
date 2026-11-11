@@ -102,7 +102,7 @@ function reconcileStatement(stated, pages) {
     const boxes = pages
         .map((p, page) => ({ ...p, page }))
         .filter((p) => p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null);
-    if (!perPageBoxes(pages.map((p) => p.stated))) {
+    if (!perPageBoxes(pages.filter((p) => p.rows.length).map((p) => p.stated))) {
         return reconcile(stated, allRows);
     }
     const NO_TOTALS = {

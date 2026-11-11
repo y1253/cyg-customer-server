@@ -266,7 +266,13 @@ export function reconcileStatement(
       (p) =>
         p.stated.totalDeposits !== null || p.stated.totalWithdrawals !== null,
     );
-  if (!perPageBoxes(pages.map((p) => p.stated))) {
+  // A page with no rows (a summary page) cannot hold a box totalling ITS rows: its box is
+  // the statement's. Counting it made Chase / Amex card statements (summary on page 1, a
+  // partial subtotal on page 3) "per page", and page 1's totals were checked against its
+  // zero rows — 5 correctly read Madam recovery statements in NEEDS_REVIEW (2026-11-11).
+  if (
+    !perPageBoxes(pages.filter((p) => p.rows.length).map((p) => p.stated))
+  ) {
     return reconcile(stated, allRows);
   }
 

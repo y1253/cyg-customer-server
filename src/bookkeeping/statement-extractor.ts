@@ -833,7 +833,12 @@ export function assemble(
     rows.forEach((t, i) => (t.amount = fix.amounts[i]));
     totalsFlips += fix.flips;
   };
-  if (perPageBoxes(pages.map((p) => p.stated))) {
+  // A page with no rows is a summary: its box is the statement's (`reconcileStatement`).
+  if (
+    perPageBoxes(
+      pages.filter((p) => p.transactions.length).map((p) => p.stated),
+    )
+  ) {
     pages.forEach((p, page) =>
       fixFromTotals(
         finite.filter((t) => t.page === page),

@@ -538,7 +538,7 @@ function assemble(readings) {
         rows.forEach((t, i) => (t.amount = fix.amounts[i]));
         totalsFlips += fix.flips;
     };
-    if ((0, reconcile_util_1.perPageBoxes)(pages.map((p) => p.stated))) {
+    if ((0, reconcile_util_1.perPageBoxes)(pages.filter((p) => p.transactions.length).map((p) => p.stated))) {
         pages.forEach((p, page) => fixFromTotals(finite.filter((t) => t.page === page), p.stated));
     }
     else {

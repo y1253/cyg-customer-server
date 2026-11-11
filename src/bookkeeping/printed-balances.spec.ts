@@ -5,7 +5,7 @@ import { listStatements } from '../assistant/statement-list.util';
 import { statementDoneNote } from '../voice/voice-session';
 import { balanceFit, withBalanceCheck } from './bookkeeping.service';
 import { pageContents } from './page-content.util';
-import { reconcile } from './reconcile.util';
+import { reconcile, reconcileStatement } from './reconcile.util';
 import { pdfPageTexts, printedBalanceLines } from './pipeline/pdf-text';
 import { missingBalances, StatementExtractor } from './statement-extractor';
 import { customerBalances } from './statement-processor.service';
@@ -318,5 +318,56 @@ describe('a card read with every sign flipped is not VERIFIED (#288, 2026-11-11)
     const r = reconcile(stated, rows([225.09, -25, -80.39]));
     expect(r.balanceSign).toBe(-1);
     expect(r.verification).toBe('VERIFIED');
+  });
+});
+
+describe('a summary page with no rows is not a per-page totals box (#288, 2026-11-11)', () => {
+  const none = {
+    openingBalance: null,
+    closingBalance: null,
+    totalDeposits: null,
+    totalWithdrawals: null,
+    depositCount: null,
+    withdrawalCount: null,
+    totalsScope: null,
+  };
+  const summary = {
+    ...none,
+    openingBalance: 3618.57,
+    closingBalance: 3498.87,
+    totalDeposits: 225.09,
+    totalWithdrawals: 105.39,
+    totalsScope: 'all' as const,
+  };
+  const row = (amount: number, page: number) => ({
+    amount,
+    balanceAfter: null,
+    page,
+  });
+
+  it('page 1 summary + page 3 partial subtotal → the whole statement is checked, VERIFIED', () => {
+    const r = reconcileStatement(summary, [
+      { stated: summary, rows: [] },
+      { stated: none, rows: [row(225.09, 1), row(-25, 1)] },
+      {
+        stated: { ...none, totalWithdrawals: 80.39, totalsScope: 'partial' },
+        rows: [row(-80.39, 2)],
+      },
+    ]);
+    expect(r.verification).toBe('VERIFIED');
+    expect(r.checks.every((c) => c.page === undefined)).toBe(true);
+  });
+
+  it('pages that each have rows and their own box are still checked per page (TD)', () => {
+    const box = (dep: number) => ({
+      ...none,
+      totalDeposits: dep,
+      totalsScope: 'all' as const,
+    });
+    const r = reconcileStatement(box(100), [
+      { stated: box(100), rows: [row(100, 0)] },
+      { stated: box(50), rows: [row(50, 1)] },
+    ]);
+    expect(r.checks.filter((c) => c.page !== undefined)).toHaveLength(2);
   });
 });
