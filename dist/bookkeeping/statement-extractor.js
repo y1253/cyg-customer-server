@@ -31,6 +31,7 @@ const pdf_decrypt_1 = require("./pdf-decrypt");
 const page_content_util_1 = require("./page-content.util");
 const pdf_images_1 = require("./pdf-images");
 const pdf_text_1 = require("./pipeline/pdf-text");
+const tool_results_1 = require("./pipeline/tool-results");
 const reconcile_util_1 = require("./reconcile.util");
 const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
@@ -188,7 +189,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             const t = texts && texts.length === chunks.length ? texts[i] : null;
             return t && (0, pdf_text_1.pdfTextQuality)(t).ok ? t : null;
         };
-        const asText = new Set();
+        const withText = new Set();
         const skipped = contents && contents.length === chunks.length
             ? (0, page_content_util_1.pagesToSkip)(contents)
             : new Set();
@@ -196,20 +197,22 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             this.logger.log(`"${filename}": skipped page(s) ${[...skipped].map((i) => i + 1).join(',')} — nothing to read`);
         }
         let calls = 0;
-        const read = async (i, model, context, hint, text = null) => {
+        const read = async (i, model, context, hint) => {
             calls++;
+            const text = textOf(i);
             const reading = await this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''), text);
             if (text == null)
                 return reading;
-            asText.add(i);
+            withText.add(i);
             return {
                 ...reading,
-                hasItemImages: contents?.[i] ? showsItemImages(contents[i]) : false,
+                hasItemImages: reading.hasItemImages ||
+                    (contents?.[i] ? showsItemImages(contents[i]) : false),
             };
         };
         const firstRead = async (i, context) => {
             try {
-                return await read(i, this.model(), context, null, textOf(i));
+                return await read(i, this.model(), context, null);
             }
             catch (err) {
                 this.logger.warn(`"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`);
@@ -297,7 +300,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
             (textMode
-                ? `page(s) first read from their text layer: ${[...asText]
+                ? `page(s) read with their text layer as tool results: ${[...withText]
                     .sort((a, b) => a - b)
                     .map((i) => i + 1)
                     .join(',') || 'none'}, `
@@ -329,26 +332,21 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
         }
         if (hint)
             lines.push('', hint);
-        if (text != null) {
-            lines.push('', "You get this page's TEXT LAYER, not the PDF: every line as printed, columns kept with " +
-                'spaces (a Withdrawals / Deposits / Balance column stays in its place). Read it exactly ' +
-                'as you would read the page. hasItemImages is decided by us — return false.', `"""\n${text}\n"""`);
-        }
+        if (text != null)
+            lines.push('', (0, tool_results_1.pageTextHint)(text));
         const reply = await this.openai.chat({
             model,
             system,
-            user: text != null
-                ? [{ type: 'text', text: lines.join('\n') }]
-                : [
-                    { type: 'text', text: lines.join('\n') },
-                    {
-                        type: 'file',
-                        file: {
-                            filename,
-                            file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
-                        },
+            user: [
+                { type: 'text', text: lines.join('\n') },
+                {
+                    type: 'file',
+                    file: {
+                        filename,
+                        file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
                     },
-                ],
+                },
+            ],
             jsonSchema: { name: 'bank_statement_page', schema: exports.EXTRACTION_SCHEMA },
             maxTokens: MAX_OUTPUT_TOKENS,
             timeoutMs: CHUNK_TIMEOUT_MS,

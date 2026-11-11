@@ -6,14 +6,12 @@ import type { PrismaService } from '../prisma/prisma.service';
 import type { ObjectStorageService } from '../storage/object-storage.service';
 import {
   AttachmentExtractor,
-  tooThin,
   UnreadableAttachmentError,
   type AttachmentReading,
 } from './attachment-extractor';
 import { chequeNumberOnlyMatch } from './attachment-match.util';
 import {
   AttachmentProcessorService,
-  ONE_CHEQUE_HINT,
   withOcrChequeNumber,
 } from './attachment-processor.service';
 import { chequeRegions } from './cheque-split';
@@ -25,6 +23,7 @@ import { DocumentPipeline, type Prepared } from './pipeline/document-pipeline';
 import type { OcrService } from './pipeline/ocr.service';
 import type { OcrLine, OcrResult } from './pipeline/ocr.util';
 import { pdfPageTexts } from './pipeline/pdf-text';
+import type { ChequeRegion } from './pipeline/tool-results';
 import type { ProductMemoryService } from './product-memory.service';
 import type { SplitsService } from './splits.service';
 import { showsItemImages, StatementExtractor } from './statement-extractor';
@@ -102,8 +101,11 @@ const backOcr = ocr([
 const config = (env: Record<string, string> = {}) =>
   ({ get: (k: string) => env[k] }) as unknown as ConfigService;
 
-describe('step2: cheques are cut apart by CODE and each is read alone', () => {
-  function setup(ocrs: Array<OcrResult | null>) {
+describe('step2e: the cheque regions code finds are TOOL RESULTS; the AI decides', () => {
+  function setup(
+    ocrs: Array<OcrResult | null>,
+    answer: AttachmentReading[] = [reading({ total: 100 })],
+  ) {
     const row = {
       id: 11,
       customerId: 7,
@@ -142,37 +144,33 @@ describe('step2: cheques are cut apart by CODE and each is read alone', () => {
       },
       bankTransaction: { findMany: jest.fn().mockResolvedValue([]) },
     } as unknown as PrismaService;
-    const putBuffer = jest.fn().mockResolvedValue(undefined);
     const storage = {
       getBuffer: jest.fn().mockResolvedValue(Buffer.from('whole')),
-      putBuffer,
+      putBuffer: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn().mockResolvedValue(undefined),
     } as unknown as ObjectStorageService;
-    const read = jest.fn(
-      (
-        _file: Buffer,
-        _name: string,
-        _mime: string,
-        _cls: string,
-        _today: string,
-        _message: string | null,
-        _rules: string,
-        prepared: Prepared | null,
-      ) =>
-        Promise.resolve([
-          reading({
-            checkNumber: prepared?.chequeNumber ? '9999' : null,
-            total: 100,
-          }),
-        ]),
-    );
+    // file, name, mime, cls, today, message, rules, prepared, regions
+    const read = jest.fn<
+      Promise<AttachmentReading[]>,
+      [
+        Buffer,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string,
+        Prepared | null,
+        readonly ChequeRegion[],
+      ]
+    >(() => Promise.resolve(answer));
     const extractor = {
       read,
       pick: jest.fn(),
     } as unknown as AttachmentExtractor;
     const ocrService = {
       enabled: () => true,
-      read: jest.fn(),
+      read: jest.fn().mockResolvedValue(null),
     } as unknown as OcrService;
     const pipeline = new DocumentPipeline(ocrService, config());
     let n = 0;
@@ -190,61 +188,73 @@ describe('step2: cheques are cut apart by CODE and each is read alone', () => {
       undefined,
       pipeline,
     );
-    return { service, read, putBuffer, update, create, prepare };
+    return { service, read, create, prepare };
   }
 
   beforeEach(() => {
     regions.mockReset();
     crop.mockReset();
+    crop.mockImplementation((_f, _m, boxes) =>
+      Promise.resolve(boxes.map((_, i) => Buffer.from(`crop${i}`))),
+    );
   });
 
-  it('two cheques in one image: two crops, each read on its own, with ONE_CHEQUE_HINT', async () => {
+  it('two cheques in one image: the WHOLE image goes to the AI once, with both regions and their numbers', async () => {
     regions.mockResolvedValue([
       { x0: 0, y0: 0, x1: 0.48, y1: 1 },
       { x0: 0.52, y0: 0, x1: 1, y1: 1 },
     ]);
-    crop.mockResolvedValue([Buffer.from('one'), Buffer.from('two')]);
-    const { service, read, putBuffer, create } = setup([
+    const { service, read, create, prepare } = setup([
       chequeOcr('001042', '450.00'),
       chequeOcr('001043', '120.00'),
     ]);
     await service.sweep();
-    const calls = read.mock.calls;
-    expect(calls).toHaveLength(2);
-    expect(calls.map((c) => String(c[0]))).toEqual(['one', 'two']);
-    expect(calls.every((c) => c[6].endsWith(ONE_CHEQUE_HINT))).toBe(true);
-    // The OCR's printed number replaces the AI's (each crop its own).
-    expect(calls.map((c) => c[7]?.chequeNumber)).toEqual(['001042', '001043']);
-    expect(
-      (putBuffer.mock.calls as Array<[string, Buffer]>).map((c) =>
-        String(c[1]),
-      ),
-    ).toEqual(['one', 'two']);
-    expect(create).toHaveBeenCalledTimes(1); // the second cheque's sibling row
+    expect(read).toHaveBeenCalledTimes(1);
+    const call = read.mock.calls[0];
+    expect(String(call[0])).toBe('whole');
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(call[8].map((r) => [r.chequeNumber, r.back])).toEqual([
+      ['001042', false],
+      ['001043', false],
+    ]);
+    // The AI saw ONE document: nothing is cut, no sibling row.
+    expect(create).not.toHaveBeenCalled();
   });
 
-  it("drops a cheque's BACK beside its front — one cheque, so the old path decides", async () => {
+  it('the AI cuts by ITS boxes: two documents → a crop each, the second a sibling row', async () => {
     regions.mockResolvedValue([
       { x0: 0, y0: 0, x1: 0.48, y1: 1 },
       { x0: 0.52, y0: 0, x1: 1, y1: 1 },
     ]);
-    crop.mockResolvedValue([Buffer.from('front'), Buffer.from('back')]);
-    const { service, read, prepare } = setup([
-      chequeOcr('001042', '450.00'),
-      backOcr,
-    ]);
+    const { service, read, create } = setup(
+      [chequeOcr('001042', '450.00'), chequeOcr('001043', '120.00')],
+      [
+        reading({ checkNumber: '1042', box: { x0: 0, y0: 0, x1: 0.5, y1: 1 } }),
+        reading({ checkNumber: '1043', box: { x0: 0.5, y0: 0, x1: 1, y1: 1 } }),
+      ],
+    );
     await service.sweep();
-    // Not split: the whole file is read once, through the pipeline.
     expect(read).toHaveBeenCalledTimes(1);
-    expect(String(read.mock.calls[0][0])).toBe('whole');
-    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it('no regions found: the file is read whole, the pipeline first', async () => {
+  it("a cheque's BACK is told to the AI, never dropped by code", async () => {
+    regions.mockResolvedValue([
+      { x0: 0, y0: 0, x1: 0.48, y1: 1 },
+      { x0: 0.52, y0: 0, x1: 1, y1: 1 },
+    ]);
+    const { service, read } = setup([chequeOcr('001042', '450.00'), backOcr]);
+    await service.sweep();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0][8].map((r) => r.back)).toEqual([false, true]);
+  });
+
+  it('no regions found: the file is read whole with the pipeline, no region hints', async () => {
     regions.mockResolvedValue([]);
     const { service, read, prepare } = setup([]);
     await service.sweep();
     expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0][8]).toEqual([]);
     expect(prepare).toHaveBeenCalledWith(
       expect.any(Buffer),
       'image/png',
@@ -255,7 +265,7 @@ describe('step2: cheques are cut apart by CODE and each is read alone', () => {
 });
 
 describe('step2: a cheque follows its NUMBER', () => {
-  it("OCR's number replaces a different one the AI read", () => {
+  it("OCR's number never replaces the AI's — it is kept as evidence", () => {
     const prepared = {
       source: 'OCR',
       ok: false,
@@ -277,13 +287,13 @@ describe('step2: a cheque follows its NUMBER', () => {
       }),
       prepared,
     );
-    expect(r.checkNumber).toBe('001042');
+    expect(r.checkNumber).toBe('1047');
     expect(r.pipeline?.ocrChequeNumber).toBe('001042');
-    // The same number (zeros aside) is left alone; a receipt is never touched.
+    // The same number (zeros aside) adds nothing; a receipt is never touched.
     expect(
-      withOcrChequeNumber(reading({ checkNumber: '1042' }), prepared)
-        .checkNumber,
-    ).toBe('1042');
+      withOcrChequeNumber(reading({ checkNumber: '1042' }), prepared).pipeline
+        ?.ocrChequeNumber,
+    ).toBeUndefined();
     expect(
       withOcrChequeNumber(
         reading({ kind: 'RECEIPT', checkNumber: null }),
@@ -314,7 +324,7 @@ describe('step2: a cheque follows its NUMBER', () => {
   });
 });
 
-describe('step2: the reader reads the pipeline TEXT first, the file when that is not enough', () => {
+describe('step2e: the reader ALWAYS reads the file; the tools are its help', () => {
   const textReply = (doc: Partial<AttachmentReading>) =>
     JSON.stringify({
       documents: [
@@ -375,44 +385,41 @@ describe('step2: the reader reads the pipeline TEXT first, the file when that is
       p,
     );
 
-  it('good OCR: one call on the TEXT model, no image, box dropped', async () => {
+  it('good OCR: still the VISION model with the image, the OCR text as tool results', async () => {
     const { chat, ex } = extractor([textReply({})]);
     const [r] = await read(ex, 'image', prepared(true));
     expect(chat).toHaveBeenCalledTimes(1);
     const req = chat.mock.calls[0][0];
-    expect(req.model).toBe('gpt-4.1-mini');
-    expect(JSON.stringify(req.user)).not.toContain('image_url');
-    expect(JSON.stringify(req.user)).toContain('TOTAL 26.85');
-    expect(r.box).toBeNull();
-    expect(r.pipeline).toMatchObject({ source: 'OCR', model: 'text' });
-  });
-
-  it('text that gives no amount or date: the vision model reads the file', async () => {
-    const { chat, ex } = extractor([
-      textReply({ total: null, date: null }),
-      textReply({}),
-    ]);
-    const [r] = await read(ex, 'image', prepared(true));
-    expect(chat).toHaveBeenCalledTimes(2);
-    expect(chat.mock.calls[1][0].model).toBe('gpt-4o');
-    expect(JSON.stringify(chat.mock.calls[1][0].user)).toContain('image_url');
+    expect(req.model).toBe('gpt-4o');
+    const user = JSON.stringify(req.user);
+    expect(user).toContain('image_url');
+    expect(user).toContain('TOOL RESULTS');
+    expect(user).toContain('TOTAL 26.85');
+    expect(user).toContain('The FILE always wins');
+    // The AI's box stands (it saw the image).
+    expect(r.box).toEqual({ x0: 0, y0: 0, x1: 0.5, y1: 0.5 });
     expect(r.pipeline).toMatchObject({
+      source: 'OCR',
       model: 'vision',
-      reason: 'its text was not enough',
+      reason: 'the file, with the tool results',
     });
   });
 
-  it('OCR unsure: the vision model, with the OCR text as a hint', async () => {
+  it('unsure OCR: the vision model is told why the tool was unsure', async () => {
     const { chat, ex } = extractor([textReply({})]);
-    const [r] = await read(ex, 'image', prepared(false));
-    expect(chat).toHaveBeenCalledTimes(1);
+    await read(ex, 'image', prepared(false));
     const user = JSON.stringify(chat.mock.calls[0][0].user);
     expect(user).toContain('image_url');
-    expect(user).toContain('may be incomplete or misread');
-    expect(r.pipeline).toMatchObject({
-      model: 'vision',
-      reason: 'low confidence 0.70',
-    });
+    expect(user).toContain('it was unsure: low confidence 0.70');
+  });
+
+  it('no tools at all: the plain vision read, no TOOL RESULTS block', async () => {
+    const { chat, ex } = extractor([textReply({})]);
+    const [r] = await read(ex, 'image', null);
+    expect(JSON.stringify(chat.mock.calls[0][0].user)).not.toContain(
+      'TOOL RESULTS',
+    );
+    expect(r.pipeline).toMatchObject({ model: 'vision', reason: null });
   });
 
   it('a spreadsheet nobody could open is refused, never sent to the vision model', async () => {
@@ -448,14 +455,6 @@ describe('step2: the reader reads the pipeline TEXT first, the file when that is
     expect(out[0].summary).toContain(
       '5 payments from 2026-10-01 to 2026-10-05',
     );
-  });
-
-  it('tooThin: only payment documents with neither amount nor date', () => {
-    expect(tooThin([reading({ total: null, date: null })])).toBe(true);
-    expect(tooThin([reading({ total: null })])).toBe(false);
-    expect(
-      tooThin([reading({ documentType: 'DOCUMENT', total: null, date: null })]),
-    ).toBe(false);
   });
 });
 
@@ -513,7 +512,7 @@ describe('step2: a re-read statement re-files its cheque image uncut', () => {
   });
 });
 
-describe('step2: a statement page is first read from its own text layer', () => {
+describe('step2e: a statement page goes with its own text layer as tool results', () => {
   async function pdf(n: number): Promise<Buffer> {
     const doc = await PDFDocument.create();
     for (let i = 0; i < n; i++) doc.addPage();
@@ -532,7 +531,7 @@ describe('step2: a statement page is first read from its own text layer', () => 
     depositCount: null,
     withdrawalCount: null,
     totalsScope: 'none',
-    hasItemImages: true,
+    hasItemImages: false,
     transactions: [
       {
         pendingDate: null,
@@ -553,11 +552,16 @@ describe('step2: a statement page is first read from its own text layer', () => 
     contents.mockReset();
   });
 
-  it('sends the text instead of the PDF; the cheque-image flag comes from code', async () => {
+  it('sends the PDF AND its text; cheque images = the model OR the code', async () => {
     texts.mockResolvedValue([textLayer, '']);
     contents.mockResolvedValue([
-      { text: textLayer, images: [], bounds: [0, 0, 612, 792] },
-      // page 2: a cheque image (a quarter of the page wide), no text layer
+      // page 1: a text layer and a cheque image the model does not report
+      {
+        text: textLayer,
+        images: [[40, 400, 572, 630]],
+        bounds: [0, 0, 612, 792],
+      },
+      // page 2: a cheque image, no text layer — the model's word alone
       { text: '', images: [[40, 100, 572, 330]], bounds: [0, 0, 612, 792] },
     ]);
     const chat = jest.fn<Promise<string>, [ChatRequest]>(() =>
@@ -569,12 +573,15 @@ describe('step2: a statement page is first read from its own text layer', () => 
     );
     const out = await ex.extract(await pdf(2), 's.pdf');
     const [first, second] = chat.mock.calls.map((c) => c[0]);
-    // Page 1: its text, no PDF part. Page 2 (no text layer): the PDF, as before.
-    expect(Array.isArray(first.user) && first.user).toHaveLength(1);
+    // Page 1: the PDF page AND its text layer as tool results.
+    expect(JSON.stringify(first.user)).toContain('application/pdf');
+    expect(JSON.stringify(first.user)).toContain('TOOL RESULTS');
     expect(JSON.stringify(first.user)).toContain('CHEQUE 1042');
+    // Page 2 (no text layer): the PDF alone.
     expect(JSON.stringify(second.user)).toContain('application/pdf');
-    // The model said page 1 shows images; code says it does not (no image on it).
-    expect(out.imagePages.map((p) => p.page)).toEqual([1]);
+    expect(JSON.stringify(second.user)).not.toContain('TOOL RESULTS');
+    // Page 1's cheque image: the code saw it although the model said no.
+    expect(out.imagePages.map((p) => p.page)).toEqual([0]);
   });
 
   it('off by default: every page is the PDF', async () => {

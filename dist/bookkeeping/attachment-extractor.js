@@ -13,7 +13,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_SHEET_PAYMENTS = exports.AttachmentExtractor = exports.MAX_DOCUMENTS_PER_FILE = exports.UnreadableAttachmentError = exports.isPaymentDocument = exports.DOCUMENT_TYPES = void 0;
 exports.isRefusal = isRefusal;
 exports.sheetAsDocument = sheetAsDocument;
-exports.tooThin = tooThin;
 exports.cleanReadings = cleanReadings;
 exports.cleanReading = cleanReading;
 exports.cleanBox = cleanBox;
@@ -21,6 +20,7 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const openai_client_1 = require("../ai/openai.client");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const tool_results_1 = require("./pipeline/tool-results");
 exports.DOCUMENT_TYPES = [
     'RECEIPT',
     'INVOICE',
@@ -239,7 +239,7 @@ let AttachmentExtractor = AttachmentExtractor_1 = class AttachmentExtractor {
         return (this.config.get('OPENAI_BOOKKEEPING_TAX_MODEL')?.trim() ||
             'gpt-4.1-mini');
     }
-    async read(file, filename, mime, cls, today, message, rules = '', prepared = null) {
+    async read(file, filename, mime, cls, today, message, rules = '', prepared = null, regions = []) {
         if (cls === 'text') {
             const words = file.toString('utf8').trim();
             if (words.replace(/[^\p{L}\p{N}]/gu, '').length < 3) {
@@ -264,49 +264,32 @@ let AttachmentExtractor = AttachmentExtractor_1 = class AttachmentExtractor {
                 },
             }));
         }
-        if (prepared?.ok || cls === 'sheet') {
+        if (cls === 'sheet') {
             if (!prepared?.ok) {
                 throw new UnreadableAttachmentError('We could not open this spreadsheet. Save it again as .xlsx or .csv and send it again.');
             }
-            try {
-                const readings = await this.ask(this.textModel(), TEXT_DOCUMENT_PROMPT + rules, `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`);
-                if (cls === 'sheet' && readings.length > exports.MAX_SHEET_PAYMENTS) {
-                    return [sheetAsDocument(readings, prepared)];
-                }
-                if (cls === 'sheet' || !tooThin(readings)) {
-                    return readings.map((r) => ({
-                        ...r,
-                        box: null,
-                        pipeline: pipelineOf(prepared, 'text', null),
-                    }));
-                }
-                this.logger.log(`"${filename}": its text gave no amount or date — the vision model reads the file`);
+            const readings = await this.ask(this.textModel(), TEXT_DOCUMENT_PROMPT + rules, `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`);
+            if (readings.length > exports.MAX_SHEET_PAYMENTS) {
+                return [sheetAsDocument(readings, prepared)];
             }
-            catch (err) {
-                if (cls === 'sheet')
-                    throw err;
-                this.logger.warn(`"${filename}": reading its text failed (${err instanceof Error ? err.message : String(err)}) — the vision model reads the file`);
-            }
+            return readings.map((r) => ({
+                ...r,
+                box: null,
+                pipeline: pipelineOf(prepared, 'text', null),
+            }));
         }
-        const hint = prepared?.text.trim()
-            ? "\n\nText a local OCR / the PDF's text layer read off it (may be incomplete or " +
-                `misread; trust the file):\n"""\n${prepared.text.slice(0, 6000)}\n"""`
-            : '';
+        const tools = (0, tool_results_1.toolResultsHint)(prepared, regions);
         const user = [
             {
                 type: 'text',
-                text: `Read this document.${senderNote(message)}${hint}`,
+                text: `Read this document.${senderNote(message)}${tools}`,
             },
             filePart(file, filename, mime, cls),
         ];
         const readings = await this.ask(this.visionModel(), DOCUMENT_PROMPT + rules, user);
         return readings.map((r) => ({
             ...r,
-            pipeline: pipelineOf(prepared, 'vision', prepared
-                ? prepared.ok
-                    ? 'its text was not enough'
-                    : prepared.reason
-                : null),
+            pipeline: pipelineOf(prepared, 'vision', tools ? 'the file, with the tool results' : null),
         }));
     }
     async lookAt(file, filename, mime, cls, question) {
@@ -405,12 +388,6 @@ function pipelineOf(prepared, model, reason) {
             : null,
         reason,
     };
-}
-function tooThin(readings) {
-    return readings.every((r) => (0, exports.isPaymentDocument)(r.documentType) &&
-        r.total == null &&
-        r.subtotal == null &&
-        !r.date);
 }
 const positive = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0
     ? Math.round(n * 100) / 100

@@ -5,6 +5,7 @@ import type { AttachmentClass } from './attachment-uploads';
 import type { MatchCandidate } from './attachment-match.util';
 import { ACCOUNT_NAMES } from './chart-of-accounts';
 import type { PipelineSource, Prepared } from './pipeline/document-pipeline';
+import { toolResultsHint, type ChequeRegion } from './pipeline/tool-results';
 
 /**
  * What a file IS (step11b), decided before anything is matched. Only a payment record
@@ -69,8 +70,8 @@ export interface AttachmentReading {
   text?: string | null;
   /**
    * step2 (2026-11-08): how this file was read — the local pipeline's source (null = none),
-   * which model read it (`text` = the pipeline's text alone, `vision` = the file itself),
-   * OCR's confidence and why the text was not enough on its own.
+   * which model read it (`text` = a spreadsheet's cells, `vision` = the file itself — since
+   * step2e every image and PDF, with the tools' results as a help), OCR's confidence.
    */
   pipeline?: ReadingPipeline;
 }
@@ -80,7 +81,10 @@ export interface ReadingPipeline {
   model: 'text' | 'vision' | 'audio';
   confidence: number | null;
   reason: string | null;
-  /** The cheque number OCR read, when it differs from the AI's and replaced it. */
+  /**
+   * The cheque number OCR read, when it differs from the AI's. Evidence only since step2e:
+   * the AI's number stands; matching tries this one after it, and only at the same amount.
+   */
   ocrChequeNumber?: string | null;
 }
 
@@ -228,9 +232,9 @@ const DOCUMENT_PROMPT =
   READ_RULES;
 
 /**
- * step2: the file's TEXT, read by the local pipeline (PaddleOCR, the PDF's own text layer,
- * the spreadsheet's cells) — the text model reads it instead of the vision model reading
- * the file. `[unsure NN%]` marks an OCR line the model should doubt.
+ * step2: a SPREADSHEET's text (its cells, read by the local pipeline) on the text model — the
+ * only file read from its text alone, since a sheet cannot be shown to the vision model.
+ * Images and PDFs always go to the vision model with the file (step2e, `toolResultsHint`).
  */
 const TEXT_DOCUMENT_PROMPT =
   'A small-business owner sent this file to their bookkeeper. You do NOT see the file: you ' +
@@ -365,6 +369,8 @@ export class AttachmentExtractor {
     rules = '',
     /** step2: what the local pipeline read first (`DocumentPipeline.prepare`); null = none. */
     prepared: Prepared | null = null,
+    /** step2e: the cheque-shaped regions the code found in an image (tool results). */
+    regions: readonly ChequeRegion[] = [],
   ): Promise<AttachmentReading[]> {
     if (cls === 'text') {
       const words = file.toString('utf8').trim();
@@ -404,49 +410,35 @@ export class AttachmentExtractor {
         },
       }));
     }
-    // step2: the pipeline's text first, on the text model — only when it read the file well.
-    if (prepared?.ok || cls === 'sheet') {
+    // A spreadsheet is read from its cells: it cannot be shown to the vision model.
+    if (cls === 'sheet') {
       if (!prepared?.ok) {
         throw new UnreadableAttachmentError(
           'We could not open this spreadsheet. Save it again as .xlsx or .csv and send it again.',
         );
       }
-      try {
-        const readings = await this.ask(
-          this.textModel(),
-          TEXT_DOCUMENT_PROMPT + rules,
-          `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`,
-        );
-        if (cls === 'sheet' && readings.length > MAX_SHEET_PAYMENTS) {
-          return [sheetAsDocument(readings, prepared)];
-        }
-        if (cls === 'sheet' || !tooThin(readings)) {
-          return readings.map((r) => ({
-            ...r,
-            box: null,
-            pipeline: pipelineOf(prepared, 'text', null),
-          }));
-        }
-        this.logger.log(
-          `"${filename}": its text gave no amount or date — the vision model reads the file`,
-        );
-      } catch (err) {
-        if (cls === 'sheet') throw err;
-        this.logger.warn(
-          `"${filename}": reading its text failed (${err instanceof Error ? err.message : String(err)}) — the vision model reads the file`,
-        );
+      const readings = await this.ask(
+        this.textModel(),
+        TEXT_DOCUMENT_PROMPT + rules,
+        `TODAY: ${today}\n\nFile "${filename.slice(0, 200)}", text read off it:\n"""\n${prepared.text}\n"""${senderNote(message)}`,
+      );
+      if (readings.length > MAX_SHEET_PAYMENTS) {
+        return [sheetAsDocument(readings, prepared)];
       }
+      return readings.map((r) => ({
+        ...r,
+        box: null,
+        pipeline: pipelineOf(prepared, 'text', null),
+      }));
     }
-    // The pipeline's text, when it read anything, is a hint (never the truth) for the
-    // vision model — OCR is best at printed numbers, the model at what is unclear.
-    const hint = prepared?.text.trim()
-      ? "\n\nText a local OCR / the PDF's text layer read off it (may be incomplete or " +
-        `misread; trust the file):\n"""\n${prepared.text.slice(0, 6000)}\n"""`
-      : '';
+    // step2e (user's rule): the tools help the model, never the opposite. The vision model
+    // ALWAYS reads the file itself; what OCR / the PDF's text layer / the cheque regions
+    // found goes along as TOOL RESULTS to check its reading against — the file wins.
+    const tools = toolResultsHint(prepared, regions);
     const user: ChatContent = [
       {
         type: 'text',
-        text: `Read this document.${senderNote(message)}${hint}`,
+        text: `Read this document.${senderNote(message)}${tools}`,
       },
       filePart(file, filename, mime, cls),
     ];
@@ -460,11 +452,7 @@ export class AttachmentExtractor {
       pipeline: pipelineOf(
         prepared,
         'vision',
-        prepared
-          ? prepared.ok
-            ? 'its text was not enough'
-            : prepared.reason
-          : null,
+        tools ? 'the file, with the tool results' : null,
       ),
     }));
   }
@@ -617,21 +605,6 @@ function pipelineOf(
         : null,
     reason,
   };
-}
-
-/**
- * A text reading that found nothing to file: every payment document without an amount AND
- * without a date — the text was not enough, so the file goes to the vision model (user's
- * rule: what the pipeline cannot read goes to the model).
- */
-export function tooThin(readings: readonly AttachmentReading[]): boolean {
-  return readings.every(
-    (r) =>
-      isPaymentDocument(r.documentType) &&
-      r.total == null &&
-      r.subtotal == null &&
-      !r.date,
-  );
 }
 
 const positive = (n: unknown): number | null =>

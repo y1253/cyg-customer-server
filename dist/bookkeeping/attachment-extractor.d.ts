@@ -3,6 +3,7 @@ import { OpenAiClient } from '../ai/openai.client';
 import type { AttachmentClass } from './attachment-uploads';
 import type { MatchCandidate } from './attachment-match.util';
 import type { PipelineSource, Prepared } from './pipeline/document-pipeline';
+import { type ChequeRegion } from './pipeline/tool-results';
 export declare const DOCUMENT_TYPES: readonly ["RECEIPT", "INVOICE", "CHECK", "DEPOSIT_SLIP", "PAYMENT_NOTE", "BANK_STATEMENT", "DOCUMENT"];
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export declare const isPaymentDocument: (t: DocumentType | undefined) => boolean;
@@ -52,7 +53,7 @@ export declare class AttachmentExtractor {
     constructor(openai: OpenAiClient, config: ConfigService);
     private visionModel;
     private textModel;
-    read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null, rules?: string, prepared?: Prepared | null): Promise<AttachmentReading[]>;
+    read(file: Buffer, filename: string, mime: string, cls: AttachmentClass, today: string, message?: string | null, rules?: string, prepared?: Prepared | null, regions?: readonly ChequeRegion[]): Promise<AttachmentReading[]>;
     lookAt(file: Buffer, filename: string, mime: string, cls: 'image' | 'pdf', question: string): Promise<string | null>;
     pick(reading: AttachmentReading, candidates: readonly MatchCandidate[], message?: string | null, rules?: string): Promise<{
         transactionId: number | null;
@@ -63,7 +64,6 @@ export declare class AttachmentExtractor {
 }
 export declare const MAX_SHEET_PAYMENTS = 3;
 export declare function sheetAsDocument(readings: readonly AttachmentReading[], prepared: Prepared): AttachmentReading;
-export declare function tooThin(readings: readonly AttachmentReading[]): boolean;
 export declare function cleanReadings(raw: unknown): AttachmentReading[];
 export declare function cleanReading(r: AttachmentReading): AttachmentReading;
 export declare function cleanBox(b: unknown): DocumentBox | null;

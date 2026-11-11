@@ -12,6 +12,7 @@ import {
 } from './page-content.util';
 import { itemBoxes, type Box, type ImagePage } from './pdf-images';
 import { pdfPageTexts, pdfTextQuality } from './pipeline/pdf-text';
+import { pageTextHint } from './pipeline/tool-results';
 import {
   describeCheck,
   perPageBoxes,
@@ -261,12 +262,11 @@ export class StatementExtractor {
   }
 
   /**
-   * step2 (2026-11-08): `STATEMENT_TEXT_PIPELINE=1` = a page's FIRST read is its own text
-   * layer (laid out as printed, `pipeline/pdf-text.ts`) instead of the PDF itself, when that
-   * layer is real. Everything else stays: re-reads, the "is it a statement?" retry and a
-   * failed first read always send the PDF page (what the text could not settle goes to the
-   * model), and reconcile / sign repair / the saved PDF are untouched. Off by default until
-   * `bookkeeping-probe.ts --text-pipeline` shows the hard statements still verify.
+   * step2 (2026-11-08): `STATEMENT_TEXT_PIPELINE=1` = a page's own text layer (laid out as
+   * printed, `pipeline/pdf-text.ts`) goes along with every read of it, when that layer is
+   * real. step2e (2026-11-10, user's rule: the tools help the model, not the opposite): it
+   * is TOOL RESULTS beside the PDF page, never instead of it — the text-only first read
+   * (and the code deciding `hasItemImages` alone) made the errors go up.
    */
   textPipeline(): boolean {
     return this.config.get<string>('STATEMENT_TEXT_PIPELINE')?.trim() === '1';
@@ -318,7 +318,7 @@ export class StatementExtractor {
       const t = texts && texts.length === chunks.length ? texts[i] : null;
       return t && pdfTextQuality(t).ok ? t : null;
     };
-    const asText = new Set<number>();
+    const withText = new Set<number>();
     const skipped =
       contents && contents.length === chunks.length
         ? pagesToSkip(contents)
@@ -334,10 +334,10 @@ export class StatementExtractor {
       model: string,
       context: PageContext | null,
       hint: string | null,
-      /** step2: the page's text layer instead of the PDF (first reads only). */
-      text: string | null = null,
     ): Promise<PageReading> => {
       calls++;
+      // step2e: the page's text layer, when real, goes WITH the PDF page on every read.
+      const text = textOf(i);
       const reading = await this.readChunk(
         chunks[i],
         i,
@@ -351,11 +351,14 @@ export class StatementExtractor {
         text,
       );
       if (text == null) return reading;
-      asText.add(i);
-      // The model saw no images: whether the page shows cheques is decided by code.
+      withText.add(i);
+      // Cheque images on the page: the model's eye OR the code's (an image the model
+      // missed, or a scan the code can't tell from a background).
       return {
         ...reading,
-        hasItemImages: contents?.[i] ? showsItemImages(contents[i]) : false,
+        hasItemImages:
+          reading.hasItemImages ||
+          (contents?.[i] ? showsItemImages(contents[i]) : false),
       };
     };
     // A first read that fails (a reply cut off at the token cap — gpt-4.1 looping on one
@@ -366,7 +369,7 @@ export class StatementExtractor {
       context: PageContext | null,
     ): Promise<PageReading> => {
       try {
-        return await read(i, this.model(), context, null, textOf(i));
+        return await read(i, this.model(), context, null);
       } catch (err) {
         this.logger.warn(
           `"${filename}" page ${i + 1}: ${errorText(err)} — reading it again with ${this.verifyModel()}`,
@@ -487,8 +490,8 @@ export class StatementExtractor {
     this.logger.log(
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
         (textMode
-          ? `page(s) first read from their text layer: ${
-              [...asText]
+          ? `page(s) read with their text layer as tool results: ${
+              [...withText]
                 .sort((a, b) => a - b)
                 .map((i) => i + 1)
                 .join(',') || 'none'
@@ -529,7 +532,7 @@ export class StatementExtractor {
     context: PageContext | null,
     hint: string | null,
     system: string = SYSTEM_PROMPT,
-    /** step2: the page's own text layer, sent INSTEAD of the PDF; null = the PDF. */
+    /** step2e: the page's own text layer, sent WITH the PDF as tool results; null = none. */
     text: string | null = null,
   ): Promise<PageReading> {
     const from = index * pagesPerChunk + 1;
@@ -542,31 +545,20 @@ export class StatementExtractor {
       );
     }
     if (hint) lines.push('', hint);
-    if (text != null) {
-      lines.push(
-        '',
-        "You get this page's TEXT LAYER, not the PDF: every line as printed, columns kept with " +
-          'spaces (a Withdrawals / Deposits / Balance column stays in its place). Read it exactly ' +
-          'as you would read the page. hasItemImages is decided by us — return false.',
-        `"""\n${text}\n"""`,
-      );
-    }
+    if (text != null) lines.push('', pageTextHint(text));
     const reply = await this.openai.chat({
       model,
       system,
-      user:
-        text != null
-          ? [{ type: 'text', text: lines.join('\n') }]
-          : [
-              { type: 'text', text: lines.join('\n') },
-              {
-                type: 'file',
-                file: {
-                  filename,
-                  file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
-                },
-              },
-            ],
+      user: [
+        { type: 'text', text: lines.join('\n') },
+        {
+          type: 'file',
+          file: {
+            filename,
+            file_data: `data:application/pdf;base64,${chunk.bytes.toString('base64')}`,
+          },
+        },
+      ],
       jsonSchema: { name: 'bank_statement_page', schema: EXTRACTION_SCHEMA },
       maxTokens: MAX_OUTPUT_TOKENS,
       timeoutMs: CHUNK_TIMEOUT_MS,

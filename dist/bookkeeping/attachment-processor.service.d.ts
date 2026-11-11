@@ -22,7 +22,6 @@ export declare function sniffImageMime(b: Buffer): string | null;
 export declare function customerNoteOf(extracted: unknown): string | null;
 export declare function readerHints(source: string, note: string | null): string;
 export declare function classOf(mimeType: string): AttachmentClass;
-export declare const ONE_CHEQUE_HINT: string;
 export declare function withOcrChequeNumber(reading: AttachmentReading, prepared: Prepared | null): AttachmentReading;
 export declare class AttachmentProcessorService {
     private readonly prisma;
@@ -40,8 +39,7 @@ export declare class AttachmentProcessorService {
     sweep(): Promise<void>;
     private runSweep;
     private processOne;
-    private codeSplit;
-    private readSplit;
+    private chequeHints;
     private finish;
     private fileSiblings;
     private cut;
