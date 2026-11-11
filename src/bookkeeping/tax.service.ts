@@ -24,6 +24,11 @@ import {
   nameKey,
   type RuleMatchType,
 } from './name-memory.util';
+import {
+  attachmentName,
+  nameKeyOf,
+  type NameInput,
+} from './attachment-name.util';
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
@@ -521,19 +526,24 @@ export class TaxService {
       }),
       this.typeContext(scope),
     ]);
-    const [placed, ownGroups] = await Promise.all([
+    const [placed, ownGroups, fileNames] = await Promise.all([
       this.prisma.ledgerName.findMany({
         where: {
           ...scopeWhere(scope),
-          OR: [{ group: { not: null } }, { fields: { not: Prisma.DbNull } }],
+          OR: [
+            { group: { not: null } },
+            { fields: { not: Prisma.DbNull } },
+            { manual: true },
+          ],
         },
-        select: { name: true, group: true, fields: true },
+        select: { name: true, group: true, fields: true, manual: true },
       }),
       this.prisma.customerNameGroup.findMany({
         where: { ...scopeWhere(scope), deletedAt: null },
         orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         select: { id: true, name: true },
       }),
+      this.namesOfFiles(scope),
     ]);
     const groupList: NameGroupView[] = [
       ...BUILTIN_GROUPS,
@@ -624,10 +634,10 @@ export class TaxService {
               key: r.matchKey,
               text: r.includeChars ?? r.matchKey,
               category: r.category,
+              // step8 (check1.png): the rows this rule NAMES — an exact description rule of
+              // another name wins rows the text also reaches, and they are not this name's.
               rows: [...named, ...nameless].filter(
-                (t) =>
-                  !t.splitOfId &&
-                  descriptionContains(t.description, r.matchKey),
+                (t) => !t.splitOfId && t.personalRuleId === r.id,
               ).length,
             })),
           exceptionOf: exceptionOf.get(key) ?? [],
@@ -709,6 +719,36 @@ export class TaxService {
       names.sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    // step2 (2026-11-11): a name with files but no transactions — or added by hand — is
+    // still listed (its folder holds the files), unlike an empty chart category.
+    const listed = new Set(names.map((n) => nameKey(n.name)));
+    const extra = [
+      ...placed.filter((l) => l.manual).map((l) => l.name),
+      ...fileNames,
+    ];
+    for (const name of extra) {
+      const key = nameKey(name);
+      if (listed.has(key)) continue;
+      listed.add(key);
+      names.push({
+        name,
+        category: UNCATEGORIZED,
+        otherCategories: 0,
+        type: typeOfCategory(UNCATEGORIZED, ctx),
+        rows: 0,
+        total: 0,
+        agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
+        fields: fieldsOf.get(key) ?? [],
+        descriptions: [],
+        followsContains: [],
+        exceptionOf: [],
+        group: groupOf.get(key) ?? typeOfCategory(UNCATEGORIZED, ctx),
+        ruleKey: key,
+        rule: null,
+      });
+    }
+    names.sort((a, b) => a.name.localeCompare(b.name));
+
     const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
     // A CONTAINS rule that names its rows lives in that name (`followsContains`); only the
     // category-only ones are listed on their own.
@@ -727,6 +767,84 @@ export class TaxService {
       );
 
     return { names, unrecognized, containsRules, groups: groupList };
+  }
+
+  /**
+   * step2 (2026-11-11): the names the book's live files are filed under (`attachmentName`),
+   * in their most common spelling — Unsorted (no name) left out.
+   */
+  private async namesOfFiles(scope: BookScope): Promise<string[]> {
+    const rows = await this.prisma.transactionAttachment.findMany({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        // A voice note that was only a message is not a file (`NOT_VOICE_MESSAGE`).
+        NOT: { kind: 'AUDIO', status: 'DOCUMENT' },
+      },
+      select: {
+        nameOverride: true,
+        extracted: true,
+        transaction: {
+          select: {
+            name: true,
+            statement: { select: { deletedAt: true, status: true } },
+          },
+        },
+      },
+    });
+    const spellings = new Map<string, Map<string, number>>();
+    for (const r of rows) {
+      const t = r.transaction;
+      const live =
+        t && !t.statement.deletedAt && t.statement.status === 'DONE' ? t : null;
+      const name = attachmentName({
+        nameOverride: r.nameOverride,
+        transaction: live,
+        reading: r.extracted as NameInput['reading'],
+      });
+      if (!name) continue;
+      const key = nameKey(name);
+      const m = spellings.get(key) ?? new Map<string, number>();
+      m.set(name, (m.get(name) ?? 0) + 1);
+      spellings.set(key, m);
+    }
+    return [...spellings.values()].map(
+      (m) =>
+        [...m.entries()].sort(
+          (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+        )[0][0],
+    );
+  }
+
+  /**
+   * step2 (2026-11-11): add a name by hand on the Names tab — it is listed from now on even
+   * with no transactions, ready for files. An existing name just becomes manual.
+   */
+  async addName(
+    scope: BookScope,
+    rawName: string,
+    group: string | null,
+  ): Promise<string> {
+    const name = rawName.replace(/\s+/g, ' ').trim().slice(0, 191);
+    if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
+      throw new BadRequestException('Give the name');
+    if (group) await this.setNameGroup(scope, name, group);
+    const rows = await this.prisma.ledgerName.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, name: true },
+    });
+    const existing = rows.find((r) => nameKey(r.name) === nameKey(name));
+    if (existing) {
+      await this.prisma.ledgerName.update({
+        where: { id: existing.id },
+        data: { manual: true },
+      });
+      return existing.name;
+    }
+    await this.prisma.ledgerName.create({
+      data: { ...scopeWhere(scope), name, manual: true },
+    });
+    return name;
   }
 
   /**
@@ -1035,9 +1153,16 @@ export class TaxService {
     const target = nameTaxKey(newName);
     keys.delete(target);
     if (!keys.size) return;
+    await this.moveNameFiles(scope, oldNames, newName);
     const rows = await this.prisma.ledgerName.findMany({
       where: scopeWhere(scope),
-      select: { name: true, group: true, taxExempt: true, fields: true },
+      select: {
+        name: true,
+        group: true,
+        taxExempt: true,
+        fields: true,
+        manual: true,
+      },
     });
     if (rows.some((r) => nameTaxKey(r.name) === target)) return;
     const from = rows.find((r) => keys.has(nameTaxKey(r.name)));
@@ -1049,7 +1174,40 @@ export class TaxService {
         group: from.group,
         taxExempt: from.taxExempt,
         fields: (from.fields as Prisma.InputJsonValue | null) ?? Prisma.DbNull,
+        manual: from.manual,
       },
+    });
+  }
+
+  /**
+   * step2 (2026-11-11): a renamed / merged name takes its files with it — the files the
+   * customer filed under the old name (`nameOverride`) and its subfolders (`NameFolder`).
+   * Files that follow their transaction move by themselves.
+   */
+  async moveNameFiles(
+    scope: BookScope,
+    oldNames: readonly string[],
+    newName: string,
+  ): Promise<void> {
+    const keys = new Set(oldNames.map(nameKeyOf));
+    keys.delete(nameKeyOf(newName));
+    if (!keys.size) return;
+    const files = await this.prisma.transactionAttachment.findMany({
+      where: { ...scopeWhere(scope), nameOverride: { not: null } },
+      select: { id: true, nameOverride: true },
+    });
+    const ids = files
+      .filter((f) => keys.has(nameKeyOf(f.nameOverride!)))
+      .map((f) => f.id);
+    if (ids.length) {
+      await this.prisma.transactionAttachment.updateMany({
+        where: { id: { in: ids } },
+        data: { nameOverride: newName.trim().slice(0, 191) },
+      });
+    }
+    await this.prisma.nameFolder.updateMany({
+      where: { ...scopeWhere(scope), name: { in: [...keys] } },
+      data: { name: nameKeyOf(newName) },
     });
   }
 

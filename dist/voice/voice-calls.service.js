@@ -81,11 +81,18 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         return this.callMe(scope, 'nothing in particular yet — they pressed "Call me" on the website. Greet them and ask how you can help', null);
     }
     async callMeAvailable(customerId) {
-        const customer = await this.prisma.customer.findFirst({
-            where: { id: customerId, deletedAt: null },
-            select: { phoneE164: true },
-        });
-        return !!customer?.phoneE164 && (await this.canCall());
+        return (await this.callMeState(customerId)).available;
+    }
+    async callMeState(customerId) {
+        const [customer, voice] = await Promise.all([
+            this.prisma.customer.findFirst({
+                where: { id: customerId, deletedAt: null },
+                select: { phoneE164: true },
+            }),
+            this.canCall(),
+        ]);
+        const hasPhone = !!customer?.phoneE164;
+        return { available: voice && hasPhone, voice, hasPhone };
     }
     async callMe(scope, about, chat) {
         const customer = await this.prisma.customer.findFirst({

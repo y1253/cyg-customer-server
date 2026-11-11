@@ -16,4 +16,6 @@ export declare class StatementImagesService {
         periodEnd: Date | null;
     }, pdf: Buffer, pages: readonly ImagePage[]): Promise<void>;
     removeFor(scope: BookScope, statementId: number): Promise<void>;
+    dropSiblingsOfDeleted(scope?: BookScope): Promise<number>;
+    onApplicationBootstrap(): void;
 }

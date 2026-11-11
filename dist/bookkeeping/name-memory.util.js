@@ -15,6 +15,7 @@ exports.memoryWrites = memoryWrites;
 exports.containsRuleFor = containsRuleFor;
 exports.indexRules = indexRules;
 exports.findLinkConflicts = findLinkConflicts;
+exports.rowNameConflicts = rowNameConflicts;
 exports.linkConflictMessage = linkConflictMessage;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.EXCEPTION = 'EXCEPTION';
@@ -401,6 +402,37 @@ function findLinkConflicts(input) {
         }
     }
     return out;
+}
+function rowNameConflicts(input) {
+    const target = (0, exports.nameKey)(input.name);
+    const skip = new Set((input.ignore ?? []).map(exports.nameKey));
+    const exact = new Set((input.rules ?? [])
+        .filter((r) => r.matchType === 'DESCRIPTION')
+        .map((r) => r.matchKey));
+    const longer = (input.rules ?? []).filter((r) => r.matchType === 'CONTAINS' &&
+        r.matchKey.length > input.key.length &&
+        r.matchKey.includes(input.key));
+    const reaches = (d) => input.matchType === 'DESCRIPTION'
+        ? descriptionKey(d) === input.key
+        : (0, exports.descriptionContains)(d, input.key) &&
+            !exact.has(descriptionKey(d)) &&
+            !longer.some((r) => (0, exports.descriptionContains)(d, r.matchKey));
+    const byName = new Map();
+    for (const r of input.rows) {
+        const name = cleanName(r.name);
+        if (!name || r.manualEdit || !reaches(r.description))
+            continue;
+        const k = (0, exports.nameKey)(name);
+        if (k === target || skip.has(k) || byName.has(k))
+            continue;
+        byName.set(k, {
+            matchType: 'DESCRIPTION',
+            text: r.description,
+            name,
+            remove: false,
+        });
+    }
+    return [...byName.values()];
 }
 function linkConflictMessage(conflicts, name) {
     const names = [...new Set(conflicts.map((c) => c.name))];

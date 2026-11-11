@@ -124,6 +124,8 @@ export declare class TaxService {
     linesFor(scope: BookScope, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
     private compute;
     names(scope: BookScope): Promise<NamesView>;
+    private namesOfFiles;
+    addName(scope: BookScope, rawName: string, group: string | null): Promise<string>;
     setNameGroup(scope: BookScope, rawName: string, group: string | null): Promise<void>;
     setNameFields(scope: BookScope, rawName: string, input: NameFieldDto[]): Promise<void>;
     mergeNameFields(scope: BookScope, source: string, target: string): Promise<void>;
@@ -138,5 +140,6 @@ export declare class TaxService {
     setNameAgencies(scope: BookScope, name: string, agencyIds: number[]): Promise<NamesView>;
     carryAgencies(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     carryNameSettings(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
+    moveNameFiles(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;
 }

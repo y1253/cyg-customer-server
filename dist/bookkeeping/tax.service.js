@@ -18,6 +18,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_util_1 = require("./name-memory.util");
+const attachment_name_util_1 = require("./attachment-name.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
@@ -275,19 +276,24 @@ let TaxService = class TaxService {
             }),
             this.typeContext(scope),
         ]);
-        const [placed, ownGroups] = await Promise.all([
+        const [placed, ownGroups, fileNames] = await Promise.all([
             this.prisma.ledgerName.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
-                    OR: [{ group: { not: null } }, { fields: { not: client_1.Prisma.DbNull } }],
+                    OR: [
+                        { group: { not: null } },
+                        { fields: { not: client_1.Prisma.DbNull } },
+                        { manual: true },
+                    ],
                 },
-                select: { name: true, group: true, fields: true },
+                select: { name: true, group: true, fields: true, manual: true },
             }),
             this.prisma.customerNameGroup.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
                 orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
                 select: { id: true, name: true },
             }),
+            this.namesOfFiles(scope),
         ]);
         const groupList = [
             ...exports.BUILTIN_GROUPS,
@@ -357,8 +363,7 @@ let TaxService = class TaxService {
                     key: r.matchKey,
                     text: r.includeChars ?? r.matchKey,
                     category: r.category,
-                    rows: [...named, ...nameless].filter((t) => !t.splitOfId &&
-                        (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
+                    rows: [...named, ...nameless].filter((t) => !t.splitOfId && t.personalRuleId === r.id).length,
                 })),
                 exceptionOf: exceptionOf.get(key) ?? [],
                 group: groupOf.get(key) ?? typeOfCategory(category, ctx),
@@ -425,6 +430,34 @@ let TaxService = class TaxService {
             });
             names.sort((a, b) => a.name.localeCompare(b.name));
         }
+        const listed = new Set(names.map((n) => (0, name_memory_util_1.nameKey)(n.name)));
+        const extra = [
+            ...placed.filter((l) => l.manual).map((l) => l.name),
+            ...fileNames,
+        ];
+        for (const name of extra) {
+            const key = (0, name_memory_util_1.nameKey)(name);
+            if (listed.has(key))
+                continue;
+            listed.add(key);
+            names.push({
+                name,
+                category: chart_of_accounts_1.UNCATEGORIZED,
+                otherCategories: 0,
+                type: typeOfCategory(chart_of_accounts_1.UNCATEGORIZED, ctx),
+                rows: 0,
+                total: 0,
+                agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(name)) ?? [],
+                fields: fieldsOf.get(key) ?? [],
+                descriptions: [],
+                followsContains: [],
+                exceptionOf: [],
+                group: groupOf.get(key) ?? typeOfCategory(chart_of_accounts_1.UNCATEGORIZED, ctx),
+                ruleKey: key,
+                rule: null,
+            });
+        }
+        names.sort((a, b) => a.name.localeCompare(b.name));
         const descriptions = [...named, ...nameless].filter((r) => !r.splitOfId);
         const containsRules = rules
             .filter((r) => r.matchType === 'CONTAINS' && !r.name)
@@ -436,6 +469,65 @@ let TaxService = class TaxService {
             rows: descriptions.filter((t) => (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
         }));
         return { names, unrecognized, containsRules, groups: groupList };
+    }
+    async namesOfFiles(scope) {
+        const rows = await this.prisma.transactionAttachment.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                NOT: { kind: 'AUDIO', status: 'DOCUMENT' },
+            },
+            select: {
+                nameOverride: true,
+                extracted: true,
+                transaction: {
+                    select: {
+                        name: true,
+                        statement: { select: { deletedAt: true, status: true } },
+                    },
+                },
+            },
+        });
+        const spellings = new Map();
+        for (const r of rows) {
+            const t = r.transaction;
+            const live = t && !t.statement.deletedAt && t.statement.status === 'DONE' ? t : null;
+            const name = (0, attachment_name_util_1.attachmentName)({
+                nameOverride: r.nameOverride,
+                transaction: live,
+                reading: r.extracted,
+            });
+            if (!name)
+                continue;
+            const key = (0, name_memory_util_1.nameKey)(name);
+            const m = spellings.get(key) ?? new Map();
+            m.set(name, (m.get(name) ?? 0) + 1);
+            spellings.set(key, m);
+        }
+        return [...spellings.values()].map((m) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]);
+    }
+    async addName(scope, rawName, group) {
+        const name = rawName.replace(/\s+/g, ' ').trim().slice(0, 191);
+        if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            throw new common_1.BadRequestException('Give the name');
+        if (group)
+            await this.setNameGroup(scope, name, group);
+        const rows = await this.prisma.ledgerName.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, name: true },
+        });
+        const existing = rows.find((r) => (0, name_memory_util_1.nameKey)(r.name) === (0, name_memory_util_1.nameKey)(name));
+        if (existing) {
+            await this.prisma.ledgerName.update({
+                where: { id: existing.id },
+                data: { manual: true },
+            });
+            return existing.name;
+        }
+        await this.prisma.ledgerName.create({
+            data: { ...(0, scope_1.scopeWhere)(scope), name, manual: true },
+        });
+        return name;
     }
     async setNameGroup(scope, rawName, group) {
         const name = rawName.trim();
@@ -672,9 +764,16 @@ let TaxService = class TaxService {
         keys.delete(target);
         if (!keys.size)
             return;
+        await this.moveNameFiles(scope, oldNames, newName);
         const rows = await this.prisma.ledgerName.findMany({
             where: (0, scope_1.scopeWhere)(scope),
-            select: { name: true, group: true, taxExempt: true, fields: true },
+            select: {
+                name: true,
+                group: true,
+                taxExempt: true,
+                fields: true,
+                manual: true,
+            },
         });
         if (rows.some((r) => (0, tax_util_1.nameTaxKey)(r.name) === target))
             return;
@@ -688,7 +787,31 @@ let TaxService = class TaxService {
                 group: from.group,
                 taxExempt: from.taxExempt,
                 fields: from.fields ?? client_1.Prisma.DbNull,
+                manual: from.manual,
             },
+        });
+    }
+    async moveNameFiles(scope, oldNames, newName) {
+        const keys = new Set(oldNames.map(attachment_name_util_1.nameKeyOf));
+        keys.delete((0, attachment_name_util_1.nameKeyOf)(newName));
+        if (!keys.size)
+            return;
+        const files = await this.prisma.transactionAttachment.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), nameOverride: { not: null } },
+            select: { id: true, nameOverride: true },
+        });
+        const ids = files
+            .filter((f) => keys.has((0, attachment_name_util_1.nameKeyOf)(f.nameOverride)))
+            .map((f) => f.id);
+        if (ids.length) {
+            await this.prisma.transactionAttachment.updateMany({
+                where: { id: { in: ids } },
+                data: { nameOverride: newName.trim().slice(0, 191) },
+            });
+        }
+        await this.prisma.nameFolder.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: { in: [...keys] } },
+            data: { name: (0, attachment_name_util_1.nameKeyOf)(newName) },
         });
     }
     async renameLine(scope, transactionId, agencyId, name) {

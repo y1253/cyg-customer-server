@@ -318,6 +318,14 @@ export function failedChecks(detail: Prisma.JsonValue | null): string[] {
  * (`scopeWhere`: their `customerId` AND the `companyId` it belongs to), and a statement that is not theirs answers 404 — never 403, which would
  * confirm somebody else's upload exists.
  */
+/** step8: a statement's note grows; the newest words last, the oldest dropped past 4000 chars. */
+export function appendNote(had: string | null, note: string): string {
+  const add = note.trim();
+  if (!had?.trim()) return add.slice(0, 4000);
+  if (had.includes(add)) return had;
+  return `${had.trim()}\n\n${add}`.slice(-4000);
+}
+
 @Injectable()
 export class BookkeepingService {
   private readonly logger = new Logger(BookkeepingService.name);
@@ -586,8 +594,15 @@ export class BookkeepingService {
   ): Promise<{ stream: Readable; filename: string; size: number }> {
     const f = await this.fileInfo(scope, id);
     if (f.generated) {
-      const buf = await this.feedStatementPdf(scope, await this.owned(scope, id));
-      return { stream: Readable.from(buf), filename: f.filename, size: buf.length };
+      const buf = await this.feedStatementPdf(
+        scope,
+        await this.owned(scope, id),
+      );
+      return {
+        stream: Readable.from(buf),
+        filename: f.filename,
+        size: buf.length,
+      };
     }
     return {
       stream: await this.storage.getStream(f.storageKey),
@@ -692,6 +707,8 @@ export class BookkeepingService {
     scope: BookScope,
     id: number,
     note?: string,
+    /** step8: add the note after the one the statement has (the AI's re-reads), not replace it. */
+    opts: { append?: boolean } = {},
   ): Promise<StatementView> {
     const s = await this.owned(scope, id);
     if (s.source === 'PLAID') {
@@ -719,11 +736,42 @@ export class BookkeepingService {
         errorDetail: null,
         ...(note === undefined
           ? {}
-          : { customerNote: note.trim().slice(0, 4000) || null }),
+          : {
+              customerNote:
+                (opts.append && note.trim()
+                  ? appendNote(s.customerNote, note)
+                  : note.trim().slice(0, 4000)) || null,
+            }),
       },
     });
     this.processor.processSoon();
     return toView(row);
+  }
+
+  /**
+   * step8 (2026-11-11): "fix every CIBC 7522 statement" — the statement itself plus every
+   * other FAILED / NEEDS_REVIEW uploaded statement of the same account (folder) in this book.
+   */
+  async sameAccountToRetry(scope: BookScope, id: number): Promise<number[]> {
+    const s = await this.owned(scope, id);
+    const account = s.accountNameByCustomer ?? s.accountName;
+    if (!account) return [s.id];
+    const others = await this.prisma.bankStatement.findMany({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        id: { not: s.id },
+        source: { not: 'PLAID' },
+        status: { in: [StatementStatus.FAILED, StatementStatus.NEEDS_REVIEW] },
+        OR: [
+          { accountNameByCustomer: account },
+          { accountNameByCustomer: null, accountName: account },
+        ],
+      },
+      select: { id: true },
+      orderBy: { periodStart: 'asc' },
+    });
+    return [s.id, ...others.map((o) => o.id)];
   }
 
   /**

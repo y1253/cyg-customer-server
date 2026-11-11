@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -24,9 +27,16 @@ const opening_balance_util_1 = require("./opening-balance.util");
 const splits_util_1 = require("./splits.util");
 const statement_label_1 = require("./statement-label");
 const fx_service_1 = require("./fx.service");
+const custom_columns_service_1 = require("./custom-columns.service");
 const scope_1 = require("./scope");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
+function customCellsOf(r, custom) {
+    if (!custom)
+        return [];
+    const cells = r.id !== null && !r.tax && !r.split ? custom.cells.get(r.id) : undefined;
+    return custom.headers.map((_, i) => cells?.[i] ?? '');
+}
 const BRAND = '#169F96';
 function netOf(rows) {
     return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
@@ -57,10 +67,20 @@ let LedgerExportService = class LedgerExportService {
     prisma;
     tax;
     fx;
-    constructor(prisma, tax, fx) {
+    customColumns;
+    constructor(prisma, tax, fx, customColumns) {
         this.prisma = prisma;
         this.tax = tax;
         this.fx = fx;
+        this.customColumns = customColumns;
+    }
+    async customFor(scope) {
+        if (!this.customColumns)
+            return undefined;
+        const { columns, cells } = await this.customColumns.exportCells(scope);
+        return columns.length
+            ? { headers: columns.map((c) => c.name), cells }
+            : undefined;
     }
     async rowsFor(scope) {
         const [rows, statements, taxes] = await Promise.all([
@@ -189,7 +209,7 @@ let LedgerExportService = class LedgerExportService {
             ];
         });
     }
-    async excel(rows, customerName) {
+    async excel(rows, customerName, custom) {
         const wb = new exceljs_1.default.Workbook();
         wb.creator = 'CYG Finance';
         const ws = wb.addWorksheet('Ledger', {
@@ -198,14 +218,14 @@ let LedgerExportService = class LedgerExportService {
         ws.columns = [
             { header: 'ID', key: 'id', width: 9 },
             {
-                header: 'Pending date',
-                key: 'pendingDate',
+                header: 'Posting date',
+                key: 'postingDate',
                 width: 14,
                 style: { numFmt: 'yyyy-mm-dd' },
             },
             {
-                header: 'Posting date',
-                key: 'postingDate',
+                header: 'Pending date',
+                key: 'pendingDate',
                 width: 14,
                 style: { numFmt: 'yyyy-mm-dd' },
             },
@@ -240,6 +260,17 @@ let LedgerExportService = class LedgerExportService {
                 },
             ];
         }
+        const customKeys = (custom?.headers ?? []).map((_, i) => `custom${i}`);
+        if (custom) {
+            ws.columns = [
+                ...ws.columns,
+                ...custom.headers.map((h, i) => ({
+                    header: h,
+                    key: customKeys[i],
+                    width: Math.min(30, Math.max(12, h.length + 4)),
+                })),
+            ];
+        }
         const header = ws.getRow(1);
         header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
         header.fill = {
@@ -249,9 +280,10 @@ let LedgerExportService = class LedgerExportService {
         };
         for (const r of rows) {
             const { tax, split, ...cells } = r;
+            const own = Object.fromEntries(customCellsOf(r, custom).map((v, i) => [customKeys[i], v]));
             const row = ws.addRow(foreign
-                ? { ...cells, homeAmount: cells.homeAmount ?? cells.amount }
-                : cells);
+                ? { ...cells, ...own, homeAmount: cells.homeAmount ?? cells.amount }
+                : { ...cells, ...own });
             if (tax)
                 row.font = { italic: true, color: { argb: 'FF8A8F98' } };
             else if (split)
@@ -266,11 +298,14 @@ let LedgerExportService = class LedgerExportService {
             }),
         });
         total.font = { bold: true };
-        ws.autoFilter = { from: 'A1', to: foreign ? 'L1' : 'I1' };
+        ws.autoFilter = {
+            from: { row: 1, column: 1 },
+            to: { row: 1, column: ws.columns.length },
+        };
         wb.title = `${customerName} — ledger`;
         return Buffer.from(await wb.xlsx.writeBuffer());
     }
-    pdf(rows, customerName) {
+    pdf(rows, customerName, custom) {
         return new Promise((resolve, reject) => {
             const doc = new pdfkit_1.default({
                 size: 'LETTER',
@@ -281,9 +316,9 @@ let LedgerExportService = class LedgerExportService {
             doc.on('data', (c) => chunks.push(c));
             doc.on('end', () => resolve(Buffer.concat(chunks)));
             doc.on('error', reject);
-            const cols = [
-                { label: 'Pending', width: 56 },
+            const fixed = [
                 { label: 'Posting', width: 56 },
+                { label: 'Pending', width: 56 },
                 { label: 'Name', width: 90 },
                 { label: 'Description', width: 136 },
                 { label: 'Amount', width: 66, align: 'right' },
@@ -291,6 +326,20 @@ let LedgerExportService = class LedgerExportService {
                 { label: 'Credit', width: 114 },
                 { label: 'Statement', width: 88 },
             ];
+            const wide = [
+                ...fixed,
+                ...(custom?.headers ?? []).map((label) => ({
+                    label,
+                    width: 70,
+                    align: undefined,
+                })),
+            ];
+            const fit = (doc.page.width - doc.page.margins.left - doc.page.margins.right) /
+                wide.reduce((n, c) => n + c.width, 0);
+            const cols = wide.map((c) => ({
+                ...c,
+                width: c.width * Math.min(1, fit),
+            }));
             const left = doc.page.margins.left;
             const bottom = () => doc.page.height - doc.page.margins.bottom;
             const dates = rows
@@ -330,14 +379,15 @@ let LedgerExportService = class LedgerExportService {
             drawHeader();
             rows.forEach((r, i) => {
                 const cells = [
-                    ISO(r.pendingDate),
                     ISO(r.postingDate),
+                    ISO(r.pendingDate),
                     r.name,
                     r.description,
                     MONEY(r.amount),
                     r.debitAccount,
                     r.creditAccount,
                     r.statement,
+                    ...customCellsOf(r, custom),
                 ];
                 doc.fontSize(8.5);
                 const h = Math.max(...cells.map((t, k) => doc.heightOfString(t, { width: cols[k].width - 6 }))) + 5;
@@ -385,8 +435,10 @@ let LedgerExportService = class LedgerExportService {
 exports.LedgerExportService = LedgerExportService;
 exports.LedgerExportService = LedgerExportService = __decorate([
     (0, common_1.Injectable)(),
+    __param(3, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         tax_service_1.TaxService,
-        fx_service_1.FxService])
+        fx_service_1.FxService,
+        custom_columns_service_1.CustomColumnsService])
 ], LedgerExportService);
 //# sourceMappingURL=export.service.js.map

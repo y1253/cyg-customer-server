@@ -28,6 +28,8 @@ export declare class CallMeController {
     constructor(calls: VoiceCallsService);
     available(scope: BookScope): Promise<{
         available: boolean;
+        voice: boolean;
+        hasPhone: boolean;
     }>;
     callMe(scope: BookScope, dto: CallMeDto): Promise<{
         ok: boolean;

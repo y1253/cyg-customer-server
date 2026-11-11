@@ -32,6 +32,7 @@ import {
   exceptionKey,
   fallbackName,
   findLinkConflicts,
+  rowNameConflicts,
   indexRules,
   linkConflictMessage,
   memoryWrites,
@@ -826,17 +827,34 @@ export class NameMemoryService implements OnApplicationBootstrap {
     const [rules, rows] = await Promise.all([
       this.rulesOf(scope),
       this.prisma.bankTransaction.findMany({
-        where: { ...scopeWhere(scope), splitOfId: null },
-        select: { description: true },
+        where: {
+          ...scopeWhere(scope),
+          splitOfId: null,
+          statement: { deletedAt: null },
+        },
+        select: { description: true, name: true, manualEdit: true },
       }),
     ]);
-    const conflicts = findLinkConflicts({
+    const ruled = findLinkConflicts({
       matchType,
       key,
       name,
       rules,
       descriptions: [...new Set(rows.map((r) => r.description))],
     });
+    // step8: names the rows carry now, however they got them (AI, memory) — not only rules.
+    const taken = new Set(ruled.map((c) => nameKey(c.name)));
+    const conflicts = [
+      ...ruled,
+      ...rowNameConflicts({
+        matchType,
+        key,
+        name,
+        rows,
+        rules,
+        ignore: [UNCLARIFIED_NAME],
+      }).filter((c) => !taken.has(nameKey(c.name))),
+    ];
     if (!conflicts.length) return;
     if (!replace) {
       throw new ConflictException({
@@ -1160,6 +1178,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
       await this.setNameCategory(scope, target, category);
     // step2 (2026-11-09): its profile fields (phone, email, …) join the target's.
     await this.tax.mergeNameFields(scope, source, target);
+    // step2 (2026-11-11): its files and subfolders join the target's folder.
+    await this.tax.moveNameFiles(scope, [source], target);
     // The tax follows the target only: the merged name's own choices go.
     await this.prisma.ledgerNameAgency.deleteMany({
       where: { ...scopeWhere(scope), name: source },

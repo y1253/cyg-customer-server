@@ -161,11 +161,12 @@ export class FileLinkService {
       }
       case 'ledger': {
         const rows = await this.exporter.rowsFor(scope);
+        const custom = await this.exporter.customFor(scope);
         const owner = await this.ownerName(scope);
         const xlsx = p.x === 'xlsx';
         const buf = xlsx
-          ? await this.exporter.excel(rows, owner)
-          : await this.exporter.pdf(rows, owner);
+          ? await this.exporter.excel(rows, owner, custom)
+          : await this.exporter.pdf(rows, owner, custom);
         return {
           body: new StreamableFile(buf),
           filename: `ledger-${new Date().toISOString().slice(0, 10)}.${xlsx ? 'xlsx' : 'pdf'}`,

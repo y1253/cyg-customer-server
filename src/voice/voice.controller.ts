@@ -127,8 +127,10 @@ export class CallMeController {
   constructor(private readonly calls: VoiceCallsService) {}
 
   @Get()
-  async available(@Book() scope: BookScope): Promise<{ available: boolean }> {
-    return { available: await this.calls.callMeAvailable(scope.customerId) };
+  async available(
+    @Book() scope: BookScope,
+  ): Promise<{ available: boolean; voice: boolean; hasPhone: boolean }> {
+    return this.calls.callMeState(scope.customerId);
   }
 
   /**
@@ -160,9 +162,15 @@ export function welcomeText(
   voice: boolean,
 ): string {
   const first = name.trim().split(/\s+/)[0];
-  const ways = ['text', ...(whatsapp ? ['WhatsApp'] : []), ...(voice ? ['call'] : [])];
+  const ways = [
+    'text',
+    ...(whatsapp ? ['WhatsApp'] : []),
+    ...(voice ? ['call'] : []),
+  ];
   const how =
-    ways.length > 1 ? `${ways.slice(0, -1).join(', ')} or ${ways.at(-1)}` : ways[0];
+    ways.length > 1
+      ? `${ways.slice(0, -1).join(', ')} or ${ways.at(-1)}`
+      : ways[0];
   return (
     `Hi${first ? ` ${first}` : ''}, this is the CYG Finance AI assistant. Save this number: ` +
     `${how} me any time about your books, or send a photo of a receipt and I'll file it. ` +

@@ -77,6 +77,7 @@ export declare function balanceFit(opening: number | null, closing: number | nul
     expectedClosing: number | null;
 };
 export declare function failedChecks(detail: Prisma.JsonValue | null): string[];
+export declare function appendNote(had: string | null, note: string): string;
 export declare class BookkeepingService {
     private readonly prisma;
     private readonly storage;
@@ -111,7 +112,10 @@ export declare class BookkeepingService {
         generated: boolean;
     }>;
     private feedStatementPdf;
-    retry(scope: BookScope, id: number, note?: string): Promise<StatementView>;
+    retry(scope: BookScope, id: number, note?: string, opts?: {
+        append?: boolean;
+    }): Promise<StatementView>;
+    sameAccountToRetry(scope: BookScope, id: number): Promise<number[]>;
     setBalances(scope: BookScope, id: number, input: {
         openingBalance?: number | null;
         closingBalance?: number | null;

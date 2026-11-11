@@ -45,6 +45,8 @@ function toolResultsHint(prepared, regions = []) {
 }
 function pageTextHint(text) {
     return (`${TOOLS_HEADER}\n- This page's text layer (every line as printed, columns kept with ` +
-        `spaces):\n"""\n${text.slice(0, exports.TOOL_TEXT_CHARS * 2)}\n"""`);
+        `spaces):\n"""\n${text.slice(0, exports.TOOL_TEXT_CHARS * 2)}\n"""\n` +
+        `- The text cannot show which lines are captions over cheque / deposit images, or which ` +
+        `column an amount sits in — the page image decides both. A caption over an image is never a row.`);
 }
 //# sourceMappingURL=tool-results.js.map

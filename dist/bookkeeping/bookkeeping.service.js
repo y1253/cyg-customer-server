@@ -13,6 +13,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingService = void 0;
 exports.balanceFit = balanceFit;
 exports.failedChecks = failedChecks;
+exports.appendNote = appendNote;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
@@ -145,6 +146,14 @@ function failedChecks(detail) {
             ? [check.text]
             : [];
     });
+}
+function appendNote(had, note) {
+    const add = note.trim();
+    if (!had?.trim())
+        return add.slice(0, 4000);
+    if (had.includes(add))
+        return had;
+    return `${had.trim()}\n\n${add}`.slice(-4000);
 }
 let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     prisma;
@@ -357,7 +366,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         const f = await this.fileInfo(scope, id);
         if (f.generated) {
             const buf = await this.feedStatementPdf(scope, await this.owned(scope, id));
-            return { stream: stream_1.Readable.from(buf), filename: f.filename, size: buf.length };
+            return {
+                stream: stream_1.Readable.from(buf),
+                filename: f.filename,
+                size: buf.length,
+            };
         }
         return {
             stream: await this.storage.getStream(f.storageKey),
@@ -427,7 +440,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         });
     }
-    async retry(scope, id, note) {
+    async retry(scope, id, note, opts = {}) {
         const s = await this.owned(scope, id);
         if (s.source === 'PLAID') {
             throw new common_1.BadRequestException('A bank-feed month comes straight from the bank — it cannot be read again');
@@ -447,11 +460,37 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 errorDetail: null,
                 ...(note === undefined
                     ? {}
-                    : { customerNote: note.trim().slice(0, 4000) || null }),
+                    : {
+                        customerNote: (opts.append && note.trim()
+                            ? appendNote(s.customerNote, note)
+                            : note.trim().slice(0, 4000)) || null,
+                    }),
             },
         });
         this.processor.processSoon();
         return toView(row);
+    }
+    async sameAccountToRetry(scope, id) {
+        const s = await this.owned(scope, id);
+        const account = s.accountNameByCustomer ?? s.accountName;
+        if (!account)
+            return [s.id];
+        const others = await this.prisma.bankStatement.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                id: { not: s.id },
+                source: { not: 'PLAID' },
+                status: { in: [client_1.StatementStatus.FAILED, client_1.StatementStatus.NEEDS_REVIEW] },
+                OR: [
+                    { accountNameByCustomer: account },
+                    { accountNameByCustomer: null, accountName: account },
+                ],
+            },
+            select: { id: true },
+            orderBy: { periodStart: 'asc' },
+        });
+        return [s.id, ...others.map((o) => o.id)];
     }
     async setBalances(scope, id, input) {
         const s = await this.owned(scope, id);

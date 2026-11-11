@@ -19,12 +19,21 @@ export interface VoiceDeps {
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
 }
+export declare function promisedAction(said: string): boolean;
+export declare const KEEP_PROMISE_NOTE = "[System note, not from the caller] You just told the caller you would do something, but you called no tool, so nothing is happening and they are waiting in silence. Do it NOW with the right tool call \u2014 or, if no tool can do it, say so plainly in one sentence.";
+export interface FileFamilyMember {
+    id: number;
+    status: string;
+    chequeNumber: string | null;
+    amount: number | null;
+    transaction: string | null;
+}
 export declare function attachmentDoneNote(attachmentId: number, row: {
     status: string;
     error: string | null;
     matchNote: string | null;
     filename: string;
-}): string;
+}, family?: readonly FileFamilyMember[]): string;
 export declare function statementDoneNote(statementId: number, row: {
     status: string;
     error: string | null;
@@ -55,6 +64,9 @@ export declare class VoiceSession implements LiveCall {
     private toolOutputsPending;
     private spoke;
     private fillerWanted;
+    private responseHadTool;
+    private responseSaid;
+    private promiseNudged;
     private tools;
     private toolsRunning;
     private closed;
@@ -77,6 +89,7 @@ export declare class VoiceSession implements LiveCall {
     private onOpenAi;
     private endCall;
     private sendEndMark;
+    private keepPromise;
     private answerToolsIfReady;
     private createResponse;
     inject(note: string): void;
@@ -85,6 +98,7 @@ export declare class VoiceSession implements LiveCall {
     private runTool;
     private watchStatement;
     private unwatch;
+    private fileFamily;
     private watchAttachment;
     private saveAssistant;
     private freshConversation;

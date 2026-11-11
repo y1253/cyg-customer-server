@@ -17,6 +17,7 @@ exports.dropSpuriousPages = dropSpuriousPages;
 exports.assemble = assemble;
 exports.closingOf = closingOf;
 exports.rereadRound = rereadRound;
+exports.signHint = signHint;
 exports.better = better;
 exports.splitPdf = splitPdf;
 exports.looksLikeStatement = looksLikeStatement;
@@ -32,6 +33,7 @@ const page_content_util_1 = require("./page-content.util");
 const pdf_images_1 = require("./pdf-images");
 const pdf_text_1 = require("./pipeline/pdf-text");
 const tool_results_1 = require("./pipeline/tool-results");
+const cheque_caption_util_1 = require("./cheque-caption.util");
 const reconcile_util_1 = require("./reconcile.util");
 const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
@@ -122,7 +124,7 @@ exports.SYSTEM_PROMPT = [
     'Count the transaction lines on each page and make sure your list has the same number.',
     'Opening/closing balances, "balance forward" lines, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
     'Account-summary lines are NOT transactions either: "Previous balance", "Payment, Credits", "Purchases", "Cash advances", "Fees charged", "Interest charged", "New balance", "Closing totals" are totals of the rows listed elsewhere — never list them as rows (but DO copy them into the printed figures below: "Previous balance" is openingBalance, "New balance" closingBalance, the payments/credits total totalDeposits, purchases + fees + interest totalWithdrawals). A page with no table of dated transactions (a summary, terms, a notice, a blank page) has NO transactions: return an empty transaction list, never invent one — its printed figures are still copied.',
-    'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions.',
+    'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions. The caption printed over each image ("CHEQUE # 00034  $983.28", "Item 3 of 8") labels that image — it is NOT a row, even when the page text lists it.',
     '',
     'For each transaction:',
     '- postingDate: the posting/transaction date as YYYY-MM-DD. If the statement prints dates without a year, take the year from the statement period.',
@@ -197,9 +199,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             this.logger.log(`"${filename}": skipped page(s) ${[...skipped].map((i) => i + 1).join(',')} — nothing to read`);
         }
         let calls = 0;
-        const read = async (i, model, context, hint) => {
+        const read = async (i, model, context, hint, noText = false) => {
             calls++;
-            const text = textOf(i);
+            const text = noText ? null : textOf(i);
             const reading = await this.readChunk(chunks[i], i, pagesPerChunk, totalPages, filename, model, context, hint, exports.SYSTEM_PROMPT + (opts.rules ?? ''), text);
             if (text == null)
                 return reading;
@@ -270,6 +272,7 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                 "A previous reading of this statement does NOT add up against the bank's own figures:",
                 ...failed.map((c) => `- ${(0, reconcile_util_1.describeCheck)(c)}`),
                 'Re-read EVERY line on this page carefully. A row is probably missing, doubled, misread, or has the wrong sign. Copy the summary figures exactly as printed too.',
+                ...signHint(result.verification),
                 'But if a total you copied is NOT the total of every transaction (year-to-date, a subtotal, one category only, leaves out fees…), set it to null and totalsScope to "partial" — never change a row to make it fit.',
             ].join('\n');
             const rereadPages = new Map();
@@ -298,6 +301,28 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
             stale = improved ? 0 : stale + 1;
             await opts.onRound?.(rereads);
         }
+        if (result.verification.verification === 'MISMATCH' &&
+            withText.size > 0 &&
+            maxRereads > 0) {
+            const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
+            this.logger.warn(`"${filename}": still off after ${rereads} re-read(s) — reading page(s) ${targets.map((t) => t + 1).join(',')} once more WITHOUT the text layer`);
+            const trial = [...pages];
+            await this.pool(targets, async (i) => {
+                try {
+                    trial[i] = await read(i, this.verifyModel(), i === 0 ? null : context, signHint(result.verification).join('\n') || null, true);
+                }
+                catch (err) {
+                    this.logger.warn(`"${filename}" page ${i + 1}: image-only read failed (${errorText(err)})`);
+                }
+            });
+            const candidate = assemble(trial);
+            if (better(candidate.verification, result.verification)) {
+                trial.forEach((p, i) => (pages[i] = p));
+                result = candidate;
+                this.logger.log(`"${filename}": the image-only read added up better — kept (${candidate.verification.verification})`);
+            }
+            rereads++;
+        }
         this.logger.log(`"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
             (textMode
                 ? `page(s) read with their text layer as tool results: ${[...withText]
@@ -311,6 +336,9 @@ let StatementExtractor = StatementExtractor_1 = class StatementExtractor {
                 : '') +
             (result.balanceFixes
                 ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
+                : '') +
+            (result.captionRows
+                ? `, ${result.captionRows} cheque-image caption(s) left out`
                 : ''));
         return { ...result, calls, rereads };
     }
@@ -418,7 +446,8 @@ function dropSpuriousPages(pages) {
     }
     return null;
 }
-function assemble(pages) {
+function assemble(readings) {
+    const { pages, dropped: captionRows } = (0, cheque_caption_util_1.dropChequeCaptions)(readings);
     const first = (pick) => {
         for (const p of pages) {
             const v = pick(p);
@@ -487,6 +516,7 @@ function assemble(pages) {
         transactions,
         signFixes: totalsFlips + repair.flips,
         balanceFixes: balances.fixes,
+        captionRows,
         imagePages: pages.flatMap((p, page) => p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : []),
         verification,
     };
@@ -515,6 +545,22 @@ function rereadRound(n) {
     if (n === 1)
         return { verifyModel: true, allPages: false };
     return { verifyModel: true, allPages: n % 2 === 0 };
+}
+function signHint(v) {
+    const of = (name) => v.checks.find((c) => c.name === name && !c.ok && !c.skipped && c.page == null);
+    const dep = of('deposits');
+    const wd = of('withdrawals');
+    if (!dep || !wd)
+        return [];
+    const extraIn = dep.actual - dep.expected;
+    if (extraIn === 0 || wd.expected - wd.actual !== extraIn)
+        return [];
+    const money = (c) => `$${(Math.abs(c) / 100).toFixed(2)}`;
+    return [
+        extraIn > 0
+            ? `Rows worth ${money(extraIn)} were read as money IN (credits / payments) but are money OUT (purchases, fees, interest). The statement's credits total ${money(dep.expected)} — only rows printed as credits (a "CR" mark, a minus, the payments / credits section) are positive; every purchase is negative.`
+            : `Rows worth ${money(extraIn)} were read as money OUT but are money IN. The statement's credits total ${money(dep.expected)} — check the sign of every row against its column or "CR" mark.`,
+    ];
 }
 function better(a, b) {
     if (a.verification === 'VERIFIED' && b.verification !== 'VERIFIED')

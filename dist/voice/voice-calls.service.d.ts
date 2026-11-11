@@ -85,6 +85,11 @@ export declare class VoiceCallsService implements OnModuleInit {
         error: string;
     }>;
     callMeAvailable(customerId: number): Promise<boolean>;
+    callMeState(customerId: number): Promise<{
+        available: boolean;
+        voice: boolean;
+        hasPhone: boolean;
+    }>;
     private callMe;
     callPersonNow(ctx: ToolContext, person: PersonTarget, message: string): Promise<{
         ok: true;

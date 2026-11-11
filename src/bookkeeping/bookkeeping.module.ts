@@ -1,3 +1,5 @@
+import { CustomColumnsController } from './custom-columns.controller';
+import { CustomColumnsService } from './custom-columns.service';
 import { FileLinkController, FileLinkService } from './file-links';
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
@@ -14,6 +16,11 @@ import { BookkeepingService } from './bookkeeping.service';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { CustomerAccountsService } from './customer-accounts.service';
+import {
+  NameFilesController,
+  PhoneUploadController,
+} from './name-files.controller';
+import { NameFilesService } from './name-files.service';
 import { NameMemoryService } from './name-memory.service';
 import { ProductCategorizer } from './product-categorizer';
 import { ProductMemoryService } from './product-memory.service';
@@ -35,8 +42,11 @@ import { OcrService } from './pipeline/ocr.service';
   controllers: [
     BooksController,
     BookkeepingController,
+    CustomColumnsController,
     StaffRulesController,
     FileLinkController,
+    NameFilesController,
+    PhoneUploadController,
   ],
   providers: [
     AttachmentExtractor,
@@ -46,11 +56,13 @@ import { OcrService } from './pipeline/ocr.service';
     BookScopeGuard,
     CommunicationsService,
     CustomerAccountsService,
+    CustomColumnsService,
     DocumentPipeline,
     FileLinkService,
     FxService,
     InstructionsService,
     LedgerExportService,
+    NameFilesService,
     NameMemoryService,
     OcrService,
     OpenAiClient,
@@ -73,6 +85,7 @@ import { OcrService } from './pipeline/ocr.service';
     BookkeepingService,
     BookScopeGuard,
     CustomerAccountsService,
+    CustomColumnsService,
     FileLinkService,
     InstructionsService,
     LedgerExportService,

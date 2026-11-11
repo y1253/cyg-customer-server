@@ -125,7 +125,7 @@ let CallMeController = class CallMeController {
         this.calls = calls;
     }
     async available(scope) {
-        return { available: await this.calls.callMeAvailable(scope.customerId) };
+        return this.calls.callMeState(scope.customerId);
     }
     async callMe(scope, dto) {
         const placed = dto.statementId || dto.attachmentId
@@ -160,8 +160,14 @@ exports.CallMeController = CallMeController = __decorate([
 const WELCOME_EVERY_MS = 10 * 60_000;
 function welcomeText(name, whatsapp, voice) {
     const first = name.trim().split(/\s+/)[0];
-    const ways = ['text', ...(whatsapp ? ['WhatsApp'] : []), ...(voice ? ['call'] : [])];
-    const how = ways.length > 1 ? `${ways.slice(0, -1).join(', ')} or ${ways.at(-1)}` : ways[0];
+    const ways = [
+        'text',
+        ...(whatsapp ? ['WhatsApp'] : []),
+        ...(voice ? ['call'] : []),
+    ];
+    const how = ways.length > 1
+        ? `${ways.slice(0, -1).join(', ')} or ${ways.at(-1)}`
+        : ways[0];
     return (`Hi${first ? ` ${first}` : ''}, this is the CYG Finance AI assistant. Save this number: ` +
         `${how} me any time about your books, or send a photo of a receipt and I'll file it. ` +
         `Reply STOP to stop texts.`);

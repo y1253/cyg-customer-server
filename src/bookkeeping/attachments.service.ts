@@ -27,9 +27,16 @@ import {
   sniffImageMime,
 } from './attachment-processor.service';
 import { attachmentFolder } from './attachment-folders.util';
+import {
+  attachmentName,
+  fileBucket,
+  type FileBucket,
+} from './attachment-name.util';
 import { attachmentType } from './attachment-uploads';
 import { scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
+import { chequeNumberOf } from './cheque-caption.util';
+import { statementOf } from './attachment-match.util';
 
 /**
  * step12: a voice note that was only a message (`kind AUDIO` read as a DOCUMENT — no
@@ -42,6 +49,11 @@ export const NOT_VOICE_MESSAGE = {
 
 export interface AttachmentView {
   id: number;
+  /**
+   * step8 (2026-11-11): the statement this file was cut out of (a cheque image) — its
+   * "from statement" badge opens that statement's PDF. Null for every other file.
+   */
+  fromStatementId: number | null;
   kind: AttachmentKind;
   status: AttachmentStatus;
   filename: string;
@@ -76,6 +88,18 @@ export interface AttachmentView {
   cropped: boolean;
   /** step9: the other documents read off the same image (`doc:<row>:<n>` rows), by id. */
   siblings: number[];
+  /**
+   * step2 (2026-11-11): the Names-tab name it is filed under (`attachmentName`) — null =
+   * Unsorted — and which of the three counts it is in.
+   */
+  name: string | null;
+  bucket: FileBucket;
+  /** step2: the customer's subfolder inside that name's folder; null = the top. */
+  folderId: number | null;
+  /** step2: the customer's own name for the file; null = not renamed. */
+  displayName: string | null;
+  /** step2: it came by email and the email is kept — "View full email". */
+  hasEmail: boolean;
   /** The transaction it belongs to; null while unmatched. */
   transaction: {
     id: number;
@@ -131,8 +155,32 @@ type Loaded = Prisma.TransactionAttachmentGetPayload<{
   include: typeof INCLUDE;
 }>;
 
+/** A name a file is filed under, as typed; '' / blank = none. */
+export const cleanName = (s: string | null | undefined): string | null =>
+  s?.replace(/\s+/g, ' ').trim().slice(0, 191) || null;
+
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
+
+/**
+ * step8: a document cut from a statement image (`doc:<row>:<n>`) gets the statement of the
+ * row it was cut from — `rows` = the rows at hand (the book's, or the file's group).
+ */
+function withSourceStatements(
+  views: AttachmentView[],
+  rows: ReadonlyArray<{ id: number; sourceRef: string | null }>,
+): AttachmentView[] {
+  const refOf = new Map(rows.map((r) => [r.id, r.sourceRef]));
+  return views.map((v) => {
+    if (v.fromStatementId !== null) return v;
+    let ref = refOf.get(v.id) ?? null;
+    for (let i = 0; i < 3 && ref?.startsWith('doc:'); i++) {
+      ref = refOf.get(Number(ref.split(':')[1])) ?? null;
+    }
+    const id = statementOf(ref);
+    return id === null ? v : { ...v, fromStatementId: id };
+  });
+}
 
 function toView(a: Loaded, messageCount = 0): AttachmentView {
   const reading = (a.extracted as unknown as AttachmentReading | null) ?? null;
@@ -142,6 +190,7 @@ function toView(a: Loaded, messageCount = 0): AttachmentView {
     t && !t.statement.deletedAt && t.statement.status === StatementStatus.DONE;
   return {
     id: a.id,
+    fromStatementId: statementOf(a.sourceRef),
     kind: a.kind,
     status: a.status,
     filename: a.filename,
@@ -159,6 +208,7 @@ function toView(a: Loaded, messageCount = 0): AttachmentView {
     messageCount,
     cropped: !!a.sourceStorageKey,
     siblings: [],
+    ...placeOf(a, reading, live ? t : null),
     transaction: live
       ? {
           id: t.id,
@@ -171,6 +221,29 @@ function toView(a: Loaded, messageCount = 0): AttachmentView {
           splitCount: t._count.splits,
         }
       : null,
+  };
+}
+
+/** step2: where a file sits on the Names tab, and which count it is in. */
+function placeOf(
+  a: Loaded,
+  reading: AttachmentReading | null,
+  t: { name: string | null } | null,
+): Pick<
+  AttachmentView,
+  'name' | 'bucket' | 'folderId' | 'displayName' | 'hasEmail'
+> {
+  const name = attachmentName({
+    nameOverride: a.nameOverride,
+    transaction: t,
+    reading,
+  });
+  return {
+    name,
+    bucket: fileBucket(a.status, !!t, name == null),
+    folderId: a.folderId,
+    displayName: a.displayName,
+    hasEmail: a.inboxMessageId != null || a.source === 'EMAIL',
   };
 }
 
@@ -198,6 +271,11 @@ export class AttachmentsService {
     scope: BookScope,
     files: Express.Multer.File[],
     transactionId: number | null,
+    /**
+     * step2: uploaded inside a name's folder on the Names tab (and maybe one of its
+     * subfolders) — it stays there; it is still read and matched like any file.
+     */
+    place: { name?: string | null; folderId?: number | null } = {},
   ): Promise<AttachmentView[]> {
     try {
       if (!files?.length) throw new BadRequestException('Choose a file to add');
@@ -207,6 +285,11 @@ export class AttachmentsService {
         );
       }
       if (transactionId != null) await this.parent(scope, transactionId);
+      const folderId =
+        place.folderId != null
+          ? (await this.folder(scope, place.folderId)).id
+          : null;
+      const nameOverride = cleanName(place.name);
       const ids: number[] = [];
       for (const file of files) {
         const type = attachmentType(file.originalname);
@@ -225,6 +308,8 @@ export class AttachmentsService {
             mimeType: type.mime,
             size: file.size,
             storageKey: key,
+            nameOverride,
+            folderId,
           },
           select: { id: true },
         });
@@ -281,15 +366,22 @@ export class AttachmentsService {
       scope,
       rows.map((r) => r.id),
     );
-    return rows.map((r) => toView(r, counts.get(r.id) ?? 0));
+    return withSourceStatements(
+      rows.map((r) => toView(r, counts.get(r.id) ?? 0)),
+      rows,
+    );
   }
 
   async get(scope: BookScope, id: number): Promise<AttachmentView> {
     const row = await this.owned(scope, id);
     const counts = await this.messageCounts(scope, [row.id]);
     const group = await this.groupOf(scope, row);
+    const [view] = withSourceStatements(
+      [toView(row, counts.get(row.id) ?? 0)],
+      group,
+    );
     return {
-      ...toView(row, counts.get(row.id) ?? 0),
+      ...view,
       siblings: group.filter((x) => x.id !== row.id).map((x) => x.id),
     };
   }
@@ -301,7 +393,13 @@ export class AttachmentsService {
   private async groupOf(
     scope: BookScope,
     row: { id: number; sourceRef: string | null },
-  ): Promise<Array<{ id: number; transactionId: number | null }>> {
+  ): Promise<
+    Array<{
+      id: number;
+      transactionId: number | null;
+      sourceRef: string | null;
+    }>
+  > {
     const rootId = siblingOf(row.sourceRef)?.rowId ?? row.id;
     return this.prisma.transactionAttachment.findMany({
       where: {
@@ -309,7 +407,7 @@ export class AttachmentsService {
         deletedAt: null,
         OR: [{ id: rootId }, { sourceRef: { startsWith: `doc:${rootId}:` } }],
       },
-      select: { id: true, transactionId: true },
+      select: { id: true, transactionId: true, sourceRef: true },
       orderBy: { id: 'asc' },
     });
   }
@@ -405,6 +503,41 @@ export class AttachmentsService {
    * Attach to a transaction by hand (a receipt's items are split onto it when it has no
    * splits yet), or detach with `null`. Splits already made from it are kept.
    */
+  /**
+   * step8 (2026-11-11): why a cheque must NOT be moved to `transactionId` — it is already on
+   * the row printing its cheque number (`chequeNumberOf`), and the target does not print it.
+   * Null = moving it is fine.
+   */
+  async chequeKeptOn(
+    scope: BookScope,
+    id: number,
+    transactionId: number,
+  ): Promise<string | null> {
+    const row = await this.prisma.transactionAttachment.findFirst({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+      select: {
+        transactionId: true,
+        extracted: true,
+        transaction: { select: { description: true } },
+      },
+    });
+    if (!row?.transaction || row.transactionId === transactionId) return null;
+    const e = (row.extracted ?? {}) as { checkNumber?: unknown };
+    const wanted =
+      typeof e.checkNumber === 'string'
+        ? e.checkNumber.replace(/\D/g, '').replace(/^0+/, '')
+        : '';
+    if (!wanted || chequeNumberOf(row.transaction.description) !== wanted) {
+      return null;
+    }
+    const target = await this.prisma.bankTransaction.findFirst({
+      where: { id: transactionId, ...scopeWhere(scope) },
+      select: { description: true },
+    });
+    if (target && chequeNumberOf(target.description) === wanted) return null;
+    return `Not moved: this is cheque ${e.checkNumber as string} and it is already on "${row.transaction.description}", the transaction printing that number. Tell the customer; move it only if they say it is wrong (customerSaysWrong=true).`;
+  }
+
   async setTransaction(
     scope: BookScope,
     id: number,
@@ -481,6 +614,50 @@ export class AttachmentsService {
     });
     this.processor.processSoon();
     return this.get(scope, id);
+  }
+
+  /**
+   * step2 (2026-11-11): file it under another name (`name` '' = back to what was read),
+   * into a subfolder (`folderId` null = the name's top), and/or give it its own name
+   * (`displayName` '' = the original). Moving to another name leaves the subfolder.
+   */
+  async place(
+    scope: BookScope,
+    id: number,
+    p: {
+      name?: string | null;
+      folderId?: number | null;
+      displayName?: string | null;
+    },
+  ): Promise<AttachmentView> {
+    const a = await this.owned(scope, id);
+    const data: Prisma.TransactionAttachmentUncheckedUpdateInput = {};
+    if (p.name !== undefined) {
+      data.nameOverride = cleanName(p.name);
+      if (p.folderId === undefined) data.folderId = null;
+    }
+    if (p.folderId !== undefined) {
+      data.folderId =
+        p.folderId == null ? null : (await this.folder(scope, p.folderId)).id;
+    }
+    if (p.displayName !== undefined) {
+      data.displayName = p.displayName?.trim().slice(0, 255) || null;
+    }
+    await this.prisma.transactionAttachment.update({
+      where: { id: a.id },
+      data,
+    });
+    return this.get(scope, id);
+  }
+
+  /** A live subfolder of this book; 404 otherwise. */
+  private async folder(scope: BookScope, id: number) {
+    const f = await this.prisma.nameFolder.findFirst({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+      select: { id: true },
+    });
+    if (!f) throw new NotFoundException('Folder not found');
+    return f;
   }
 
   /** Soft delete; the file stays in R2 and any splits made from it stay too. */

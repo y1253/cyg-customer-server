@@ -63,7 +63,7 @@ export declare class BookkeepingController {
     products(scope: BookScope): Promise<ProductView[]>;
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;
     resetProductRule(scope: BookScope, dto: ResetProductRuleDto): Promise<ProductView[]>;
-    uploadAttachments(scope: BookScope, files: Express.Multer.File[], rawTransactionId?: string): Promise<AttachmentView[]>;
+    uploadAttachments(scope: BookScope, files: Express.Multer.File[], rawTransactionId?: string, name?: string, rawFolderId?: string): Promise<AttachmentView[]>;
     communicationChannels(scope: BookScope): Promise<ChannelSummary[]>;
     communicationPage(scope: BookScope, channel: string, before?: string): Promise<CommPage>;
     intake(scope: BookScope): Promise<IntakeView>;

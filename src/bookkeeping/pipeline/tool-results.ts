@@ -90,6 +90,10 @@ export function toolResultsHint(
 export function pageTextHint(text: string): string {
   return (
     `${TOOLS_HEADER}\n- This page's text layer (every line as printed, columns kept with ` +
-    `spaces):\n"""\n${text.slice(0, TOOL_TEXT_CHARS * 2)}\n"""`
+    `spaces):\n"""\n${text.slice(0, TOOL_TEXT_CHARS * 2)}\n"""\n` +
+    // step8 (2026-11-11): the text loses which lines are captions over cheque images, and
+    // the model listed "CHEQUE # 00034 $983.28" captions as rows (TD, book 2).
+    `- The text cannot show which lines are captions over cheque / deposit images, or which ` +
+    `column an amount sits in — the page image decides both. A caption over an image is never a row.`
   );
 }

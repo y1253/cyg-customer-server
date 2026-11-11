@@ -203,11 +203,26 @@ export class VoiceCallsService implements OnModuleInit {
 
   /** Can the customer be called now (the "Call me" button)? Never says why not. */
   async callMeAvailable(customerId: number): Promise<boolean> {
-    const customer = await this.prisma.customer.findFirst({
-      where: { id: customerId, deletedAt: null },
-      select: { phoneE164: true },
-    });
-    return !!customer?.phoneE164 && (await this.canCall());
+    return (await this.callMeState(customerId)).available;
+  }
+
+  /**
+   * step8 (2026-11-11, `pic17.png`): the AI phone is on (`voice`) and whether the account has
+   * a phone — with no phone, the "Call me" button still shows and asks for one (saved to the
+   * profile) instead of hiding.
+   */
+  async callMeState(
+    customerId: number,
+  ): Promise<{ available: boolean; voice: boolean; hasPhone: boolean }> {
+    const [customer, voice] = await Promise.all([
+      this.prisma.customer.findFirst({
+        where: { id: customerId, deletedAt: null },
+        select: { phoneE164: true },
+      }),
+      this.canCall(),
+    ]);
+    const hasPhone = !!customer?.phoneE164;
+    return { available: voice && hasPhone, voice, hasPhone };
   }
 
   private async callMe(

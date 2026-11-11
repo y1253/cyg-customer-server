@@ -1,3 +1,4 @@
+import { CustomColumnsService } from '../bookkeeping/custom-columns.service';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import {
   AttachmentStatus,
@@ -146,6 +147,12 @@ const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
 
 /** READ tools: never change anything (step12: the strong AI investigates with them too). */
 export const READ_TOOLS: ToolDefinition[] = [
+  {
+    name: 'list_custom_columns',
+    description:
+      'The customer\'s OWN ledger columns in this book (step8: e.g. "Business" with options 1 / 2 / 3): each column\'s id, name, type (TEXT any text, LETTERS text only, NUMBER number only, DROPDOWN one of its options), min / max characters and options, plus how many transactions have an answer. Read it before set_custom_column.',
+    parameters: obj({}),
+  },
   {
     name: 'list_statements',
     description:
@@ -322,6 +329,20 @@ const SWITCH_BOOK_TOOL: ToolDefinition = {
 /** WRITE tools: applied at once and listed under the answer. */
 const WRITE_TOOLS: ToolDefinition[] = [
   {
+    name: 'set_custom_column',
+    description:
+      "Fill one of the customer's own ledger columns (list_custom_columns) on one or more transactions (search_transactions for their ids; at most 200 at a time) — e.g. \"mark all Uber rows as business 2\". DROPDOWN: option = the option's label exactly. Others: value, which must follow the column's rules (the tool says why it refused). Empty value = clear the cell. Tell the customer how many rows were filled.",
+    parameters: obj(
+      {
+        columnId: int,
+        transactionIds: { type: 'array', items: int },
+        value: str,
+        option: str,
+      },
+      ['columnId', 'transactionIds'],
+    ),
+  },
+  {
     name: 'attach_receipt',
     description:
       'Attach a receipt / cheque / voice note to a transaction. understood=false when the customer told you where it goes but you cannot see why it matches.',
@@ -331,6 +352,11 @@ const WRITE_TOOLS: ToolDefinition[] = [
         transactionId: int,
         understood: { type: 'boolean' },
         reason: str,
+        customerSaysWrong: {
+          type: 'boolean',
+          description:
+            'true ONLY when the customer said this file is on the wrong transaction. A cheque already on the transaction printing its number is never moved without it.',
+        },
       },
       ['attachmentId', 'transactionId', 'understood'],
     ),
@@ -455,15 +481,16 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'retry_statement',
     description:
-      'Read a bank / card statement again from its PDF — one we could not read, one that needs review, or one already read that the customer says was read wrong (statementId from list_statements; not a bank-feed month). Free; it takes a few minutes, and the statement is out of the books until it is read. Receipts on a read statement are put back on the same transactions after. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it. For only a wrong opening / closing balance use set_statement_balances instead.',
+      'Read a bank / card statement again from its PDF — one we could not read, one that needs review, or one already read that the customer says was read wrong (statementId from list_statements; not a bank-feed month). Free; it takes a few minutes, and the statement is out of the books until it is read. Receipts on a read statement are put back on the same transactions after. note = what the customer said is wrong with THIS statement (e.g. "page 3 withdrawals were read as deposits"); the reader follows it on this and every later re-read. Leave note out to keep the one it has; "" clears it. For only a wrong opening / closing balance use set_statement_balances instead. The recent words of the customer in this conversation are always passed to the reader too. sameAccount: true = also read again EVERY other statement of the same account that we could not read (failed / needs review), with the same note — use it whenever the customer asks to fix "all" the statements of that account; never say you fixed others without it.',
     parameters: obj(
       {
         statementId: int,
         note: {
           type: 'string',
           description:
-            "What is wrong with this statement, in the customer's words — only for THIS statement",
+            'What is wrong with this statement, in the customer\'s OWN words (quote them — keep their figures, e.g. "payments $9,750 + other credits $1,605.06 = deposits $11,355.06"). Never your own theory of the cause.',
         },
+        sameAccount: { type: 'boolean' },
       },
       ['statementId'],
     ),
@@ -882,6 +909,8 @@ export class AssistantTools {
     @Optional() private readonly outbox?: CustomerOutbox,
     /** step12c: the people the AI calls / texts for the customer. */
     @Optional() private readonly contacts?: AiContactsService,
+    /** step8: the customer's own ledger columns. */
+    @Optional() private readonly customColumns?: CustomColumnsService,
   ) {}
 
   private readonly logger = new Logger(AssistantTools.name);
@@ -1015,6 +1044,27 @@ export class AssistantTools {
     }
   }
 
+  /** The customer's last messages in this conversation (≤ 2 h, ≤ 4), verbatim — for the reader. */
+  private async customerWords(ctx: ToolContext): Promise<string> {
+    if (!ctx.conversation || !this.prisma.aiMessage) return '';
+    const rows = await this.prisma.aiMessage.findMany({
+      where: {
+        conversationId: ctx.conversation.id,
+        role: 'USER',
+        createdAt: { gte: new Date(Date.now() - 2 * 3600_000) },
+      },
+      orderBy: { id: 'desc' },
+      take: 4,
+      select: { text: true },
+    });
+    const text = rows
+      .reverse()
+      .map((r) => r.text.trim())
+      .filter(Boolean)
+      .join(' / ');
+    return text ? `The customer said: "${text.slice(0, 1500)}"` : '';
+  }
+
   private async exec(
     name: string,
     a: Args,
@@ -1034,6 +1084,52 @@ export class AssistantTools {
     });
 
     switch (name) {
+      case 'list_custom_columns': {
+        if (!this.customColumns)
+          throw new Error('custom columns are not available');
+        const v = await this.customColumns.view(scope);
+        const filled = (id: number) =>
+          Object.values(v.answers).filter((byCol) => byCol[id]).length;
+        return {
+          content: json(
+            v.columns.map((c) => ({
+              id: c.id,
+              name: c.name,
+              type: c.type,
+              minChars: c.minChars,
+              maxChars: c.maxChars,
+              options: c.options.map((o) => o.label),
+              answered: filled(c.id),
+            })),
+          ),
+        };
+      }
+      case 'set_custom_column': {
+        if (!this.customColumns)
+          throw new Error('custom columns are not available');
+        const ids = Array.isArray(a.transactionIds)
+          ? a.transactionIds.filter(
+              (x): x is number =>
+                typeof x === 'number' && Number.isInteger(x) && x > 0,
+            )
+          : [];
+        if (!ids.length) throw new Error('give the transaction ids');
+        if (ids.length > 200)
+          throw new Error('at most 200 transactions at a time');
+        const n = await this.customColumns.answer(scope, ids, id(a.columnId), {
+          value: typeof a.value === 'string' ? a.value : null,
+          option: typeof a.option === 'string' ? a.option : undefined,
+        });
+        const what =
+          (typeof a.option === 'string' && a.option) ||
+          (typeof a.value === 'string' && a.value) ||
+          '';
+        return done(
+          what
+            ? `Set “${what}” on ${n} transaction${n === 1 ? '' : 's'}`
+            : `Cleared ${n} transaction${n === 1 ? '' : 's'}`,
+        );
+      }
       case 'list_statements': {
         const list = await this.bookkeeping.list(scope);
         return {
@@ -1419,6 +1515,22 @@ export class AssistantTools {
       }
 
       case 'attach_receipt': {
+        // step8 (2026-11-11, the Logistics call): the AI moved a cheque that its number had
+        // already matched onto another transaction. A file whose cheque number its current
+        // transaction prints stays, unless the AI says the customer called it wrong.
+        if (a.customerSaysWrong !== true) {
+          const kept = await this.attachments.chequeKeptOn(
+            scope,
+            id(a.attachmentId),
+            id(a.transactionId),
+          );
+          if (kept) {
+            return {
+              content: json({ ok: false, error: kept }),
+              action: { tool: name, ok: false, summary: kept },
+            };
+          }
+        }
         const view = await this.attachments.setTransaction(
           scope,
           id(a.attachmentId),
@@ -1564,19 +1676,38 @@ export class AssistantTools {
           id(a.attachmentId),
           note,
         );
+        // step8 (2026-11-11): on the Logistics call the AI said "I've split it into three
+        // files" before anything was read. It is only QUEUED here.
         return done(
           `Reading ${view.filename} again${note?.trim() ? ' with your note' : ''}`,
+          {
+            ok: true,
+            queued: true,
+            note: 'Only queued: nothing is read, split or attached yet. Say it is being read again; never say it is split or matched until the result comes back (on a call a system note brings it; elsewhere get_attachment shows it).',
+          },
         );
       }
       case 'retry_statement': {
-        const note = typeof a.note === 'string' ? a.note : undefined;
-        const view = await this.bookkeeping.retry(
-          scope,
-          id(a.statementId),
-          note,
-        );
+        // step8 (2026-11-11, yakirov #434): the AI's paraphrase of the customer was wrong and
+        // their exact figures never reached the reader — their own words go along too.
+        const said = await this.customerWords(ctx);
+        const typed = typeof a.note === 'string' ? a.note : undefined;
+        const note =
+          typed === undefined && !said
+            ? undefined
+            : [typed?.trim(), said].filter(Boolean).join('\n\n');
+        const ids = a.sameAccount
+          ? await this.bookkeeping.sameAccountToRetry(scope, id(a.statementId))
+          : [id(a.statementId)];
+        const labels: string[] = [];
+        for (const sid of ids) {
+          const view = await this.bookkeeping.retry(scope, sid, note, {
+            append: true,
+          });
+          labels.push(view.label);
+        }
         return done(
-          `Reading ${view.label} again${note?.trim() ? ' with your note' : ''}`,
+          `Reading ${labels.join(', ')} again${note?.trim() ? ' with your note' : ''}`,
         );
       }
       case 'set_statement_balances': {

@@ -23,6 +23,7 @@ export interface ExtractedStatement {
     rereads: number;
     signFixes: number;
     balanceFixes: number;
+    captionRows?: number;
     imagePages: ImagePage[];
 }
 export interface PageReading {
@@ -154,12 +155,13 @@ export declare function dropSpuriousPages(pages: readonly PageReading[]): {
     readings: PageReading[];
     result: ReturnType<typeof assemble>;
 } | null;
-export declare function assemble(pages: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
+export declare function assemble(readings: PageReading[]): Omit<ExtractedStatement, 'calls' | 'rereads'>;
 export declare function closingOf(pages: PageReading[], openingBalance?: number | null): number | null;
 export declare function rereadRound(n: number): {
     verifyModel: boolean;
     allPages: boolean;
 };
+export declare function signHint(v: ReconcileResult): string[];
 export declare function better(a: ReconcileResult, b: ReconcileResult): boolean;
 export declare function splitPdf(pdf: Buffer, pagesPerChunk: number, decrypt?: (pdf: Buffer) => Promise<Buffer>): Promise<Array<{
     bytes: Buffer;

@@ -7,6 +7,8 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingModule = void 0;
+const custom_columns_controller_1 = require("./custom-columns.controller");
+const custom_columns_service_1 = require("./custom-columns.service");
 const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
@@ -23,6 +25,8 @@ const bookkeeping_service_1 = require("./bookkeeping.service");
 const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const name_files_controller_1 = require("./name-files.controller");
+const name_files_service_1 = require("./name-files.service");
 const name_memory_service_1 = require("./name-memory.service");
 const product_categorizer_1 = require("./product-categorizer");
 const product_memory_service_1 = require("./product-memory.service");
@@ -47,8 +51,11 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
         controllers: [
             books_controller_1.BooksController,
             bookkeeping_controller_1.BookkeepingController,
+            custom_columns_controller_1.CustomColumnsController,
             staff_rules_controller_1.StaffRulesController,
             file_links_1.FileLinkController,
+            name_files_controller_1.NameFilesController,
+            name_files_controller_1.PhoneUploadController,
         ],
         providers: [
             attachment_extractor_1.AttachmentExtractor,
@@ -58,11 +65,13 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             book_scope_guard_1.BookScopeGuard,
             communications_service_1.CommunicationsService,
             customer_accounts_service_1.CustomerAccountsService,
+            custom_columns_service_1.CustomColumnsService,
             document_pipeline_1.DocumentPipeline,
             file_links_1.FileLinkService,
             fx_service_1.FxService,
             instructions_service_1.InstructionsService,
             export_service_1.LedgerExportService,
+            name_files_service_1.NameFilesService,
             name_memory_service_1.NameMemoryService,
             ocr_service_1.OcrService,
             openai_client_1.OpenAiClient,
@@ -84,6 +93,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             bookkeeping_service_1.BookkeepingService,
             book_scope_guard_1.BookScopeGuard,
             customer_accounts_service_1.CustomerAccountsService,
+            custom_columns_service_1.CustomColumnsService,
             file_links_1.FileLinkService,
             instructions_service_1.InstructionsService,
             export_service_1.LedgerExportService,

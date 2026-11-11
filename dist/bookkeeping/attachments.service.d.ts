@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import type { AttachmentReading } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
+import { type FileBucket } from './attachment-name.util';
 import { type BookScope } from './scope';
 export declare const NOT_VOICE_MESSAGE: {
     NOT: {
@@ -15,6 +16,7 @@ export declare const NOT_VOICE_MESSAGE: {
 };
 export interface AttachmentView {
     id: number;
+    fromStatementId: number | null;
     kind: AttachmentKind;
     status: AttachmentStatus;
     filename: string;
@@ -32,6 +34,11 @@ export interface AttachmentView {
     messageCount: number;
     cropped: boolean;
     siblings: number[];
+    name: string | null;
+    bucket: FileBucket;
+    folderId: number | null;
+    displayName: string | null;
+    hasEmail: boolean;
     transaction: {
         id: number;
         name: string | null;
@@ -51,6 +58,7 @@ export interface IntakeView {
     email: string | null;
     voice: boolean;
 }
+export declare const cleanName: (s: string | null | undefined) => string | null;
 export declare class AttachmentsService {
     private readonly prisma;
     private readonly storage;
@@ -58,7 +66,10 @@ export declare class AttachmentsService {
     private readonly processor;
     private readonly config?;
     constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined);
-    upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null): Promise<AttachmentView[]>;
+    upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null, place?: {
+        name?: string | null;
+        folderId?: number | null;
+    }): Promise<AttachmentView[]>;
     intake(scope: BookScope): Promise<IntakeView>;
     list(scope: BookScope): Promise<AttachmentView[]>;
     get(scope: BookScope, id: number): Promise<AttachmentView>;
@@ -66,9 +77,16 @@ export declare class AttachmentsService {
     reread(scope: BookScope, id: number, note?: string): Promise<AttachmentView>;
     private readingOf;
     private messageCounts;
+    chequeKeptOn(scope: BookScope, id: number, transactionId: number): Promise<string | null>;
     setTransaction(scope: BookScope, id: number, transactionId: number | null): Promise<AttachmentView>;
     applyItems(scope: BookScope, id: number): Promise<AttachmentView>;
     retry(scope: BookScope, id: number): Promise<AttachmentView>;
+    place(scope: BookScope, id: number, p: {
+        name?: string | null;
+        folderId?: number | null;
+        displayName?: string | null;
+    }): Promise<AttachmentView>;
+    private folder;
     remove(scope: BookScope, id: number): Promise<void>;
     file(scope: BookScope, id: number, original?: boolean): Promise<{
         stream: Readable;

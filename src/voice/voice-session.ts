@@ -86,6 +86,34 @@ function idArg(args: string, key: string): number | null {
   }
 }
 
+/**
+ * step8 (2026-11-11, the Logistics call a5a09d6d): the AI said "I'm going to look up the
+ * transaction for cheque 00011 now" and called NO tool — the caller sat in silence for three
+ * minutes ("took very long, my friend"). A turn that announces an action it did not take is
+ * found here, and the model is told once to act or say it can't. Pure.
+ */
+export function promisedAction(said: string): boolean {
+  const t = said.toLowerCase().replace(/’/g, "'");
+  if (!t.trim() || /\?\s*$/.test(t.trim())) return false;
+  return /\b(let me|i'm going to|i am going to|i'll (now |go ahead and |just )?(look|find|search|check|attach|match|pull|split|move|fix|read|go|get|do|start)|i will (now )?(look|find|search|check|attach|match|pull|split|fix)|one moment|just a moment|give me a (moment|second)|let's (go ahead and )?(find|look|search|check|attach|match))\b/.test(
+    t,
+  );
+}
+
+/** The note that makes the model keep a promise it just made (`promisedAction`). */
+export const KEEP_PROMISE_NOTE =
+  '[System note, not from the caller] You just told the caller you would do something, but you called no tool, so nothing is happening and they are waiting in silence. Do it NOW with the right tool call — or, if no tool can do it, say so plainly in one sentence.';
+
+/** One document cut from the same image as a re-read file, for `attachmentDoneNote`. */
+export interface FileFamilyMember {
+  id: number;
+  status: string;
+  chequeNumber: string | null;
+  amount: number | null;
+  /** The transaction it is attached to ("CHQ#00015-… −1448.80"), or null. */
+  transaction: string | null;
+}
+
 /** step2: the note the model gets when a file re-read on this call is finished. Pure. */
 export function attachmentDoneNote(
   attachmentId: number,
@@ -95,8 +123,23 @@ export function attachmentDoneNote(
     matchNote: string | null;
     filename: string;
   },
+  /** step8: the file itself + every document cut from the same image, with what each got. */
+  family: readonly FileFamilyMember[] = [],
 ): string {
   const head = `[System note, not from the caller] The file you re-read on this call (#${attachmentId}, "${row.filename}") is finished:`;
+  if (family.length > 1) {
+    const lines = family.map(
+      (m) =>
+        `- #${m.id}${m.chequeNumber ? ` cheque ${m.chequeNumber}` : ''}${m.amount != null ? ` $${m.amount.toFixed(2)}` : ''}: ` +
+        (m.transaction
+          ? `attached to ${m.transaction}`
+          : `${m.status.toLowerCase()}, not attached`),
+    );
+    return (
+      `${head} it held ${family.length} documents, now ${family.length} separate files:\n${lines.join('\n')}\n` +
+      'Tell the caller exactly this, briefly — the number of files above, never another. The attached ones are ALREADY on the right transactions: never move them unless the caller says one is wrong. Only the ones not attached still need a transaction (use their ids above).'
+    );
+  }
   if (row.status === 'MATCHED') {
     return `${head} it was read and attached to a transaction (get_attachment ${attachmentId} says which). Tell the caller now, briefly.`;
   }
@@ -174,6 +217,11 @@ export class VoiceSession implements LiveCall {
   private spoke = false;
   /** A tool call came with nothing said: speak a short "let me check" while it runs. */
   private fillerWanted = false;
+  /** step8: the current response called a tool / what it said — for `promisedAction`. */
+  private responseHadTool = false;
+  private responseSaid = '';
+  /** step8: the model was already reminded to keep its promise since the caller last spoke. */
+  private promiseNudged = false;
   /** Tool calls run one after another, without holding up the audio events. */
   private tools: Promise<void> = Promise.resolve();
   private toolsRunning = 0;
@@ -441,7 +489,7 @@ export class VoiceSession implements LiveCall {
         'noise, say nothing about its content — at most ask once, briefly, to repeat. Never answer a ' +
         'guess. When you have asked a question, wait for the answer; never fill a silence with more talk.',
       'Never promise what no tool did: no "staff / a specialist will review it", no "in a few business ' +
-        "days\", no \"I'll let you know\" — unless a tool result or a note on this call says it will happen.",
+        'days", no "I\'ll let you know" — unless a tool result or a note on this call says it will happen.',
     ];
     const conversation = this.conversation!;
     if (!conversation.bookChosen) {
@@ -518,6 +566,8 @@ export class VoiceSession implements LiveCall {
       this.responding = true;
       this.requested = false;
       this.spoke = false;
+      this.responseHadTool = false;
+      this.responseSaid = '';
     } else if (has(RT.responseDone, type)) {
       this.responding = false;
       if (this.ending) this.sendEndMark();
@@ -534,8 +584,10 @@ export class VoiceSession implements LiveCall {
       }
       this.fillerWanted = false;
       this.answerToolsIfReady();
+      this.keepPromise();
       this.flushNotes();
     } else if (has(RT.userText, type)) {
+      this.promiseNudged = false;
       this.recordUsage(REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
       const said =
         typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
@@ -567,7 +619,9 @@ export class VoiceSession implements LiveCall {
           this.callSid,
         );
       } else if (said && this.conversation) await this.saveAssistant(said);
+      if (said) this.responseSaid += ` ${said}`;
     } else if (has(RT.toolCall, type)) {
+      this.responseHadTool = true;
       if (!this.spoke) this.fillerWanted = true;
       this.toolsRunning++;
       this.tools = this.tools
@@ -611,6 +665,28 @@ export class VoiceSession implements LiveCall {
       streamSid: this.streamSid,
       mark: { name: END_MARK },
     });
+  }
+
+  /** step8: a turn that promised an action and called no tool gets ONE reminder. */
+  private keepPromise(): void {
+    if (
+      this.responseHadTool ||
+      this.promiseNudged ||
+      this.prospect ||
+      this.ending ||
+      this.toolsRunning > 0 ||
+      this.toolOutputsPending ||
+      this.watched.size > 0 ||
+      this.watchedFiles.size > 0 ||
+      !promisedAction(this.responseSaid)
+    ) {
+      return;
+    }
+    this.promiseNudged = true;
+    this.logger.log(
+      `call ${this.callSid}: promised an action without a tool — reminding the model`,
+    );
+    this.inject(KEEP_PROMISE_NOTE);
   }
 
   private answerToolsIfReady(): void {
@@ -826,6 +902,45 @@ export class VoiceSession implements LiveCall {
     this.watched.delete(statementId);
   }
 
+  /** step8: a re-read file and every document cut from the same image, with what each got. */
+  private async fileFamily(
+    scope: BookScope,
+    attachmentId: number,
+  ): Promise<FileFamilyMember[]> {
+    const rows = await this.deps.prisma.transactionAttachment.findMany({
+      where: {
+        customerId: scope.customerId,
+        bookId: scope.bookId,
+        deletedAt: null,
+        OR: [
+          { id: attachmentId },
+          { sourceRef: { startsWith: `doc:${attachmentId}:` } },
+        ],
+      },
+      orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        status: true,
+        extracted: true,
+        transaction: { select: { description: true, amount: true } },
+      },
+    });
+    return rows.map((r) => {
+      const e = (r.extracted ?? {}) as Record<string, unknown>;
+      const num = e.checkNumber ?? e.chequeNumber;
+      const total = Number(e.total ?? e.amount);
+      return {
+        id: r.id,
+        status: r.status,
+        chequeNumber: typeof num === 'string' && num ? num : null,
+        amount: Number.isFinite(total) && total ? total : null,
+        transaction: r.transaction
+          ? `${r.transaction.description} ${Number(r.transaction.amount).toFixed(2)}`
+          : null,
+      };
+    });
+  }
+
   /** step2: like `watchStatement`, for a file read again on this call. */
   private watchAttachment(scope: BookScope, attachmentId: number | null): void {
     if (!attachmentId || this.closed || this.watchedFiles.has(attachmentId))
@@ -853,7 +968,13 @@ export class VoiceSession implements LiveCall {
         return;
       }
       stop();
-      this.inject(attachmentDoneNote(attachmentId, row));
+      this.inject(
+        attachmentDoneNote(
+          attachmentId,
+          row,
+          await this.fileFamily(scope, attachmentId),
+        ),
+      );
     };
     this.watchedFiles.set(
       attachmentId,

@@ -58,6 +58,7 @@ const DOCUMENT_SCHEMA = {
         'checkNumber',
         'payee',
         'memo',
+        'party',
         'category',
         'box',
         'text',
@@ -83,6 +84,7 @@ const DOCUMENT_SCHEMA = {
         checkNumber: text,
         payee: text,
         memo: text,
+        party: text,
         category: { type: ['string', 'null'], enum: [...chart_of_accounts_1.ACCOUNT_NAMES, null] },
         text: { type: ['string', 'null'] },
         box: {
@@ -136,6 +138,10 @@ amounts together. One document = one entry. For each entry:
   NEVER invent an item — an empty list is correct when the lines cannot be read.
   Use a short readable name ("Pampers Size 4", not "PMPRS SZ4 0371").
 - checkNumber, payee, memo: for a cheque (payee = who it is made out to); else null.
+- party: the business or person on the OTHER side of the document from the owner — who
+  sent the letter / notice / invoice, the other party of a contract or agreement, the store
+  of a receipt ("CRA", "Landlord Inc", "Walmart"). Its usual short name, never the owner's
+  own business. null when none is shown.
 - category: for a cheque, the bookkeeping account the payment most likely belongs to,
   judged from the payee and the memo (a landlord -> Rent, a contractor -> Contractors,
   a person paid wages -> Payroll & Wages); "Uncategorized" when unclear; null for
@@ -439,6 +445,7 @@ function cleanReading(r) {
         checkNumber: str(r.checkNumber, 32),
         payee: str(r.payee),
         memo: str(r.memo, 255),
+        party: str(r.party),
         category: typeof r.category === 'string' && chart_of_accounts_1.ACCOUNT_NAMES.includes(r.category)
             ? r.category
             : null,

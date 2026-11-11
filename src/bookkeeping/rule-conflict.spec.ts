@@ -403,8 +403,10 @@ describe('NameMemoryService — RULE_CONFLICT', () => {
         category: null,
       }),
     );
+    // step8: "Aws" too — the AI named those rows, and the new text would take them.
     expect(body?.conflicts).toEqual([
       { matchType: 'CONTAINS', text: 'AMZN MKTP', name: 'Amazon' },
+      { matchType: 'DESCRIPTION', text: 'AMZN WEB SERVICES', name: 'Aws' },
     ]);
     expect(first.rows.map((r) => r.name)).toEqual(['Amazon', 'Aws']);
 
@@ -445,6 +447,7 @@ describe('NameMemoryService — RULE_CONFLICT', () => {
     );
     expect(body?.conflicts).toEqual([
       { matchType: 'DESCRIPTION', text: 'AMZN MKTP 123', name: 'Amazon' },
+      { matchType: 'DESCRIPTION', text: 'AMZN WEB', name: 'Aws' },
     ]);
     await service(prisma).saveRule(BOOK, {
       matchType: 'CONTAINS',
@@ -540,11 +543,24 @@ describe('containsRows — a longer text keeps its rows (step2 fix)', () => {
         },
       ],
     );
+    // step8: "Aws" (named by the AI) is asked about; the row the longer text wins is not.
+    const body = await conflictOf(
+      service(prisma).saveRule(BOOK, {
+        matchType: 'CONTAINS',
+        matchKey: 'amzn',
+        name: 'Amazon',
+        category: null,
+      }),
+    );
+    expect(body?.conflicts).toEqual([
+      { matchType: 'DESCRIPTION', text: 'AMZN WEB', name: 'Aws' },
+    ]);
     await service(prisma).saveRule(BOOK, {
       matchType: 'CONTAINS',
       matchKey: 'amzn',
       name: 'Amazon',
       category: null,
+      replace: true,
     });
     expect(rows.map((r) => r.name)).toEqual(['Amazon Marketplace', 'Amazon']);
   });

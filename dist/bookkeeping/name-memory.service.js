@@ -516,17 +516,33 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const [rules, rows] = await Promise.all([
             this.rulesOf(scope),
             this.prisma.bankTransaction.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: null },
-                select: { description: true },
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    splitOfId: null,
+                    statement: { deletedAt: null },
+                },
+                select: { description: true, name: true, manualEdit: true },
             }),
         ]);
-        const conflicts = (0, name_memory_util_1.findLinkConflicts)({
+        const ruled = (0, name_memory_util_1.findLinkConflicts)({
             matchType,
             key,
             name,
             rules,
             descriptions: [...new Set(rows.map((r) => r.description))],
         });
+        const taken = new Set(ruled.map((c) => (0, name_memory_util_1.nameKey)(c.name)));
+        const conflicts = [
+            ...ruled,
+            ...(0, name_memory_util_1.rowNameConflicts)({
+                matchType,
+                key,
+                name,
+                rows,
+                rules,
+                ignore: [reports_util_1.UNCLARIFIED_NAME],
+            }).filter((c) => !taken.has((0, name_memory_util_1.nameKey)(c.name))),
+        ];
         if (!conflicts.length)
             return;
         if (!replace) {
@@ -733,6 +749,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (category !== chart_of_accounts_1.UNCATEGORIZED)
             await this.setNameCategory(scope, target, category);
         await this.tax.mergeNameFields(scope, source, target);
+        await this.tax.moveNameFiles(scope, [source], target);
         await this.prisma.ledgerNameAgency.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });

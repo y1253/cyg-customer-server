@@ -23,6 +23,7 @@ export interface AttachmentReading {
     checkNumber: string | null;
     payee: string | null;
     memo: string | null;
+    party?: string | null;
     category?: string | null;
     box?: DocumentBox | null;
     transcript?: string;

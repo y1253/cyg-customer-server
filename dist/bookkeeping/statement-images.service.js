@@ -88,6 +88,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                 },
                 data: { deletedAt: new Date() },
             });
+            await this.dropSiblingsOfDeleted(scope);
             if (images.length)
                 this.attachments.processSoon();
             if (pages.length) {
@@ -107,6 +108,54 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
             },
             data: { deletedAt: new Date() },
         });
+        await this.dropSiblingsOfDeleted(scope);
+    }
+    async dropSiblingsOfDeleted(scope) {
+        const alive = await this.prisma.transactionAttachment.findMany({
+            where: {
+                ...(scope ? (0, scope_1.scopeWhere)(scope) : {}),
+                source: 'STATEMENT',
+                sourceRef: { startsWith: 'doc:' },
+                deletedAt: null,
+            },
+            select: { id: true, sourceRef: true, transactionId: true },
+        });
+        if (!alive.length)
+            return 0;
+        const parentOf = (ref) => Number(ref?.split(':')[1]);
+        const parents = await this.prisma.transactionAttachment.findMany({
+            where: {
+                id: { in: [...new Set(alive.map((a) => parentOf(a.sourceRef)))] },
+            },
+            select: { id: true, deletedAt: true },
+        });
+        const dead = new Set(parents.filter((p) => p.deletedAt).map((p) => p.id));
+        const orphans = alive.filter((a) => dead.has(parentOf(a.sourceRef)));
+        if (!orphans.length)
+            return 0;
+        const txIds = orphans
+            .map((o) => o.transactionId)
+            .filter((t) => !!t);
+        const liveTx = new Set((await this.prisma.bankTransaction.findMany({
+            where: { id: { in: txIds }, statement: { deletedAt: null } },
+            select: { id: true },
+        })).map((t) => t.id));
+        const drop = orphans
+            .filter((o) => !o.transactionId || !liveTx.has(o.transactionId))
+            .map((o) => o.id);
+        if (!drop.length)
+            return 0;
+        await this.prisma.transactionAttachment.updateMany({
+            where: { id: { in: drop } },
+            data: { deletedAt: new Date() },
+        });
+        this.logger.log(`${drop.length} cut document(s) of deleted statement images removed`);
+        return drop.length + (await this.dropSiblingsOfDeleted(scope));
+    }
+    onApplicationBootstrap() {
+        setTimeout(() => {
+            void this.dropSiblingsOfDeleted().catch((err) => this.logger.warn(`orphan crop sweep failed: ${String(err)}`));
+        }, 75_000).unref?.();
     }
 };
 exports.StatementImagesService = StatementImagesService;

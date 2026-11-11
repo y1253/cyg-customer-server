@@ -384,6 +384,9 @@ export class BookkeepingController {
     @Book() scope: BookScope,
     @UploadedFiles() files: Express.Multer.File[],
     @Body('transactionId') rawTransactionId?: string,
+    /** step2 (2026-11-11): uploaded inside a name's folder (and subfolder) on the Names tab. */
+    @Body('name') name?: string,
+    @Body('folderId') rawFolderId?: string,
   ): Promise<AttachmentView[]> {
     const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
     if (
@@ -392,7 +395,14 @@ export class BookkeepingController {
     ) {
       throw new BadRequestException('transactionId must be a transaction id');
     }
-    return this.attachments.upload(scope, files, transactionId);
+    const folderId = rawFolderId ? Number(rawFolderId) : null;
+    if (folderId !== null && (!Number.isInteger(folderId) || folderId < 1)) {
+      throw new BadRequestException('folderId must be a folder id');
+    }
+    return this.attachments.upload(scope, files, transactionId, {
+      name: typeof name === 'string' ? name : null,
+      folderId,
+    });
   }
 
   /** The Communication tab (step12): one row per channel, newest message first. */
@@ -567,11 +577,12 @@ export class BookkeepingController {
     }
     const owner = await this.ownerName(scope);
     const rows = await this.exporter.rowsFor(scope);
+    const custom = await this.exporter.customFor(scope);
     const stamp = new Date().toISOString().slice(0, 10);
     const buf =
       format === 'xlsx'
-        ? await this.exporter.excel(rows, owner)
-        : await this.exporter.pdf(rows, owner);
+        ? await this.exporter.excel(rows, owner, custom)
+        : await this.exporter.pdf(rows, owner, custom);
     res.set({
       'Content-Type':
         format === 'xlsx'

@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.VoiceSession = void 0;
+exports.VoiceSession = exports.KEEP_PROMISE_NOTE = void 0;
+exports.promisedAction = promisedAction;
 exports.attachmentDoneNote = attachmentDoneNote;
 exports.statementDoneNote = statementDoneNote;
 const common_1 = require("@nestjs/common");
@@ -41,8 +42,23 @@ function idArg(args, key) {
         return null;
     }
 }
-function attachmentDoneNote(attachmentId, row) {
+function promisedAction(said) {
+    const t = said.toLowerCase().replace(/’/g, "'");
+    if (!t.trim() || /\?\s*$/.test(t.trim()))
+        return false;
+    return /\b(let me|i'm going to|i am going to|i'll (now |go ahead and |just )?(look|find|search|check|attach|match|pull|split|move|fix|read|go|get|do|start)|i will (now )?(look|find|search|check|attach|match|pull|split|fix)|one moment|just a moment|give me a (moment|second)|let's (go ahead and )?(find|look|search|check|attach|match))\b/.test(t);
+}
+exports.KEEP_PROMISE_NOTE = '[System note, not from the caller] You just told the caller you would do something, but you called no tool, so nothing is happening and they are waiting in silence. Do it NOW with the right tool call — or, if no tool can do it, say so plainly in one sentence.';
+function attachmentDoneNote(attachmentId, row, family = []) {
     const head = `[System note, not from the caller] The file you re-read on this call (#${attachmentId}, "${row.filename}") is finished:`;
+    if (family.length > 1) {
+        const lines = family.map((m) => `- #${m.id}${m.chequeNumber ? ` cheque ${m.chequeNumber}` : ''}${m.amount != null ? ` $${m.amount.toFixed(2)}` : ''}: ` +
+            (m.transaction
+                ? `attached to ${m.transaction}`
+                : `${m.status.toLowerCase()}, not attached`));
+        return (`${head} it held ${family.length} documents, now ${family.length} separate files:\n${lines.join('\n')}\n` +
+            'Tell the caller exactly this, briefly — the number of files above, never another. The attached ones are ALREADY on the right transactions: never move them unless the caller says one is wrong. Only the ones not attached still need a transaction (use their ids above).');
+    }
     if (row.status === 'MATCHED') {
         return `${head} it was read and attached to a transaction (get_attachment ${attachmentId} says which). Tell the caller now, briefly.`;
     }
@@ -87,6 +103,9 @@ class VoiceSession {
     toolOutputsPending = false;
     spoke = false;
     fillerWanted = false;
+    responseHadTool = false;
+    responseSaid = '';
+    promiseNudged = false;
     tools = Promise.resolve();
     toolsRunning = 0;
     closed = false;
@@ -271,7 +290,7 @@ class VoiceSession {
                 'noise, say nothing about its content — at most ask once, briefly, to repeat. Never answer a ' +
                 'guess. When you have asked a question, wait for the answer; never fill a silence with more talk.',
             'Never promise what no tool did: no "staff / a specialist will review it", no "in a few business ' +
-                "days\", no \"I'll let you know\" — unless a tool result or a note on this call says it will happen.",
+                'days", no "I\'ll let you know" — unless a tool result or a note on this call says it will happen.',
         ];
         const conversation = this.conversation;
         if (!conversation.bookChosen) {
@@ -333,6 +352,8 @@ class VoiceSession {
             this.responding = true;
             this.requested = false;
             this.spoke = false;
+            this.responseHadTool = false;
+            this.responseSaid = '';
         }
         else if (has(voice_util_1.RT.responseDone, type)) {
             this.responding = false;
@@ -346,9 +367,11 @@ class VoiceSession {
             }
             this.fillerWanted = false;
             this.answerToolsIfReady();
+            this.keepPromise();
             this.flushNotes();
         }
         else if (has(voice_util_1.RT.userText, type)) {
+            this.promiseNudged = false;
             this.recordUsage(voice_util_1.REALTIME_TRANSCRIBE_MODEL, 'transcribe', ev.usage);
             const said = typeof ev.transcript === 'string' ? ev.transcript.trim() : '';
             if (said && this.prospect) {
@@ -366,8 +389,11 @@ class VoiceSession {
             }
             else if (said && this.conversation)
                 await this.saveAssistant(said);
+            if (said)
+                this.responseSaid += ` ${said}`;
         }
         else if (has(voice_util_1.RT.toolCall, type)) {
+            this.responseHadTool = true;
             if (!this.spoke)
                 this.fillerWanted = true;
             this.toolsRunning++;
@@ -404,6 +430,22 @@ class VoiceSession {
             streamSid: this.streamSid,
             mark: { name: END_MARK },
         });
+    }
+    keepPromise() {
+        if (this.responseHadTool ||
+            this.promiseNudged ||
+            this.prospect ||
+            this.ending ||
+            this.toolsRunning > 0 ||
+            this.toolOutputsPending ||
+            this.watched.size > 0 ||
+            this.watchedFiles.size > 0 ||
+            !promisedAction(this.responseSaid)) {
+            return;
+        }
+        this.promiseNudged = true;
+        this.logger.log(`call ${this.callSid}: promised an action without a tool — reminding the model`);
+        this.inject(exports.KEEP_PROMISE_NOTE);
     }
     answerToolsIfReady() {
         if (this.ending)
@@ -569,6 +611,40 @@ class VoiceSession {
             clearInterval(t);
         this.watched.delete(statementId);
     }
+    async fileFamily(scope, attachmentId) {
+        const rows = await this.deps.prisma.transactionAttachment.findMany({
+            where: {
+                customerId: scope.customerId,
+                bookId: scope.bookId,
+                deletedAt: null,
+                OR: [
+                    { id: attachmentId },
+                    { sourceRef: { startsWith: `doc:${attachmentId}:` } },
+                ],
+            },
+            orderBy: { id: 'asc' },
+            select: {
+                id: true,
+                status: true,
+                extracted: true,
+                transaction: { select: { description: true, amount: true } },
+            },
+        });
+        return rows.map((r) => {
+            const e = (r.extracted ?? {});
+            const num = e.checkNumber ?? e.chequeNumber;
+            const total = Number(e.total ?? e.amount);
+            return {
+                id: r.id,
+                status: r.status,
+                chequeNumber: typeof num === 'string' && num ? num : null,
+                amount: Number.isFinite(total) && total ? total : null,
+                transaction: r.transaction
+                    ? `${r.transaction.description} ${Number(r.transaction.amount).toFixed(2)}`
+                    : null,
+            };
+        });
+    }
     watchAttachment(scope, attachmentId) {
         if (!attachmentId || this.closed || this.watchedFiles.has(attachmentId))
             return;
@@ -599,7 +675,7 @@ class VoiceSession {
                 return;
             }
             stop();
-            this.inject(attachmentDoneNote(attachmentId, row));
+            this.inject(attachmentDoneNote(attachmentId, row, await this.fileFamily(scope, attachmentId)));
         };
         this.watchedFiles.set(attachmentId, setInterval(() => {
             void tick().catch((err) => {

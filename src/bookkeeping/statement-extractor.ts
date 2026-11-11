@@ -13,6 +13,7 @@ import {
 import { itemBoxes, type Box, type ImagePage } from './pdf-images';
 import { pdfPageTexts, pdfTextQuality } from './pipeline/pdf-text';
 import { pageTextHint } from './pipeline/tool-results';
+import { dropChequeCaptions } from './cheque-caption.util';
 import {
   describeCheck,
   perPageBoxes,
@@ -78,6 +79,8 @@ export interface ExtractedStatement {
   signFixes: number;
   /** Overdrawn running balances whose lost minus sign was put back (`repairBalanceSigns`). */
   balanceFixes: number;
+  /** step8: cheque-image captions read as rows and left out (`dropChequeCaptions`). */
+  captionRows?: number;
   /**
    * The pages that show images of cheques / deposit slips (`hasItemImages`) — cut out and
    * attached to their rows after the statement is saved (`StatementImagesService`).
@@ -203,7 +206,7 @@ export const SYSTEM_PROMPT = [
   'Count the transaction lines on each page and make sure your list has the same number.',
   'Opening/closing balances, "balance forward" lines, running balances, subtotals, page headers and marketing text are NOT transactions — never list them as rows.',
   'Account-summary lines are NOT transactions either: "Previous balance", "Payment, Credits", "Purchases", "Cash advances", "Fees charged", "Interest charged", "New balance", "Closing totals" are totals of the rows listed elsewhere — never list them as rows (but DO copy them into the printed figures below: "Previous balance" is openingBalance, "New balance" closingBalance, the payments/credits total totalDeposits, purchases + fees + interest totalWithdrawals). A page with no table of dated transactions (a summary, terms, a notice, a blank page) has NO transactions: return an empty transaction list, never invent one — its printed figures are still copied.',
-  'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions.',
+  'Pages that show IMAGES or copies of cheques, deposit slips or "items enclosed" only repeat items already listed on the statement pages — never list a row from such an image; a page of only such images has NO transactions. The caption printed over each image ("CHEQUE # 00034  $983.28", "Item 3 of 8") labels that image — it is NOT a row, even when the page text lists it.',
   '',
   'For each transaction:',
   '- postingDate: the posting/transaction date as YYYY-MM-DD. If the statement prints dates without a year, take the year from the statement period.',
@@ -334,10 +337,12 @@ export class StatementExtractor {
       model: string,
       context: PageContext | null,
       hint: string | null,
+      /** step8: the last-chance round reads the page alone, as before the text pipeline. */
+      noText = false,
     ): Promise<PageReading> => {
       calls++;
       // step2e: the page's text layer, when real, goes WITH the PDF page on every read.
-      const text = textOf(i);
+      const text = noText ? null : textOf(i);
       const reading = await this.readChunk(
         chunks[i],
         i,
@@ -452,6 +457,7 @@ export class StatementExtractor {
         "A previous reading of this statement does NOT add up against the bank's own figures:",
         ...failed.map((c) => `- ${describeCheck(c)}`),
         'Re-read EVERY line on this page carefully. A row is probably missing, doubled, misread, or has the wrong sign. Copy the summary figures exactly as printed too.',
+        ...signHint(result.verification),
         'But if a total you copied is NOT the total of every transaction (year-to-date, a subtotal, one category only, leaves out fees…), set it to null and totalsScope to "partial" — never change a row to make it fit.',
       ].join('\n');
       const rereadPages = new Map<number, PageReading>();
@@ -487,6 +493,46 @@ export class StatementExtractor {
       await opts.onRound?.(rereads);
     }
 
+    // step8 (2026-11-11, yakirov CIBC VISA #434): with the text layer beside every read, 40+
+    // purchases came back as credits on every re-read; these card statements read right
+    // before the text pipeline. Last chance: every page read from its image alone, kept only
+    // if the statement then adds up better.
+    if (
+      result.verification.verification === 'MISMATCH' &&
+      withText.size > 0 &&
+      maxRereads > 0
+    ) {
+      const targets = chunks.map((_, i) => i).filter((i) => !skipped.has(i));
+      this.logger.warn(
+        `"${filename}": still off after ${rereads} re-read(s) — reading page(s) ${targets.map((t) => t + 1).join(',')} once more WITHOUT the text layer`,
+      );
+      const trial = [...pages];
+      await this.pool(targets, async (i) => {
+        try {
+          trial[i] = await read(
+            i,
+            this.verifyModel(),
+            i === 0 ? null : context,
+            signHint(result.verification).join('\n') || null,
+            true,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `"${filename}" page ${i + 1}: image-only read failed (${errorText(err)})`,
+          );
+        }
+      });
+      const candidate = assemble(trial);
+      if (better(candidate.verification, result.verification)) {
+        trial.forEach((p, i) => (pages[i] = p));
+        result = candidate;
+        this.logger.log(
+          `"${filename}": the image-only read added up better — kept (${candidate.verification.verification})`,
+        );
+      }
+      rereads++;
+    }
+
     this.logger.log(
       `"${filename}": ${result.transactions.length} transactions from ${chunks.length} chunk(s), ` +
         (textMode
@@ -503,6 +549,9 @@ export class StatementExtractor {
           : '') +
         (result.balanceFixes
           ? `, ${result.balanceFixes} overdrawn balance(s) given back their minus sign`
+          : '') +
+        (result.captionRows
+          ? `, ${result.captionRows} cheque-image caption(s) left out`
           : ''),
     );
     return { ...result, calls, rereads };
@@ -661,8 +710,10 @@ export function dropSpuriousPages(pages: readonly PageReading[]): {
  * how a broken running balance names the page to re-read.
  */
 export function assemble(
-  pages: PageReading[],
+  readings: PageReading[],
 ): Omit<ExtractedStatement, 'calls' | 'rereads'> {
+  // step8: the captions over cheque images are not rows (`dropChequeCaptions`).
+  const { pages, dropped: captionRows } = dropChequeCaptions(readings);
   const first = <T>(pick: (p: PageReading) => T | null): T | null => {
     for (const p of pages) {
       const v = pick(p);
@@ -753,6 +804,7 @@ export function assemble(
     transactions,
     signFixes: totalsFlips + repair.flips,
     balanceFixes: balances.fixes,
+    captionRows,
     // One page per chunk (`PAGES_PER_CHUNK`), so a reading's index is its PDF page.
     imagePages: pages.flatMap((p, page) =>
       p.hasItemImages ? [{ page, hasRows: p.transactions.length > 0 }] : [],
@@ -810,6 +862,29 @@ export function rereadRound(n: number): {
   if (n === 0) return { verifyModel: false, allPages: false };
   if (n === 1) return { verifyModel: true, allPages: false };
   return { verifyModel: true, allPages: n % 2 === 0 };
+}
+
+/**
+ * step8 (2026-11-11): deposits too high and withdrawals too low by the SAME amount = rows
+ * with the wrong sign (yakirov CIBC VISA #434: $1,112.14 of purchases read as credits, more
+ * rows than `repairSignsFromTotals` may flip). Tell the re-read so, with the figures. Pure.
+ */
+export function signHint(v: ReconcileResult): string[] {
+  const of = (name: string) =>
+    v.checks.find(
+      (c) => c.name === name && !c.ok && !c.skipped && c.page == null,
+    );
+  const dep = of('deposits');
+  const wd = of('withdrawals');
+  if (!dep || !wd) return [];
+  const extraIn = dep.actual - dep.expected;
+  if (extraIn === 0 || wd.expected - wd.actual !== extraIn) return [];
+  const money = (c: number) => `$${(Math.abs(c) / 100).toFixed(2)}`;
+  return [
+    extraIn > 0
+      ? `Rows worth ${money(extraIn)} were read as money IN (credits / payments) but are money OUT (purchases, fees, interest). The statement's credits total ${money(dep.expected)} — only rows printed as credits (a "CR" mark, a minus, the payments / credits section) are positive; every purchase is negative.`
+      : `Rows worth ${money(extraIn)} were read as money OUT but are money IN. The statement's credits total ${money(dep.expected)} — check the sign of every row against its column or "CR" mark.`,
+  ];
 }
 
 /** Is reading `a` closer to the bank's figures than `b`? More checks passing wins; then a smaller money gap. */

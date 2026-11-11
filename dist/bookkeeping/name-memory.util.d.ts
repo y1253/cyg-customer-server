@@ -124,4 +124,16 @@ export declare function findLinkConflicts(input: {
     rules: readonly NameRule[];
     descriptions: readonly string[];
 }): LinkConflict[];
+export declare function rowNameConflicts(input: {
+    matchType: 'DESCRIPTION' | 'CONTAINS';
+    key: string;
+    name: string;
+    rows: ReadonlyArray<{
+        description: string;
+        name: string | null;
+        manualEdit?: boolean;
+    }>;
+    ignore?: readonly string[];
+    rules?: readonly NameRule[];
+}): LinkConflict[];
 export declare function linkConflictMessage(conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[], name: string): string;

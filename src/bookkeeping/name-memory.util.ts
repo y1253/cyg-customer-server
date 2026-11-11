@@ -682,6 +682,68 @@ export function findLinkConflicts(input: {
   return out;
 }
 
+/**
+ * step8 (2026-11-11, `check1.png`): a description is linked to a name by whatever named its
+ * rows — the customer's rules, but also the AI's reading or the firm memory. Linking it to
+ * ANOTHER name silently took those rows away from the old one ("it's just merging the 2
+ * names"), because `findLinkConflicts` only knew the customer's rules. These are the names
+ * the rows the new link reaches carry NOW (a one-time edit and a nameless row never count).
+ * One conflict per name, its first description shown. Pure.
+ */
+export function rowNameConflicts(input: {
+  matchType: 'DESCRIPTION' | 'CONTAINS';
+  key: string;
+  name: string;
+  rows: ReadonlyArray<{
+    description: string;
+    name: string | null;
+    manualEdit?: boolean;
+  }>;
+  /** Names that are not real (e.g. "Unclarified name"). */
+  ignore?: readonly string[];
+  /**
+   * The customer's rules: a contains-text never reaches a row an exact description rule or a
+   * LONGER text rule wins (`resolveRow`) — those rows stay where they are (and a rule of
+   * another name is `findLinkConflicts`' to report).
+   */
+  rules?: readonly NameRule[];
+}): LinkConflict[] {
+  const target = nameKey(input.name);
+  const skip = new Set((input.ignore ?? []).map(nameKey));
+  const exact = new Set(
+    (input.rules ?? [])
+      .filter((r) => r.matchType === 'DESCRIPTION')
+      .map((r) => r.matchKey),
+  );
+  const longer = (input.rules ?? []).filter(
+    (r) =>
+      r.matchType === 'CONTAINS' &&
+      r.matchKey.length > input.key.length &&
+      r.matchKey.includes(input.key),
+  );
+  const reaches = (d: string) =>
+    input.matchType === 'DESCRIPTION'
+      ? descriptionKey(d) === input.key
+      : descriptionContains(d, input.key) &&
+        !exact.has(descriptionKey(d)) &&
+        !longer.some((r) => descriptionContains(d, r.matchKey));
+  const byName = new Map<string, LinkConflict>();
+  for (const r of input.rows) {
+    const name = cleanName(r.name);
+    if (!name || r.manualEdit || !reaches(r.description)) continue;
+    const k = nameKey(name);
+    if (k === target || skip.has(k) || byName.has(k)) continue;
+    // Shown as the printed description it reaches ("“X” is linked to Agence").
+    byName.set(k, {
+      matchType: 'DESCRIPTION',
+      text: r.description,
+      name,
+      remove: false,
+    });
+  }
+  return [...byName.values()];
+}
+
 /** What a RULE_CONFLICT says — to the customer's screen and to the AI. */
 export function linkConflictMessage(
   conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[],

@@ -12,7 +12,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AttachmentsService = exports.NOT_VOICE_MESSAGE = void 0;
+exports.AttachmentsService = exports.cleanName = exports.NOT_VOICE_MESSAGE = void 0;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
@@ -25,9 +25,12 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const attachment_folders_util_1 = require("./attachment-folders.util");
+const attachment_name_util_1 = require("./attachment-name.util");
 const attachment_uploads_1 = require("./attachment-uploads");
 const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
+const cheque_caption_util_1 = require("./cheque-caption.util");
+const attachment_match_util_1 = require("./attachment-match.util");
 exports.NOT_VOICE_MESSAGE = {
     NOT: { kind: client_1.AttachmentKind.AUDIO, status: client_1.AttachmentStatus.DOCUMENT },
 };
@@ -50,13 +53,29 @@ const INCLUDE = {
         },
     },
 };
+const cleanName = (s) => s?.replace(/\s+/g, ' ').trim().slice(0, 191) || null;
+exports.cleanName = cleanName;
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
+function withSourceStatements(views, rows) {
+    const refOf = new Map(rows.map((r) => [r.id, r.sourceRef]));
+    return views.map((v) => {
+        if (v.fromStatementId !== null)
+            return v;
+        let ref = refOf.get(v.id) ?? null;
+        for (let i = 0; i < 3 && ref?.startsWith('doc:'); i++) {
+            ref = refOf.get(Number(ref.split(':')[1])) ?? null;
+        }
+        const id = (0, attachment_match_util_1.statementOf)(ref);
+        return id === null ? v : { ...v, fromStatementId: id };
+    });
+}
 function toView(a, messageCount = 0) {
     const reading = a.extracted ?? null;
     const t = a.transaction;
     const live = t && !t.statement.deletedAt && t.statement.status === client_1.StatementStatus.DONE;
     return {
         id: a.id,
+        fromStatementId: (0, attachment_match_util_1.statementOf)(a.sourceRef),
         kind: a.kind,
         status: a.status,
         filename: a.filename,
@@ -74,6 +93,7 @@ function toView(a, messageCount = 0) {
         messageCount,
         cropped: !!a.sourceStorageKey,
         siblings: [],
+        ...placeOf(a, reading, live ? t : null),
         transaction: live
             ? {
                 id: t.id,
@@ -86,6 +106,20 @@ function toView(a, messageCount = 0) {
                 splitCount: t._count.splits,
             }
             : null,
+    };
+}
+function placeOf(a, reading, t) {
+    const name = (0, attachment_name_util_1.attachmentName)({
+        nameOverride: a.nameOverride,
+        transaction: t,
+        reading,
+    });
+    return {
+        name,
+        bucket: (0, attachment_name_util_1.fileBucket)(a.status, !!t, name == null),
+        folderId: a.folderId,
+        displayName: a.displayName,
+        hasEmail: a.inboxMessageId != null || a.source === 'EMAIL',
     };
 }
 let AttachmentsService = class AttachmentsService {
@@ -101,7 +135,7 @@ let AttachmentsService = class AttachmentsService {
         this.processor = processor;
         this.config = config;
     }
-    async upload(scope, files, transactionId) {
+    async upload(scope, files, transactionId, place = {}) {
         try {
             if (!files?.length)
                 throw new common_1.BadRequestException('Choose a file to add');
@@ -110,6 +144,10 @@ let AttachmentsService = class AttachmentsService {
             }
             if (transactionId != null)
                 await this.parent(scope, transactionId);
+            const folderId = place.folderId != null
+                ? (await this.folder(scope, place.folderId)).id
+                : null;
+            const nameOverride = (0, exports.cleanName)(place.name);
             const ids = [];
             for (const file of files) {
                 const type = (0, attachment_uploads_1.attachmentType)(file.originalname);
@@ -128,6 +166,8 @@ let AttachmentsService = class AttachmentsService {
                         mimeType: type.mime,
                         size: file.size,
                         storageKey: key,
+                        nameOverride,
+                        folderId,
                     },
                     select: { id: true },
                 });
@@ -169,14 +209,15 @@ let AttachmentsService = class AttachmentsService {
             orderBy: { createdAt: 'desc' },
         });
         const counts = await this.messageCounts(scope, rows.map((r) => r.id));
-        return rows.map((r) => toView(r, counts.get(r.id) ?? 0));
+        return withSourceStatements(rows.map((r) => toView(r, counts.get(r.id) ?? 0)), rows);
     }
     async get(scope, id) {
         const row = await this.owned(scope, id);
         const counts = await this.messageCounts(scope, [row.id]);
         const group = await this.groupOf(scope, row);
+        const [view] = withSourceStatements([toView(row, counts.get(row.id) ?? 0)], group);
         return {
-            ...toView(row, counts.get(row.id) ?? 0),
+            ...view,
             siblings: group.filter((x) => x.id !== row.id).map((x) => x.id),
         };
     }
@@ -188,7 +229,7 @@ let AttachmentsService = class AttachmentsService {
                 deletedAt: null,
                 OR: [{ id: rootId }, { sourceRef: { startsWith: `doc:${rootId}:` } }],
             },
-            select: { id: true, transactionId: true },
+            select: { id: true, transactionId: true, sourceRef: true },
             orderBy: { id: 'asc' },
         });
     }
@@ -259,6 +300,32 @@ let AttachmentsService = class AttachmentsService {
         }
         return out;
     }
+    async chequeKeptOn(scope, id, transactionId) {
+        const row = await this.prisma.transactionAttachment.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: {
+                transactionId: true,
+                extracted: true,
+                transaction: { select: { description: true } },
+            },
+        });
+        if (!row?.transaction || row.transactionId === transactionId)
+            return null;
+        const e = (row.extracted ?? {});
+        const wanted = typeof e.checkNumber === 'string'
+            ? e.checkNumber.replace(/\D/g, '').replace(/^0+/, '')
+            : '';
+        if (!wanted || (0, cheque_caption_util_1.chequeNumberOf)(row.transaction.description) !== wanted) {
+            return null;
+        }
+        const target = await this.prisma.bankTransaction.findFirst({
+            where: { id: transactionId, ...(0, scope_1.scopeWhere)(scope) },
+            select: { description: true },
+        });
+        if (target && (0, cheque_caption_util_1.chequeNumberOf)(target.description) === wanted)
+            return null;
+        return `Not moved: this is cheque ${e.checkNumber} and it is already on "${row.transaction.description}", the transaction printing that number. Tell the customer; move it only if they say it is wrong (customerSaysWrong=true).`;
+    }
     async setTransaction(scope, id, transactionId) {
         const a = await this.owned(scope, id);
         if (a.status === client_1.AttachmentStatus.PENDING ||
@@ -319,6 +386,36 @@ let AttachmentsService = class AttachmentsService {
         });
         this.processor.processSoon();
         return this.get(scope, id);
+    }
+    async place(scope, id, p) {
+        const a = await this.owned(scope, id);
+        const data = {};
+        if (p.name !== undefined) {
+            data.nameOverride = (0, exports.cleanName)(p.name);
+            if (p.folderId === undefined)
+                data.folderId = null;
+        }
+        if (p.folderId !== undefined) {
+            data.folderId =
+                p.folderId == null ? null : (await this.folder(scope, p.folderId)).id;
+        }
+        if (p.displayName !== undefined) {
+            data.displayName = p.displayName?.trim().slice(0, 255) || null;
+        }
+        await this.prisma.transactionAttachment.update({
+            where: { id: a.id },
+            data,
+        });
+        return this.get(scope, id);
+    }
+    async folder(scope, id) {
+        const f = await this.prisma.nameFolder.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { id: true },
+        });
+        if (!f)
+            throw new common_1.NotFoundException('Folder not found');
+        return f;
     }
     async remove(scope, id) {
         const a = await this.owned(scope, id);

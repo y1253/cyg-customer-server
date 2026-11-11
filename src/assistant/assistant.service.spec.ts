@@ -456,7 +456,9 @@ describe('AssistantTools', () => {
       JSON.stringify({ statementId: 178 }),
       ctx,
     );
-    expect(bookkeeping.retry).toHaveBeenCalledWith(ctx.scope, 178, undefined);
+    expect(bookkeeping.retry).toHaveBeenCalledWith(ctx.scope, 178, undefined, {
+      append: true,
+    });
     expect(out.action).toEqual({
       tool: 'retry_statement',
       ok: true,
@@ -481,6 +483,7 @@ describe('AssistantTools', () => {
       ctx.scope,
       178,
       'Page 3 withdrawals were read as deposits',
+      { append: true },
     );
     expect(out.action?.summary).toBe(
       'Reading TD 5234 · Oct 2024 again with your note',

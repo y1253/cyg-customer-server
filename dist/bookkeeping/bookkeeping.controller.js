@@ -164,13 +164,20 @@ let BookkeepingController = class BookkeepingController {
         await this.productMemory.resetRule(scope, dto.itemKey);
         return this.productMemory.products(scope);
     }
-    uploadAttachments(scope, files, rawTransactionId) {
+    uploadAttachments(scope, files, rawTransactionId, name, rawFolderId) {
         const transactionId = rawTransactionId ? Number(rawTransactionId) : null;
         if (transactionId !== null &&
             (!Number.isInteger(transactionId) || transactionId < 1)) {
             throw new common_1.BadRequestException('transactionId must be a transaction id');
         }
-        return this.attachments.upload(scope, files, transactionId);
+        const folderId = rawFolderId ? Number(rawFolderId) : null;
+        if (folderId !== null && (!Number.isInteger(folderId) || folderId < 1)) {
+            throw new common_1.BadRequestException('folderId must be a folder id');
+        }
+        return this.attachments.upload(scope, files, transactionId, {
+            name: typeof name === 'string' ? name : null,
+            folderId,
+        });
     }
     communicationChannels(scope) {
         return this.communications.channels(scope);
@@ -251,10 +258,11 @@ let BookkeepingController = class BookkeepingController {
         }
         const owner = await this.ownerName(scope);
         const rows = await this.exporter.rowsFor(scope);
+        const custom = await this.exporter.customFor(scope);
         const stamp = new Date().toISOString().slice(0, 10);
         const buf = format === 'xlsx'
-            ? await this.exporter.excel(rows, owner)
-            : await this.exporter.pdf(rows, owner);
+            ? await this.exporter.excel(rows, owner, custom)
+            : await this.exporter.pdf(rows, owner, custom);
         res.set({
             'Content-Type': format === 'xlsx'
                 ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -497,8 +505,10 @@ __decorate([
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.UploadedFiles)()),
     __param(2, (0, common_1.Body)('transactionId')),
+    __param(3, (0, common_1.Body)('name')),
+    __param(4, (0, common_1.Body)('folderId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Array, String]),
+    __metadata("design:paramtypes", [Object, Array, String, String, String]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "uploadAttachments", null);
 __decorate([

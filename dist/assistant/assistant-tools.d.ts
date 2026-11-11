@@ -1,3 +1,4 @@
+import { CustomColumnsService } from '../bookkeeping/custom-columns.service';
 import { type AiConversation } from '@prisma/client';
 import type { ToolDefinition } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -91,7 +92,8 @@ export declare class AssistantTools {
     private readonly history?;
     private readonly outbox?;
     private readonly contacts?;
-    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined, contacts?: AiContactsService | undefined);
+    private readonly customColumns?;
+    constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined, contacts?: AiContactsService | undefined, customColumns?: CustomColumnsService | undefined);
     private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;
@@ -105,6 +107,7 @@ export declare class AssistantTools {
     private schedulesStore;
     private schedulesList;
     run(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolOutcome>;
+    private customerWords;
     private exec;
     private switchBook;
     private fileAsStatement;
