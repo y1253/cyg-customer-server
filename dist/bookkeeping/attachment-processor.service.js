@@ -293,7 +293,9 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             return null;
         const found = await (0, cheque_reading_1.findCheques)(file, mime, this.pipeline);
         if (found) {
-            this.logger.log(`attachment #${row.id}: ${found.regions.length} cheque-shaped region(s) found by ${found.by} (${found.regions.filter((r) => r.back).length} back), ${found.cheques.length} cheque(s) to read one by one`);
+            this.logger.log(found.notCheques
+                ? `attachment #${row.id}: ${found.regions.length} region(s) found by ${found.by} but not all read as cheques — not cut`
+                : `attachment #${row.id}: ${found.regions.length} cheque-shaped region(s) found by ${found.by} (${found.regions.filter((r) => r.back).length} back), ${found.cheques.length} cheque(s) to read one by one`);
         }
         return found;
     }

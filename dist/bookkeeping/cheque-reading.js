@@ -44,15 +44,15 @@ async function findCheques(file, mime, pipeline) {
     catch {
         return { regions, cheques: [], by };
     }
+    const front = regions.map(() => false);
     for (let i = 0; i < crops.length; i++) {
         const ocr = await pipeline.readImage(crops[i]);
         if (!ocr)
             continue;
+        front[i] = (0, ocr_util_1.looksLikeChequeFront)(ocr);
         regions[i].back = (0, ocr_util_1.looksLikeChequeBack)(ocr);
         regions[i].chequeNumber =
-            !regions[i].back && (0, ocr_util_1.looksLikeChequeText)(ocr)
-                ? (0, ocr_util_1.chequeNumberFromOcr)(ocr)
-                : null;
+            !regions[i].back && front[i] ? (0, ocr_util_1.chequeNumberFromOcr)(ocr) : null;
     }
     if (!rects.length)
         return { regions, cheques: [], by };
@@ -76,13 +76,18 @@ async function findCheques(file, mime, pipeline) {
     });
     const backs = (0, cheque_vision_util_1.backColumn)(rects, regions.map((r) => r.back), regions.map((r) => !!r.chequeNumber));
     backs.forEach((b, i) => (regions[i].back = b));
-    const cheques = rects.length
-        ? (0, cheque_vision_util_1.pairBacks)(rects, backs).map((c) => ({
+    const pairs = (0, cheque_vision_util_1.pairBacks)(rects, backs);
+    const allCheques = pairs.every((c) => {
+        const i = rects.indexOf(c.front);
+        return !!regions[i].chequeNumber || !!captions[i]?.number || front[i];
+    });
+    const cheques = allCheques
+        ? pairs.map((c) => ({
             box: (0, cheque_vision_util_1.cutBox)(c, rects, scan.width, scan.height),
             number: regions[rects.indexOf(c.front)].chequeNumber,
         }))
         : [];
-    return { regions, cheques, by };
+    return { regions, cheques, by, notCheques: !allCheques };
 }
 function readAlone(found) {
     return (found.cheques.length >= 2 ||

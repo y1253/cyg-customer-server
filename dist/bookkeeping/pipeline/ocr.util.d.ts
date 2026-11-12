@@ -24,6 +24,7 @@ export declare const MIN_LINE_CONFIDENCE = 0.85;
 export declare const MIN_TEXT_CONFIDENCE = 0.88;
 export declare function micrLine(r: OcrResult): OcrLine | null;
 export declare function looksLikeChequeText(r: OcrResult): boolean;
+export declare function looksLikeChequeFront(r: OcrResult): boolean;
 export declare function chequeNumberFromOcr(r: OcrResult): string | null;
 export declare function looksLikeChequeBack(r: OcrResult): boolean;
 export declare function sideBySide(r: OcrResult): boolean;

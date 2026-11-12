@@ -1,5 +1,5 @@
 import type { ItemImage } from './pdf-images';
-import { StatementImagesService } from './statement-images.service';
+import { StatementImagesService, recutPages } from './statement-images.service';
 
 // mupdf (ESM + WASM) does not load under jest: the cutting is mocked; what is checked is
 // which cut images become attachments (step2, 2026-11-12).
@@ -116,5 +116,124 @@ describe('StatementImagesService.harvest', () => {
       { page: 2, hasRows: false },
     ]);
     expect(cheque.upserts).toEqual(['stmt:7:p3:1']);
+  });
+});
+
+describe('recutPages', () => {
+  it("takes the pages a statement's files came from; rows unless a cheque was read there", () => {
+    expect(
+      recutPages([
+        { sourceRef: 'stmt:40:p4:1', extracted: { documentType: 'CHECK' } },
+        { sourceRef: 'stmt:40:p4:2', extracted: { documentType: 'DOCUMENT' } },
+        {
+          sourceRef: 'stmt:40:p1:1',
+          extracted: { documentType: 'BANK_STATEMENT' },
+        },
+        { sourceRef: 'stmt:40:p5:1', extracted: null },
+        { sourceRef: 'doc:9:1', extracted: { documentType: 'CHECK' } },
+      ]),
+    ).toEqual([
+      { page: 0, hasRows: true },
+      { page: 3, hasRows: false },
+      { page: 4, hasRows: true },
+    ]);
+  });
+});
+
+describe('StatementImagesService.recut', () => {
+  const scope = { customerId: 1, bookId: 2, companyId: null };
+
+  it('cuts the images again from the PDF and drops the old crops', async () => {
+    mockItemImages.mockReset();
+    mockItemImages.mockResolvedValue([
+      image(0, {
+        text: 'CHEQUE # 00021 $2,318.08',
+        number: '00021',
+        amount: 2318.08,
+      }),
+    ]);
+    const deletes: unknown[] = [];
+    const prisma = {
+      bankStatement: {
+        findFirst: jest.fn().mockResolvedValue({
+          ...statement('BANK'),
+          status: 'DONE',
+          source: 'UPLOAD',
+          storageKey: 'k.pdf',
+        }),
+      },
+      transactionAttachment: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              sourceRef: 'stmt:7:p3:1',
+              extracted: { documentType: 'CHECK', customerNote: 'x' },
+            },
+          ])
+          .mockResolvedValue([]),
+        findUnique: jest.fn().mockResolvedValue({
+          storageKey: 'crop.png',
+          sourceStorageKey: 'page.png',
+          extracted: { customerNote: 'payee is Revenu Quebec' },
+        }),
+        upsert: jest.fn().mockResolvedValue({ id: 382 }),
+        updateMany: jest.fn((args: unknown) => {
+          deletes.push(args);
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    };
+    const storage = {
+      getBuffer: jest.fn().mockResolvedValue(Buffer.from('pdf')),
+      putBuffer: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new StatementImagesService(
+      prisma as never,
+      storage as never,
+      { processSoon: jest.fn() } as never,
+      undefined,
+    );
+    await expect(service.recut(scope, 7)).resolves.toBe(true);
+    expect(mockItemImages).toHaveBeenCalledWith(Buffer.from('pdf'), [
+      { page: 2, hasRows: false },
+    ]);
+    // Written over the uncut image, the old crop removed, the note kept.
+    expect(storage.putBuffer).toHaveBeenCalledWith(
+      'page.png',
+      expect.anything(),
+      'image/png',
+    );
+    expect(storage.delete).toHaveBeenCalledWith('crop.png');
+    const upsert = (
+      prisma.transactionAttachment.upsert.mock.calls[0] as [
+        { update: { extracted: unknown; filename: string } },
+      ]
+    )[0];
+    expect(upsert.update.extracted).toEqual({
+      customerNote: 'payee is Revenu Quebec',
+    });
+    expect(upsert.update.filename).toMatch(/cheque 00021\.png$/);
+    // The old documents read off it go.
+    expect(deletes).toContainEqual(
+      expect.objectContaining({
+        where: { sourceRef: { startsWith: 'doc:382:' }, deletedAt: null },
+      }),
+    );
+  });
+
+  it('refuses a statement that is gone or unread', async () => {
+    const prisma = {
+      bankStatement: { findFirst: jest.fn().mockResolvedValue(null) },
+      transactionAttachment: {},
+    };
+    const service = new StatementImagesService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      undefined,
+    );
+    await expect(service.recut(scope, 7)).resolves.toBe(false);
   });
 });

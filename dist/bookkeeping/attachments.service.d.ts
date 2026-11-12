@@ -8,6 +8,7 @@ import type { AttachmentReading } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { type FileBucket } from './attachment-name.util';
 import { type BookScope } from './scope';
+import { StatementImagesService } from './statement-images.service';
 export declare const NOT_VOICE_MESSAGE: {
     NOT: {
         kind: "AUDIO";
@@ -65,7 +66,9 @@ export declare class AttachmentsService {
     private readonly openai;
     private readonly processor;
     private readonly config?;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined);
+    private readonly images?;
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined, images?: StatementImagesService | undefined);
+    private recutStatements;
     upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null, place?: {
         name?: string | null;
         folderId?: number | null;

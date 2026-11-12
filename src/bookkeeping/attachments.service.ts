@@ -38,6 +38,7 @@ import { scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
 import { chequeNumberOf } from './cheque-caption.util';
 import { statementOf } from './attachment-match.util';
+import { StatementImagesService } from './statement-images.service';
 
 /**
  * step12: a voice note that was only a message (`kind AUDIO` read as a DOCUMENT — no
@@ -262,7 +263,57 @@ export class AttachmentsService {
     private readonly openai: OpenAiClient,
     private readonly processor: AttachmentProcessorService,
     @Optional() private readonly config?: ConfigService,
+    /** step2 (2026-11-12): a statement-cut file read again is cut again from the PDF. */
+    @Optional() private readonly images?: StatementImagesService,
   ) {}
+
+  /**
+   * step2 (2026-11-12): "Read again" on a file cut out of a statement cuts the statement's
+   * cheque images out of its PDF AGAIN (`StatementImagesService.recut`, which queues them) —
+   * reading the stored image again kept the old 144 dpi page picture and its wrong payees. A
+   * `doc:` sibling goes by its parent's statement. Returns the ids that re-cut covered; the
+   * rest are read again as before.
+   */
+  private async recutStatements(
+    scope: BookScope,
+    rows: ReadonlyArray<{
+      id: number;
+      source: string | null;
+      sourceRef: string | null;
+    }>,
+  ): Promise<Set<number>> {
+    const covered = new Set<number>();
+    const cut = rows.filter((r) => r.source === 'STATEMENT');
+    if (!this.images || !cut.length) return covered;
+    const parentIds = cut
+      .map((r) => siblingOf(r.sourceRef)?.rowId)
+      .filter((id): id is number => !!id);
+    const parents = parentIds.length
+      ? await this.prisma.transactionAttachment.findMany({
+          where: { id: { in: parentIds } },
+          select: { id: true, sourceRef: true },
+        })
+      : [];
+    const byStatement = new Map<number, number[]>();
+    for (const r of cut) {
+      const sib = siblingOf(r.sourceRef);
+      const ref = sib
+        ? parents.find((p) => p.id === sib.rowId)?.sourceRef
+        : r.sourceRef;
+      const statementId = statementOf(ref);
+      if (!statementId) continue;
+      byStatement.set(statementId, [
+        ...(byStatement.get(statementId) ?? []),
+        r.id,
+      ]);
+    }
+    for (const [statementId, ids] of byStatement) {
+      if (await this.images.recut(scope, statementId)) {
+        ids.forEach((id) => covered.add(id));
+      }
+    }
+    return covered;
+  }
 
   /**
    * Stores each staged file in R2 and queues it for reading (free — no Generate needed).
@@ -465,6 +516,8 @@ export class AttachmentsService {
         },
       }),
     ]);
+    // step2 (2026-11-12): a statement's cheque is cut again from the PDF (the note is kept).
+    await this.recutStatements(scope, [a]);
     this.processor.processSoon();
     return this.get(scope, root.id);
   }
@@ -604,15 +657,25 @@ export class AttachmentsService {
    */
   async retryAll(scope: BookScope, ids: number[]): Promise<{ queued: number }> {
     if (!ids.length) return { queued: 0 };
-    const { count } = await this.prisma.transactionAttachment.updateMany({
-      where: {
-        id: { in: ids },
-        ...scopeWhere(scope),
-        deletedAt: null,
-        status: { in: [AttachmentStatus.FAILED, AttachmentStatus.UNMATCHED] },
-      },
-      data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
+    const where = {
+      id: { in: ids },
+      ...scopeWhere(scope),
+      deletedAt: null,
+      status: { in: [AttachmentStatus.FAILED, AttachmentStatus.UNMATCHED] },
+    };
+    const rows = await this.prisma.transactionAttachment.findMany({
+      where,
+      select: { id: true, source: true, sourceRef: true },
     });
+    const recut = await this.recutStatements(scope, rows);
+    const rest = rows.filter((r) => !recut.has(r.id)).map((r) => r.id);
+    const { count: requeued } = rest.length
+      ? await this.prisma.transactionAttachment.updateMany({
+          where: { ...where, id: { in: rest } },
+          data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
+        })
+      : { count: 0 };
+    const count = requeued + recut.size;
     if (count) {
       this.processor.processSoon();
       changeFeed.bump(scope.customerId);
@@ -631,12 +694,17 @@ export class AttachmentsService {
         'Only a file that failed or found no match can be read again',
       );
     }
-    await this.prisma.transactionAttachment.update({
-      where: { id: a.id },
-      data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
-    });
+    const recut = await this.recutStatements(scope, [a]);
+    if (!recut.has(a.id)) {
+      await this.prisma.transactionAttachment.update({
+        where: { id: a.id },
+        data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
+      });
+    }
     this.processor.processSoon();
-    return this.get(scope, id);
+    // A re-cut can retire this very row (a page cut whole that holds no cheque): then the
+    // file as it was is answered — the list drops it on its next refresh.
+    return this.get(scope, id).catch(() => toView(a, 0));
   }
 
   /**

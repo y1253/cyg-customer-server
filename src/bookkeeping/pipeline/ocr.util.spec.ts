@@ -1,6 +1,7 @@
 import {
   chequeNumberFromOcr,
   looksLikeChequeBack,
+  looksLikeChequeFront,
   looksLikeChequeText,
   ocrGate,
   ocrText,
@@ -233,5 +234,24 @@ describe('ocrText', () => {
     expect(t).toContain('Pay to the order of Rona Inc.   [unsure 62%]');
     expect(t).toContain('$ 1,450.00');
     expect(t).not.toContain('$ 1,450.00   [unsure');
+  });
+});
+
+describe('looksLikeChequeFront', () => {
+  it("a cheque's wording or MICR line — never a statement's 'Cheque/Debit' header", () => {
+    expect(looksLikeChequeFront(cheque())).toBe(true);
+    expect(
+      looksLikeChequeFront(
+        result([
+          line('Statement of Account  Branch No. 4240', 30, 30),
+          line(
+            'Description  Cheque/Debit  Deposit/Credit  Date  Balance',
+            30,
+            60,
+          ),
+          line('CHQ#00021-1144563030  2,318.08  JAN 17  12,401.55', 30, 90),
+        ]),
+      ),
+    ).toBe(false);
   });
 });

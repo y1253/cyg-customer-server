@@ -14,6 +14,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 var StatementImagesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementImagesService = exports.STATEMENT_SOURCE = void 0;
+exports.recutPages = recutPages;
 const crypto_1 = require("crypto");
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
@@ -70,8 +71,9 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                 refs.push(sourceRef);
                 const existing = await this.prisma.transactionAttachment.findUnique({
                     where: { sourceRef },
-                    select: { storageKey: true, sourceStorageKey: true },
+                    select: { storageKey: true, sourceStorageKey: true, extracted: true },
                 });
+                const note = (0, attachment_processor_service_1.customerNoteOf)(existing?.extracted);
                 const storageKey = existing?.sourceStorageKey ??
                     existing?.storageKey ??
                     `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}.png`;
@@ -85,7 +87,9 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     mimeType: 'image/png',
                     status: client_1.AttachmentStatus.PENDING,
                     transactionId: null,
-                    extracted: client_1.Prisma.DbNull,
+                    extracted: note
+                        ? { customerNote: note }
+                        : client_1.Prisma.DbNull,
                     matchNote: null,
                     error: null,
                     attempts: 0,
@@ -93,21 +97,32 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     deletedAt: null,
                     size: image.png.length,
                 };
-                await this.prisma.transactionAttachment.upsert({
+                const filename = (image.caption?.number
+                    ? `${label} cheque ${image.caption.number}.png`
+                    : `${label} p${image.page + 1} #${image.index + 1}.png`).slice(0, 255);
+                const saved = await this.prisma.transactionAttachment.upsert({
                     where: { sourceRef },
                     create: {
                         ...queued,
                         ...(0, scope_1.scopeWhere)(scope),
-                        filename: (image.caption?.number
-                            ? `${label} cheque ${image.caption.number}.png`
-                            : `${label} p${image.page + 1} #${image.index + 1}.png`).slice(0, 255),
+                        filename,
                         mimeType: 'image/png',
                         storageKey,
                         source: exports.STATEMENT_SOURCE,
                         sourceRef,
                     },
-                    update: queued,
+                    update: { ...queued, filename },
+                    select: { id: true },
                 });
+                if (existing) {
+                    await this.prisma.transactionAttachment.updateMany({
+                        where: {
+                            sourceRef: { startsWith: `doc:${saved.id}:` },
+                            deletedAt: null,
+                        },
+                        data: { deletedAt: new Date(), transactionId: null },
+                    });
+                }
             }
             await this.prisma.transactionAttachment.updateMany({
                 where: {
@@ -127,6 +142,39 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
         catch (err) {
             this.logger.warn(`statement #${statement.id}: item images not attached: ${String(err)}`);
         }
+    }
+    async recut(scope, statementId) {
+        const statement = await this.prisma.bankStatement.findFirst({
+            where: { id: statementId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+        });
+        if (!statement ||
+            statement.status !== 'DONE' ||
+            statement.source === 'PLAID' ||
+            !statement.storageKey) {
+            return false;
+        }
+        const rows = await this.prisma.transactionAttachment.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                sourceRef: { startsWith: `stmt:${statementId}:` },
+                deletedAt: null,
+            },
+            select: { sourceRef: true, extracted: true },
+        });
+        const pages = recutPages(rows);
+        if (!pages.length)
+            return false;
+        let pdf;
+        try {
+            pdf = await this.storage.getBuffer(statement.storageKey);
+        }
+        catch (err) {
+            this.logger.warn(`statement #${statementId}: PDF not read for a re-cut: ${String(err)}`);
+            return false;
+        }
+        await this.harvest(statement, pdf, pages);
+        this.logger.log(`statement #${statementId}: cheque images cut again from the PDF (${pages.length} page(s))`);
+        return true;
     }
     async removeFor(scope, statementId) {
         await this.prisma.transactionAttachment.updateMany({
@@ -196,4 +244,20 @@ exports.StatementImagesService = StatementImagesService = StatementImagesService
         attachment_processor_service_1.AttachmentProcessorService,
         document_pipeline_1.DocumentPipeline])
 ], StatementImagesService);
+function recutPages(rows) {
+    const pages = new Map();
+    for (const r of rows) {
+        const m = /^stmt:\d+:p(\d+):\d+$/.exec(r.sourceRef ?? '');
+        if (!m)
+            continue;
+        const page = Number(m[1]) - 1;
+        const type = r.extracted
+            ?.documentType;
+        const cheque = type === 'CHECK' || type === 'DEPOSIT_SLIP';
+        pages.set(page, (pages.get(page) ?? true) && !cheque);
+    }
+    return [...pages.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([page, hasRows]) => ({ page, hasRows }));
+}
 //# sourceMappingURL=statement-images.service.js.map

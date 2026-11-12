@@ -18,7 +18,7 @@ import type { DocumentPipeline, Prepared } from './pipeline/document-pipeline';
 import {
   chequeNumberFromOcr,
   looksLikeChequeBack,
-  looksLikeChequeText,
+  looksLikeChequeFront,
 } from './pipeline/ocr.util';
 import type { ChequeRegion } from './pipeline/tool-results';
 
@@ -56,6 +56,8 @@ export interface ChequeFind {
   cheques: FoundCheque[];
   /** 'opencv' = OpenCV's rectangles (cut by code); 'xy-cut' = step2b's (a hint only). */
   by: 'opencv' | 'xy-cut';
+  /** Rectangles were found but not all read as cheques, so nothing is cut by code. */
+  notCheques?: boolean;
 }
 
 /**
@@ -102,14 +104,16 @@ export async function findCheques(
   } catch {
     return { regions, cheques: [], by };
   }
+  const front = regions.map(() => false);
   for (let i = 0; i < crops.length; i++) {
     const ocr = await pipeline.readImage(crops[i]);
     if (!ocr) continue;
+    front[i] = looksLikeChequeFront(ocr);
     regions[i].back = looksLikeChequeBack(ocr);
+    // A number only off a real front — a statement's "CHEQUE/DEBIT" table read as a cheque
+    // and gave its account number (#40, 2026-11-12).
     regions[i].chequeNumber =
-      !regions[i].back && looksLikeChequeText(ocr)
-        ? chequeNumberFromOcr(ocr)
-        : null;
+      !regions[i].back && front[i] ? chequeNumberFromOcr(ocr) : null;
   }
   if (!rects.length) return { regions, cheques: [], by };
   // The bank's caption over each frame ("CHEQUE # 00016 $1,448.80"; over the back the same
@@ -141,13 +145,21 @@ export async function findCheques(
   );
   backs.forEach((b, i) => (regions[i].back = b));
   // Only OpenCV's rectangles are cut by code; the XY-cut stays a hint (step2e).
-  const cheques = rects.length
-    ? pairBacks(rects, backs).map((c) => ({
+  const pairs = pairBacks(rects, backs);
+  // step2 (2026-11-12): and only when EVERY front reads as a cheque (a number, the bank's
+  // caption, a MICR line or "pay to the order of") — OpenCV also boxes a statement page's
+  // tables, which were cut into "documents" (the step2b rule, restored).
+  const allCheques = pairs.every((c) => {
+    const i = rects.indexOf(c.front);
+    return !!regions[i].chequeNumber || !!captions[i]?.number || front[i];
+  });
+  const cheques = allCheques
+    ? pairs.map((c) => ({
         box: cutBox(c, rects, scan!.width, scan!.height),
         number: regions[rects.indexOf(c.front)].chequeNumber,
       }))
     : [];
-  return { regions, cheques, by };
+  return { regions, cheques, by, notCheques: !allCheques };
 }
 
 /**

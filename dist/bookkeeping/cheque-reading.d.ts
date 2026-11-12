@@ -9,6 +9,7 @@ export interface ChequeFind {
     regions: ChequeRegion[];
     cheques: FoundCheque[];
     by: 'opencv' | 'xy-cut';
+    notCheques?: boolean;
 }
 export declare function findCheques(file: Buffer, mime: string, pipeline: Pick<DocumentPipeline, 'enabled' | 'readImage'>): Promise<ChequeFind | null>;
 export declare function readAlone(found: ChequeFind): boolean;

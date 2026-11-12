@@ -4,7 +4,10 @@ import { AttachmentStatus, Prisma, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { statementImageRef } from './attachment-match.util';
-import { AttachmentProcessorService } from './attachment-processor.service';
+import {
+  AttachmentProcessorService,
+  customerNoteOf,
+} from './attachment-processor.service';
 import { itemImages, type ImagePage, type ItemImage } from './pdf-images';
 import { DocumentPipeline } from './pipeline/document-pipeline';
 import { looksLikeChequeBack, looksLikeChequeText } from './pipeline/ocr.util';
@@ -101,8 +104,10 @@ export class StatementImagesService {
         refs.push(sourceRef);
         const existing = await this.prisma.transactionAttachment.findUnique({
           where: { sourceRef },
-          select: { storageKey: true, sourceStorageKey: true },
+          select: { storageKey: true, sourceStorageKey: true, extracted: true },
         });
+        // The customer's correction ("reread with note") rides along to the new read.
+        const note = customerNoteOf(existing?.extracted);
         // step2 (2026-11-08): a row that was cut into cheques points at its CROP; the image
         // itself is its `sourceStorageKey`. The new image goes there, the row points back at
         // it uncut, and the old crop is removed — it used to overwrite the crop's key with
@@ -121,7 +126,9 @@ export class StatementImagesService {
           mimeType: 'image/png',
           status: AttachmentStatus.PENDING,
           transactionId: null,
-          extracted: Prisma.DbNull,
+          extracted: note
+            ? ({ customerNote: note } as Prisma.InputJsonValue)
+            : Prisma.DbNull,
           matchNote: null,
           error: null,
           attempts: 0,
@@ -129,22 +136,37 @@ export class StatementImagesService {
           deletedAt: null,
           size: image.png.length,
         };
-        await this.prisma.transactionAttachment.upsert({
+        const filename = (
+          image.caption?.number
+            ? `${label} cheque ${image.caption.number}.png`
+            : `${label} p${image.page + 1} #${image.index + 1}.png`
+        ).slice(0, 255);
+        const saved = await this.prisma.transactionAttachment.upsert({
           where: { sourceRef },
           create: {
             ...queued,
             ...scopeWhere(scope),
-            filename: (image.caption?.number
-              ? `${label} cheque ${image.caption.number}.png`
-              : `${label} p${image.page + 1} #${image.index + 1}.png`
-            ).slice(0, 255),
+            filename,
             mimeType: 'image/png',
             storageKey,
             source: STATEMENT_SOURCE,
             sourceRef,
           },
-          update: queued,
+          update: { ...queued, filename },
+          select: { id: true },
         });
+        // step2 (2026-11-12): the documents read off the OLD image (`doc:<id>:<n>` — the AI's
+        // crops, often two cheques in one) go, attached or not: the new image's own read files
+        // them again and matches them by number. Kept, they sat on transactions beside it.
+        if (existing) {
+          await this.prisma.transactionAttachment.updateMany({
+            where: {
+              sourceRef: { startsWith: `doc:${saved.id}:` },
+              deletedAt: null,
+            },
+            data: { deletedAt: new Date(), transactionId: null },
+          });
+        }
       }
       // A re-read that no longer sees an image drops the attachment it made before.
       await this.prisma.transactionAttachment.updateMany({
@@ -167,6 +189,53 @@ export class StatementImagesService {
         `statement #${statement.id}: item images not attached: ${String(err)}`,
       );
     }
+  }
+
+  /**
+   * step2 (2026-11-12): cut a statement's cheque images out of its PDF AGAIN, with today's
+   * cutting (`itemImages`), and queue them — what "Read again" on a statement-cut file does.
+   * Re-reading the stored image kept the old 144 dpi page picture (four cheques in one), so
+   * the payees stayed wrong. The pages are the ones its files came from; a page whose file
+   * was last read as anything but a cheque / deposit slip (a rows page cut whole by the old
+   * harvest) counts as a page with rows, so it gives nothing and that file goes. False when
+   * the statement is gone, unread or has no PDF — the caller then just re-reads the file.
+   */
+  async recut(scope: BookScope, statementId: number): Promise<boolean> {
+    const statement = await this.prisma.bankStatement.findFirst({
+      where: { id: statementId, ...scopeWhere(scope), deletedAt: null },
+    });
+    if (
+      !statement ||
+      statement.status !== 'DONE' ||
+      statement.source === 'PLAID' ||
+      !statement.storageKey
+    ) {
+      return false;
+    }
+    const rows = await this.prisma.transactionAttachment.findMany({
+      where: {
+        ...scopeWhere(scope),
+        sourceRef: { startsWith: `stmt:${statementId}:` },
+        deletedAt: null,
+      },
+      select: { sourceRef: true, extracted: true },
+    });
+    const pages = recutPages(rows);
+    if (!pages.length) return false;
+    let pdf: Buffer;
+    try {
+      pdf = await this.storage.getBuffer(statement.storageKey);
+    } catch (err) {
+      this.logger.warn(
+        `statement #${statementId}: PDF not read for a re-cut: ${String(err)}`,
+      );
+      return false;
+    }
+    await this.harvest(statement, pdf, pages);
+    this.logger.log(
+      `statement #${statementId}: cheque images cut again from the PDF (${pages.length} page(s))`,
+    );
+    return true;
   }
 
   /** A deleted statement takes the images cut out of it along. */
@@ -243,4 +312,26 @@ export class StatementImagesService {
       );
     }, 75_000).unref?.();
   }
+}
+
+/**
+ * The pages a statement's files came from (`stmt:<id>:p<page>:<n>`, 1-based), and whether
+ * each has rows: true unless one of its files was last read as a cheque or a deposit slip. Pure.
+ */
+export function recutPages(
+  rows: ReadonlyArray<{ sourceRef: string | null; extracted: unknown }>,
+): ImagePage[] {
+  const pages = new Map<number, boolean>();
+  for (const r of rows) {
+    const m = /^stmt:\d+:p(\d+):\d+$/.exec(r.sourceRef ?? '');
+    if (!m) continue;
+    const page = Number(m[1]) - 1;
+    const type = (r.extracted as { documentType?: unknown } | null)
+      ?.documentType;
+    const cheque = type === 'CHECK' || type === 'DEPOSIT_SLIP';
+    pages.set(page, (pages.get(page) ?? true) && !cheque);
+  }
+  return [...pages.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([page, hasRows]) => ({ page, hasRows }));
 }

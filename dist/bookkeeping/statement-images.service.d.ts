@@ -19,7 +19,12 @@ export declare class StatementImagesService {
         periodEnd: Date | null;
         accountKind?: BankStatement['accountKind'];
     }, pdf: Buffer, pages: readonly ImagePage[]): Promise<void>;
+    recut(scope: BookScope, statementId: number): Promise<boolean>;
     removeFor(scope: BookScope, statementId: number): Promise<void>;
     dropSiblingsOfDeleted(scope?: BookScope): Promise<number>;
     onApplicationBootstrap(): void;
 }
+export declare function recutPages(rows: ReadonlyArray<{
+    sourceRef: string | null;
+    extracted: unknown;
+}>): ImagePage[];

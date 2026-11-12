@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MIN_TEXT_CONFIDENCE = exports.MIN_LINE_CONFIDENCE = void 0;
 exports.micrLine = micrLine;
 exports.looksLikeChequeText = looksLikeChequeText;
+exports.looksLikeChequeFront = looksLikeChequeFront;
 exports.chequeNumberFromOcr = chequeNumberFromOcr;
 exports.looksLikeChequeBack = looksLikeChequeBack;
 exports.sideBySide = sideBySide;
@@ -29,6 +30,13 @@ function micrLine(r) {
 }
 function looksLikeChequeText(r) {
     return CHEQUE_WORDS.test(r.text) || micrLine(r) !== null;
+}
+const FRONT_WORDS = /(?<![\p{L}\p{N}])(pay\s+to\s+the\s+order|order\s+of|payez|[àa]\s+l['’]ordre|pay\s*\/\s*payez|dollars|void\s+after|non[-\s]?n[ée]gociable)(?![\p{L}\p{N}])/iu;
+function looksLikeChequeFront(r) {
+    if (FRONT_WORDS.test(r.text))
+        return true;
+    const micr = micrLine(r);
+    return !!micr && MICR_SYMBOLS.test(micr.text);
 }
 function chequeNumberFromOcr(r) {
     const { width, height } = r;

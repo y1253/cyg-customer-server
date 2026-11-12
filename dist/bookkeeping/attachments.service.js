@@ -32,6 +32,7 @@ const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
 const cheque_caption_util_1 = require("./cheque-caption.util");
 const attachment_match_util_1 = require("./attachment-match.util");
+const statement_images_service_1 = require("./statement-images.service");
 exports.NOT_VOICE_MESSAGE = {
     NOT: { kind: client_1.AttachmentKind.AUDIO, status: client_1.AttachmentStatus.DOCUMENT },
 };
@@ -129,12 +130,49 @@ let AttachmentsService = class AttachmentsService {
     openai;
     processor;
     config;
-    constructor(prisma, storage, openai, processor, config) {
+    images;
+    constructor(prisma, storage, openai, processor, config, images) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
         this.config = config;
+        this.images = images;
+    }
+    async recutStatements(scope, rows) {
+        const covered = new Set();
+        const cut = rows.filter((r) => r.source === 'STATEMENT');
+        if (!this.images || !cut.length)
+            return covered;
+        const parentIds = cut
+            .map((r) => (0, attachment_processor_service_1.siblingOf)(r.sourceRef)?.rowId)
+            .filter((id) => !!id);
+        const parents = parentIds.length
+            ? await this.prisma.transactionAttachment.findMany({
+                where: { id: { in: parentIds } },
+                select: { id: true, sourceRef: true },
+            })
+            : [];
+        const byStatement = new Map();
+        for (const r of cut) {
+            const sib = (0, attachment_processor_service_1.siblingOf)(r.sourceRef);
+            const ref = sib
+                ? parents.find((p) => p.id === sib.rowId)?.sourceRef
+                : r.sourceRef;
+            const statementId = (0, attachment_match_util_1.statementOf)(ref);
+            if (!statementId)
+                continue;
+            byStatement.set(statementId, [
+                ...(byStatement.get(statementId) ?? []),
+                r.id,
+            ]);
+        }
+        for (const [statementId, ids] of byStatement) {
+            if (await this.images.recut(scope, statementId)) {
+                ids.forEach((id) => covered.add(id));
+            }
+        }
+        return covered;
     }
     async upload(scope, files, transactionId, place = {}) {
         try {
@@ -271,6 +309,7 @@ let AttachmentsService = class AttachmentsService {
                 },
             }),
         ]);
+        await this.recutStatements(scope, [a]);
         this.processor.processSoon();
         return this.get(scope, root.id);
     }
@@ -377,15 +416,25 @@ let AttachmentsService = class AttachmentsService {
     async retryAll(scope, ids) {
         if (!ids.length)
             return { queued: 0 };
-        const { count } = await this.prisma.transactionAttachment.updateMany({
-            where: {
-                id: { in: ids },
-                ...(0, scope_1.scopeWhere)(scope),
-                deletedAt: null,
-                status: { in: [client_1.AttachmentStatus.FAILED, client_1.AttachmentStatus.UNMATCHED] },
-            },
-            data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
+        const where = {
+            id: { in: ids },
+            ...(0, scope_1.scopeWhere)(scope),
+            deletedAt: null,
+            status: { in: [client_1.AttachmentStatus.FAILED, client_1.AttachmentStatus.UNMATCHED] },
+        };
+        const rows = await this.prisma.transactionAttachment.findMany({
+            where,
+            select: { id: true, source: true, sourceRef: true },
         });
+        const recut = await this.recutStatements(scope, rows);
+        const rest = rows.filter((r) => !recut.has(r.id)).map((r) => r.id);
+        const { count: requeued } = rest.length
+            ? await this.prisma.transactionAttachment.updateMany({
+                where: { ...where, id: { in: rest } },
+                data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
+            })
+            : { count: 0 };
+        const count = requeued + recut.size;
         if (count) {
             this.processor.processSoon();
             change_feed_1.changeFeed.bump(scope.customerId);
@@ -399,12 +448,15 @@ let AttachmentsService = class AttachmentsService {
             a.status !== client_1.AttachmentStatus.DOCUMENT) {
             throw new common_1.BadRequestException('Only a file that failed or found no match can be read again');
         }
-        await this.prisma.transactionAttachment.update({
-            where: { id: a.id },
-            data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
-        });
+        const recut = await this.recutStatements(scope, [a]);
+        if (!recut.has(a.id)) {
+            await this.prisma.transactionAttachment.update({
+                where: { id: a.id },
+                data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
+            });
+        }
         this.processor.processSoon();
-        return this.get(scope, id);
+        return this.get(scope, id).catch(() => toView(a, 0));
     }
     async place(scope, id, p) {
         const a = await this.owned(scope, id);
@@ -514,10 +566,12 @@ exports.AttachmentsService = AttachmentsService;
 exports.AttachmentsService = AttachmentsService = __decorate([
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
+    __param(5, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
         attachment_processor_service_1.AttachmentProcessorService,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        statement_images_service_1.StatementImagesService])
 ], AttachmentsService);
 //# sourceMappingURL=attachments.service.js.map

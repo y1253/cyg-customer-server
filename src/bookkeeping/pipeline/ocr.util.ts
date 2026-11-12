@@ -74,6 +74,23 @@ export function looksLikeChequeText(r: OcrResult): boolean {
   return CHEQUE_WORDS.test(r.text) || micrLine(r) !== null;
 }
 
+/** What only a cheque's FRONT prints — never a statement's "Cheque/Debit" column header. */
+const FRONT_WORDS =
+  /(?<![\p{L}\p{N}])(pay\s+to\s+the\s+order|order\s+of|payez|[àa]\s+l['’]ordre|pay\s*\/\s*payez|dollars|void\s+after|non[-\s]?n[ée]gociable)(?![\p{L}\p{N}])/iu;
+
+/**
+ * step2 (2026-11-12): a cheque's front — its MICR line or its "pay to the order of" wording.
+ * Stricter than `looksLikeChequeText`: a TD statement page's table says "Cheque" too, and
+ * OpenCV's boxes on such a page were cut into "documents" (#662, #664…).
+ */
+export function looksLikeChequeFront(r: OcrResult): boolean {
+  if (FRONT_WORDS.test(r.text)) return true;
+  // A MICR line only with its symbols: a statement row ("IZ424 TFR-TO 5234496 2,272.38")
+  // has as many digit groups.
+  const micr = micrLine(r);
+  return !!micr && MICR_SYMBOLS.test(micr.text);
+}
+
 /**
  * The cheque's number (digits, leading zeros kept) — the number printed top-right ("No.
  * 001234", "1042"), confirmed by the MICR line when both exist. A number only on the MICR
