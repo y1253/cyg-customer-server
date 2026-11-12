@@ -17,6 +17,8 @@ export async function cropImage(
   file: Buffer,
   mimeType: string,
   boxes: readonly DocumentBox[],
+  /** step2 (2026-11-12): render each crop at least this wide (a small scan, upscaled). */
+  minWidthPx = 0,
 ): Promise<Buffer[]> {
   const mupdf = await import('mupdf');
   const doc = mupdf.Document.openDocument(file, mimeType);
@@ -44,7 +46,7 @@ export async function cropImage(
           b[3] + y0,
         ];
         const scale = Math.min(
-          Math.max(native, 1),
+          Math.max(native, 1, minWidthPx / Math.max(1, b[2] - b[0])),
           MAX_WIDTH_PX / Math.max(1, b[2] - b[0]),
         );
         return renderClip(mupdf, page, shifted, scale);

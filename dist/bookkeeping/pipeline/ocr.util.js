@@ -57,8 +57,11 @@ function chequeNumberFromOcr(r) {
         ? short[0]
         : null;
 }
-const BACK_WORDS = /(?<![\p{L}\p{N}])(endorse|for\s+deposit|deposit\s+only|pour\s+d[ée]p[ôo]t|do\s+not\s+write|ne\s+pas\s+[ée]crire|sign\s+here)(?![\p{L}\p{N}])/iu;
+const BACK_WORDS = /(?<![\p{L}\p{N}])(endorse|endorsement|endossement|for\s+deposit|deposit\s+only|pour\s+d[ée]p[ôo]t|do\s+not\s+write|ne\s+pas\s+[ée]crire|sign\s+here|back\s*\/\s*verso|negotiating\s+institution)(?![\p{L}\p{N}])/iu;
+const BACK_ONLY = /(?<![\p{L}\p{N}])(back\s*\/\s*verso|negotiating\s+institution|endorsement\s*-\s*signature)(?![\p{L}\p{N}])/iu;
 function looksLikeChequeBack(r) {
+    if (BACK_ONLY.test(r.text))
+        return true;
     if (looksLikeChequeText(r) || MONEY.test(r.text))
         return false;
     return BACK_WORDS.test(r.text) || chars(r.text) < 40;

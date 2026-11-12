@@ -1,11 +1,13 @@
 import { randomUUID } from 'crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AttachmentStatus, Prisma, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { statementImageRef } from './attachment-match.util';
 import { AttachmentProcessorService } from './attachment-processor.service';
-import { itemImages, type ImagePage } from './pdf-images';
+import { itemImages, type ImagePage, type ItemImage } from './pdf-images';
+import { DocumentPipeline } from './pipeline/document-pipeline';
+import { looksLikeChequeBack, looksLikeChequeText } from './pipeline/ocr.util';
 import { scopeOf, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { statementLabel } from './statement-label';
 
@@ -31,7 +33,26 @@ export class StatementImagesService {
     private readonly prisma: PrismaService,
     private readonly storage: ObjectStorageService,
     private readonly attachments: AttachmentProcessorService,
+    /** step2 (2026-11-12): OCR, to tell a cheque from a summary box. Optional for specs. */
+    @Optional() private readonly pipeline?: DocumentPipeline,
   ) {}
+
+  /**
+   * step2 (2026-11-12): only a cheque or a deposit slip becomes an attachment. Amex draws its
+   * summary boxes as images; 37 of them ("Contact information…", "Payments and Credits") sat
+   * in book 129 as documents. Captioned by the bank as a cheque = yes; else the OCR must read
+   * cheque wording, a MICR line, a cheque's back or a deposit slip. No OCR = kept (as before).
+   */
+  private async isChequeLike(image: ItemImage): Promise<boolean> {
+    if (image.caption?.number) return true;
+    const ocr = await this.pipeline?.readImage(image.png).catch(() => null);
+    if (!ocr) return true;
+    return (
+      looksLikeChequeText(ocr) ||
+      looksLikeChequeBack(ocr) ||
+      /(?<![\p{L}])(deposit|d[ée]p[ôo]t)(?![\p{L}])/iu.test(ocr.text)
+    );
+  }
 
   /** Never throws — a statement is done whether or not its images could be cut out. */
   async harvest(
@@ -44,14 +65,31 @@ export class StatementImagesService {
       | 'filename'
       | 'accountName'
       | 'bankName'
-    > & { periodStart: Date | null; periodEnd: Date | null },
+    > & {
+      periodStart: Date | null;
+      periodEnd: Date | null;
+      accountKind?: BankStatement['accountKind'];
+    },
     pdf: Buffer,
     pages: readonly ImagePage[],
   ): Promise<void> {
     // The images belong to the statement's own book (general, or one company's).
     const scope = scopeOf(statement);
     try {
-      const images = await itemImages(pdf, pages);
+      // A card has no cheques: whatever image it prints is a logo or a summary box.
+      const all =
+        statement.accountKind === 'CREDIT_CARD'
+          ? []
+          : await itemImages(pdf, pages);
+      const images: ItemImage[] = [];
+      for (const image of all) {
+        if (await this.isChequeLike(image)) images.push(image);
+        else {
+          this.logger.log(
+            `statement #${statement.id} p${image.page + 1}: image ${image.index + 1} is not a cheque — skipped`,
+          );
+        }
+      }
       const label = statementLabel(statement);
       const refs: string[] = [];
       for (const image of images) {
@@ -96,11 +134,10 @@ export class StatementImagesService {
           create: {
             ...queued,
             ...scopeWhere(scope),
-            filename:
-              `${label} p${image.page + 1} #${image.index + 1}.png`.slice(
-                0,
-                255,
-              ),
+            filename: (image.caption?.number
+              ? `${label} cheque ${image.caption.number}.png`
+              : `${label} p${image.page + 1} #${image.index + 1}.png`
+            ).slice(0, 255),
             mimeType: 'image/png',
             storageKey,
             source: STATEMENT_SOURCE,

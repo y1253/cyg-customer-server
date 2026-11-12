@@ -24,6 +24,12 @@
  * `--text-pipeline` on a statement: reads it TWICE (the PDF, then its text layer —
  * `STATEMENT_TEXT_PIPELINE=1`) and prints both verifications and call counts side by side.
  * Turn the env switch on in production only when the hard statements still verify.
+ *
+ * step2 (2026-11-12) — cheques found by OpenCV, read one at a time:
+ * `--cv` on an image: the rectangles OpenCV finds, each OCR'd (number / back), the backs joined
+ * to their fronts, and one PNG per cheque as it would be cut (`<name>-cv/`). No OpenAI.
+ * `--read-cheques` on an image: the same, then each cheque read on its own by the real reader
+ * (`readChequesAlone`, OpenAI) — or, when fewer than two are found, the whole image as before.
  */
 import 'dotenv/config';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -34,6 +40,13 @@ import { classOf } from '../src/bookkeeping/attachment-processor.service';
 import { attachmentType } from '../src/bookkeeping/attachment-uploads';
 import { chequeRegions } from '../src/bookkeeping/cheque-split';
 import { cropImage } from '../src/bookkeeping/crop';
+import { AttachmentExtractor } from '../src/bookkeeping/attachment-extractor';
+import {
+  findCheques,
+  readAlone,
+  readChequesAlone,
+} from '../src/bookkeeping/cheque-reading';
+import { readerHints } from '../src/bookkeeping/attachment-processor.service';
 import { buildLedgerRows } from '../src/bookkeeping/ledger.util';
 import { itemImages, type ImagePage } from '../src/bookkeeping/pdf-images';
 import { DocumentPipeline } from '../src/bookkeeping/pipeline/document-pipeline';
@@ -65,6 +78,8 @@ async function main(): Promise<void> {
     get: (k: string) => process.env[k],
   } as unknown as ConfigService;
   if (process.argv.includes('--cheques')) return cheques(file, config0);
+  if (process.argv.includes('--cv')) return cv(file, config0, false);
+  if (process.argv.includes('--read-cheques')) return cv(file, config0, true);
   if (process.argv.includes('--prepare')) return prepare(file, config0);
   if (process.argv.includes('--page-text')) return pageText(file);
   if (process.argv.includes('--text-pipeline')) return compare(file);
@@ -187,6 +202,92 @@ async function cheques(file: string, config: ConfigService): Promise<void> {
   await ocr.onModuleDestroy();
 }
 
+/**
+ * step2 (2026-11-12): the cheques of one image as production finds them (`findCheques`), the
+ * cuts written next to it; with `read`, each read on its own by the real reader.
+ */
+async function cv(
+  file: string,
+  config: ConfigService,
+  read: boolean,
+): Promise<void> {
+  const bytes = readFileSync(file);
+  const mime = attachmentType(file)?.mime ?? 'image/png';
+  const ocr = new OcrService(config);
+  const pipeline = new DocumentPipeline(ocr, config);
+  const started = Date.now();
+  const found = await findCheques(bytes, mime, pipeline);
+  console.log(`${Date.now() - started} ms`);
+  const dir = join(
+    dirname(file),
+    `${basename(file).replace(/\.[^.]+$/, '')}-cv`,
+  );
+  mkdirSync(dir, { recursive: true });
+  if (!found) console.log('fewer than two cheque rectangles — read whole');
+  else {
+    console.log(`found by ${found.by}:`);
+    found.regions.forEach((r, i) =>
+      console.log(
+        `  region ${i + 1} ${JSON.stringify(r.box)} back=${r.back} number=${r.chequeNumber ?? '—'}`,
+      ),
+    );
+    const cuts = found.cheques.length
+      ? await cropImage(
+          bytes,
+          mime,
+          found.cheques.map((c) => c.box),
+        )
+      : [];
+    cuts.forEach((png, i) => {
+      const path = join(dir, `cheque-${i + 1}.png`);
+      writeFileSync(path, png);
+      console.log(
+        `  cheque ${i + 1} number=${found.cheques[i].number ?? '—'} → ${path}`,
+      );
+    });
+  }
+  if (read) {
+    const extractor = new AttachmentExtractor(new OpenAiClient(config), config);
+    const today = new Date().toISOString().slice(0, 10);
+    const hints = readerHints('STATEMENT', null);
+    const readings =
+      found && readAlone(found)
+        ? await readChequesAlone({
+            file: bytes,
+            mime,
+            cheques: found.cheques,
+            extractor,
+            pipeline,
+            filename: basename(file),
+            today,
+            message: null,
+            hints,
+          })
+        : null;
+    const all =
+      readings ??
+      (await extractor.read(
+        bytes,
+        basename(file),
+        mime,
+        'image',
+        today,
+        null,
+        hints,
+        await pipeline.prepare(bytes, mime, 'image'),
+        found?.regions ?? [],
+      ));
+    console.log(readings ? 'read one by one:' : 'read whole:');
+    for (const r of all) {
+      console.log(
+        `  ${r.documentType} #${r.checkNumber ?? '—'} payee=${r.payee ?? r.vendor ?? '—'} ` +
+          `amount=${r.total ?? '—'} date=${r.date ?? '—'} memo=${r.memo ?? '—'} box=${JSON.stringify(r.box)}`,
+      );
+    }
+  }
+  await ocr.onModuleDestroy();
+}
+
 /** step2: what the local pipeline hands the AI for one attachment. */
 async function prepare(file: string, config: ConfigService): Promise<void> {
   const type = attachmentType(file);
@@ -259,7 +360,9 @@ async function writeImages(
   for (const img of images) {
     const path = join(dir, `p${img.page + 1}-${img.index + 1}.png`);
     writeFileSync(path, img.png);
-    console.log(`wrote ${path} (${img.png.length} bytes)`);
+    console.log(
+      `wrote ${path} (${img.png.length} bytes)${img.withBack ? ' front+back' : ''} caption=${JSON.stringify(img.caption)}`,
+    );
   }
   if (!images.length) console.log('no item images found');
 }

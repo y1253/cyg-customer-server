@@ -182,9 +182,7 @@ export class StatementProcessorService {
       const strong =
         row.chainRereadAt !== null &&
         (row.processedAt === null || row.processedAt < row.chainRereadAt);
-      const hint = strong
-        ? await loadChainHint(this.prisma, scope, row)
-        : null;
+      const hint = strong ? await loadChainHint(this.prisma, scope, row) : null;
       const extracted = await this.extractor.extract(pdf, row.filename, {
         rules,
         strong,
@@ -229,7 +227,10 @@ export class StatementProcessorService {
       const runs = row.runs + 1;
       // step2: the strong re-read of a statement that was in the books never takes it out
       // or makes it worse — the earlier reading stays when this one checks out less well.
-      if (strong && RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']) {
+      if (
+        strong &&
+        RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']
+      ) {
         await this.prisma.bankStatement.update({
           where: { id: row.id },
           data: { status: StatementStatus.DONE, runs, processedAt: new Date() },
@@ -316,6 +317,9 @@ export class StatementProcessorService {
           {
             ...row,
             accountName,
+            accountKind: row.accountNameByCustomer
+              ? (row.accountKind ?? extracted.accountKind)
+              : extracted.accountKind,
             bankName: extracted.bankName,
             periodStart: parseIsoDate(extracted.periodStart),
             periodEnd: parseIsoDate(extracted.periodEnd),
@@ -494,7 +498,11 @@ function isoDay(d: Date | null): string | null {
 }
 
 /** How well a reading checked out — a strong re-read may never go down (step2). */
-const RANK: Record<string, number> = { MISMATCH: 0, UNVERIFIED: 1, VERIFIED: 2 };
+const RANK: Record<string, number> = {
+  MISMATCH: 0,
+  UNVERIFIED: 1,
+  VERIFIED: 2,
+};
 
 /**
  * step8: what the customer said was wrong with THIS statement (its chat on Bank feeds) goes

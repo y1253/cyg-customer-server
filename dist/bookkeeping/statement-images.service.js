@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var StatementImagesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StatementImagesService = exports.STATEMENT_SOURCE = void 0;
@@ -19,6 +22,8 @@ const object_storage_service_1 = require("../storage/object-storage.service");
 const attachment_match_util_1 = require("./attachment-match.util");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const pdf_images_1 = require("./pdf-images");
+const document_pipeline_1 = require("./pipeline/document-pipeline");
+const ocr_util_1 = require("./pipeline/ocr.util");
 const scope_1 = require("./scope");
 const statement_label_1 = require("./statement-label");
 exports.STATEMENT_SOURCE = 'STATEMENT';
@@ -26,16 +31,38 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
     prisma;
     storage;
     attachments;
+    pipeline;
     logger = new common_1.Logger(StatementImagesService_1.name);
-    constructor(prisma, storage, attachments) {
+    constructor(prisma, storage, attachments, pipeline) {
         this.prisma = prisma;
         this.storage = storage;
         this.attachments = attachments;
+        this.pipeline = pipeline;
+    }
+    async isChequeLike(image) {
+        if (image.caption?.number)
+            return true;
+        const ocr = await this.pipeline?.readImage(image.png).catch(() => null);
+        if (!ocr)
+            return true;
+        return ((0, ocr_util_1.looksLikeChequeText)(ocr) ||
+            (0, ocr_util_1.looksLikeChequeBack)(ocr) ||
+            /(?<![\p{L}])(deposit|d[ée]p[ôo]t)(?![\p{L}])/iu.test(ocr.text));
     }
     async harvest(statement, pdf, pages) {
         const scope = (0, scope_1.scopeOf)(statement);
         try {
-            const images = await (0, pdf_images_1.itemImages)(pdf, pages);
+            const all = statement.accountKind === 'CREDIT_CARD'
+                ? []
+                : await (0, pdf_images_1.itemImages)(pdf, pages);
+            const images = [];
+            for (const image of all) {
+                if (await this.isChequeLike(image))
+                    images.push(image);
+                else {
+                    this.logger.log(`statement #${statement.id} p${image.page + 1}: image ${image.index + 1} is not a cheque — skipped`);
+                }
+            }
             const label = (0, statement_label_1.statementLabel)(statement);
             const refs = [];
             for (const image of images) {
@@ -71,7 +98,9 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     create: {
                         ...queued,
                         ...(0, scope_1.scopeWhere)(scope),
-                        filename: `${label} p${image.page + 1} #${image.index + 1}.png`.slice(0, 255),
+                        filename: (image.caption?.number
+                            ? `${label} cheque ${image.caption.number}.png`
+                            : `${label} p${image.page + 1} #${image.index + 1}.png`).slice(0, 255),
                         mimeType: 'image/png',
                         storageKey,
                         source: exports.STATEMENT_SOURCE,
@@ -161,8 +190,10 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
 exports.StatementImagesService = StatementImagesService;
 exports.StatementImagesService = StatementImagesService = StatementImagesService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(3, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
-        attachment_processor_service_1.AttachmentProcessorService])
+        attachment_processor_service_1.AttachmentProcessorService,
+        document_pipeline_1.DocumentPipeline])
 ], StatementImagesService);
 //# sourceMappingURL=statement-images.service.js.map

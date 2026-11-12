@@ -4,7 +4,7 @@ exports.cropImage = cropImage;
 const crop_util_1 = require("./crop.util");
 const pdf_images_1 = require("./pdf-images");
 const MAX_WIDTH_PX = 2400;
-async function cropImage(file, mimeType, boxes) {
+async function cropImage(file, mimeType, boxes, minWidthPx = 0) {
     const mupdf = await import('mupdf');
     const doc = mupdf.Document.openDocument(file, mimeType);
     try {
@@ -29,7 +29,7 @@ async function cropImage(file, mimeType, boxes) {
                     b[2] + x0,
                     b[3] + y0,
                 ];
-                const scale = Math.min(Math.max(native, 1), MAX_WIDTH_PX / Math.max(1, b[2] - b[0]));
+                const scale = Math.min(Math.max(native, 1, minWidthPx / Math.max(1, b[2] - b[0])), MAX_WIDTH_PX / Math.max(1, b[2] - b[0]));
                 return (0, pdf_images_1.renderClip)(mupdf, page, shifted, scale);
             });
         }

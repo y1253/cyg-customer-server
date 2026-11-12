@@ -151,9 +151,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const rules = withCustomerNote(learned, row.customerNote);
             const strong = row.chainRereadAt !== null &&
                 (row.processedAt === null || row.processedAt < row.chainRereadAt);
-            const hint = strong
-                ? await (0, statement_continuity_1.loadChainHint)(this.prisma, scope, row)
-                : null;
+            const hint = strong ? await (0, statement_continuity_1.loadChainHint)(this.prisma, scope, row) : null;
             const extracted = await this.extractor.extract(pdf, row.filename, {
                 rules,
                 strong,
@@ -175,7 +173,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;
-            if (strong && RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']) {
+            if (strong &&
+                RANK[verification] < RANK[row.verification ?? 'UNVERIFIED']) {
                 await this.prisma.bankStatement.update({
                     where: { id: row.id },
                     data: { status: client_1.StatementStatus.DONE, runs, processedAt: new Date() },
@@ -245,6 +244,9 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 await this.images.harvest({
                     ...row,
                     accountName,
+                    accountKind: row.accountNameByCustomer
+                        ? (row.accountKind ?? extracted.accountKind)
+                        : extracted.accountKind,
                     bankName: extracted.bankName,
                     periodStart: (0, ledger_util_1.parseIsoDate)(extracted.periodStart),
                     periodEnd: (0, ledger_util_1.parseIsoDate)(extracted.periodEnd),
@@ -403,7 +405,11 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
 function isoDay(d) {
     return d ? d.toISOString().slice(0, 10) : null;
 }
-const RANK = { MISMATCH: 0, UNVERIFIED: 1, VERIFIED: 2 };
+const RANK = {
+    MISMATCH: 0,
+    UNVERIFIED: 1,
+    VERIFIED: 2,
+};
 function withCustomerNote(rules, note) {
     const text = note?.trim();
     if (!text)

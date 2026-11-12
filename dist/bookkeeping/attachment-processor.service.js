@@ -45,9 +45,8 @@ const queue_retry_1 = require("./queue-retry");
 const scope_1 = require("./scope");
 const crop_1 = require("./crop");
 const crop_util_1 = require("./crop.util");
-const cheque_split_1 = require("./cheque-split");
+const cheque_reading_1 = require("./cheque-reading");
 const document_pipeline_1 = require("./pipeline/document-pipeline");
-const ocr_util_1 = require("./pipeline/ocr.util");
 const CONCURRENCY = 2;
 const GENERIC_CHEQUE_NAME = /^(cheque|check|chq|chk)\b/i;
 const BATCH = 6;
@@ -117,9 +116,10 @@ function readerHints(source, note) {
     let out = '';
     if (source === 'STATEMENT') {
         out +=
-            "\n\nThis image was cut out of a bank statement's cheque / deposit page. It may show " +
-                'SEVERAL cheques (often two side by side, or a front and its back): each cheque is its ' +
-                'own document with its own box.';
+            "\n\nThis image was cut out of a bank statement's cheque / deposit page. The caption " +
+                'the bank printed over a cheque ("CHEQUE # 00021 $2,318.08") is its number and amount. ' +
+                'A cheque\'s BACK (endorsement, BACK/VERSO, deposit stamps, "Negotiating Institution") ' +
+                'belongs to its front and is never a document of its own.';
     }
     if (note) {
         out +=
@@ -249,14 +249,19 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             const note = customerNoteOf(row.extracted);
             const hints = ((await this.rules?.promptBlock(scope, undefined, 'ATTACHMENT_READER')) ?? '') + readerHints(row.source, note);
             const prepared = (await this.pipeline?.prepare(file, mime, cls)) ?? null;
-            const regions = cls === 'image' ? await this.chequeHints(row, file, mime) : [];
-            let readings = await this.extractor.read(file, row.filename, mime, cls, day(row.createdAt), row.message, hints, prepared, regions);
+            const found = cls === 'image' ? await this.chequeHints(row, file, mime) : null;
+            const sibling = siblingOf(row.sourceRef);
+            let readings = found && (0, cheque_reading_1.readAlone)(found)
+                ? await this.readEach(row, file, mime, found.cheques, hints, sibling && sibling.index < found.cheques.length
+                    ? sibling.index
+                    : null)
+                : null;
+            readings ??= await this.extractor.read(file, row.filename, mime, cls, day(row.createdAt), row.message, hints, prepared, found?.regions ?? []);
             if (readings.length === 1) {
                 readings = [withOcrChequeNumber(readings[0], prepared)];
             }
-            const sibling = siblingOf(row.sourceRef);
             if (sibling) {
-                const reading = readings[sibling.index] ?? readings[0];
+                const reading = readings[sibling.index] ?? readings.find(Boolean) ?? readings[0];
                 const parent = await this.prisma.transactionAttachment.findUnique({
                     where: { id: sibling.rowId },
                     select: { sourceRef: true },
@@ -284,36 +289,32 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         }
     }
     async chequeHints(row, file, mime) {
-        if (!this.pipeline?.enabled())
-            return [];
-        const boxes = await (0, cheque_split_1.chequeRegions)(file, mime);
-        if (boxes.length < 2)
-            return [];
-        const regions = boxes.map((box) => ({
-            box,
-            chequeNumber: null,
-            back: false,
-        }));
-        let crops;
-        try {
-            crops = await (0, crop_1.cropImage)(file, mime, boxes);
+        if (!this.pipeline)
+            return null;
+        const found = await (0, cheque_reading_1.findCheques)(file, mime, this.pipeline);
+        if (found) {
+            this.logger.log(`attachment #${row.id}: ${found.regions.length} cheque-shaped region(s) found by ${found.by} (${found.regions.filter((r) => r.back).length} back), ${found.cheques.length} cheque(s) to read one by one`);
         }
-        catch (err) {
-            this.logger.warn(`attachment #${row.id}: cheque regions found but not cut for OCR: ${err instanceof Error ? err.message : String(err)}`);
-            return regions;
-        }
-        for (let i = 0; i < crops.length; i++) {
-            const ocr = await this.pipeline.readImage(crops[i]);
-            if (!ocr)
-                continue;
-            regions[i].back = (0, ocr_util_1.looksLikeChequeBack)(ocr);
-            regions[i].chequeNumber =
-                !regions[i].back && (0, ocr_util_1.looksLikeChequeText)(ocr)
-                    ? (0, ocr_util_1.chequeNumberFromOcr)(ocr)
-                    : null;
-        }
-        this.logger.log(`attachment #${row.id}: ${regions.length} cheque-shaped regions found — given to the reader as tool results`);
-        return regions;
+        return found;
+    }
+    async readEach(row, file, mime, cheques, hints, only) {
+        const readings = await (0, cheque_reading_1.readChequesAlone)({
+            file,
+            mime,
+            cheques,
+            extractor: this.extractor,
+            pipeline: this.pipeline ?? null,
+            filename: row.filename,
+            today: day(row.createdAt),
+            message: row.message,
+            hints,
+            only,
+            withOcr: withOcrChequeNumber,
+        });
+        this.logger.log(readings
+            ? `attachment #${row.id}: ${only === null ? cheques.length : 1} cheque(s) read one by one`
+            : `attachment #${row.id}: cheques not cut — the whole image is read`);
+        return readings;
     }
     async finish(row, scope, cls, reading, statementId, customerNote = null) {
         const kind = kindFor(cls, reading);

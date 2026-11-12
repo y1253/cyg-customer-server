@@ -13,6 +13,7 @@ export type ChatContent = string | Array<{
     type: 'image_url';
     image_url: {
         url: string;
+        detail?: 'low' | 'high' | 'auto';
     };
 }>;
 export interface ChatRequest {

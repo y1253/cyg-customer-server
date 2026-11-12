@@ -115,7 +115,11 @@ export function chequeNumberFromOcr(r: OcrResult): string | null {
 
 /** "For deposit only", an endorsement, a bank's stamp: what a cheque's BACK says. */
 const BACK_WORDS =
-  /(?<![\p{L}\p{N}])(endorse|for\s+deposit|deposit\s+only|pour\s+d[ée]p[ôo]t|do\s+not\s+write|ne\s+pas\s+[ée]crire|sign\s+here)(?![\p{L}\p{N}])/iu;
+  /(?<![\p{L}\p{N}])(endorse|endorsement|endossement|for\s+deposit|deposit\s+only|pour\s+d[ée]p[ôo]t|do\s+not\s+write|ne\s+pas\s+[ée]crire|sign\s+here|back\s*\/\s*verso|negotiating\s+institution)(?![\p{L}\p{N}])/iu;
+
+/** Printed on a cheque's back only: TD's "BACK/VERSO", the negotiating bank's stamp block. */
+const BACK_ONLY =
+  /(?<![\p{L}\p{N}])(back\s*\/\s*verso|negotiating\s+institution|endorsement\s*-\s*signature)(?![\p{L}\p{N}])/iu;
 
 /**
  * A cheque's BACK (or a blank strip): not cheque wording, no amount and no MICR line — an
@@ -123,6 +127,9 @@ const BACK_WORDS =
  * as a cheque of its own.
  */
 export function looksLikeChequeBack(r: OcrResult): boolean {
+  // step2 (2026-11-12): what only a back prints wins, even beside the bank's "CHEQUE # 00021"
+  // caption (a TD back's crop carries it, and "cheque" alone made it a front).
+  if (BACK_ONLY.test(r.text)) return true;
   if (looksLikeChequeText(r) || MONEY.test(r.text)) return false;
   return BACK_WORDS.test(r.text) || chars(r.text) < 40;
 }

@@ -16,7 +16,10 @@ export type ChatContent =
   | Array<
       | { type: 'text'; text: string }
       | { type: 'file'; file: { filename: string; file_data: string } }
-      | { type: 'image_url'; image_url: { url: string } }
+      | {
+          type: 'image_url';
+          image_url: { url: string; detail?: 'low' | 'high' | 'auto' };
+        }
     >;
 
 export interface ChatRequest {

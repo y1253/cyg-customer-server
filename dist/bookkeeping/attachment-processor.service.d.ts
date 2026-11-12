@@ -40,6 +40,7 @@ export declare class AttachmentProcessorService {
     private runSweep;
     private processOne;
     private chequeHints;
+    private readEach;
     private finish;
     private fileSiblings;
     private cut;

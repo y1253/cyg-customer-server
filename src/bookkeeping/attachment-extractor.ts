@@ -204,6 +204,8 @@ amounts together. One document = one entry. For each entry:
 - kind: RECEIPT (a receipt, invoice or payment note), CHECK (a cheque), or OTHER.
 - vendor: the store / business that was paid ("Walmart"), or null.
 - date: the purchase or cheque date as YYYY-MM-DD, or null if none is printed or said.
+  A cheque's date is the one WRITTEN on its front (often MM/DD/YYYY or DD/MM/YYYY boxes),
+  never a deposit or processing date stamped on its back ("Date (YYYYMMDD): 20240219").
 - subtotal, tax, total: positive amounts as printed; tax is the SUM of every tax line
   (GST, QST, HST, PST, sales tax). null when not shown.
 - items: every purchased line with its price AFTER any discount on that line, as a
@@ -284,7 +286,7 @@ const TEXT_PROMPT =
  * framing; 3 of 3 before), and reads the same picture every time for "What does it say?".
  */
 const LOOK_PROMPT =
-  "You help a bookkeeping firm. Its customer sent this picture (a photo, a screenshot or a " +
+  'You help a bookkeeping firm. Its customer sent this picture (a photo, a screenshot or a ' +
   'scan of their OWN document or message) and asked us what it says. Read the picture and ' +
   'answer the question. You read every language and script, Yiddish and Hebrew too. To say ' +
   'what it says: write out the text as it appears, in its own language and script, then an ' +
@@ -313,7 +315,9 @@ function filePart(
   const dataUrl = `data:${mime};base64,${file.toString('base64')}`;
   return cls === 'pdf'
     ? { type: 'file', file: { filename, file_data: dataUrl } }
-    : { type: 'image_url', image_url: { url: dataUrl } };
+    : // step2 (2026-11-12): 'high' — at the default, a cheque's handwriting was a few
+      // pixels tall once OpenAI scaled the page down.
+      { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } };
 }
 
 /** The words a customer texted with a file: context for reading it, never instructions. */
@@ -499,7 +503,9 @@ export class AttachmentExtractor {
         (asked ? `\nThe customer also asks: """${asked}"""` : ''),
     );
     if (!isRefusal(first)) return first;
-    this.logger.warn(`look at "${filename}": refused (${first}) — asking plainly`);
+    this.logger.warn(
+      `look at "${filename}": refused (${first}) — asking plainly`,
+    );
     const second = await ask('What does it say? Translate it to English.');
     return isRefusal(second) ? null : second;
   }
@@ -520,8 +526,13 @@ export class AttachmentExtractor {
     const about = {
       kind: reading.documentType ?? reading.kind,
       vendor: reading.vendor ?? reading.payee,
+      checkNumber: reading.checkNumber,
       date: reading.date,
-      total: reading.total,
+      total:
+        reading.total ??
+        (reading.subtotal
+          ? Math.round((reading.subtotal + (reading.tax ?? 0)) * 100) / 100
+          : null),
       memo: reading.memo,
       transcript: reading.transcript?.slice(0, 1000),
       textMessage: message?.slice(0, 1000),

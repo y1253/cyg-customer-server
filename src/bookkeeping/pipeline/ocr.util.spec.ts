@@ -212,6 +212,19 @@ describe('looksLikeChequeBack', () => {
       ),
     ).toBe(false);
   });
+
+  it("a TD back is a back even with the bank's 'CHEQUE # 00021' caption on it", () => {
+    expect(
+      looksLikeChequeBack(
+        result([
+          line('CHEQUE # 00021', 30, 10),
+          line('Negotiating Institution: RBC ROYAL BANK', 30, 40),
+          line('Date (YYYYMMDD): 20240206', 30, 70),
+          line('BACK/VERSO', 300, 160),
+        ]),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('ocrText', () => {

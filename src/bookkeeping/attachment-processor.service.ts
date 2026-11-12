@@ -44,14 +44,14 @@ import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { cropImage } from './crop';
 import { cropPlan } from './crop.util';
-import { chequeRegions } from './cheque-split';
-import { DocumentPipeline, type Prepared } from './pipeline/document-pipeline';
 import {
-  chequeNumberFromOcr,
-  looksLikeChequeBack,
-  looksLikeChequeText,
-} from './pipeline/ocr.util';
-import type { ChequeRegion } from './pipeline/tool-results';
+  findCheques,
+  readAlone,
+  readChequesAlone,
+  type ChequeFind,
+  type FoundCheque,
+} from './cheque-reading';
+import { DocumentPipeline, type Prepared } from './pipeline/document-pipeline';
 
 const CONCURRENCY = 2;
 /** A row name that says nothing about who was paid ("Cheque", "CHQ 123", "Check #55"). */
@@ -156,10 +156,13 @@ export function customerNoteOf(extracted: unknown): string | null {
 export function readerHints(source: string, note: string | null): string {
   let out = '';
   if (source === 'STATEMENT') {
+    // step2 (2026-11-12): it said "a front and its back: each cheque is its own document" —
+    // against READ_RULES; backs were read as cheques with no amount and left unmatched.
     out +=
-      "\n\nThis image was cut out of a bank statement's cheque / deposit page. It may show " +
-      'SEVERAL cheques (often two side by side, or a front and its back): each cheque is its ' +
-      'own document with its own box.';
+      "\n\nThis image was cut out of a bank statement's cheque / deposit page. The caption " +
+      'the bank printed over a cheque ("CHEQUE # 00021 $2,318.08") is its number and amount. ' +
+      'A cheque\'s BACK (endorsement, BACK/VERSO, deposit stamps, "Negotiating Institution") ' +
+      'belongs to its front and is never a document of its own.';
   }
   if (note) {
     out +=
@@ -341,9 +344,25 @@ export class AttachmentProcessorService {
       // the cheque-shaped regions of an image — and the AI reads the FILE with what they
       // found as tool results. The AI decides; its boxes cut the documents apart (step9).
       const prepared = (await this.pipeline?.prepare(file, mime, cls)) ?? null;
-      const regions =
-        cls === 'image' ? await this.chequeHints(row, file, mime) : [];
-      let readings = await this.extractor.read(
+      const found =
+        cls === 'image' ? await this.chequeHints(row, file, mime) : null;
+      const sibling = siblingOf(row.sourceRef);
+      // step2 (2026-11-12): several cheques found by OpenCV → code cuts them and the model
+      // reads each on its own (a sibling only its own one). Otherwise the whole file is read.
+      let readings =
+        found && readAlone(found)
+          ? await this.readEach(
+              row,
+              file,
+              mime,
+              found.cheques,
+              hints,
+              sibling && sibling.index < found.cheques.length
+                ? sibling.index
+                : null,
+            )
+          : null;
+      readings ??= await this.extractor.read(
         file,
         row.filename,
         mime,
@@ -352,16 +371,16 @@ export class AttachmentProcessorService {
         row.message,
         hints,
         prepared,
-        regions,
+        found?.regions ?? [],
       );
       if (readings.length === 1) {
         readings = [withOcrChequeNumber(readings[0], prepared)];
       }
-      const sibling = siblingOf(row.sourceRef);
       if (sibling) {
         // A sibling read again keeps ITS document of the file (the first one if the file
         // now reads as fewer documents).
-        const reading = readings[sibling.index] ?? readings[0];
+        const reading =
+          readings[sibling.index] ?? readings.find(Boolean) ?? readings[0];
         const parent = await this.prisma.transactionAttachment.findUnique({
           where: { id: sibling.rowId },
           select: { sourceRef: true },
@@ -405,47 +424,52 @@ export class AttachmentProcessorService {
   }
 
   /**
-   * step2e (2026-11-10): the cheque-shaped regions of an image, found by code
-   * (`cheque-split.ts`) and each OCR'd for its number / whether it is a cheque's back —
-   * TOOL RESULTS for the reader, never a cut: the AI decides how many documents there are
-   * and where (its boxes cut them, step9). Until step2e the code cut and dropped by itself.
-   * [] when fewer than two regions are found or the pipeline is off.
+   * step2 (2026-11-12): the cheques OpenCV finds in an image, with their OCR
+   * (`cheque-reading.ts#findCheques`). Null when fewer than two, or the pipeline is off.
    */
   private async chequeHints(
     row: TransactionAttachment,
     file: Buffer,
     mime: string,
-  ): Promise<ChequeRegion[]> {
-    if (!this.pipeline?.enabled()) return [];
-    const boxes = await chequeRegions(file, mime);
-    if (boxes.length < 2) return [];
-    const regions: ChequeRegion[] = boxes.map((box) => ({
-      box,
-      chequeNumber: null,
-      back: false,
-    }));
-    let crops: Buffer[];
-    try {
-      crops = await cropImage(file, mime, boxes);
-    } catch (err) {
-      this.logger.warn(
-        `attachment #${row.id}: cheque regions found but not cut for OCR: ${err instanceof Error ? err.message : String(err)}`,
+  ): Promise<ChequeFind | null> {
+    if (!this.pipeline) return null;
+    const found = await findCheques(file, mime, this.pipeline);
+    if (found) {
+      this.logger.log(
+        `attachment #${row.id}: ${found.regions.length} cheque-shaped region(s) found by ${found.by} (${found.regions.filter((r) => r.back).length} back), ${found.cheques.length} cheque(s) to read one by one`,
       );
-      return regions;
     }
-    for (let i = 0; i < crops.length; i++) {
-      const ocr = await this.pipeline.readImage(crops[i]);
-      if (!ocr) continue;
-      regions[i].back = looksLikeChequeBack(ocr);
-      regions[i].chequeNumber =
-        !regions[i].back && looksLikeChequeText(ocr)
-          ? chequeNumberFromOcr(ocr)
-          : null;
-    }
+    return found;
+  }
+
+  /** step2 (2026-11-12): each cheque read on its own (`readChequesAlone`). */
+  private async readEach(
+    row: TransactionAttachment,
+    file: Buffer,
+    mime: string,
+    cheques: readonly FoundCheque[],
+    hints: string,
+    only: number | null,
+  ): Promise<AttachmentReading[] | null> {
+    const readings = await readChequesAlone({
+      file,
+      mime,
+      cheques,
+      extractor: this.extractor,
+      pipeline: this.pipeline ?? null,
+      filename: row.filename,
+      today: day(row.createdAt)!,
+      message: row.message,
+      hints,
+      only,
+      withOcr: withOcrChequeNumber,
+    });
     this.logger.log(
-      `attachment #${row.id}: ${regions.length} cheque-shaped regions found — given to the reader as tool results`,
+      readings
+        ? `attachment #${row.id}: ${only === null ? cheques.length : 1} cheque(s) read one by one`
+        : `attachment #${row.id}: cheques not cut — the whole image is read`,
     );
-    return regions;
+    return readings;
   }
 
   /**
@@ -938,7 +962,8 @@ export class AttachmentProcessorService {
       };
     }
     const file = await this.storage.getBuffer(row.storageKey);
-    const mime = cls === 'image' ? (sniffImageMime(file) ?? row.mimeType) : row.mimeType;
+    const mime =
+      cls === 'image' ? (sniffImageMime(file) ?? row.mimeType) : row.mimeType;
     const answer = await this.extractor.lookAt(
       file,
       row.filename,
