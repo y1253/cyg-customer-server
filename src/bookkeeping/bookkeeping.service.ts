@@ -834,6 +834,27 @@ export class BookkeepingService {
   }
 
   /**
+   * 2026-11-11 (user's request): "Re-read all" under the Problems filter. Every statement
+   * with a problem that a re-read can fix, each through `retry` (same rules). Never a
+   * bank-feed month, nor one whose only problem is a MISSING gap — only uploading the
+   * missing statement fixes that.
+   */
+  async retryProblems(scope: BookScope): Promise<{ queued: number }> {
+    const all = await this.list(scope);
+    let queued = 0;
+    for (const s of all.filter(rereadable)) {
+      try {
+        await this.retry(scope, s.id);
+        queued++;
+      } catch {
+        // Picked up or changed meanwhile — leave it.
+      }
+    }
+    if (queued) changeFeed.bump(scope.customerId);
+    return { queued };
+  }
+
+  /**
    * step8 (2026-11-11): "fix every CIBC 7522 statement" — the statement itself plus every
    * other FAILED / NEEDS_REVIEW (or DONE but UNVERIFIED) uploaded statement of the same
    * account (folder) in this book.
@@ -1092,4 +1113,13 @@ export class BookkeepingService {
     if (!s) throw new NotFoundException('Statement not found');
     return s;
   }
+}
+
+/** A problem statement "Re-read all" takes (`retryProblems`). Pure; the client has a twin. */
+export function rereadable(
+  s: Pick<StatementView, 'status' | 'source' | 'problem'>,
+): boolean {
+  if (s.source === 'PLAID') return false;
+  if (s.status === 'FAILED' || s.status === 'NEEDS_REVIEW') return true;
+  return s.status === 'DONE' && !!s.problem && s.problem.kind !== 'MISSING';
 }

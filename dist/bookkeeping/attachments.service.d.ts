@@ -80,6 +80,9 @@ export declare class AttachmentsService {
     chequeKeptOn(scope: BookScope, id: number, transactionId: number): Promise<string | null>;
     setTransaction(scope: BookScope, id: number, transactionId: number | null): Promise<AttachmentView>;
     applyItems(scope: BookScope, id: number): Promise<AttachmentView>;
+    retryAll(scope: BookScope, ids: number[]): Promise<{
+        queued: number;
+    }>;
     retry(scope: BookScope, id: number): Promise<AttachmentView>;
     place(scope: BookScope, id: number, p: {
         name?: string | null;

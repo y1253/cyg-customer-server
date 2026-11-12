@@ -12,6 +12,7 @@ import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
 import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
+import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
@@ -71,6 +72,9 @@ export declare class BookkeepingController {
     attachmentFile(scope: BookScope, id: number, res: Response, original?: string): Promise<StreamableFile>;
     setAttachmentTransaction(scope: BookScope, id: number, dto: SetAttachmentTransactionDto): Promise<AttachmentView>;
     applyAttachmentItems(scope: BookScope, id: number): Promise<AttachmentView>;
+    retryAttachments(scope: BookScope, dto: RetryAttachmentsDto): Promise<{
+        queued: number;
+    }>;
     retryAttachment(scope: BookScope, id: number): Promise<AttachmentView>;
     removeAttachment(scope: BookScope, id: number): Promise<void>;
     upload(scope: BookScope, files: Express.Multer.File[]): Promise<StatementView[]>;
@@ -78,6 +82,9 @@ export declare class BookkeepingController {
     transactions(scope: BookScope, statementIds?: string): Promise<TransactionView[]>;
     file(scope: BookScope, id: number, res: Response): Promise<StreamableFile>;
     moveStatement(scope: BookScope, id: number, dto: MoveStatementDto): Promise<StatementView>;
+    retryProblems(scope: BookScope): Promise<{
+        queued: number;
+    }>;
     retry(scope: BookScope, id: number): Promise<StatementView>;
     remove(scope: BookScope, id: number): Promise<void>;
     export(scope: BookScope, format: string, res: Response): Promise<StreamableFile>;

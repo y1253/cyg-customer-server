@@ -79,6 +79,7 @@ import {
   UpdateAgencyDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
+import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
@@ -476,6 +477,15 @@ export class BookkeepingController {
     return this.attachments.applyItems(scope, id);
   }
 
+  /** "Read all again" over the files we could not read / link (`retryAll`). */
+  @Post('attachments/retry-all')
+  retryAttachments(
+    @Book() scope: BookScope,
+    @Body() dto: RetryAttachmentsDto,
+  ): Promise<{ queued: number }> {
+    return this.attachments.retryAll(scope, dto.ids);
+  }
+
   @Post('attachments/:id/retry')
   retryAttachment(
     @Book() scope: BookScope,
@@ -546,6 +556,12 @@ export class BookkeepingController {
     @Body() dto: MoveStatementDto,
   ): Promise<StatementView> {
     return this.bookkeeping.moveStatement(scope, id, dto.accountName);
+  }
+
+  /** "Re-read all" under the Problems filter (`retryProblems`). */
+  @Post('statements/retry-problems')
+  retryProblems(@Book() scope: BookScope): Promise<{ queued: number }> {
+    return this.bookkeeping.retryProblems(scope);
   }
 
   @Post('statements/:id/retry')

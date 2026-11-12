@@ -15,6 +15,7 @@ exports.balanceFit = balanceFit;
 exports.withBalanceCheck = withBalanceCheck;
 exports.failedChecks = failedChecks;
 exports.appendNote = appendNote;
+exports.rereadable = rereadable;
 const crypto_1 = require("crypto");
 const promises_1 = require("fs/promises");
 const common_1 = require("@nestjs/common");
@@ -517,6 +518,21 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.processor.processSoon();
         return toView(row);
     }
+    async retryProblems(scope) {
+        const all = await this.list(scope);
+        let queued = 0;
+        for (const s of all.filter(rereadable)) {
+            try {
+                await this.retry(scope, s.id);
+                queued++;
+            }
+            catch {
+            }
+        }
+        if (queued)
+            change_feed_1.changeFeed.bump(scope.customerId);
+        return { queued };
+    }
     async sameAccountToRetry(scope, id) {
         const s = await this.owned(scope, id);
         const account = s.accountNameByCustomer ?? s.accountName;
@@ -720,4 +736,11 @@ exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decor
         statement_images_service_1.StatementImagesService,
         fx_service_1.FxService])
 ], BookkeepingService);
+function rereadable(s) {
+    if (s.source === 'PLAID')
+        return false;
+    if (s.status === 'FAILED' || s.status === 'NEEDS_REVIEW')
+        return true;
+    return s.status === 'DONE' && !!s.problem && s.problem.kind !== 'MISSING';
+}
 //# sourceMappingURL=bookkeeping.service.js.map

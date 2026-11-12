@@ -30,6 +30,7 @@ const name_memory_service_1 = require("./name-memory.service");
 const product_memory_service_1 = require("./product-memory.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
+const retry_attachments_dto_1 = require("./dto/retry-attachments.dto");
 const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
 const reports_service_1 = require("./reports.service");
@@ -212,6 +213,9 @@ let BookkeepingController = class BookkeepingController {
     applyAttachmentItems(scope, id) {
         return this.attachments.applyItems(scope, id);
     }
+    retryAttachments(scope, dto) {
+        return this.attachments.retryAll(scope, dto.ids);
+    }
     retryAttachment(scope, id) {
         return this.attachments.retry(scope, id);
     }
@@ -245,6 +249,9 @@ let BookkeepingController = class BookkeepingController {
     }
     moveStatement(scope, id, dto) {
         return this.bookkeeping.moveStatement(scope, id, dto.accountName);
+    }
+    retryProblems(scope) {
+        return this.bookkeeping.retryProblems(scope);
     }
     retry(scope, id) {
         return this.bookkeeping.retry(scope, id);
@@ -569,6 +576,14 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "applyAttachmentItems", null);
 __decorate([
+    (0, common_1.Post)('attachments/retry-all'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, retry_attachments_dto_1.RetryAttachmentsDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "retryAttachments", null);
+__decorate([
     (0, common_1.Post)('attachments/:id/retry'),
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
@@ -627,6 +642,13 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, agency_dto_1.MoveStatementDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "moveStatement", null);
+__decorate([
+    (0, common_1.Post)('statements/retry-problems'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "retryProblems", null);
 __decorate([
     (0, common_1.Post)('statements/:id/retry'),
     __param(0, (0, book_scope_guard_1.Book)()),

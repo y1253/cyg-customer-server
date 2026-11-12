@@ -125,6 +125,9 @@ export declare class BookkeepingService {
     retry(scope: BookScope, id: number, note?: string, opts?: {
         append?: boolean;
     }): Promise<StatementView>;
+    retryProblems(scope: BookScope): Promise<{
+        queued: number;
+    }>;
     sameAccountToRetry(scope: BookScope, id: number): Promise<number[]>;
     setBalances(scope: BookScope, id: number, input: {
         openingBalance?: number | null;
@@ -135,3 +138,4 @@ export declare class BookkeepingService {
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;
     private owned;
 }
+export declare function rereadable(s: Pick<StatementView, 'status' | 'source' | 'problem'>): boolean;

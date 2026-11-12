@@ -20,6 +20,7 @@ const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
 const stream_1 = require("stream");
 const openai_client_1 = require("../ai/openai.client");
+const change_feed_1 = require("../assistant/change-feed");
 const reach_1 = require("../messaging/reach");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
@@ -372,6 +373,24 @@ let AttachmentsService = class AttachmentsService {
         if (note)
             throw new common_1.BadRequestException(note);
         return this.get(scope, id);
+    }
+    async retryAll(scope, ids) {
+        if (!ids.length)
+            return { queued: 0 };
+        const { count } = await this.prisma.transactionAttachment.updateMany({
+            where: {
+                id: { in: ids },
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                status: { in: [client_1.AttachmentStatus.FAILED, client_1.AttachmentStatus.UNMATCHED] },
+            },
+            data: { status: client_1.AttachmentStatus.PENDING, attempts: 0, error: null },
+        });
+        if (count) {
+            this.processor.processSoon();
+            change_feed_1.changeFeed.bump(scope.customerId);
+        }
+        return { queued: count };
     }
     async retry(scope, id) {
         const a = await this.owned(scope, id);

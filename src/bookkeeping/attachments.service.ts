@@ -16,6 +16,7 @@ import {
 } from '@prisma/client';
 import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
+import { changeFeed } from '../assistant/change-feed';
 import { firmReach } from '../messaging/reach';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
@@ -595,6 +596,28 @@ export class AttachmentsService {
     const note = await this.processor.applyItems(scope, a.id, true);
     if (note) throw new BadRequestException(note);
     return this.get(scope, id);
+  }
+
+  /**
+   * 2026-11-11 (user's request): "Read all again" — every FAILED / UNMATCHED file of `ids`
+   * in this book back to PENDING, as `retry` does one.
+   */
+  async retryAll(scope: BookScope, ids: number[]): Promise<{ queued: number }> {
+    if (!ids.length) return { queued: 0 };
+    const { count } = await this.prisma.transactionAttachment.updateMany({
+      where: {
+        id: { in: ids },
+        ...scopeWhere(scope),
+        deletedAt: null,
+        status: { in: [AttachmentStatus.FAILED, AttachmentStatus.UNMATCHED] },
+      },
+      data: { status: AttachmentStatus.PENDING, attempts: 0, error: null },
+    });
+    if (count) {
+      this.processor.processSoon();
+      changeFeed.bump(scope.customerId);
+    }
+    return { queued: count };
   }
 
   async retry(scope: BookScope, id: number): Promise<AttachmentView> {
