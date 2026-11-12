@@ -411,7 +411,7 @@ let AssistantService = AssistantService_1 = class AssistantService {
             : [];
         sameAccount.sort((a, b) => chainDay(a) - chainDay(b) || a.id - b.id);
         const startingDates = s.accountName
-            ? ((0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(await (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, (0, scope_1.scopeOf)(conversation)))).get(s.accountName) ?? [])
+            ? ((0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingChain)(await (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, (0, scope_1.scopeOf)(conversation)))).get(s.accountName) ?? [])
             : [];
         return {
             statementId: s.id,

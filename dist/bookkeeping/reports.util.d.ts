@@ -19,6 +19,11 @@ export interface ReportOptions {
         foreign: boolean;
     }>;
 }
+export interface ReportStart {
+    date: string | null;
+    amount: number;
+    reason?: StartReason;
+}
 export interface AccountBalance {
     name: string;
     type: AccountType;
@@ -27,6 +32,7 @@ export interface AccountBalance {
     count: number;
     currency?: string;
     foreignBalance?: number;
+    starts?: ReportStart[];
 }
 export interface ReportLine {
     name: string;
@@ -35,10 +41,7 @@ export interface ReportLine {
     byName?: ReportLine[];
     currency?: string;
     foreignAmount?: number;
-    starts?: Array<{
-        date: string | null;
-        reason?: StartReason;
-    }>;
+    starts?: ReportStart[];
 }
 export interface ReportsView {
     from: string | null;

@@ -7,6 +7,7 @@ exports.money = money;
 const reconcile_util_1 = require("./reconcile.util");
 exports.PROBLEM_TITLES = {
     BALANCE: "Transactions don't match the balance",
+    ENDING: "Ending balance doesn't match",
     MISMATCH: "Statement didn't match",
     MISSING: 'Missing statements',
     NO_BALANCES: "Couldn't check — balances not read",
@@ -24,6 +25,9 @@ function statementProblem(s) {
     }
     if (s.status !== 'DONE')
         return null;
+    const ending = endingProblem(s);
+    if (ending)
+        return ending;
     const r = s.reason;
     if (r?.kind === 'MISMATCH') {
         const before = r.previousEnd
@@ -38,17 +42,26 @@ function statementProblem(s) {
             : s.rechecked
                 ? ` We re-read both with our strongest reader and they still don't match, so your books start again here at ${money(r.opening)}.`
                 : ` Your books start again here at ${money(r.opening)}.`;
-        return { kind: 'MISMATCH', title: exports.PROBLEM_TITLES.MISMATCH, text: head + tail };
+        return {
+            kind: 'MISMATCH',
+            title: exports.PROBLEM_TITLES.MISMATCH,
+            text: head + tail,
+        };
     }
     if (r?.kind === 'MISSING') {
         const to = r.to ? `to ${longDay(r.to)}` : 'up to this one';
         const restart = s.openingBalance === null
             ? ''
             : ` Your books start again here at ${money(s.openingBalance)}.`;
+        const jump = r.previousClosing != null &&
+            s.openingBalance !== null &&
+            Math.round(r.previousClosing * 100) !== Math.round(s.openingBalance * 100)
+            ? ` The statement before it ends at ${money(r.previousClosing)}; this one opens at ${money(s.openingBalance)}.`
+            : '';
         return {
             kind: 'MISSING',
             title: exports.PROBLEM_TITLES.MISSING,
-            text: `No statement from ${longDay(r.from)} ${to}.${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
+            text: `No statement from ${longDay(r.from)} ${to}.${jump}${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
         };
     }
     if (s.source !== 'PLAID' && s.verification === 'UNVERIFIED') {
@@ -64,6 +77,27 @@ function statementProblem(s) {
         };
     }
     return null;
+}
+function endingProblem(s) {
+    if (s.source === 'PLAID' || s.net === undefined)
+        return null;
+    if (s.openingBalance === null || s.closingBalance === null)
+        return null;
+    const card = s.accountKind === 'CREDIT_CARD';
+    const c = (n) => Math.round(n * 100);
+    const should = c(s.openingBalance) + (card ? -1 : 1) * c(s.net);
+    const ends = c(s.closingBalance);
+    if (should === ends)
+        return null;
+    const moneyIn = s.net > 0 ? s.net : 0;
+    const moneyOut = s.net < 0 ? -s.net : 0;
+    return {
+        kind: 'ENDING',
+        title: exports.PROBLEM_TITLES.ENDING,
+        text: `It starts at ${money(s.openingBalance)}; with the transactions we read (net ${moneyIn ? `${money(moneyIn)} in` : `${money(moneyOut)} out`}) it should end at ${money(should / 100)}, ` +
+            `but the statement ends at ${money(s.closingBalance)} (off by ${money(Math.abs(ends - should) / 100)}). ` +
+            'Its transactions are in your books as read — try again, or ask the AI to fix it.',
+    };
 }
 function needsReviewText(input) {
     const failed = input.checks.filter((c) => !c.ok && !c.skipped);

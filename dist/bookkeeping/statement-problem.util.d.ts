@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { StartReason } from './opening-balance.util';
 import { type Check } from './reconcile.util';
-export type ProblemKind = 'BALANCE' | 'MISMATCH' | 'MISSING' | 'NO_BALANCES';
+export type ProblemKind = 'BALANCE' | 'ENDING' | 'MISMATCH' | 'MISSING' | 'NO_BALANCES';
 export interface StatementProblem {
     kind: ProblemKind;
     title: string;
@@ -16,6 +16,8 @@ export interface ProblemInput {
     source: string;
     openingBalance: number | null;
     closingBalance: number | null;
+    net?: number;
+    accountKind?: string | null;
     reason?: StartReason | null;
     rechecked?: boolean;
     rechecking?: boolean;

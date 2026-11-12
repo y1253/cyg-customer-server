@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OPENING_POSITION = exports.OPENING_STATEMENT_SELECT = exports.num = exports.isCreditCard = exports.CREDIT_CARD = exports.STARTING_BALANCE = void 0;
 exports.openingRows = openingRows;
+exports.openingChain = openingChain;
 exports.startsByAccount = startsByAccount;
 exports.endingsOf = endingsOf;
 exports.ledgerOrder = ledgerOrder;
@@ -10,6 +11,9 @@ const ledger_util_1 = require("./ledger.util");
 const reconcile_util_1 = require("./reconcile.util");
 exports.STARTING_BALANCE = 'Starting balance';
 function openingRows(statements, bridges = statements.bridges ?? []) {
+    return openingChain(statements, bridges).filter((r) => !r.silent);
+}
+function openingChain(statements, bridges = statements.bridges ?? []) {
     const byAccount = new Map();
     const bridgeRows = bridges.map((b) => ({ ...b, bridgeOnly: true }));
     for (const s of [...statements, ...bridgeRows]) {
@@ -31,9 +35,25 @@ function openingRows(statements, bridges = statements.bridges ?? []) {
                 carried = carried.slice(0, MAX_CARRIED);
                 continue;
             }
+            const had = carried;
             carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
-            if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0)
+            if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0) {
+                const reason = before && silentBreak(before, s, had);
+                if (reason)
+                    out.push({
+                        statementId: s.id,
+                        bankAccount,
+                        amount: 0,
+                        postingDate: s.periodStart,
+                        description: exports.STARTING_BALANCE,
+                        offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
+                        ...(0, ledger_util_1.doubleEntry)(0, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
+                        periodEnd: s.periodEnd ?? null,
+                        reason,
+                        silent: true,
+                    });
                 continue;
+            }
             if (continues)
                 continue;
             const sign = (0, exports.isCreditCard)(s.accountKind) ? -1 : 1;
@@ -60,6 +80,12 @@ const GAP_TOLERANCE_DAYS = 3;
 const MONTH_DAYS = 35;
 function breakReason(previous, s) {
     const prevEnd = previous.periodEnd ?? null;
+    const computed = previous.openingBalance === null
+        ? null
+        : ((0, reconcile_util_1.cents)(previous.openingBalance) +
+            ((0, exports.isCreditCard)(previous.accountKind) ? -1 : 1) * (0, reconcile_util_1.cents)(previous.net)) /
+            100;
+    const previousClosing = previous.closingBalance ?? computed;
     if (prevEnd) {
         const expected = prevEnd.getTime() + DAY_MS;
         const gap = s.periodStart
@@ -74,18 +100,25 @@ function breakReason(previous, s) {
                 to: s.periodStart
                     ? isoDay(new Date(s.periodStart.getTime() - DAY_MS))
                     : null,
+                previousClosing,
+                opening: s.openingBalance,
             };
     }
-    const computed = previous.openingBalance === null
-        ? null
-        : ((0, reconcile_util_1.cents)(previous.openingBalance) + (0, reconcile_util_1.cents)(previous.net)) / 100;
     return {
         kind: 'MISMATCH',
         previousStatementId: previous.id,
         previousEnd: prevEnd ? isoDay(prevEnd) : null,
-        previousClosing: previous.closingBalance ?? computed,
+        previousClosing,
         opening: s.openingBalance ?? 0,
     };
+}
+function silentBreak(previous, s, endings) {
+    const reason = breakReason(previous, s);
+    if (reason.kind === 'MISSING')
+        return reason;
+    if (s.openingBalance === null || !endings.length || endings.includes(0))
+        return null;
+    return reason;
 }
 function startsByAccount(rows) {
     const out = new Map();

@@ -4,10 +4,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
 import {
   isCreditCard,
+  openingChain,
   openingRows,
   startsByAccount,
 } from './opening-balance.util';
-import { buildReports, type ReportRow, type ReportsView } from './reports.util';
+import {
+  buildReports,
+  type ReportRow,
+  type ReportStart,
+  type ReportsView,
+} from './reports.util';
 import { CustomerAccountsService } from './customer-accounts.service';
 import type { FxEntry } from './fx.service';
 import { remainderOf, splitTotals } from './splits.util';
@@ -159,20 +165,32 @@ export class ReportsService {
       creditCards,
       bankCurrencies,
     });
-    // Where each statement account's books start, as of the sheet's own date.
-    const starts = startsByAccount(openingRows(statements));
+    // Where each statement account's books start, as of the period's end — with the amount
+    // (step2, 2026-11-12), on the side its balance is shown: a card's amount OWED.
+    const starts = startsByAccount(openingChain(statements));
+    const startsOf = (name: string): ReportStart[] | undefined => {
+      const list = (starts.get(name) ?? []).filter(
+        (s) => !to || !s.date || s.date <= to,
+      );
+      const sign = creditCards.has(name) ? -1 : 1;
+      return list.length
+        ? list.map((s) => ({
+            date: s.date,
+            amount: sign * s.amount || 0,
+            ...(s.reason && { reason: s.reason }),
+          }))
+        : undefined;
+    };
     const sheet = view.balanceSheet;
     for (const line of [
       ...sheet.assets,
       ...sheet.liabilities,
       ...sheet.equity,
+      ...view.accounts,
     ]) {
       if (!line.bank) continue;
-      const list = (starts.get(line.name) ?? []).filter(
-        (s) => !to || !s.date || s.date <= to,
-      );
-      if (list.length)
-        line.starts = list.map((s) => ({ date: s.date, reason: s.reason }));
+      const list = startsOf(line.name);
+      if (list) line.starts = list;
     }
     return view;
   }

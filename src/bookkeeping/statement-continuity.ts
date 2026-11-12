@@ -3,7 +3,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
 import {
   num,
-  openingRows,
+  openingChain,
   type OpeningStatement,
 } from './opening-balance.util';
 import { money } from './statement-problem.util';
@@ -24,7 +24,7 @@ export function mismatchPairs(
   accounts?: ReadonlySet<string>,
 ): number[] {
   const ids = new Set<number>();
-  for (const r of openingRows(statements)) {
+  for (const r of openingChain(statements)) {
     if (r.reason?.kind !== 'MISMATCH') continue;
     if (accounts && !accounts.has(r.bankAccount)) continue;
     ids.add(r.reason.previousStatementId);

@@ -10,7 +10,13 @@ const done = (over: Partial<ProblemInput> = {}): ProblemInput => ({
   error: null,
   verification: 'VERIFIED',
   verificationDetail: [
-    { name: 'balance', expected: 10000, actual: 10000, ok: true, skipped: null },
+    {
+      name: 'balance',
+      expected: 10000,
+      actual: 10000,
+      ok: true,
+      skipped: null,
+    },
   ],
   source: 'UPLOAD',
   openingBalance: 50,
@@ -29,7 +35,13 @@ describe('statementProblem (step2, 2026-11-11)', () => {
         status: 'NEEDS_REVIEW',
         error: 'It starts at $50.00 …',
         verificationDetail: [
-          { name: 'balance', expected: 10000, actual: 9000, ok: false, skipped: null },
+          {
+            name: 'balance',
+            expected: 10000,
+            actual: 9000,
+            ok: false,
+            skipped: null,
+          },
         ],
       }),
     );
@@ -46,7 +58,13 @@ describe('statementProblem (step2, 2026-11-11)', () => {
         status: 'NEEDS_REVIEW',
         verificationDetail: [
           { name: 'balance', expected: 1, actual: 1, ok: true, skipped: null },
-          { name: 'deposits', expected: 5, actual: 4, ok: false, skipped: null },
+          {
+            name: 'deposits',
+            expected: 5,
+            actual: 4,
+            ok: false,
+            skipped: null,
+          },
         ],
       }),
     );
@@ -69,9 +87,9 @@ describe('statementProblem (step2, 2026-11-11)', () => {
       'The statement ending Feb 28, 2026 closes at $1,200.00; this one opens at $1,150.50. ' +
         "We re-read both with our strongest reader and they still don't match, so your books start again here at $1,150.50.",
     );
-    expect(statementProblem(done({ reason, rechecking: true }))?.text).toContain(
-      "We're re-reading both",
-    );
+    expect(
+      statementProblem(done({ reason, rechecking: true }))?.text,
+    ).toContain("We're re-reading both");
   });
 
   it('MISSING: names the gap', () => {
@@ -111,8 +129,20 @@ describe('statementProblem (step2, 2026-11-11)', () => {
         done({
           closingBalance: null,
           verificationDetail: [
-            { name: 'deposits', expected: 5, actual: 5, ok: true, skipped: null },
-            { name: 'runningBalance', expected: 9, actual: 9, ok: true, skipped: null },
+            {
+              name: 'deposits',
+              expected: 5,
+              actual: 5,
+              ok: true,
+              skipped: null,
+            },
+            {
+              name: 'runningBalance',
+              expected: 9,
+              actual: 9,
+              ok: true,
+              skipped: null,
+            },
           ],
         }),
       ),
@@ -130,7 +160,12 @@ describe('statementProblem (step2, 2026-11-11)', () => {
     const p = statementProblem(
       done({
         verificationDetail: [],
-        reason: { kind: 'MISSING', previousStatementId: 1, from: '2026-03-01', to: null },
+        reason: {
+          kind: 'MISSING',
+          previousStatementId: 1,
+          from: '2026-03-01',
+          to: null,
+        },
       }),
     );
     expect(p?.kind).toBe('MISSING');
@@ -145,7 +180,13 @@ describe('needsReviewText', () => {
         openingBalance: 100,
         amounts: [50, -20, -5.5],
         checks: [
-          { name: 'balance', expected: 13000, actual: 12450, ok: false, skipped: null },
+          {
+            name: 'balance',
+            expected: 13000,
+            actual: 12450,
+            ok: false,
+            skipped: null,
+          },
         ],
       }),
     ).toBe(
@@ -162,11 +203,62 @@ describe('needsReviewText', () => {
         openingBalance: null,
         amounts: [],
         checks: [
-          { name: 'deposits', expected: 500, actual: 400, ok: false, skipped: null },
+          {
+            name: 'deposits',
+            expected: 500,
+            actual: 400,
+            ok: false,
+            skipped: null,
+          },
         ],
       }),
     ).toContain(
       "don't add up to the bank's own figures: Deposits: statement $5.00, read $4.00 (off by $1.00). We re-read it 1 time,",
+    );
+  });
+});
+
+describe('ENDING and the balance across a gap (step2, 2026-11-12)', () => {
+  it('a read statement whose opening ± its rows misses its closing is ENDING', () => {
+    const p = statementProblem(done({ net: 40 }));
+    expect(p?.kind).toBe('ENDING');
+    expect(p?.title).toBe(PROBLEM_TITLES.ENDING);
+    expect(p?.text).toContain('should end at $90.00');
+    expect(p?.text).toContain('ends at $100.00 (off by $10.00)');
+    expect(statementProblem(done({ net: 50 }))).toBeNull();
+  });
+
+  it('a card ends at opening − net (the amount owed); a bank-feed month or no rows sum is never checked', () => {
+    expect(
+      statementProblem(done({ accountKind: 'CREDIT_CARD', net: -50 })),
+    ).toBeNull();
+    expect(
+      statementProblem(done({ accountKind: 'CREDIT_CARD', net: 50 }))?.kind,
+    ).toBe('ENDING');
+    expect(statementProblem(done({ source: 'PLAID', net: 1 }))).toBeNull();
+    expect(statementProblem(done())).toBeNull();
+    expect(statementProblem(done({ closingBalance: null, net: 1 }))).toBeNull();
+  });
+
+  it('MISSING says when the balance jumped across the gap ($1,024.43 → $0)', () => {
+    const p = statementProblem(
+      done({
+        openingBalance: 0,
+        closingBalance: 0,
+        net: 0,
+        reason: {
+          kind: 'MISSING',
+          previousStatementId: 273,
+          from: '2025-03-21',
+          to: '2025-06-20',
+          previousClosing: 1024.43,
+          opening: 0,
+        },
+      }),
+    );
+    expect(p?.kind).toBe('MISSING');
+    expect(p?.text).toContain(
+      'The statement before it ends at $1,024.43; this one opens at $0.00.',
     );
   });
 });

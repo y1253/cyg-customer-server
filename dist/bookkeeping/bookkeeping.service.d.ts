@@ -30,6 +30,7 @@ export interface StatementView {
     transactionCount: number;
     openingBalance: number | null;
     closingBalance: number | null;
+    endingBalance?: number | null;
     verification: string | null;
     createdAt: Date;
     processedAt: Date | null;

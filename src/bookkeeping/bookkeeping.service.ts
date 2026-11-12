@@ -28,6 +28,7 @@ import {
 import {
   ledgerOrder,
   OPENING_POSITION,
+  openingChain,
   openingRows,
   startsByAccount,
   type StartReason,
@@ -85,6 +86,11 @@ export interface StatementView {
    */
   openingBalance: number | null;
   closingBalance: number | null;
+  /**
+   * step2 (2026-11-12): where it ends — the printed closing, else opening ± its rows (a card:
+   * opening − net, the amount owed). Null when neither is known, or outside `list()`.
+   */
+  endingBalance?: number | null;
   verification: string | null;
   createdAt: Date;
   processedAt: Date | null;
@@ -269,8 +275,12 @@ function toView(
     reason?: StartReason;
     rechecked?: boolean;
     rechecking?: boolean;
+    /** Σ its own rows: the ending is checked (step2, 2026-11-12) and shown. */
+    net?: number;
   } = {},
 ): StatementView {
+  const opening = s.openingBalance === null ? null : Number(s.openingBalance);
+  const closing = s.closingBalance === null ? null : Number(s.closingBalance);
   return {
     id: s.id,
     filename: s.filename,
@@ -290,8 +300,14 @@ function toView(
     periodStart: day(s.periodStart),
     periodEnd: day(s.periodEnd),
     transactionCount: s.transactionCount,
-    openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
-    closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+    openingBalance: opening,
+    closingBalance: closing,
+    ...(extra.net !== undefined && {
+      endingBalance:
+        closing ??
+        balanceFit(opening, null, extra.net, s.accountKind === 'CREDIT_CARD')
+          .expectedClosing,
+    }),
     verification: s.verification,
     createdAt: s.createdAt,
     processedAt: s.processedAt,
@@ -299,8 +315,9 @@ function toView(
     source: s.source,
     problem: statementProblem({
       ...s,
-      openingBalance: s.openingBalance === null ? null : Number(s.openingBalance),
-      closingBalance: s.closingBalance === null ? null : Number(s.closingBalance),
+      openingBalance: opening,
+      closingBalance: closing,
+      net: extra.net,
       reason: extra.reason,
       rechecked: extra.rechecked,
       rechecking: extra.rechecking,
@@ -500,7 +517,7 @@ export class BookkeepingService {
     ]);
     // The same rows the ledger shows as "Starting balance", so the folders agree with it.
     const starts = new Map(
-      [...startsByAccount(openingRows(opening)).values()]
+      [...startsByAccount(openingChain(opening)).values()]
         .flat()
         .map((s) => [
           s.statementId,
@@ -508,6 +525,9 @@ export class BookkeepingService {
         ]),
     );
     const byId = new Map(rows.map((r) => [r.id, r]));
+    const nets = new Map(
+      [...opening, ...(opening.bridges ?? [])].map((o) => [o.id, o.net]),
+    );
     const busy = (r?: BankStatement) =>
       r?.status === StatementStatus.PENDING ||
       r?.status === StatementStatus.PROCESSING;
@@ -521,6 +541,7 @@ export class BookkeepingService {
       return {
         ...toView(r, currencies, {
           reason,
+          net: nets.get(r.id),
           rechecked:
             r.chainRereadAt !== null && previous?.chainRereadAt != null,
           // The strong re-read of the pair is queued or running (the earlier one, or
@@ -976,7 +997,9 @@ export class BookkeepingService {
       },
     });
     return {
-      statement: toView(checked),
+      statement: toView(checked, undefined, {
+        net: Number(sum._sum.amount ?? 0),
+      }),
       ...fit,
       ...(fit.balancesMatch !== true && {
         advice:

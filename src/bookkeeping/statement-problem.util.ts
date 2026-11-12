@@ -7,6 +7,9 @@ import { describeCheck, type Check } from './reconcile.util';
  * these, said plainly on its row on Bank feeds (worst first when two apply):
  * - BALANCE: its own transactions do not add up to its balances / totals, after every
  *   re-read (NEEDS_REVIEW — out of the books).
+ * - ENDING (step2, 2026-11-12): read and in the books (DONE), but its opening ± the rows
+ *   we read does not reach its own closing balance — whatever `verification` says (a balance
+ *   set from the chat, a strong re-read that was set back, a customer's figures).
  * - MISMATCH: it opens at a different balance than the previous statement of the account
  *   ended, although their periods touch — both were re-read once on the strong model
  *   (`StatementContinuityService`); the books start again here.
@@ -15,7 +18,12 @@ import { describeCheck, type Check } from './reconcile.util';
  *   balance to check them against), even on the strong model (in the books as read).
  * Computed on READ, never stored, so a move / delete / retry never leaves a stale one.
  */
-export type ProblemKind = 'BALANCE' | 'MISMATCH' | 'MISSING' | 'NO_BALANCES';
+export type ProblemKind =
+  | 'BALANCE'
+  | 'ENDING'
+  | 'MISMATCH'
+  | 'MISSING'
+  | 'NO_BALANCES';
 
 export interface StatementProblem {
   kind: ProblemKind;
@@ -27,6 +35,7 @@ export interface StatementProblem {
 
 export const PROBLEM_TITLES: Record<ProblemKind, string> = {
   BALANCE: "Transactions don't match the balance",
+  ENDING: "Ending balance doesn't match",
   MISMATCH: "Statement didn't match",
   MISSING: 'Missing statements',
   NO_BALANCES: "Couldn't check — balances not read",
@@ -42,6 +51,10 @@ export interface ProblemInput {
   source: string;
   openingBalance: number | null;
   closingBalance: number | null;
+  /** Σ its own rows (step2, 2026-11-12); absent = the ending is not checked here. */
+  net?: number;
+  /** 'CREDIT_CARD' = its balances are the amount OWED. */
+  accountKind?: string | null;
   /** Why the books start again at this statement (`openingRows`), if they do. */
   reason?: StartReason | null;
   /** Both statements of a MISMATCH were re-read on the strong model already. */
@@ -65,6 +78,8 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
     };
   }
   if (s.status !== 'DONE') return null;
+  const ending = endingProblem(s);
+  if (ending) return ending;
   const r = s.reason;
   if (r?.kind === 'MISMATCH') {
     const before = r.previousEnd
@@ -80,7 +95,11 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
       : s.rechecked
         ? ` We re-read both with our strongest reader and they still don't match, so your books start again here at ${money(r.opening)}.`
         : ` Your books start again here at ${money(r.opening)}.`;
-    return { kind: 'MISMATCH', title: PROBLEM_TITLES.MISMATCH, text: head + tail };
+    return {
+      kind: 'MISMATCH',
+      title: PROBLEM_TITLES.MISMATCH,
+      text: head + tail,
+    };
   }
   if (r?.kind === 'MISSING') {
     const to = r.to ? `to ${longDay(r.to)}` : 'up to this one';
@@ -88,10 +107,17 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
       s.openingBalance === null
         ? ''
         : ` Your books start again here at ${money(s.openingBalance)}.`;
+    // step2 (2026-11-12): say when the balance jumped across the gap too (#278: $1,024.43 → $0).
+    const jump =
+      r.previousClosing != null &&
+      s.openingBalance !== null &&
+      Math.round(r.previousClosing * 100) !== Math.round(s.openingBalance * 100)
+        ? ` The statement before it ends at ${money(r.previousClosing)}; this one opens at ${money(s.openingBalance)}.`
+        : '';
     return {
       kind: 'MISSING',
       title: PROBLEM_TITLES.MISSING,
-      text: `No statement from ${longDay(r.from)} ${to}.${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
+      text: `No statement from ${longDay(r.from)} ${to}.${jump}${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
     };
   }
   // A bank-feed month has no printed balances to read — it is built from them. Only
@@ -111,6 +137,31 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
     };
   }
   return null;
+}
+
+/**
+ * ENDING: a read statement (not a bank-feed month — built from its own balances) whose
+ * opening ± its rows does not reach its closing, to the cent. A card prints the balance
+ * OWED, so its purchases (negative rows) raise it: opening − net. Pure.
+ */
+function endingProblem(s: ProblemInput): StatementProblem | null {
+  if (s.source === 'PLAID' || s.net === undefined) return null;
+  if (s.openingBalance === null || s.closingBalance === null) return null;
+  const card = s.accountKind === 'CREDIT_CARD';
+  const c = (n: number) => Math.round(n * 100);
+  const should = c(s.openingBalance) + (card ? -1 : 1) * c(s.net);
+  const ends = c(s.closingBalance);
+  if (should === ends) return null;
+  const moneyIn = s.net > 0 ? s.net : 0;
+  const moneyOut = s.net < 0 ? -s.net : 0;
+  return {
+    kind: 'ENDING',
+    title: PROBLEM_TITLES.ENDING,
+    text:
+      `It starts at ${money(s.openingBalance)}; with the transactions we read (net ${moneyIn ? `${money(moneyIn)} in` : `${money(moneyOut)} out`}) it should end at ${money(should / 100)}, ` +
+      `but the statement ends at ${money(s.closingBalance)} (off by ${money(Math.abs(ends - should) / 100)}). ` +
+      'Its transactions are in your books as read — try again, or ask the AI to fix it.',
+  };
 }
 
 /**

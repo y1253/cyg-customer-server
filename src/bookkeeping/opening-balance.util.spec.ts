@@ -1,5 +1,6 @@
 import { OWNERS_LOAN } from './chart-of-accounts';
 import {
+  openingChain,
   openingRows,
   startsByAccount,
   type OpeningStatement,
@@ -313,6 +314,8 @@ describe('why an account starts again', () => {
         previousStatementId: 1,
         from: '2026-06-01',
         to: '2026-06-30',
+        previousClosing: 656.71,
+        opening: 669.97,
       },
     ]);
   });
@@ -343,6 +346,8 @@ describe('why an account starts again', () => {
       previousStatementId: 1,
       from: '2026-02-01',
       to: null,
+      previousClosing: 200,
+      opening: 900,
     });
   });
 
@@ -353,6 +358,95 @@ describe('why an account starts again', () => {
         ended(st(2, '2026-02-01', 400, null, 'TD 1'), '2026-02-28'),
       ])[1],
     ).toMatchObject({ kind: 'MISMATCH', previousClosing: 150, opening: 400 });
+  });
+});
+
+describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () => {
+  const ended = (s: OpeningStatement, periodEnd: string): OpeningStatement => ({
+    ...s,
+    periodEnd: new Date(`${periodEnd}T00:00:00Z`),
+  });
+  const card = (s: OpeningStatement): OpeningStatement => ({
+    ...s,
+    accountKind: 'CREDIT_CARD',
+  });
+
+  it('a $0 opening months after a statement ending at $1,024.43 is a MISSING break, no ledger row (Chase 4148 #278)', () => {
+    const list = [
+      card(
+        ended(
+          st(273, '2025-02-21', 0, 1024.43, 'Chase 4148', -1024.43),
+          '2025-03-20',
+        ),
+      ),
+      card(ended(st(278, '2025-06-21', 0, 0, 'Chase 4148'), '2025-07-20')),
+    ];
+    expect(openingRows(list)).toEqual([]);
+    const chain = openingChain(list);
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toMatchObject({
+      statementId: 278,
+      amount: 0,
+      silent: true,
+      reason: {
+        kind: 'MISSING',
+        previousStatementId: 273,
+        from: '2025-03-21',
+        to: '2025-06-20',
+        previousClosing: 1024.43,
+        opening: 0,
+      },
+    });
+    expect(startsByAccount(chain).get('Chase 4148')).toEqual([
+      expect.objectContaining({ statementId: 278, amount: 0 }),
+    ]);
+  });
+
+  it('a $0 opening right after a statement that did not end at $0 is a MISMATCH', () => {
+    const chain = openingChain([
+      ended(st(1, '2026-01-01', 100, 250, 'TD 1', 150), '2026-01-31'),
+      ended(st(2, '2026-02-01', 0, 50, 'TD 1', 50), '2026-02-28'),
+    ]);
+    expect(chain.map((r) => [r.statementId, r.silent, r.reason?.kind])).toEqual(
+      [
+        [1, undefined, undefined],
+        [2, true, 'MISMATCH'],
+      ],
+    );
+  });
+
+  it('a $0 opening that carries over, or an account that starts at $0, is no break', () => {
+    expect(
+      openingChain([
+        ended(st(1, '2026-01-01', 0, 0, 'TD 1'), '2026-01-31'),
+        ended(st(2, '2026-02-01', 0, 10, 'TD 1', 10), '2026-02-28'),
+      ]),
+    ).toEqual([]);
+    expect(
+      openingChain([
+        ended(st(1, '2026-01-01', 100, 0, 'TD 1', -100), '2026-01-31'),
+        ended(st(2, '2026-02-01', 0, 10, 'TD 1', 10), '2026-02-28'),
+      ]).map((r) => r.statementId),
+    ).toEqual([1]);
+  });
+
+  it('an unread opening still bridges when the periods touch, but a gap before it is shown', () => {
+    expect(
+      openingChain([
+        ended(st(1, '2026-01-01', 100, 200, 'TD 1', 100), '2026-01-31'),
+        ended(st(2, '2026-02-01', null, null, 'TD 1', 5), '2026-02-28'),
+        ended(st(3, '2026-03-01', 205, 205, 'TD 1'), '2026-03-31'),
+      ]).map((r) => r.statementId),
+    ).toEqual([1]);
+    const gap = openingChain([
+      ended(st(1, '2026-01-01', 100, 200, 'TD 1', 100), '2026-01-31'),
+      ended(st(2, '2026-04-01', null, null, 'TD 1', 5), '2026-04-30'),
+    ]);
+    expect(gap[1]).toMatchObject({
+      statementId: 2,
+      silent: true,
+      reason: { kind: 'MISSING', opening: null },
+    });
   });
 });
 

@@ -44,6 +44,17 @@ export interface ReportOptions {
   bankCurrencies?: ReadonlyMap<string, { currency: string; foreign: boolean }>;
 }
 
+/**
+ * Where a statement account's books start (step2, 2026-11-12: with the AMOUNT). `amount` is
+ * in the account's own currency on its normal side, like its balance: a bank's cash, a
+ * card's amount OWED. More than one = a break in the chain; each later one says why.
+ */
+export interface ReportStart {
+  date: string | null;
+  amount: number;
+  reason?: StartReason;
+}
+
 export interface AccountBalance {
   name: string;
   type: AccountType;
@@ -57,6 +68,8 @@ export interface AccountBalance {
   currency?: string;
   /** A foreign statement account's balance in its own currency (`balance` is converted). */
   foreignBalance?: number;
+  /** A statement account: where its books start, up to the period's end (`ReportStart`). */
+  starts?: ReportStart[];
 }
 
 export interface ReportLine {
@@ -74,7 +87,7 @@ export interface ReportLine {
    * balance" row up to the sheet's date). More than one = a break in the chain; each
    * later one says why (`StartReason`).
    */
-  starts?: Array<{ date: string | null; reason?: StartReason }>;
+  starts?: ReportStart[];
 }
 
 export interface ReportsView {

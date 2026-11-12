@@ -127,18 +127,30 @@ let ReportsService = class ReportsService {
             creditCards,
             bankCurrencies,
         });
-        const starts = (0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingRows)(statements));
+        const starts = (0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingChain)(statements));
+        const startsOf = (name) => {
+            const list = (starts.get(name) ?? []).filter((s) => !to || !s.date || s.date <= to);
+            const sign = creditCards.has(name) ? -1 : 1;
+            return list.length
+                ? list.map((s) => ({
+                    date: s.date,
+                    amount: sign * s.amount || 0,
+                    ...(s.reason && { reason: s.reason }),
+                }))
+                : undefined;
+        };
         const sheet = view.balanceSheet;
         for (const line of [
             ...sheet.assets,
             ...sheet.liabilities,
             ...sheet.equity,
+            ...view.accounts,
         ]) {
             if (!line.bank)
                 continue;
-            const list = (starts.get(line.name) ?? []).filter((s) => !to || !s.date || s.date <= to);
-            if (list.length)
-                line.starts = list.map((s) => ({ date: s.date, reason: s.reason }));
+            const list = startsOf(line.name);
+            if (list)
+                line.starts = list;
         }
         return view;
     }

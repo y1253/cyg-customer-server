@@ -22,7 +22,7 @@ import { statementProblem } from '../bookkeeping/statement-problem.util';
 import { statementLabel } from '../bookkeeping/statement-label';
 import { loadOpeningStatements } from '../bookkeeping/opening-balance.query';
 import {
-  openingRows,
+  openingChain,
   startsByAccount,
 } from '../bookkeeping/opening-balance.util';
 import { PrismaService } from '../prisma/prisma.service';
@@ -603,7 +603,7 @@ export class AssistantService {
     // MISMATCH (the previous closing is not this opening) — the same rows the folder shows.
     const startingDates = s.accountName
       ? (startsByAccount(
-          openingRows(
+          openingChain(
             await loadOpeningStatements(this.prisma, scopeOf(conversation)),
           ),
         ).get(s.accountName) ?? [])

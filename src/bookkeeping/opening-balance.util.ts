@@ -41,6 +41,12 @@ export interface OpeningRow {
   periodEnd: Date | null;
   /** Why the account starts again here; absent on its first start (that one is normal). */
   reason?: StartReason;
+  /**
+   * step2 (2026-11-12): a break with NOTHING to post — the statement opens at $0 (or its
+   * opening was not read) where the previous one did not end there. Never a ledger row
+   * (`openingRows` leaves it out); only `openingChain` returns it, so the break is shown.
+   */
+  silent?: true;
 }
 
 /**
@@ -57,6 +63,10 @@ export type StartReason =
       previousStatementId: number;
       from: string;
       to: string | null;
+      /** Where the previous statement ended (step2, 2026-11-12; null = not known). */
+      previousClosing?: number | null;
+      /** Where this one opens (null = not read). */
+      opening?: number | null;
     }
   | {
       kind: 'MISMATCH';
@@ -102,6 +112,21 @@ export function openingRows(
   statements: OpeningStatement[] & { bridges?: OpeningStatement[] },
   bridges: OpeningStatement[] = statements.bridges ?? [],
 ): OpeningRow[] {
+  return openingChain(statements, bridges).filter((r) => !r.silent);
+}
+
+/**
+ * `openingRows` plus the SILENT breaks (step2, 2026-11-12): a statement that opens at $0,
+ * or whose opening was not read, after a statement that did not end at $0 / across a gap.
+ * Chase 4148 #278 opened at $0 three months after #273 ended at $1,024.43 and the Bank
+ * feeds tab said nothing — a $0 opening never got a start, so `breakReason` never ran.
+ * What shows where an account starts (`startsByAccount`) and which pairs are re-read
+ * (`mismatchPairs`) reads THIS; the ledger, reports and export read `openingRows`.
+ */
+export function openingChain(
+  statements: OpeningStatement[] & { bridges?: OpeningStatement[] },
+  bridges: OpeningStatement[] = statements.bridges ?? [],
+): OpeningRow[] {
   const byAccount = new Map<string, OpeningStatement[]>();
   const bridgeRows = bridges.map((b) => ({ ...b, bridgeOnly: true }));
   for (const s of [...statements, ...bridgeRows]) {
@@ -125,11 +150,29 @@ export function openingRows(
         carried = carried.slice(0, MAX_CARRIED);
         continue;
       }
+      const had = carried;
       // Never cleared when it grows: the first candidates (the printed closing, then
       // opening + Σ rows) are the likeliest, so keep those. Clearing it made the 5th
       // statement after a run of unread openings look like a new start.
       carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
-      if (s.openingBalance === null || cents(s.openingBalance) === 0) continue;
+      if (s.openingBalance === null || cents(s.openingBalance) === 0) {
+        // Nothing to post, but the books do not carry over here: say so.
+        const reason = before && silentBreak(before, s, had);
+        if (reason)
+          out.push({
+            statementId: s.id,
+            bankAccount,
+            amount: 0,
+            postingDate: s.periodStart,
+            description: STARTING_BALANCE,
+            offsetAccount: OWNERS_LOAN,
+            ...doubleEntry(0, bankAccount, OWNERS_LOAN),
+            periodEnd: s.periodEnd ?? null,
+            reason,
+            silent: true,
+          });
+        continue;
+      }
       if (continues) continue;
       const sign = isCreditCard(s.accountKind) ? -1 : 1;
       const amount = (sign * cents(s.openingBalance)) / 100;
@@ -172,6 +215,14 @@ function breakReason(
   s: OpeningStatement,
 ): StartReason {
   const prevEnd = previous.periodEnd ?? null;
+  // A card prints the balance OWED: its purchases (negative rows) raise it.
+  const computed =
+    previous.openingBalance === null
+      ? null
+      : (cents(previous.openingBalance) +
+          (isCreditCard(previous.accountKind) ? -1 : 1) * cents(previous.net)) /
+        100;
+  const previousClosing = previous.closingBalance ?? computed;
   if (prevEnd) {
     const expected = prevEnd.getTime() + DAY_MS;
     const gap = s.periodStart
@@ -186,19 +237,35 @@ function breakReason(
         to: s.periodStart
           ? isoDay(new Date(s.periodStart.getTime() - DAY_MS))
           : null,
+        previousClosing,
+        opening: s.openingBalance,
       };
   }
-  const computed =
-    previous.openingBalance === null
-      ? null
-      : (cents(previous.openingBalance) + cents(previous.net)) / 100;
   return {
     kind: 'MISMATCH',
     previousStatementId: previous.id,
     previousEnd: prevEnd ? isoDay(prevEnd) : null,
-    previousClosing: previous.closingBalance ?? computed,
+    previousClosing,
     opening: s.openingBalance ?? 0,
   };
+}
+
+/**
+ * The break a statement with nothing to post ($0 or unread opening) still is (step2,
+ * 2026-11-12), or null when it carries on. A gap is always a break. With the periods
+ * touching, an UNREAD opening bridges the chain (never a break); a $0 opening is one only
+ * when the endings before it are known and none of them is $0.
+ */
+function silentBreak(
+  previous: OpeningStatement,
+  s: OpeningStatement,
+  endings: number[],
+): StartReason | null {
+  const reason = breakReason(previous, s);
+  if (reason.kind === 'MISSING') return reason;
+  if (s.openingBalance === null || !endings.length || endings.includes(0))
+    return null;
+  return reason;
 }
 
 /** Where an account's books start: one Starting balance row, as the customer sees it. */

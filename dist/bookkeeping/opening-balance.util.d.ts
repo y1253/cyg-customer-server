@@ -20,12 +20,15 @@ export interface OpeningRow {
     creditAccount: string;
     periodEnd: Date | null;
     reason?: StartReason;
+    silent?: true;
 }
 export type StartReason = {
     kind: 'MISSING';
     previousStatementId: number;
     from: string;
     to: string | null;
+    previousClosing?: number | null;
+    opening?: number | null;
 } | {
     kind: 'MISMATCH';
     previousStatementId: number;
@@ -35,6 +38,9 @@ export type StartReason = {
 };
 export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[] & {
+    bridges?: OpeningStatement[];
+}, bridges?: OpeningStatement[]): OpeningRow[];
+export declare function openingChain(statements: OpeningStatement[] & {
     bridges?: OpeningStatement[];
 }, bridges?: OpeningStatement[]): OpeningRow[];
 export interface StartingBalance {

@@ -11,7 +11,7 @@ const statement_problem_util_1 = require("./statement-problem.util");
 const scope_1 = require("./scope");
 function mismatchPairs(statements, accounts) {
     const ids = new Set();
-    for (const r of (0, opening_balance_util_1.openingRows)(statements)) {
+    for (const r of (0, opening_balance_util_1.openingChain)(statements)) {
         if (r.reason?.kind !== 'MISMATCH')
             continue;
         if (accounts && !accounts.has(r.bankAccount))
