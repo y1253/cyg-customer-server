@@ -25,6 +25,8 @@ function openingChain(statements, bridges = statements.bridges ?? []) {
         list.sort((a, b) => chainTime(a) - chainTime(b) || a.id - b.id);
         let carried = [];
         let previous;
+        let brokenBridge;
+        let inBooks = false;
         for (const s of list) {
             const before = previous;
             previous = s;
@@ -33,13 +35,21 @@ function openingChain(statements, bridges = statements.bridges ?? []) {
                 carried =
                     continues || s.openingBalance === null ? endingsOf(s, carried) : [];
                 carried = carried.slice(0, MAX_CARRIED);
+                if (continues)
+                    brokenBridge = undefined;
+                else if (s.openingBalance !== null || brokenBridge)
+                    brokenBridge = s;
                 continue;
             }
+            const review = brokenBridge && reviewReason(brokenBridge);
+            brokenBridge = undefined;
+            const first = !inBooks;
+            inBooks = true;
             const had = carried;
             carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
             if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0) {
-                const reason = before && silentBreak(before, s, had);
-                if (reason)
+                const reason = review || (before && silentBreak(before, s, had));
+                if (reason || first)
                     out.push({
                         statementId: s.id,
                         bankAccount,
@@ -49,8 +59,9 @@ function openingChain(statements, bridges = statements.bridges ?? []) {
                         offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
                         ...(0, ledger_util_1.doubleEntry)(0, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
                         periodEnd: s.periodEnd ?? null,
-                        reason,
+                        ...(reason && { reason }),
                         silent: true,
+                        ...(s.openingBalance === null && { unread: true }),
                     });
                 continue;
             }
@@ -67,7 +78,9 @@ function openingChain(statements, bridges = statements.bridges ?? []) {
                 offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
                 ...(0, ledger_util_1.doubleEntry)(amount, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
                 periodEnd: s.periodEnd ?? null,
-                ...(before && { reason: breakReason(before, s) }),
+                ...(review
+                    ? { reason: review }
+                    : before && { reason: breakReason(before, s) }),
             });
         }
     }
@@ -112,6 +125,13 @@ function breakReason(previous, s) {
         opening: s.openingBalance ?? 0,
     };
 }
+function reviewReason(bridge) {
+    return {
+        kind: 'REVIEW',
+        previousStatementId: bridge.id,
+        previousEnd: bridge.periodEnd ? isoDay(bridge.periodEnd) : null,
+    };
+}
 function silentBreak(previous, s, endings) {
     const reason = breakReason(previous, s);
     if (reason.kind === 'MISSING')
@@ -129,6 +149,7 @@ function startsByAccount(rows) {
             statementId: r.statementId,
             date: day ? isoDay(day) : null,
             amount: r.amount,
+            ...(r.unread && { unread: r.unread }),
             ...(r.reason && { reason: r.reason }),
         });
         out.set(r.bankAccount, list);

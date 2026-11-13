@@ -51,7 +51,8 @@ export interface ReportOptions {
  */
 export interface ReportStart {
   date: string | null;
-  amount: number;
+  /** Absent when the statement's opening was not read. */
+  amount?: number;
   reason?: StartReason;
 }
 

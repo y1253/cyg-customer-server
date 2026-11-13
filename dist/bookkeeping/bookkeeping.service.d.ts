@@ -38,7 +38,7 @@ export interface StatementView {
     source: string;
     startingBalance?: {
         date: string | null;
-        amount: number;
+        amount?: number;
         reason?: StartReason;
     } | null;
     problem: StatementProblem | null;

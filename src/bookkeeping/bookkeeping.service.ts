@@ -104,7 +104,8 @@ export interface StatementView {
    */
   startingBalance?: {
     date: string | null;
-    amount: number;
+    /** Absent when its opening was not read (the books start here, amount unknown). */
+    amount?: number;
     /** Why the account starts again here (absent on its first start). */
     reason?: StartReason;
   } | null;
@@ -521,7 +522,11 @@ export class BookkeepingService {
         .flat()
         .map((s) => [
           s.statementId,
-          { date: s.date, amount: s.amount, reason: s.reason },
+          {
+            date: s.date,
+            ...(!s.unread && { amount: s.amount }),
+            reason: s.reason,
+          },
         ]),
     );
     const byId = new Map(rows.map((r) => [r.id, r]));

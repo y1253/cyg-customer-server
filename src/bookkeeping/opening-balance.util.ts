@@ -47,6 +47,8 @@ export interface OpeningRow {
    * (`openingRows` leaves it out); only `openingChain` returns it, so the break is shown.
    */
   silent?: true;
+  /** A silent start whose opening was not read: where the books start, with no amount known. */
+  unread?: true;
 }
 
 /**
@@ -74,6 +76,17 @@ export type StartReason =
       previousEnd: string | null;
       previousClosing: number | null;
       opening: number;
+    }
+  | {
+      /**
+       * The statement before it could not be reconciled (NEEDS_REVIEW, out of the books) and
+       * does not carry over, so the books start again here — whatever the two balances say
+       * (2026-11-12: Amex #254 / #266 said "didn't match" while opening at exactly the
+       * closing of the NEEDS_REVIEW statement before them). Its own row already shows why.
+       */
+      kind: 'REVIEW';
+      previousStatementId: number;
+      previousEnd: string | null;
     };
 
 export const STARTING_BALANCE = 'Starting balance';
@@ -139,6 +152,9 @@ export function openingChain(
     list.sort((a, b) => chainTime(a) - chainTime(b) || a.id - b.id);
     let carried: number[] = [];
     let previous: OpeningStatement | undefined;
+    /** The NEEDS_REVIEW statement the chain broke at, until a statement in the books follows. */
+    let brokenBridge: OpeningStatement | undefined;
+    let inBooks = false;
     for (const s of list) {
       const before = previous;
       previous = s;
@@ -148,17 +164,26 @@ export function openingChain(
         carried =
           continues || s.openingBalance === null ? endingsOf(s, carried) : [];
         carried = carried.slice(0, MAX_CARRIED);
+        if (continues) brokenBridge = undefined;
+        else if (s.openingBalance !== null || brokenBridge) brokenBridge = s;
         continue;
       }
+      const review = brokenBridge && reviewReason(brokenBridge);
+      brokenBridge = undefined;
+      // The account's first statement in the books: where it starts is ALWAYS listed (step2
+      // follow-up, 2026-11-12) — a $0 / unread opening used to give no start at all, so
+      // Madam recovery's BMO 6454 (21 statements, opening $0) showed no starting balance.
+      const first = !inBooks;
+      inBooks = true;
       const had = carried;
       // Never cleared when it grows: the first candidates (the printed closing, then
       // opening + Σ rows) are the likeliest, so keep those. Clearing it made the 5th
       // statement after a run of unread openings look like a new start.
       carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
       if (s.openingBalance === null || cents(s.openingBalance) === 0) {
-        // Nothing to post, but the books do not carry over here: say so.
-        const reason = before && silentBreak(before, s, had);
-        if (reason)
+        // Nothing to post, but the books do not carry over here (or start here): say so.
+        const reason = review || (before && silentBreak(before, s, had));
+        if (reason || first)
           out.push({
             statementId: s.id,
             bankAccount,
@@ -168,8 +193,9 @@ export function openingChain(
             offsetAccount: OWNERS_LOAN,
             ...doubleEntry(0, bankAccount, OWNERS_LOAN),
             periodEnd: s.periodEnd ?? null,
-            reason,
+            ...(reason && { reason }),
             silent: true,
+            ...(s.openingBalance === null && { unread: true as const }),
           });
         continue;
       }
@@ -185,7 +211,9 @@ export function openingChain(
         offsetAccount: OWNERS_LOAN,
         ...doubleEntry(amount, bankAccount, OWNERS_LOAN),
         periodEnd: s.periodEnd ?? null,
-        ...(before && { reason: breakReason(before, s) }),
+        ...(review
+          ? { reason: review }
+          : before && { reason: breakReason(before, s) }),
       });
     }
   }
@@ -250,6 +278,15 @@ function breakReason(
   };
 }
 
+/** The books start again after a NEEDS_REVIEW statement that does not carry over. */
+function reviewReason(bridge: OpeningStatement): StartReason {
+  return {
+    kind: 'REVIEW',
+    previousStatementId: bridge.id,
+    previousEnd: bridge.periodEnd ? isoDay(bridge.periodEnd) : null,
+  };
+}
+
 /**
  * The break a statement with nothing to post ($0 or unread opening) still is (step2,
  * 2026-11-12), or null when it carries on. A gap is always a break. With the periods
@@ -274,6 +311,8 @@ export interface StartingBalance {
   /** YYYY-MM-DD: the statement's first day, else its last; null when it printed no period. */
   date: string | null;
   amount: number;
+  /** Its opening was not read: the date is known, the amount is not (`amount` is 0). */
+  unread?: true;
   /** Why the account starts again here; absent on its first start. */
   reason?: StartReason;
 }
@@ -294,6 +333,7 @@ export function startsByAccount(
       statementId: r.statementId,
       date: day ? isoDay(day) : null,
       amount: r.amount,
+      ...(r.unread && { unread: r.unread }),
       ...(r.reason && { reason: r.reason }),
     });
     out.set(r.bankAccount, list);

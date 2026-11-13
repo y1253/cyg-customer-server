@@ -21,7 +21,7 @@ export interface ReportOptions {
 }
 export interface ReportStart {
     date: string | null;
-    amount: number;
+    amount?: number;
     reason?: StartReason;
 }
 export interface AccountBalance {

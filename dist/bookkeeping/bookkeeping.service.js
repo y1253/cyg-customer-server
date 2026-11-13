@@ -281,7 +281,11 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             .flat()
             .map((s) => [
             s.statementId,
-            { date: s.date, amount: s.amount, reason: s.reason },
+            {
+                date: s.date,
+                ...(!s.unread && { amount: s.amount }),
+                reason: s.reason,
+            },
         ]));
         const byId = new Map(rows.map((r) => [r.id, r]));
         const nets = new Map([...opening, ...(opening.bridges ?? [])].map((o) => [o.id, o.net]));

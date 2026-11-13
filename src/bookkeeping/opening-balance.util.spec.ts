@@ -383,8 +383,15 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
     ];
     expect(openingRows(list)).toEqual([]);
     const chain = openingChain(list);
-    expect(chain).toHaveLength(1);
+    expect(chain).toHaveLength(2);
+    // The account's first statement opens at $0: where it starts, with no reason.
     expect(chain[0]).toMatchObject({
+      statementId: 273,
+      amount: 0,
+      silent: true,
+    });
+    expect(chain[0].reason).toBeUndefined();
+    expect(chain[1]).toMatchObject({
       statementId: 278,
       amount: 0,
       silent: true,
@@ -398,6 +405,7 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
       },
     });
     expect(startsByAccount(chain).get('Chase 4148')).toEqual([
+      expect.objectContaining({ statementId: 273, amount: 0 }),
       expect.objectContaining({ statementId: 278, amount: 0 }),
     ]);
   });
@@ -416,12 +424,15 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
   });
 
   it('a $0 opening that carries over, or an account that starts at $0, is no break', () => {
+    const zero = [
+      ended(st(1, '2026-01-01', 0, 0, 'TD 1'), '2026-01-31'),
+      ended(st(2, '2026-02-01', 0, 10, 'TD 1', 10), '2026-02-28'),
+    ];
+    expect(openingRows(zero)).toEqual([]);
+    // Only the account's first start ($0, no reason) — the second carries on.
     expect(
-      openingChain([
-        ended(st(1, '2026-01-01', 0, 0, 'TD 1'), '2026-01-31'),
-        ended(st(2, '2026-02-01', 0, 10, 'TD 1', 10), '2026-02-28'),
-      ]),
-    ).toEqual([]);
+      openingChain(zero).map((r) => [r.statementId, r.amount, r.reason]),
+    ).toEqual([[1, 0, undefined]]);
     expect(
       openingChain([
         ended(st(1, '2026-01-01', 100, 0, 'TD 1', -100), '2026-01-31'),
@@ -445,8 +456,71 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
     expect(gap[1]).toMatchObject({
       statementId: 2,
       silent: true,
+      unread: true,
       reason: { kind: 'MISSING', opening: null },
     });
+  });
+
+  it('an account whose first opening is $0 (BMO 6454, Madam recovery) or unread still has a start', () => {
+    const list = [
+      ended(st(320, null, 0, 100, 'BMO 6454', 100), '2025-01-31'),
+      ended(st(317, null, 100, 905.16, 'BMO 6454', 805.16), '2025-02-28'),
+      ended(st(338, '2025-05-04', null, null, 'Wise Eur'), '2025-12-31'),
+    ];
+    expect(openingRows(list)).toEqual([]);
+    const chain = openingChain(list);
+    const starts = startsByAccount(chain);
+    expect(starts.get('BMO 6454')).toEqual([
+      { statementId: 320, date: '2025-01-31', amount: 0 },
+    ]);
+    expect(starts.get('Wise Eur')).toEqual([
+      { statementId: 338, date: '2025-05-04', amount: 0, unread: true },
+    ]);
+  });
+
+  it('after a NEEDS_REVIEW statement that does not carry over the books start again with REVIEW, not MISMATCH (Amex #253 → #254, #265 → #266)', () => {
+    const amex = (s: OpeningStatement, end: string) => card(ended(s, end));
+    const done = [
+      amex(
+        st(254, '2025-06-26', 14757.76, 25137.76, 'Amex', -10380),
+        '2025-07-25',
+      ),
+      amex(st(264, null, 21205.76, 17688.39, 'Amex', 3517.37), '2026-05-26'),
+      amex(st(266, null, 22159.38, 21719.51, 'Amex', 439.87), '2026-07-26'),
+    ];
+    const bridges = [
+      // The account's first statement, opening $0 — closes where #254 opens.
+      amex(st(253, '2025-05-27', 0, 14757.76, 'Amex', -14757.76), '2025-06-25'),
+      // Opens at $0 though #264 ended at $17,688.39.
+      amex(st(265, '2026-05-27', 0, 22159.38, 'Amex', -4470.99), '2026-06-25'),
+    ];
+    const chain = openingChain(done, bridges);
+    // #264 continues nothing in the books (the statements between are not in this test).
+    expect(chain.map((r) => [r.statementId, r.reason?.kind])).toEqual([
+      [254, 'REVIEW'],
+      [264, 'MISSING'],
+      [266, 'REVIEW'],
+    ]);
+    expect(chain[2].reason).toEqual({
+      kind: 'REVIEW',
+      previousStatementId: 265,
+      previousEnd: '2026-06-25',
+    });
+    // Both still post their full balance: the NEEDS_REVIEW rows are not in the books.
+    expect(openingRows(done, bridges).map((r) => r.amount)).toEqual([
+      -14757.76, -21205.76, -22159.38,
+    ]);
+  });
+
+  it('a NEEDS_REVIEW statement that carries over still links the chain', () => {
+    const chain = openingChain(
+      [
+        ended(st(1, '2026-01-01', 100, 200, 'TD 1', 100), '2026-01-31'),
+        ended(st(3, '2026-03-01', 250, 300, 'TD 1', 50), '2026-03-31'),
+      ],
+      [ended(st(2, '2026-02-01', 200, 250, 'TD 1', 50), '2026-02-28')],
+    );
+    expect(chain.map((r) => r.statementId)).toEqual([1]);
   });
 });
 

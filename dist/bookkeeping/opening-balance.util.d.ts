@@ -21,6 +21,7 @@ export interface OpeningRow {
     periodEnd: Date | null;
     reason?: StartReason;
     silent?: true;
+    unread?: true;
 }
 export type StartReason = {
     kind: 'MISSING';
@@ -35,6 +36,10 @@ export type StartReason = {
     previousEnd: string | null;
     previousClosing: number | null;
     opening: number;
+} | {
+    kind: 'REVIEW';
+    previousStatementId: number;
+    previousEnd: string | null;
 };
 export declare const STARTING_BALANCE = "Starting balance";
 export declare function openingRows(statements: OpeningStatement[] & {
@@ -47,6 +52,7 @@ export interface StartingBalance {
     statementId: number;
     date: string | null;
     amount: number;
+    unread?: true;
     reason?: StartReason;
 }
 export declare function startsByAccount(rows: OpeningRow[]): Map<string, StartingBalance[]>;

@@ -176,7 +176,8 @@ export class ReportsService {
       return list.length
         ? list.map((s) => ({
             date: s.date,
-            amount: sign * s.amount || 0,
+            // Not read: the date the books start, with no amount (2026-11-12).
+            ...(!s.unread && { amount: sign * s.amount || 0 }),
             ...(s.reason && { reason: s.reason }),
           }))
         : undefined;
