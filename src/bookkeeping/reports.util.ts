@@ -4,7 +4,7 @@ import {
   UNCATEGORIZED,
   type AccountType,
 } from './chart-of-accounts';
-import type { StartReason } from './opening-balance.util';
+import type { StartDerived, StartReason } from './opening-balance.util';
 
 /** How a row with no payee is listed by name (never stored — the DB keeps null). */
 export const UNCLARIFIED_NAME = 'Unclarified name';
@@ -51,8 +51,9 @@ export interface ReportOptions {
  */
 export interface ReportStart {
   date: string | null;
-  /** Absent when the statement's opening was not read. */
-  amount?: number;
+  amount: number;
+  /** The statement's opening was not read: worked out (CLOSING) or $0 (ZERO). */
+  derived?: StartDerived;
   reason?: StartReason;
 }
 

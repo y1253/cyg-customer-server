@@ -1,6 +1,7 @@
 import { type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { PictureEnhancerService } from '../storage/picture-enhancer.service';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { type ImagePage } from './pdf-images';
 import { DocumentPipeline } from './pipeline/document-pipeline';
@@ -11,8 +12,9 @@ export declare class StatementImagesService {
     private readonly storage;
     private readonly attachments;
     private readonly pipeline?;
+    private readonly pictures?;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, attachments: AttachmentProcessorService, pipeline?: DocumentPipeline | undefined);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, attachments: AttachmentProcessorService, pipeline?: DocumentPipeline | undefined, pictures?: PictureEnhancerService | undefined);
     private isChequeLike;
     harvest(statement: Pick<BankStatement, 'id' | 'customerId' | 'bookId' | 'companyId' | 'filename' | 'accountName' | 'bankName'> & {
         periodStart: Date | null;

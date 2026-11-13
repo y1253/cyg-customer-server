@@ -74,10 +74,12 @@ describe('openingRows', () => {
     ).toEqual([3]);
   });
 
-  it('adds no row for a missing or zero opening balance', () => {
+  it('adds no row for a zero opening, or a missing one with no closing to work it out from', () => {
     expect(
-      ids([st(1, '2026-01-01', null, 200), st(2, '2026-05-01', 0, 50)]),
+      ids([st(1, '2026-01-01', null, null), st(2, '2026-05-01', 0, 50)]),
     ).toEqual([]);
+    // step2 (2026-11-13): a missing opening with a closing is worked out and posted.
+    expect(ids([st(1, '2026-01-01', null, 200)])).toEqual([1]);
   });
 
   it('chains statements that print no closing balance via opening + Σ rows (production TD case)', () => {
@@ -456,7 +458,7 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
     expect(gap[1]).toMatchObject({
       statementId: 2,
       silent: true,
-      unread: true,
+      derived: 'ZERO',
       reason: { kind: 'MISSING', opening: null },
     });
   });
@@ -474,8 +476,56 @@ describe('openingChain — breaks with nothing to post (step2, 2026-11-12)', () 
       { statementId: 320, date: '2025-01-31', amount: 0 },
     ]);
     expect(starts.get('Wise Eur')).toEqual([
-      { statementId: 338, date: '2025-05-04', amount: 0, unread: true },
+      { statementId: 338, date: '2025-05-04', amount: 0, derived: 'ZERO' },
     ]);
+  });
+
+  describe('an opening that was not read is worked out and posted (step2, 2026-11-13)', () => {
+    it('a bank: closing minus its own rows', () => {
+      const list = [ended(st(1, '2025-05-01', null, 500, 'Wise Usd', 100), '2025-05-31')];
+      expect(openingRows(list)).toMatchObject([
+        { statementId: 1, amount: 400, derived: 'CLOSING' },
+      ]);
+      expect(startsByAccount(openingChain(list)).get('Wise Usd')).toEqual([
+        { statementId: 1, date: '2025-05-01', amount: 400, derived: 'CLOSING' },
+      ]);
+    });
+
+    it('a card: purchases raise what is owed, so the opening owed is closing + net', () => {
+      const list = [card(ended(st(1, '2025-05-01', null, 900, 'Amex', -200), '2025-05-31'))];
+      expect(openingRows(list)).toMatchObject([
+        { statementId: 1, amount: -700, derived: 'CLOSING' },
+      ]);
+    });
+
+    it('nothing read at all: $0, shown but not posted', () => {
+      const list = [ended(st(1, '2025-05-01', null, null, 'Wise Eur', 50), '2025-05-31')];
+      expect(openingRows(list)).toEqual([]);
+      expect(openingChain(list)).toMatchObject([
+        { statementId: 1, amount: 0, silent: true, derived: 'ZERO' },
+      ]);
+    });
+
+    it('after a gap it is worked out too, with the reason kept', () => {
+      const list = [
+        ended(st(1, '2026-01-01', 100, 200, 'TD 1', 100), '2026-01-31'),
+        ended(st(2, '2026-04-01', null, 330, 'TD 1', 30), '2026-04-30'),
+      ];
+      expect(openingRows(list)[1]).toMatchObject({
+        statementId: 2,
+        amount: 300,
+        derived: 'CLOSING',
+        reason: { kind: 'MISSING' },
+      });
+    });
+
+    it('an unread opening that carries the chain on still gets no start', () => {
+      const list = [
+        ended(st(1, '2026-01-01', 100, 200, 'TD 1', 100), '2026-01-31'),
+        ended(st(2, '2026-02-01', null, 205, 'TD 1', 5), '2026-02-28'),
+      ];
+      expect(openingChain(list).map((r) => r.statementId)).toEqual([1]);
+    });
   });
 
   it('after a NEEDS_REVIEW statement that does not carry over the books start again with REVIEW, not MISMATCH (Amex #253 → #254, #265 → #266)', () => {

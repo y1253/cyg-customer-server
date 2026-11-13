@@ -197,8 +197,8 @@ let BookkeepingController = class BookkeepingController {
     listAttachments(scope) {
         return this.attachments.list(scope);
     }
-    async attachmentFile(scope, id, res, original) {
-        const f = await this.attachments.file(scope, id, original === '1');
+    async attachmentFile(scope, id, res, original, raw) {
+        const f = await this.attachments.file(scope, id, original === '1', raw === '1');
         res.set({
             'Content-Type': f.mimeType,
             'Content-Length': String(f.size),
@@ -554,8 +554,9 @@ __decorate([
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Res)({ passthrough: true })),
     __param(3, (0, common_1.Query)('original')),
+    __param(4, (0, common_1.Query)('raw')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Number, Object, String]),
+    __metadata("design:paramtypes", [Object, Number, Object, String, String]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "attachmentFile", null);
 __decorate([

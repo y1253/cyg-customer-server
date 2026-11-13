@@ -3,6 +3,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AttachmentStatus, Prisma, type BankStatement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { PictureEnhancerService } from '../storage/picture-enhancer.service';
 import { statementImageRef } from './attachment-match.util';
 import {
   AttachmentProcessorService,
@@ -38,6 +39,8 @@ export class StatementImagesService {
     private readonly attachments: AttachmentProcessorService,
     /** step2 (2026-11-12): OCR, to tell a cheque from a summary box. Optional for specs. */
     @Optional() private readonly pipeline?: DocumentPipeline,
+    /** step2 (2026-11-13): every cheque image is cleaned up before it is stored. */
+    @Optional() private readonly pictures?: PictureEnhancerService,
   ) {}
 
   /**
@@ -104,7 +107,12 @@ export class StatementImagesService {
         refs.push(sourceRef);
         const existing = await this.prisma.transactionAttachment.findUnique({
           where: { sourceRef },
-          select: { storageKey: true, sourceStorageKey: true, extracted: true },
+          select: {
+            storageKey: true,
+            sourceStorageKey: true,
+            originalStorageKey: true,
+            extracted: true,
+          },
         });
         // The customer's correction ("reread with note") rides along to the new read.
         const note = customerNoteOf(existing?.extracted);
@@ -116,13 +124,24 @@ export class StatementImagesService {
           existing?.sourceStorageKey ??
           existing?.storageKey ??
           `${storagePrefix(scope)}/attachments/${randomUUID()}.png`;
-        await this.storage.putBuffer(storageKey, image.png, 'image/png');
+        // step2 (2026-11-13): stored cleaned up (upright, readable size, contrast, sharpen —
+        // never cropped); the image exactly as cut from the PDF is kept beside it.
+        const clean = (await this.pictures?.enhance(image.png, 'image/png')) ?? null;
+        const originalStorageKey = clean
+          ? (existing?.originalStorageKey ??
+            `${storageKey.replace(/\.png$/i, '')}-original.png`)
+          : null;
+        if (originalStorageKey)
+          await this.storage.putBuffer(originalStorageKey, image.png, 'image/png');
+        const bytes = clean ?? image.png;
+        await this.storage.putBuffer(storageKey, bytes, 'image/png');
         if (existing?.sourceStorageKey && existing.storageKey !== storageKey) {
           await this.storage.delete(existing.storageKey).catch(() => undefined);
         }
         const queued = {
           storageKey,
           sourceStorageKey: null,
+          originalStorageKey,
           mimeType: 'image/png',
           status: AttachmentStatus.PENDING,
           transactionId: null,
@@ -134,7 +153,7 @@ export class StatementImagesService {
           attempts: 0,
           nextAttemptAt: null,
           deletedAt: null,
-          size: image.png.length,
+          size: bytes.length,
         };
         const filename = (
           image.caption?.number

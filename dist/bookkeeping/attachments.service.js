@@ -24,6 +24,7 @@ const change_feed_1 = require("../assistant/change-feed");
 const reach_1 = require("../messaging/reach");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const picture_enhancer_service_1 = require("../storage/picture-enhancer.service");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const attachment_folders_util_1 = require("./attachment-folders.util");
 const attachment_name_util_1 = require("./attachment-name.util");
@@ -94,6 +95,7 @@ function toView(a, messageCount = 0) {
         folder: (0, attachment_folders_util_1.attachmentFolder)(live ? t : null),
         messageCount,
         cropped: !!a.sourceStorageKey,
+        hasOriginal: !!a.originalStorageKey,
         siblings: [],
         ...placeOf(a, reading, live ? t : null),
         transaction: live
@@ -131,13 +133,15 @@ let AttachmentsService = class AttachmentsService {
     processor;
     config;
     images;
-    constructor(prisma, storage, openai, processor, config, images) {
+    pictures;
+    constructor(prisma, storage, openai, processor, config, images, pictures) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
         this.processor = processor;
         this.config = config;
         this.images = images;
+        this.pictures = pictures;
     }
     async recutStatements(scope, rows) {
         const covered = new Set();
@@ -193,7 +197,7 @@ let AttachmentsService = class AttachmentsService {
                 if (!type)
                     continue;
                 const key = `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}${type.ext}`;
-                await this.storage.putFile(key, file.path, type.mime);
+                const stored = await this.storeUpload(key, file.path, type.mime, type.ext);
                 const row = await this.prisma.transactionAttachment.create({
                     data: {
                         ...(0, scope_1.scopeWhere)(scope),
@@ -203,8 +207,9 @@ let AttachmentsService = class AttachmentsService {
                             : client_1.AttachmentKind.OTHER,
                         filename: file.originalname.slice(0, 255),
                         mimeType: type.mime,
-                        size: file.size,
+                        size: stored.size ?? file.size,
                         storageKey: key,
+                        originalStorageKey: stored.originalKey,
                         nameOverride,
                         folderId,
                     },
@@ -495,9 +500,25 @@ let AttachmentsService = class AttachmentsService {
             data: { deletedAt: new Date() },
         });
     }
-    async file(scope, id, original = false) {
+    async storeUpload(key, path, mime, ext) {
+        if (this.pictures?.handles(mime)) {
+            const original = await (0, promises_1.readFile)(path);
+            const clean = await this.pictures.enhance(original, mime);
+            if (clean) {
+                const originalKey = `${key.slice(0, key.length - ext.length)}-original${ext}`;
+                await this.storage.putBuffer(originalKey, original, mime);
+                await this.storage.putBuffer(key, clean, mime);
+                return { originalKey, size: clean.length };
+            }
+        }
+        await this.storage.putFile(key, path, mime);
+        return { originalKey: null, size: null };
+    }
+    async file(scope, id, original = false, raw = false) {
         const a = await this.owned(scope, id);
-        const key = (original && a.sourceStorageKey) || a.storageKey;
+        const key = (raw && a.originalStorageKey) ||
+            (original && a.sourceStorageKey) ||
+            a.storageKey;
         const info = await this.storage.head(key);
         if (!info)
             throw new common_1.NotFoundException('The file is no longer available');
@@ -505,7 +526,7 @@ let AttachmentsService = class AttachmentsService {
             const head = await this.storage.getBuffer(key);
             return {
                 stream: stream_1.Readable.from(head),
-                filename: `whole image - ${a.filename}`,
+                filename: `${key === a.originalStorageKey ? 'original' : 'whole image'} - ${a.filename}`,
                 mimeType: (0, attachment_processor_service_1.sniffImageMime)(head) ?? 'application/octet-stream',
                 size: head.length,
             };
@@ -567,11 +588,13 @@ exports.AttachmentsService = AttachmentsService = __decorate([
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
     __param(5, (0, common_1.Optional)()),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
         attachment_processor_service_1.AttachmentProcessorService,
         config_1.ConfigService,
-        statement_images_service_1.StatementImagesService])
+        statement_images_service_1.StatementImagesService,
+        picture_enhancer_service_1.PictureEnhancerService])
 ], AttachmentsService);
 //# sourceMappingURL=attachments.service.js.map

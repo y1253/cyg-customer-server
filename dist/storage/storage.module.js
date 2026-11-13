@@ -9,14 +9,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.StorageModule = void 0;
 const common_1 = require("@nestjs/common");
 const object_storage_service_1 = require("./object-storage.service");
+const picture_enhancer_service_1 = require("./picture-enhancer.service");
 let StorageModule = class StorageModule {
 };
 exports.StorageModule = StorageModule;
 exports.StorageModule = StorageModule = __decorate([
     (0, common_1.Global)(),
     (0, common_1.Module)({
-        providers: [object_storage_service_1.ObjectStorageService],
-        exports: [object_storage_service_1.ObjectStorageService],
+        providers: [object_storage_service_1.ObjectStorageService, picture_enhancer_service_1.PictureEnhancerService],
+        exports: [object_storage_service_1.ObjectStorageService, picture_enhancer_service_1.PictureEnhancerService],
     })
 ], StorageModule);
 //# sourceMappingURL=storage.module.js.map

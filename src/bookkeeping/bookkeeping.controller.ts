@@ -444,8 +444,15 @@ export class BookkeepingController {
     @Res({ passthrough: true }) res: Response,
     /** step9: `?original=1` = the whole image a cropped cheque was cut out of. */
     @Query('original') original?: string,
+    /** step2 (2026-11-13): `?raw=1` = the picture as it arrived, before the clean-up pass. */
+    @Query('raw') raw?: string,
   ): Promise<StreamableFile> {
-    const f = await this.attachments.file(scope, id, original === '1');
+    const f = await this.attachments.file(
+      scope,
+      id,
+      original === '1',
+      raw === '1',
+    );
     res.set({
       'Content-Type': f.mimeType,
       'Content-Length': String(f.size),

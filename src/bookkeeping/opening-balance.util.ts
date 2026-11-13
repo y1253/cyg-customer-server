@@ -47,9 +47,15 @@ export interface OpeningRow {
    * (`openingRows` leaves it out); only `openingChain` returns it, so the break is shown.
    */
   silent?: true;
-  /** A silent start whose opening was not read: where the books start, with no amount known. */
-  unread?: true;
+  /**
+   * step2 (2026-11-13): the statement printed no opening we could read, so the start was
+   * WORKED OUT — CLOSING = its closing balance minus its own rows (posted like a printed
+   * one), ZERO = no closing read either, so the books start at $0.
+   */
+  derived?: StartDerived;
 }
+
+export type StartDerived = 'CLOSING' | 'ZERO';
 
 /**
  * Why a statement after the first gets its own Starting balance — the only two causes:
@@ -105,7 +111,8 @@ export const STARTING_BALANCE = 'Starting balance';
  * TD 5234's March statement continued February through two statements with no opening
  * read (2026-10-19; comparing with the direct predecessor alone found no ending). Any other
  * statement (the first one, or one after a real gap) gets its full printed balance (user's
- * decision, kept 2026-10-18). No opening balance, or zero → no row.
+ * decision, kept 2026-10-18). Zero → no row. An opening that was not read is worked out
+ * from the statement's closing balance and rows (step2, 2026-11-13) and posted the same way.
  *
  * A CREDIT CARD's printed balance is a DEBT: "Previous balance $500" is −$500 on the card
  * (debit Owner's Loan / credit the card), so with purchases negative and payments positive
@@ -181,22 +188,29 @@ export function openingChain(
       // statement after a run of unread openings look like a new start.
       carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
       if (s.openingBalance === null || cents(s.openingBalance) === 0) {
-        // Nothing to post, but the books do not carry over here (or start here): say so.
+        // Nothing printed to post, but the books do not carry over here (or start here): say so.
         const reason = review || (before && silentBreak(before, s, had));
-        if (reason || first)
-          out.push({
-            statementId: s.id,
-            bankAccount,
-            amount: 0,
-            postingDate: s.periodStart,
-            description: STARTING_BALANCE,
-            offsetAccount: OWNERS_LOAN,
-            ...doubleEntry(0, bankAccount, OWNERS_LOAN),
-            periodEnd: s.periodEnd ?? null,
-            ...(reason && { reason }),
-            silent: true,
-            ...(s.openingBalance === null && { unread: true as const }),
-          });
+        if (!reason && !first) continue;
+        // step2 (2026-11-13, user: "always a starting balance, even on a statement that
+        // has none"): an unread opening that starts the books is WORKED OUT from the
+        // statement's own closing balance and rows, and posted like a printed one.
+        const worked = s.openingBalance === null ? workedOutOpening(s) : null;
+        const derived: StartDerived | undefined =
+          s.openingBalance !== null ? undefined : worked === null ? 'ZERO' : 'CLOSING';
+        const amount = worked === null ? 0 : worked;
+        out.push({
+          statementId: s.id,
+          bankAccount,
+          amount,
+          postingDate: s.periodStart,
+          description: STARTING_BALANCE,
+          offsetAccount: OWNERS_LOAN,
+          ...doubleEntry(amount, bankAccount, OWNERS_LOAN),
+          periodEnd: s.periodEnd ?? null,
+          ...(reason && { reason }),
+          ...(cents(amount) === 0 && { silent: true as const }),
+          ...(derived && { derived }),
+        });
         continue;
       }
       if (continues) continue;
@@ -278,6 +292,20 @@ function breakReason(
   };
 }
 
+/**
+ * The opening a statement whose opening was not read must have had, signed like a ledger
+ * amount (a card's balance OWED is negative): its closing minus its own rows — a card's
+ * purchases (negative rows) RAISE what is owed, so owed opening = closing + net. Null
+ * when no closing was read either, or the result is $0.
+ */
+function workedOutOpening(s: OpeningStatement): number | null {
+  if (s.closingBalance === null) return null;
+  const card = isCreditCard(s.accountKind);
+  const opening = cents(s.closingBalance) + (card ? 1 : -1) * cents(s.net);
+  if (opening === 0) return null;
+  return ((card ? -1 : 1) * opening) / 100;
+}
+
 /** The books start again after a NEEDS_REVIEW statement that does not carry over. */
 function reviewReason(bridge: OpeningStatement): StartReason {
   return {
@@ -311,8 +339,8 @@ export interface StartingBalance {
   /** YYYY-MM-DD: the statement's first day, else its last; null when it printed no period. */
   date: string | null;
   amount: number;
-  /** Its opening was not read: the date is known, the amount is not (`amount` is 0). */
-  unread?: true;
+  /** Its opening was not read, so the amount was worked out (`OpeningRow.derived`). */
+  derived?: StartDerived;
   /** Why the account starts again here; absent on its first start. */
   reason?: StartReason;
 }
@@ -333,7 +361,7 @@ export function startsByAccount(
       statementId: r.statementId,
       date: day ? isoDay(day) : null,
       amount: r.amount,
-      ...(r.unread && { unread: r.unread }),
+      ...(r.derived && { derived: r.derived }),
       ...(r.reason && { reason: r.reason }),
     });
     out.set(r.bankAccount, list);

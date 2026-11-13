@@ -596,6 +596,7 @@ export class AttachmentProcessorService {
             mimeType: files.originalMime,
             size: files.originalSize,
             storageKey: files.originalKey,
+            originalStorageKey: row.originalStorageKey,
             source: row.source,
             sourcePhone: row.sourcePhone,
             sourceRef: ref,

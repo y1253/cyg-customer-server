@@ -4,6 +4,7 @@ import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { PictureEnhancerService } from '../storage/picture-enhancer.service';
 import type { AttachmentReading } from './attachment-extractor';
 import { AttachmentProcessorService } from './attachment-processor.service';
 import { type FileBucket } from './attachment-name.util';
@@ -34,6 +35,7 @@ export interface AttachmentView {
     folder: string | null;
     messageCount: number;
     cropped: boolean;
+    hasOriginal: boolean;
     siblings: number[];
     name: string | null;
     bucket: FileBucket;
@@ -67,7 +69,8 @@ export declare class AttachmentsService {
     private readonly processor;
     private readonly config?;
     private readonly images?;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined, images?: StatementImagesService | undefined);
+    private readonly pictures?;
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: AttachmentProcessorService, config?: ConfigService | undefined, images?: StatementImagesService | undefined, pictures?: PictureEnhancerService | undefined);
     private recutStatements;
     upload(scope: BookScope, files: Express.Multer.File[], transactionId: number | null, place?: {
         name?: string | null;
@@ -94,7 +97,8 @@ export declare class AttachmentsService {
     }): Promise<AttachmentView>;
     private folder;
     remove(scope: BookScope, id: number): Promise<void>;
-    file(scope: BookScope, id: number, original?: boolean): Promise<{
+    private storeUpload;
+    file(scope: BookScope, id: number, original?: boolean, raw?: boolean): Promise<{
         stream: Readable;
         filename: string;
         mimeType: string;

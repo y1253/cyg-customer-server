@@ -31,6 +31,7 @@ import {
   openingChain,
   openingRows,
   startsByAccount,
+  type StartDerived,
   type StartReason,
 } from './opening-balance.util';
 import { cents, describeCheck, type Check } from './reconcile.util';
@@ -104,8 +105,10 @@ export interface StatementView {
    */
   startingBalance?: {
     date: string | null;
-    /** Absent when its opening was not read (the books start here, amount unknown). */
-    amount?: number;
+    /** Ledger-signed (a card's amount OWED is negative). */
+    amount: number;
+    /** Its opening was not read, so the amount was worked out (step2, 2026-11-13). */
+    derived?: StartDerived;
     /** Why the account starts again here (absent on its first start). */
     reason?: StartReason;
   } | null;
@@ -524,7 +527,8 @@ export class BookkeepingService {
           s.statementId,
           {
             date: s.date,
-            ...(!s.unread && { amount: s.amount }),
+            amount: s.amount,
+            ...(s.derived && { derived: s.derived }),
             reason: s.reason,
           },
         ]),

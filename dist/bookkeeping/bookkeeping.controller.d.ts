@@ -69,7 +69,7 @@ export declare class BookkeepingController {
     communicationPage(scope: BookScope, channel: string, before?: string): Promise<CommPage>;
     intake(scope: BookScope): Promise<IntakeView>;
     listAttachments(scope: BookScope): Promise<AttachmentView[]>;
-    attachmentFile(scope: BookScope, id: number, res: Response, original?: string): Promise<StreamableFile>;
+    attachmentFile(scope: BookScope, id: number, res: Response, original?: string, raw?: string): Promise<StreamableFile>;
     setAttachmentTransaction(scope: BookScope, id: number, dto: SetAttachmentTransactionDto): Promise<AttachmentView>;
     applyAttachmentItems(scope: BookScope, id: number): Promise<AttachmentView>;
     retryAttachments(scope: BookScope, dto: RetryAttachmentsDto): Promise<{

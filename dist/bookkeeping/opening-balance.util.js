@@ -49,20 +49,24 @@ function openingChain(statements, bridges = statements.bridges ?? []) {
             carried = endingsOf(s, carried).slice(0, MAX_CARRIED);
             if (s.openingBalance === null || (0, reconcile_util_1.cents)(s.openingBalance) === 0) {
                 const reason = review || (before && silentBreak(before, s, had));
-                if (reason || first)
-                    out.push({
-                        statementId: s.id,
-                        bankAccount,
-                        amount: 0,
-                        postingDate: s.periodStart,
-                        description: exports.STARTING_BALANCE,
-                        offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
-                        ...(0, ledger_util_1.doubleEntry)(0, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
-                        periodEnd: s.periodEnd ?? null,
-                        ...(reason && { reason }),
-                        silent: true,
-                        ...(s.openingBalance === null && { unread: true }),
-                    });
+                if (!reason && !first)
+                    continue;
+                const worked = s.openingBalance === null ? workedOutOpening(s) : null;
+                const derived = s.openingBalance !== null ? undefined : worked === null ? 'ZERO' : 'CLOSING';
+                const amount = worked === null ? 0 : worked;
+                out.push({
+                    statementId: s.id,
+                    bankAccount,
+                    amount,
+                    postingDate: s.periodStart,
+                    description: exports.STARTING_BALANCE,
+                    offsetAccount: chart_of_accounts_1.OWNERS_LOAN,
+                    ...(0, ledger_util_1.doubleEntry)(amount, bankAccount, chart_of_accounts_1.OWNERS_LOAN),
+                    periodEnd: s.periodEnd ?? null,
+                    ...(reason && { reason }),
+                    ...((0, reconcile_util_1.cents)(amount) === 0 && { silent: true }),
+                    ...(derived && { derived }),
+                });
                 continue;
             }
             if (continues)
@@ -125,6 +129,15 @@ function breakReason(previous, s) {
         opening: s.openingBalance ?? 0,
     };
 }
+function workedOutOpening(s) {
+    if (s.closingBalance === null)
+        return null;
+    const card = (0, exports.isCreditCard)(s.accountKind);
+    const opening = (0, reconcile_util_1.cents)(s.closingBalance) + (card ? 1 : -1) * (0, reconcile_util_1.cents)(s.net);
+    if (opening === 0)
+        return null;
+    return ((card ? -1 : 1) * opening) / 100;
+}
 function reviewReason(bridge) {
     return {
         kind: 'REVIEW',
@@ -149,7 +162,7 @@ function startsByAccount(rows) {
             statementId: r.statementId,
             date: day ? isoDay(day) : null,
             amount: r.amount,
-            ...(r.unread && { unread: r.unread }),
+            ...(r.derived && { derived: r.derived }),
             ...(r.reason && { reason: r.reason }),
         });
         out.set(r.bankAccount, list);

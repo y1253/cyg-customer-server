@@ -1,5 +1,5 @@
 import { type AccountType } from './chart-of-accounts';
-import type { StartReason } from './opening-balance.util';
+import type { StartDerived, StartReason } from './opening-balance.util';
 export declare const UNCLARIFIED_NAME = "Unclarified name";
 export interface ReportRow {
     amount: number;
@@ -21,7 +21,8 @@ export interface ReportOptions {
 }
 export interface ReportStart {
     date: string | null;
-    amount?: number;
+    amount: number;
+    derived?: StartDerived;
     reason?: StartReason;
 }
 export interface AccountBalance {

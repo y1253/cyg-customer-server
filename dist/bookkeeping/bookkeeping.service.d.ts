@@ -3,7 +3,7 @@ import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
-import { type StartReason } from './opening-balance.util';
+import { type StartDerived, type StartReason } from './opening-balance.util';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { type StatementProblem } from './statement-problem.util';
@@ -38,7 +38,8 @@ export interface StatementView {
     source: string;
     startingBalance?: {
         date: string | null;
-        amount?: number;
+        amount: number;
+        derived?: StartDerived;
         reason?: StartReason;
     } | null;
     problem: StatementProblem | null;

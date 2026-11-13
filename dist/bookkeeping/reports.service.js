@@ -134,7 +134,8 @@ let ReportsService = class ReportsService {
             return list.length
                 ? list.map((s) => ({
                     date: s.date,
-                    ...(!s.unread && { amount: sign * s.amount || 0 }),
+                    amount: sign * s.amount || 0,
+                    ...(s.derived && { derived: s.derived }),
                     ...(s.reason && { reason: s.reason }),
                 }))
                 : undefined;

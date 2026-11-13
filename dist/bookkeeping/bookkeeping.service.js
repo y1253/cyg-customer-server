@@ -283,7 +283,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             s.statementId,
             {
                 date: s.date,
-                ...(!s.unread && { amount: s.amount }),
+                amount: s.amount,
+                ...(s.derived && { derived: s.derived }),
                 reason: s.reason,
             },
         ]));

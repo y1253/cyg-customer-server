@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { unlink } from 'fs/promises';
+import { readFile, unlink } from 'fs/promises';
 import {
   BadRequestException,
   Injectable,
@@ -20,6 +20,7 @@ import { changeFeed } from '../assistant/change-feed';
 import { firmReach } from '../messaging/reach';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
+import { PictureEnhancerService } from '../storage/picture-enhancer.service';
 import type { AttachmentReading } from './attachment-extractor';
 import {
   AttachmentProcessorService,
@@ -88,6 +89,11 @@ export interface AttachmentView {
    * side by side) — `GET attachments/:id/file?original=1` gives the whole image.
    */
   cropped: boolean;
+  /**
+   * step2 (2026-11-13): the picture was cleaned up before it was stored — `?raw=1` gives
+   * it exactly as it arrived.
+   */
+  hasOriginal: boolean;
   /** step9: the other documents read off the same image (`doc:<row>:<n>` rows), by id. */
   siblings: number[];
   /**
@@ -209,6 +215,7 @@ function toView(a: Loaded, messageCount = 0): AttachmentView {
     folder: attachmentFolder(live ? t : null),
     messageCount,
     cropped: !!a.sourceStorageKey,
+    hasOriginal: !!a.originalStorageKey,
     siblings: [],
     ...placeOf(a, reading, live ? t : null),
     transaction: live
@@ -265,6 +272,8 @@ export class AttachmentsService {
     @Optional() private readonly config?: ConfigService,
     /** step2 (2026-11-12): a statement-cut file read again is cut again from the PDF. */
     @Optional() private readonly images?: StatementImagesService,
+    /** step2 (2026-11-13): every picture is cleaned up before it is stored. */
+    @Optional() private readonly pictures?: PictureEnhancerService,
   ) {}
 
   /**
@@ -347,7 +356,7 @@ export class AttachmentsService {
         const type = attachmentType(file.originalname);
         if (!type) continue; // the upload filter already refused it
         const key = `${storagePrefix(scope)}/attachments/${randomUUID()}${type.ext}`;
-        await this.storage.putFile(key, file.path, type.mime);
+        const stored = await this.storeUpload(key, file.path, type.mime, type.ext);
         const row = await this.prisma.transactionAttachment.create({
           data: {
             ...scopeWhere(scope),
@@ -358,8 +367,9 @@ export class AttachmentsService {
                 : AttachmentKind.OTHER,
             filename: file.originalname.slice(0, 255),
             mimeType: type.mime,
-            size: file.size,
+            size: stored.size ?? file.size,
             storageKey: key,
+            originalStorageKey: stored.originalKey,
             nameOverride,
             folderId,
           },
@@ -760,11 +770,39 @@ export class AttachmentsService {
     });
   }
 
+  /**
+   * step2 (2026-11-13): a picture is cleaned up (`PictureEnhancerService` — upright,
+   * readable size, contrast, sharpen; never cropped) and stored at `key`, with the
+   * untouched upload kept beside it at `<key>-original<ext>`. Anything else — or a picture
+   * the pass could not handle — is stored exactly as sent.
+   */
+  private async storeUpload(
+    key: string,
+    path: string,
+    mime: string,
+    ext: string,
+  ): Promise<{ originalKey: string | null; size: number | null }> {
+    if (this.pictures?.handles(mime)) {
+      const original = await readFile(path);
+      const clean = await this.pictures.enhance(original, mime);
+      if (clean) {
+        const originalKey = `${key.slice(0, key.length - ext.length)}-original${ext}`;
+        await this.storage.putBuffer(originalKey, original, mime);
+        await this.storage.putBuffer(key, clean, mime);
+        return { originalKey, size: clean.length };
+      }
+    }
+    await this.storage.putFile(key, path, mime);
+    return { originalKey: null, size: null };
+  }
+
   async file(
     scope: BookScope,
     id: number,
     /** step9: the whole image a cropped file was cut out of. */
     original = false,
+    /** step2 (2026-11-13): the picture exactly as it arrived, before the clean-up pass. */
+    raw = false,
   ): Promise<{
     stream: Readable;
     filename: string;
@@ -772,7 +810,10 @@ export class AttachmentsService {
     size: number;
   }> {
     const a = await this.owned(scope, id);
-    const key = (original && a.sourceStorageKey) || a.storageKey;
+    const key =
+      (raw && a.originalStorageKey) ||
+      (original && a.sourceStorageKey) ||
+      a.storageKey;
     const info = await this.storage.head(key);
     if (!info) throw new NotFoundException('The file is no longer available');
     if (key !== a.storageKey) {
@@ -780,7 +821,7 @@ export class AttachmentsService {
       const head = await this.storage.getBuffer(key);
       return {
         stream: Readable.from(head),
-        filename: `whole image - ${a.filename}`,
+        filename: `${key === a.originalStorageKey ? 'original' : 'whole image'} - ${a.filename}`,
         mimeType: sniffImageMime(head) ?? 'application/octet-stream',
         size: head.length,
       };

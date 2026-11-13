@@ -20,6 +20,7 @@ const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
+const picture_enhancer_service_1 = require("../storage/picture-enhancer.service");
 const attachment_match_util_1 = require("./attachment-match.util");
 const attachment_processor_service_1 = require("./attachment-processor.service");
 const pdf_images_1 = require("./pdf-images");
@@ -33,12 +34,14 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
     storage;
     attachments;
     pipeline;
+    pictures;
     logger = new common_1.Logger(StatementImagesService_1.name);
-    constructor(prisma, storage, attachments, pipeline) {
+    constructor(prisma, storage, attachments, pipeline, pictures) {
         this.prisma = prisma;
         this.storage = storage;
         this.attachments = attachments;
         this.pipeline = pipeline;
+        this.pictures = pictures;
     }
     async isChequeLike(image) {
         if (image.caption?.number)
@@ -71,19 +74,33 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                 refs.push(sourceRef);
                 const existing = await this.prisma.transactionAttachment.findUnique({
                     where: { sourceRef },
-                    select: { storageKey: true, sourceStorageKey: true, extracted: true },
+                    select: {
+                        storageKey: true,
+                        sourceStorageKey: true,
+                        originalStorageKey: true,
+                        extracted: true,
+                    },
                 });
                 const note = (0, attachment_processor_service_1.customerNoteOf)(existing?.extracted);
                 const storageKey = existing?.sourceStorageKey ??
                     existing?.storageKey ??
                     `${(0, scope_1.storagePrefix)(scope)}/attachments/${(0, crypto_1.randomUUID)()}.png`;
-                await this.storage.putBuffer(storageKey, image.png, 'image/png');
+                const clean = (await this.pictures?.enhance(image.png, 'image/png')) ?? null;
+                const originalStorageKey = clean
+                    ? (existing?.originalStorageKey ??
+                        `${storageKey.replace(/\.png$/i, '')}-original.png`)
+                    : null;
+                if (originalStorageKey)
+                    await this.storage.putBuffer(originalStorageKey, image.png, 'image/png');
+                const bytes = clean ?? image.png;
+                await this.storage.putBuffer(storageKey, bytes, 'image/png');
                 if (existing?.sourceStorageKey && existing.storageKey !== storageKey) {
                     await this.storage.delete(existing.storageKey).catch(() => undefined);
                 }
                 const queued = {
                     storageKey,
                     sourceStorageKey: null,
+                    originalStorageKey,
                     mimeType: 'image/png',
                     status: client_1.AttachmentStatus.PENDING,
                     transactionId: null,
@@ -95,7 +112,7 @@ let StatementImagesService = StatementImagesService_1 = class StatementImagesSer
                     attempts: 0,
                     nextAttemptAt: null,
                     deletedAt: null,
-                    size: image.png.length,
+                    size: bytes.length,
                 };
                 const filename = (image.caption?.number
                     ? `${label} cheque ${image.caption.number}.png`
@@ -239,10 +256,12 @@ exports.StatementImagesService = StatementImagesService;
 exports.StatementImagesService = StatementImagesService = StatementImagesService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(3, (0, common_1.Optional)()),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         attachment_processor_service_1.AttachmentProcessorService,
-        document_pipeline_1.DocumentPipeline])
+        document_pipeline_1.DocumentPipeline,
+        picture_enhancer_service_1.PictureEnhancerService])
 ], StatementImagesService);
 function recutPages(rows) {
     const pages = new Map();
