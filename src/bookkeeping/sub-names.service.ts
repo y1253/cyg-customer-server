@@ -1,16 +1,25 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
   type OnApplicationBootstrap,
 } from '@nestjs/common';
+import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
 import { scopeWhere, type BookScope } from './scope';
+import { remainderOf, splitTotals } from './splits.util';
 import { subNameOf } from './sub-names.util';
-import { ensureSubName, syncParentSubNames } from './sub-name-parents';
+import {
+  ensureSubName,
+  syncParentSubNames,
+  syncTaxSubNames,
+} from './sub-name-parents';
+import { TaxService } from './tax.service';
+import { nameTaxKey } from './tax.util';
 
 /** A sub-name as the Names tab shows it under its parent. */
 export interface SubNameView {
@@ -21,6 +30,14 @@ export interface SubNameView {
   name: string;
   category: string;
   rows: number;
+  /**
+   * step9 (2026-11-15): Σ of its money, in the bank's sign, tax included — a row its own
+   * share (a split its amount, a transaction what its splits leave); a tax sub-name the tax
+   * lines of that name and agency.
+   */
+  total: number;
+  /** step9: the sub-name of a name's tax lines for one agency ("Walmart - GST"). */
+  tax?: boolean;
 }
 
 /**
@@ -40,6 +57,7 @@ export class SubNamesService implements OnApplicationBootstrap {
     private readonly prisma: PrismaService,
     private readonly names: NameMemoryService,
     private readonly accounts: CustomerAccountsService,
+    private readonly tax: TaxService,
   ) {}
 
   /**
@@ -80,8 +98,14 @@ export class SubNamesService implements OnApplicationBootstrap {
     return ensureSubName(this.prisma, scope, parent, category);
   }
 
-  /** Every sub-name of the book with its parent and how many rows it has. */
+  /** Every sub-name of the book with its parent, how many rows it has and its total. */
   async list(scope: BookScope): Promise<SubNameView[]> {
+    // step9: the tax sub-names follow the names' agencies (never fails the list).
+    await syncTaxSubNames(this.prisma, scope).catch((err: unknown) =>
+      this.logger.warn(
+        `tax sub-names not synced: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
     const subs = await this.prisma.subName.findMany({
       where: { bookId: scope.bookId },
       orderBy: { name: 'asc' },
@@ -104,20 +128,130 @@ export class SubNamesService implements OnApplicationBootstrap {
     ]);
     const parentOf = new Map(parents.map((p) => [p.id, p.name]));
     const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
+    const agencies = await this.agencyNames(scope);
+    const [rowTotals, taxTotals] = await Promise.all([
+      this.rowTotals(
+        scope,
+        subs.map((s) => s.id),
+      ),
+      this.taxTotals(
+        scope,
+        subs.filter((s) => agencies.has(s.category)),
+        parentOf,
+      ),
+    ]);
     return subs.flatMap((s) => {
       const parent = parentOf.get(s.nameId);
-      return parent
+      const tax = agencies.has(s.category);
+      const total = tax
+        ? (taxTotals.get(s.id) ?? { cents: 0, rows: 0 })
+        : { cents: rowTotals.get(s.id) ?? 0, rows: rowsOf.get(s.id) ?? 0 };
+      // An agency with no rate for the name's kind gives it no tax line: nothing to list.
+      return parent && !(tax && !total.rows)
         ? [
             {
               id: s.id,
               parent,
               name: s.name,
               category: s.category,
-              rows: rowsOf.get(s.id) ?? 0,
+              rows: total.rows,
+              total: total.cents / 100,
+              ...(tax && { tax: true }),
             },
           ]
         : [];
     });
+  }
+
+  /** The book's tax agency names (removed ones too) — a sub-name in one is a tax sub-name. */
+  private async agencyNames(scope: BookScope): Promise<Set<string>> {
+    const rows = await this.prisma.taxAgency.findMany({
+      where: scopeWhere(scope),
+      select: { name: true },
+    });
+    return new Set(rows.map((r) => r.name));
+  }
+
+  /**
+   * Per sub-name: Σ of its rows' own shares in cents — a split its amount, a transaction
+   * what its splits leave (`remainderOf`, the Names tab's rule) — so nothing counts twice.
+   */
+  private async rowTotals(
+    scope: BookScope,
+    ids: number[],
+  ): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    if (!ids.length) return out;
+    const read = { deletedAt: null, status: StatementStatus.DONE };
+    const rows = await this.prisma.bankTransaction.findMany({
+      where: { ...scopeWhere(scope), subNameId: { in: ids }, statement: read },
+      select: { id: true, amount: true, splitOfId: true, subNameId: true },
+    });
+    const parentIds = rows.filter((r) => r.splitOfId === null).map((r) => r.id);
+    const splits = parentIds.length
+      ? await this.prisma.bankTransaction.findMany({
+          where: { ...scopeWhere(scope), splitOfId: { in: parentIds } },
+          select: { amount: true, splitOfId: true },
+        })
+      : [];
+    const totals = splitTotals(
+      splits.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
+    );
+    for (const r of rows) {
+      const cents = Math.round(
+        remainderOf({ ...r, amount: Number(r.amount) }, totals) * 100,
+      );
+      out.set(r.subNameId!, (out.get(r.subNameId!) ?? 0) + cents);
+    }
+    return out;
+  }
+
+  /** Per tax sub-name: Σ of its name's tax lines of that agency (cents, bank sign), and how many. */
+  private async taxTotals(
+    scope: BookScope,
+    subs: Array<{ id: number; nameId: number; category: string }>,
+    parentOf: ReadonlyMap<number, string>,
+  ): Promise<Map<number, { cents: number; rows: number }>> {
+    const out = new Map<number, { cents: number; rows: number }>();
+    if (!subs.length) return out;
+    const lines = await this.tax.linesFor(scope);
+    if (!lines.size) return out;
+    const rows = await this.prisma.bankTransaction.findMany({
+      where: { ...scopeWhere(scope), id: { in: [...lines.keys()] } },
+      select: { id: true, name: true, amount: true },
+    });
+    const subOf = new Map(
+      subs.flatMap((s) => {
+        const parent = parentOf.get(s.nameId);
+        return parent
+          ? [[`${nameTaxKey(parent)}|${s.category}`, s.id] as const]
+          : [];
+      }),
+    );
+    for (const r of rows) {
+      const sign = Number(r.amount) < 0 ? -1 : 1;
+      for (const l of lines.get(r.id) ?? []) {
+        const id = subOf.get(`${nameTaxKey(r.name)}|${l.agency}`);
+        if (id === undefined) continue;
+        const t = out.get(id) ?? { cents: 0, rows: 0 };
+        t.cents += sign * Math.round(l.amount * 100);
+        t.rows++;
+        out.set(id, t);
+      }
+    }
+    return out;
+  }
+
+  /** A tax sub-name follows its agency: its category is never changed or removed by hand. */
+  private async refuseTax(
+    scope: BookScope,
+    sub: { category: string },
+  ): Promise<void> {
+    if ((await this.agencyNames(scope)).has(sub.category)) {
+      throw new BadRequestException(
+        "This sub-name holds a tax line — it follows the name's tax agency. Change the name's agencies instead.",
+      );
+    }
   }
 
   /**
@@ -131,6 +265,7 @@ export class SubNamesService implements OnApplicationBootstrap {
     rawCategory: string,
   ): Promise<void> {
     const sub = await this.get(scope, id);
+    await this.refuseTax(scope, sub);
     const category = await this.accounts.validCategory(scope, rawCategory);
     const parent = await this.parentName(sub.nameId);
     if (
@@ -167,6 +302,7 @@ export class SubNamesService implements OnApplicationBootstrap {
   /** Remove a sub-name: its rows go back to the parent name's category. */
   async remove(scope: BookScope, id: number): Promise<void> {
     const sub = await this.get(scope, id);
+    await this.refuseTax(scope, sub);
     const parent = await this.parentName(sub.nameId);
     const category =
       (parent && (await this.names.categoryOfName(scope, parent))) ??

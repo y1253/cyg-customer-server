@@ -143,5 +143,5 @@ export declare class TaxService {
     private copyNameRow;
     moveSubNames(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     moveNameFiles(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
-    renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null): Promise<boolean>;
+    renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null, nameScope?: 'ONCE' | 'ALWAYS'): Promise<boolean>;
 }

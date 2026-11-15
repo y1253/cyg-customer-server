@@ -166,7 +166,7 @@ let BookkeepingController = class BookkeepingController {
         return this.subNames.remove(scope, id);
     }
     async renameTaxLine(scope, id, agencyId, dto) {
-        const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null);
+        const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null, dto.scope ?? 'ONCE');
         if (!ok)
             throw new common_1.NotFoundException('Tax line not found');
     }

@@ -71,6 +71,7 @@ export interface TransactionView {
     kind?: 'opening' | 'tax' | 'split' | 'fx';
     taxRate?: number;
     taxAgencyId?: number;
+    rowName?: string | null;
     attachments?: Array<{
         id: number;
         kind: AttachmentKind;

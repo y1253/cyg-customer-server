@@ -1,5 +1,6 @@
 import type { PrismaService } from '../prisma/prisma.service';
 import { cleanName } from './name-memory.util';
+import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { parentSubName, subNameOf } from './sub-names.util';
 
@@ -48,6 +49,16 @@ export async function ledgerNameId(
     select: { id: true },
   });
   return made.id;
+}
+
+/** A sub-name no row points at any more is removed (a split deleted or moved out of it). */
+export async function dropUnusedSubName(
+  prisma: PrismaService,
+  id: number | null,
+): Promise<void> {
+  if (!id) return;
+  const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
+  if (!used) await prisma.subName.deleteMany({ where: { id } });
 }
 
 /**
@@ -136,4 +147,79 @@ export async function syncParentSubNames(
     if (!used) await prisma.subName.deleteMany({ where: { id } });
   }
   return changed;
+}
+
+/**
+ * step9 (2026-11-15, user's request: "the tax agency sheet should behave like a split"): a
+ * tax line is a part of its row taken out by percentage, so each name taxed by an agency has
+ * the sub-name "<name> - <agency>" — every tax line of that name and agency is under it
+ * (the ledger finds it by name + agency; no row points at it). Made for every name's picked
+ * active agency; one no longer picked (or of a renamed / removed agency) goes once no row
+ * points at it. "Unclarified name" gets none. Returns how many were made.
+ */
+export async function syncTaxSubNames(
+  prisma: PrismaService,
+  scope: BookScope,
+): Promise<number> {
+  const [picks, agencies, names, subs] = await Promise.all([
+    prisma.ledgerNameAgency.findMany({
+      where: {
+        ...scopeWhere(scope),
+        agency: { deletedAt: null, active: true },
+      },
+      select: { name: true, agency: { select: { name: true } } },
+    }),
+    prisma.taxAgency.findMany({
+      where: scopeWhere(scope),
+      select: { name: true },
+    }),
+    prisma.ledgerName.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, name: true },
+    }),
+    prisma.subName.findMany({
+      where: { bookId: scope.bookId },
+      select: { id: true, nameId: true, category: true },
+    }),
+  ]);
+  const unclarified = UNCLARIFIED_NAME.toLowerCase();
+  const nameOf = new Map(names.map((n) => [n.id, n.name.toLowerCase()]));
+  const key = (name: string, category: string) =>
+    `${name.trim().toLowerCase()}|${category}`;
+  const want = new Map<string, { name: string; agency: string }>();
+  for (const p of picks) {
+    if (!p.name.trim() || p.name.trim().toLowerCase() === unclarified) continue;
+    want.set(key(p.name, p.agency.name), { name: p.name, agency: p.agency.name });
+  }
+  const have = new Set(
+    subs.flatMap((s) => {
+      const n = nameOf.get(s.nameId);
+      return n ? [key(n, s.category)] : [];
+    }),
+  );
+  let made = 0;
+  for (const [k, w] of want) {
+    if (have.has(k)) continue;
+    await ensureSubName(prisma, scope, w.name, w.agency);
+    made++;
+  }
+  // Stale tax sub-names: in an agency's name (any agency of the book, removed ones too),
+  // not wanted, and no row pointing at them.
+  const agencyNames = new Set(agencies.map((a) => a.name));
+  const stale = subs.filter((s) => {
+    const n = nameOf.get(s.nameId);
+    return (
+      agencyNames.has(s.category) && !(n && want.has(key(n, s.category)))
+    );
+  });
+  if (stale.length) {
+    const used = await prisma.bankTransaction.groupBy({
+      by: ['subNameId'],
+      where: { subNameId: { in: stale.map((s) => s.id) } },
+    });
+    const usedIds = new Set(used.map((u) => u.subNameId));
+    const drop = stale.filter((s) => !usedIds.has(s.id)).map((s) => s.id);
+    if (drop.length) await prisma.subName.deleteMany({ where: { id: { in: drop } } });
+  }
+  return made;
 }

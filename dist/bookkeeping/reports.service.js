@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReportsService = void 0;
 const common_1 = require("@nestjs/common");
@@ -20,6 +23,8 @@ const customer_accounts_service_1 = require("./customer-accounts.service");
 const splits_util_1 = require("./splits.util");
 const fx_service_1 = require("./fx.service");
 const scope_1 = require("./scope");
+const statement_errors_service_1 = require("./statement-errors.service");
+const statement_label_1 = require("./statement-label");
 const tax_service_1 = require("./tax.service");
 const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
@@ -28,11 +33,13 @@ let ReportsService = class ReportsService {
     tax;
     accounts;
     fx;
-    constructor(prisma, tax, accounts, fx) {
+    errors;
+    constructor(prisma, tax, accounts, fx, errors) {
         this.prisma = prisma;
         this.tax = tax;
         this.accounts = accounts;
         this.fx = fx;
+        this.errors = errors;
     }
     async reports(scope, from, to) {
         const done = {
@@ -153,15 +160,66 @@ let ReportsService = class ReportsService {
             if (list)
                 line.starts = list;
         }
+        const errors = await this.accountErrors(scope, [
+            ...statements,
+            ...statements.bridges,
+        ]);
+        for (const line of [
+            ...sheet.assets,
+            ...sheet.liabilities,
+            ...sheet.equity,
+            ...view.accounts,
+        ]) {
+            const list = line.bank ? errors.get(line.name) : undefined;
+            if (list?.length)
+                line.errors = list;
+        }
         return view;
+    }
+    async accountErrors(scope, statements) {
+        const out = new Map();
+        if (!this.errors || !statements.length)
+            return out;
+        const open = await this.errors
+            .openFor(scope, statements.map((s) => s.id))
+            .catch(() => new Map());
+        const newest = [...statements].sort((a, b) => (b.periodEnd?.getTime() ?? 0) - (a.periodEnd?.getTime() ?? 0) ||
+            b.id - a.id);
+        for (const s of newest) {
+            const list = open.get(s.id);
+            if (!list?.length)
+                continue;
+            const account = s.accountName ?? 'Bank account';
+            const statement = (0, statement_label_1.statementLabel)({
+                accountName: s.accountName,
+                bankName: s.bankName,
+                filename: s.filename ?? '',
+                periodStart: s.periodStart,
+                periodEnd: s.periodEnd ?? null,
+            });
+            const into = out.get(account) ?? [];
+            for (const e of list)
+                into.push({
+                    statementId: s.id,
+                    statement,
+                    kind: e.kind,
+                    title: e.title,
+                    text: e.text,
+                    source: e.source,
+                });
+            out.set(account, into);
+        }
+        return out;
     }
 };
 exports.ReportsService = ReportsService;
 exports.ReportsService = ReportsService = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         tax_service_1.TaxService,
         customer_accounts_service_1.CustomerAccountsService,
-        fx_service_1.FxService])
+        fx_service_1.FxService,
+        statement_errors_service_1.StatementErrorsService])
 ], ReportsService);
 //# sourceMappingURL=reports.service.js.map

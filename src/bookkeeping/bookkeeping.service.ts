@@ -55,7 +55,7 @@ import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import type { StoredTax } from './tax.service';
 import { FxService, type FxContext, type FxEntry } from './fx.service';
-import { taxSplit } from './tax.util';
+import { nameTaxKey, taxSplit } from './tax.util';
 
 export interface StatementView {
   id: number;
@@ -180,6 +180,8 @@ export interface TransactionView {
   taxRate?: number;
   /** On a tax row: the agency — the key for renaming the line. */
   taxAgencyId?: number;
+  /** step9: on a tax row, the name of the row it taxes (its "Always" rename covers that name). */
+  rowName?: string | null;
   /** On a transaction row: its receipts, cheques and voice notes. */
   attachments?: Array<{ id: number; kind: AttachmentKind; filename: string }>;
   /**
@@ -258,10 +260,18 @@ function withFx(
   });
 }
 
-/** A row without its tax, then one line per agency (named by the customer, or as the row). */
+/**
+ * A row without its tax, then one line per agency (named by the customer, or as the row).
+ * step9 (2026-11-15): a line not renamed shows its own sub-name "<name> - <agency>"
+ * (`taxSubName`), never the row's.
+ */
 function withTaxLines(
   p: TransactionView,
   lines: StoredTax[] | undefined,
+  taxSubName: (
+    name: string | null,
+    agency: string,
+  ) => { id: number; name: string } | undefined = () => undefined,
 ): TransactionView[] {
   if (!lines?.length) return [p];
   const split = taxSplit(p, lines);
@@ -274,9 +284,14 @@ function withTaxLines(
         key: `x:${p.id}:${lines[i].agencyId}`,
         attachments: undefined,
         name: lines[i].name ?? p.name,
+        subName:
+          lines[i].name === null
+            ? taxSubName(p.name, lines[i].agency)
+            : undefined,
         kind: 'tax',
         taxRate: lines[i].rate,
         taxAgencyId: lines[i].agencyId,
+        rowName: p.name,
       }),
     ),
   ];
@@ -653,10 +668,30 @@ export class BookkeepingService {
       }),
       this.prisma.subName.findMany({
         where: { bookId: scope.bookId },
-        select: { id: true, name: true },
+        select: { id: true, name: true, nameId: true, category: true },
       }),
     ]);
-    const subNameOf = new Map(subNames.map((s) => [s.id, s]));
+    const subNameOf = new Map(
+      subNames.map((s) => [s.id, { id: s.id, name: s.name }]),
+    );
+    // step9: a tax line's sub-name, by its row's name and its agency.
+    const subParents = subNames.length
+      ? await this.prisma.ledgerName.findMany({
+          where: { id: { in: [...new Set(subNames.map((s) => s.nameId))] } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const parentNameOf = new Map(subParents.map((n) => [n.id, n.name]));
+    const taxSubs = new Map(
+      subNames.flatMap((s) => {
+        const parent = parentNameOf.get(s.nameId);
+        return parent
+          ? [[`${nameTaxKey(parent)}|${s.category}`, subNameOf.get(s.id)!] as const]
+          : [];
+      }),
+    );
+    const taxSubName = (name: string | null, agency: string) =>
+      name ? taxSubs.get(`${nameTaxKey(name)}|${agency}`) : undefined;
     const attachmentsOf = new Map<
       number,
       Array<{ id: number; kind: AttachmentKind; filename: string }>
@@ -750,9 +785,9 @@ export class BookkeepingService {
       p.kind
         ? [p]
         : [
-            ...withTaxLines(p, taxes.get(p.id)),
+            ...withTaxLines(p, taxes.get(p.id), taxSubName),
             ...(splitsOf.get(p.id) ?? []).flatMap((c) =>
-              withTaxLines(c, taxes.get(c.id)),
+              withTaxLines(c, taxes.get(c.id), taxSubName),
             ),
           ],
     );

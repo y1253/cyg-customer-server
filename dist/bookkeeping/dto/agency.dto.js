@@ -427,6 +427,7 @@ __decorate([
 ], SetSubNameCategoryDto.prototype, "category", void 0);
 class RenameTaxLineDto {
     name;
+    scope;
 }
 exports.RenameTaxLineDto = RenameTaxLineDto;
 __decorate([
@@ -436,6 +437,11 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", Object)
 ], RenameTaxLineDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsIn)(['ONCE', 'ALWAYS']),
+    __metadata("design:type", String)
+], RenameTaxLineDto.prototype, "scope", void 0);
 class SetAttachmentTransactionDto {
     transactionId;
 }

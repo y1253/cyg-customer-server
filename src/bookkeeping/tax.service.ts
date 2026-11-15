@@ -32,6 +32,7 @@ import {
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
+import { syncTaxSubNames } from './sub-name-parents';
 import { subNameOf } from './sub-names.util';
 import {
   NAME_FIELD_KINDS,
@@ -411,7 +412,7 @@ export class TaxService {
     const out = new Map<number, StoredTax[]>();
     const picks = await this.prisma.ledgerNameAgency.findMany({
       where: scopeWhere(scope),
-      select: { name: true, agencyId: true },
+      select: { name: true, agencyId: true, lineName: true },
     });
     if (!picks.length) return out;
     const [agencyRows, rows, named, ctx] = await Promise.all([
@@ -460,12 +461,22 @@ export class TaxService {
     const nameOf = new Map(
       named.map((n) => [`${n.transactionId}:${n.agencyId}`, n.name]),
     );
+    // step9: a tax line renamed with "Always" — every line of that name and agency.
+    const alwaysOf = new Map(
+      picks.flatMap((p) =>
+        p.lineName ? [[`${nameTaxKey(p.name)}:${p.agencyId}`, p.lineName]] : [],
+      ),
+    );
+    const rowNameOf = new Map(sized.map((r) => [r.id, nameTaxKey(r.name)]));
     for (const [id, lines] of nameTaxLines(sized, agenciesOf, agencies, ctx)) {
       out.set(
         id,
         lines.map((l) => ({
           ...l,
-          name: nameOf.get(`${id}:${l.agencyId}`) ?? null,
+          name:
+            nameOf.get(`${id}:${l.agencyId}`) ??
+            alwaysOf.get(`${rowNameOf.get(id)}:${l.agencyId}`) ??
+            null,
           amount: taxAmount(amountOf.get(id) ?? 0, l.rate),
         })),
       );
@@ -1080,27 +1091,33 @@ export class TaxService {
     const key = nameTaxKey(clean);
     const existing = await this.prisma.ledgerNameAgency.findMany({
       where: scopeWhere(scope),
-      select: { id: true, name: true },
+      select: { id: true, name: true, agencyId: true },
     });
+    // MySQL compares case-insensitively; matched the same way here. A pick that stays is
+    // kept (with its tax lines' "Always" name, step9).
+    const mine = existing.filter((e) => nameTaxKey(e.name) === key);
+    const kept = new Set(
+      mine.filter((e) => ids.includes(e.agencyId)).map((e) => e.agencyId),
+    );
     await this.prisma.$transaction([
-      // MySQL compares case-insensitively; matched the same way here.
       this.prisma.ledgerNameAgency.deleteMany({
         where: {
           id: {
-            in: existing
-              .filter((e) => nameTaxKey(e.name) === key)
-              .map((e) => e.id),
+            in: mine.filter((e) => !ids.includes(e.agencyId)).map((e) => e.id),
           },
         },
       }),
       this.prisma.ledgerNameAgency.createMany({
-        data: ids.map((agencyId) => ({
-          ...scopeWhere(scope),
-          name: clean,
-          agencyId,
-        })),
+        data: ids
+          .filter((agencyId) => !kept.has(agencyId))
+          .map((agencyId) => ({
+            ...scopeWhere(scope),
+            name: clean,
+            agencyId,
+          })),
       }),
     ]);
+    await syncTaxSubNames(this.prisma, scope);
     return this.names(scope);
   }
 
@@ -1139,6 +1156,7 @@ export class TaxService {
       })),
       skipDuplicates: true,
     });
+    await syncTaxSubNames(this.prisma, scope);
   }
 
   /**
@@ -1295,12 +1313,50 @@ export class TaxService {
     transactionId: number,
     agencyId: number,
     name: string | null,
+    /** step9: ALWAYS = every tax line of this agency on the transaction's name. */
+    nameScope: 'ONCE' | 'ALWAYS' = 'ONCE',
   ): Promise<boolean> {
     const lines = await this.compute(scope, {
       OR: [{ id: transactionId }, { splitOfId: transactionId }],
     });
     const line = lines.get(transactionId)?.find((l) => l.agencyId === agencyId);
     if (!line) return false;
+    if (nameScope === 'ALWAYS') {
+      const row = await this.prisma.bankTransaction.findFirst({
+        where: { ...scopeWhere(scope), id: transactionId },
+        select: { name: true },
+      });
+      const key = nameTaxKey(row?.name);
+      const picks = (
+        await this.prisma.ledgerNameAgency.findMany({
+          where: { ...scopeWhere(scope), agencyId },
+          select: { id: true, name: true },
+        })
+      ).filter((p) => nameTaxKey(p.name) === key);
+      if (!picks.length) return false;
+      const sameName = (
+        await this.prisma.bankTransaction.findMany({
+          where: { ...scopeWhere(scope), name: row?.name ?? null },
+          select: { id: true },
+        })
+      ).map((r) => r.id);
+      await this.prisma.$transaction([
+        this.prisma.ledgerNameAgency.updateMany({
+          where: { id: { in: picks.map((p) => p.id) } },
+          data: { lineName: name },
+        }),
+        // The one-time names of that name's lines give way: they all follow it now.
+        this.prisma.transactionTax.updateMany({
+          where: {
+            ...scopeWhere(scope),
+            agencyId,
+            transactionId: { in: sameName },
+          },
+          data: { name: null },
+        }),
+      ]);
+      return true;
+    }
     await this.prisma.transactionTax.upsert({
       where: { transactionId_agencyId: { transactionId, agencyId } },
       create: {

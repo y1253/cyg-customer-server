@@ -243,6 +243,7 @@ let SplitsService = class SplitsService {
     async remove(scope, id) {
         const split = await this.findSplit(scope, id);
         await this.prisma.bankTransaction.delete({ where: { id } });
+        await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, split.subNameId);
         await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [split.splitOfId]);
     }
     async setProduct(scope, id, itemName) {
@@ -287,6 +288,8 @@ let SplitsService = class SplitsService {
                 name: (0, name_memory_util_1.fallbackName)(split.name, offset, split.description),
             },
         });
+        if (split.subNameId !== subNameId)
+            await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, split.subNameId);
     }
 };
 exports.SplitsService = SplitsService;

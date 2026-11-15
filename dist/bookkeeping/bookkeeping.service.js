@@ -93,7 +93,7 @@ function withFx(views, ctx, statements) {
         ];
     });
 }
-function withTaxLines(p, lines) {
+function withTaxLines(p, lines, taxSubName = () => undefined) {
     if (!lines?.length)
         return [p];
     const split = (0, tax_util_1.taxSplit)(p, lines);
@@ -105,9 +105,13 @@ function withTaxLines(p, lines) {
             key: `x:${p.id}:${lines[i].agencyId}`,
             attachments: undefined,
             name: lines[i].name ?? p.name,
+            subName: lines[i].name === null
+                ? taxSubName(p.name, lines[i].agency)
+                : undefined,
             kind: 'tax',
             taxRate: lines[i].rate,
             taxAgencyId: lines[i].agencyId,
+            rowName: p.name,
         })),
     ];
 }
@@ -366,10 +370,24 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             }),
             this.prisma.subName.findMany({
                 where: { bookId: scope.bookId },
-                select: { id: true, name: true },
+                select: { id: true, name: true, nameId: true, category: true },
             }),
         ]);
-        const subNameOf = new Map(subNames.map((s) => [s.id, s]));
+        const subNameOf = new Map(subNames.map((s) => [s.id, { id: s.id, name: s.name }]));
+        const subParents = subNames.length
+            ? await this.prisma.ledgerName.findMany({
+                where: { id: { in: [...new Set(subNames.map((s) => s.nameId))] } },
+                select: { id: true, name: true },
+            })
+            : [];
+        const parentNameOf = new Map(subParents.map((n) => [n.id, n.name]));
+        const taxSubs = new Map(subNames.flatMap((s) => {
+            const parent = parentNameOf.get(s.nameId);
+            return parent
+                ? [[`${(0, tax_util_1.nameTaxKey)(parent)}|${s.category}`, subNameOf.get(s.id)]]
+                : [];
+        }));
+        const taxSubName = (name, agency) => name ? taxSubs.get(`${(0, tax_util_1.nameTaxKey)(name)}|${agency}`) : undefined;
         const attachmentsOf = new Map();
         for (const a of attached) {
             const list = attachmentsOf.get(a.transactionId) ?? [];
@@ -448,8 +466,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         const views = sorted.flatMap((p) => p.kind
             ? [p]
             : [
-                ...withTaxLines(p, taxes.get(p.id)),
-                ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id))),
+                ...withTaxLines(p, taxes.get(p.id), taxSubName),
+                ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id), taxSubName)),
             ]);
         const ctx = await this.fx.context(scope, statements);
         return ctx.anyForeign ? withFx(views, ctx, byId) : views;

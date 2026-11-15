@@ -89,6 +89,7 @@ export declare class SetSubNameCategoryDto {
 }
 export declare class RenameTaxLineDto {
     name?: string | null;
+    scope?: 'ONCE' | 'ALWAYS';
 }
 export declare class SetAttachmentTransactionDto {
     transactionId: number | null;

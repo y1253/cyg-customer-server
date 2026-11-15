@@ -57,6 +57,21 @@ export interface ReportStart {
   reason?: StartReason;
 }
 
+/**
+ * step9 (2026-11-15, user's request: "errors from statements always shown at the folder,
+ * balance sheet and chart of accounts — always all errors"): one open `StatementError` of a
+ * statement filed under the account, with the statement it is on.
+ */
+export interface AccountStatementError {
+  statementId: number;
+  /** "Chase 4362 · Sep 2026" (`statementLabel`). */
+  statement: string;
+  kind: string;
+  title: string;
+  text: string;
+  source: string;
+}
+
 export interface AccountBalance {
   name: string;
   type: AccountType;
@@ -72,6 +87,8 @@ export interface AccountBalance {
   foreignBalance?: number;
   /** A statement account: where its books start, up to the period's end (`ReportStart`). */
   starts?: ReportStart[];
+  /** step9 (2026-11-15): a statement account's open statement errors, worst first. */
+  errors?: AccountStatementError[];
 }
 
 export interface ReportLine {
@@ -90,6 +107,8 @@ export interface ReportLine {
    * later one says why (`StartReason`).
    */
   starts?: ReportStart[];
+  /** step9 (2026-11-15): a statement account's open statement errors, worst first. */
+  errors?: AccountStatementError[];
 }
 
 export interface ReportsView {

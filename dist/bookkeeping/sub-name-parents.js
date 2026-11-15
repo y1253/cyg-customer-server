@@ -2,8 +2,11 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureSubName = ensureSubName;
 exports.ledgerNameId = ledgerNameId;
+exports.dropUnusedSubName = dropUnusedSubName;
 exports.syncParentSubNames = syncParentSubNames;
+exports.syncTaxSubNames = syncTaxSubNames;
 const name_memory_util_1 = require("./name-memory.util");
+const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const sub_names_util_1 = require("./sub-names.util");
 async function ensureSubName(prisma, scope, parent, category) {
@@ -37,6 +40,13 @@ async function ledgerNameId(prisma, scope, name) {
         select: { id: true },
     });
     return made.id;
+}
+async function dropUnusedSubName(prisma, id) {
+    if (!id)
+        return;
+    const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
+    if (!used)
+        await prisma.subName.deleteMany({ where: { id } });
 }
 async function syncParentSubNames(prisma, scope, parentIds) {
     const parents = await prisma.bankTransaction.findMany({
@@ -110,5 +120,64 @@ async function syncParentSubNames(prisma, scope, parentIds) {
             await prisma.subName.deleteMany({ where: { id } });
     }
     return changed;
+}
+async function syncTaxSubNames(prisma, scope) {
+    const [picks, agencies, names, subs] = await Promise.all([
+        prisma.ledgerNameAgency.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                agency: { deletedAt: null, active: true },
+            },
+            select: { name: true, agency: { select: { name: true } } },
+        }),
+        prisma.taxAgency.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { name: true },
+        }),
+        prisma.ledgerName.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, name: true },
+        }),
+        prisma.subName.findMany({
+            where: { bookId: scope.bookId },
+            select: { id: true, nameId: true, category: true },
+        }),
+    ]);
+    const unclarified = reports_util_1.UNCLARIFIED_NAME.toLowerCase();
+    const nameOf = new Map(names.map((n) => [n.id, n.name.toLowerCase()]));
+    const key = (name, category) => `${name.trim().toLowerCase()}|${category}`;
+    const want = new Map();
+    for (const p of picks) {
+        if (!p.name.trim() || p.name.trim().toLowerCase() === unclarified)
+            continue;
+        want.set(key(p.name, p.agency.name), { name: p.name, agency: p.agency.name });
+    }
+    const have = new Set(subs.flatMap((s) => {
+        const n = nameOf.get(s.nameId);
+        return n ? [key(n, s.category)] : [];
+    }));
+    let made = 0;
+    for (const [k, w] of want) {
+        if (have.has(k))
+            continue;
+        await ensureSubName(prisma, scope, w.name, w.agency);
+        made++;
+    }
+    const agencyNames = new Set(agencies.map((a) => a.name));
+    const stale = subs.filter((s) => {
+        const n = nameOf.get(s.nameId);
+        return (agencyNames.has(s.category) && !(n && want.has(key(n, s.category))));
+    });
+    if (stale.length) {
+        const used = await prisma.bankTransaction.groupBy({
+            by: ['subNameId'],
+            where: { subNameId: { in: stale.map((s) => s.id) } },
+        });
+        const usedIds = new Set(used.map((u) => u.subNameId));
+        const drop = stale.filter((s) => !usedIds.has(s.id)).map((s) => s.id);
+        if (drop.length)
+            await prisma.subName.deleteMany({ where: { id: { in: drop } } });
+    }
+    return made;
 }
 //# sourceMappingURL=sub-name-parents.js.map

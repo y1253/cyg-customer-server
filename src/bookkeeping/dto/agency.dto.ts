@@ -383,6 +383,11 @@ export class RenameTaxLineDto {
   @IsString()
   @MaxLength(191)
   name?: string | null;
+
+  /** step9: ONCE (default) = this line only; ALWAYS = every line of this name and agency. */
+  @IsOptional()
+  @IsIn(['ONCE', 'ALWAYS'])
+  scope?: 'ONCE' | 'ALWAYS';
 }
 
 /** `PATCH /api/bookkeeping/attachments/:id` — attach to a transaction, or `null` to detach. */

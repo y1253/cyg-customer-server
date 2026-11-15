@@ -371,7 +371,10 @@ export class BookkeepingController {
     return this.subNames.remove(scope, id);
   }
 
-  /** Name one tax line (an agency's tax on a row) — null puts the row's own name back. */
+  /**
+   * Name one tax line (an agency's tax on a row) — null puts the row's own name back.
+   * step9: `scope` ALWAYS names every line of the row's name and that agency.
+   */
   @Patch('transactions/:id/taxes/:agencyId')
   @HttpCode(204)
   async renameTaxLine(
@@ -385,6 +388,7 @@ export class BookkeepingController {
       id,
       agencyId,
       dto.name?.trim() || null,
+      dto.scope ?? 'ONCE',
     );
     if (!ok) throw new NotFoundException('Tax line not found');
   }

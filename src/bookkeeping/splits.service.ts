@@ -14,7 +14,7 @@ import { itemKey } from './receipt-items.util';
 import { scopeWhere, type BookScope } from './scope';
 import { signedLike, splitProblem } from './splits.util';
 import { SubNamesService } from './sub-names.service';
-import { syncParentSubNames } from './sub-name-parents';
+import { dropUnusedSubName, syncParentSubNames } from './sub-name-parents';
 import { TaxService } from './tax.service';
 
 export interface SplitInput {
@@ -311,6 +311,7 @@ export class SplitsService {
   async remove(scope: BookScope, id: number): Promise<void> {
     const split = await this.findSplit(scope, id);
     await this.prisma.bankTransaction.delete({ where: { id } });
+    await dropUnusedSubName(this.prisma, split.subNameId);
     await syncParentSubNames(this.prisma, scope, [split.splitOfId!]);
   }
 
@@ -371,5 +372,7 @@ export class SplitsService {
         name: fallbackName(split.name, offset, split.description),
       },
     });
+    if (split.subNameId !== subNameId)
+      await dropUnusedSubName(this.prisma, split.subNameId);
   }
 }

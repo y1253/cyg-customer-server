@@ -25,6 +25,14 @@ export interface ReportStart {
     derived?: StartDerived;
     reason?: StartReason;
 }
+export interface AccountStatementError {
+    statementId: number;
+    statement: string;
+    kind: string;
+    title: string;
+    text: string;
+    source: string;
+}
 export interface AccountBalance {
     name: string;
     type: AccountType;
@@ -34,6 +42,7 @@ export interface AccountBalance {
     currency?: string;
     foreignBalance?: number;
     starts?: ReportStart[];
+    errors?: AccountStatementError[];
 }
 export interface ReportLine {
     name: string;
@@ -43,6 +52,7 @@ export interface ReportLine {
     currency?: string;
     foreignAmount?: number;
     starts?: ReportStart[];
+    errors?: AccountStatementError[];
 }
 export interface ReportsView {
     from: string | null;

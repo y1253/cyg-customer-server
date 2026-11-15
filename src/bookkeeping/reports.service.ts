@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { loadOpeningStatements } from './opening-balance.query';
@@ -10,6 +10,7 @@ import {
 } from './opening-balance.util';
 import {
   buildReports,
+  type AccountStatementError,
   type ReportRow,
   type ReportStart,
   type ReportsView,
@@ -19,6 +20,11 @@ import type { FxEntry } from './fx.service';
 import { remainderOf, splitTotals } from './splits.util';
 import { FxService } from './fx.service';
 import { scopeWhere, type BookScope } from './scope';
+import {
+  StatementErrorsService,
+  type StatementErrorView,
+} from './statement-errors.service';
+import { statementLabel } from './statement-label';
 import { TaxService } from './tax.service';
 import { taxSplit } from './tax.util';
 
@@ -36,6 +42,7 @@ export class ReportsService {
     private readonly tax: TaxService,
     private readonly accounts: CustomerAccountsService,
     private readonly fx: FxService,
+    @Optional() private readonly errors?: StatementErrorsService,
   ) {}
 
   async reports(
@@ -194,6 +201,72 @@ export class ReportsService {
       const list = startsOf(line.name);
       if (list) line.starts = list;
     }
+    // step9 (2026-11-15): every open statement error, under its account on the balance
+    // sheet and the chart — read (DONE) and needs-review statements alike.
+    const errors = await this.accountErrors(scope, [
+      ...statements,
+      ...statements.bridges,
+    ]);
+    for (const line of [
+      ...sheet.assets,
+      ...sheet.liabilities,
+      ...sheet.equity,
+      ...view.accounts,
+    ]) {
+      const list = line.bank ? errors.get(line.name) : undefined;
+      if (list?.length) line.errors = list;
+    }
     return view;
+  }
+
+  /** The open statement errors of these statements, by account name, newest statement first. */
+  private async accountErrors(
+    scope: BookScope,
+    statements: Array<{
+      id: number;
+      accountName: string | null;
+      bankName?: string | null;
+      filename?: string;
+      periodStart: Date | null;
+      periodEnd?: Date | null;
+    }>,
+  ): Promise<Map<string, AccountStatementError[]>> {
+    const out = new Map<string, AccountStatementError[]>();
+    if (!this.errors || !statements.length) return out;
+    const open = await this.errors
+      .openFor(
+        scope,
+        statements.map((s) => s.id),
+      )
+      .catch(() => new Map<number, StatementErrorView[]>());
+    const newest = [...statements].sort(
+      (a, b) =>
+        (b.periodEnd?.getTime() ?? 0) - (a.periodEnd?.getTime() ?? 0) ||
+        b.id - a.id,
+    );
+    for (const s of newest) {
+      const list = open.get(s.id);
+      if (!list?.length) continue;
+      const account = s.accountName ?? 'Bank account';
+      const statement = statementLabel({
+        accountName: s.accountName,
+        bankName: s.bankName,
+        filename: s.filename ?? '',
+        periodStart: s.periodStart,
+        periodEnd: s.periodEnd ?? null,
+      });
+      const into = out.get(account) ?? [];
+      for (const e of list)
+        into.push({
+          statementId: s.id,
+          statement,
+          kind: e.kind,
+          title: e.title,
+          text: e.text,
+          source: e.source,
+        });
+      out.set(account, into);
+    }
+    return out;
   }
 }
