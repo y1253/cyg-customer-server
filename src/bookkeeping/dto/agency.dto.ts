@@ -285,7 +285,7 @@ export class SplitDto {
   category!: string;
 
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0.01)
+  @Min(0)
   amount!: number;
 
   /** Remember the item's category for later receipts. */
@@ -304,6 +304,76 @@ export class SaveSplitsDto {
   @ValidateNested({ each: true })
   @Type(() => SplitDto)
   splits!: SplitDto[];
+}
+
+/**
+ * step2 (2026-11-15): `PATCH /api/bookkeeping/transactions/:id/split` — one split edited in
+ * place in the ledger. Only the fields sent change.
+ */
+export class EditSplitDto {
+  /** Positive, as typed (with its tax); 0 is allowed. */
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  amount?: number;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name?: string;
+
+  /** ONCE (default) = this split only; ALWAYS = the description's rule moves to the name. */
+  @IsOptional()
+  @IsIn(['ALWAYS', 'ONCE'])
+  nameScope?: 'ALWAYS' | 'ONCE';
+
+  /** Take the description from the name it is linked to now (the conflict question). */
+  @IsOptional()
+  @IsBoolean()
+  replace?: boolean;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  category?: string;
+
+  /** ALL = the name's category (every row of it); SUB = only this split, as a sub-name. */
+  @IsOptional()
+  @IsIn(['ALL', 'SUB'])
+  categoryScope?: 'ALL' | 'SUB';
+
+  /** The Product column; '' clears it. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  itemName?: string;
+
+  /** Remember the product's category for later receipts. */
+  @IsOptional()
+  @IsBoolean()
+  always?: boolean;
+}
+
+/** step2 (2026-11-15): `PATCH /api/bookkeeping/transactions/:id/product` — a row's Product. */
+export class SetProductDto {
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  itemName!: string;
+}
+
+/** step2 (2026-11-15): `PATCH /api/bookkeeping/sub-names/:id` — a sub-name's category. */
+export class SetSubNameCategoryDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  category!: string;
 }
 
 /** `PATCH /api/bookkeeping/transactions/:id/taxes/:agencyId` — a tax line's own name. */

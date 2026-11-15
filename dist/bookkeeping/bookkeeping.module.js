@@ -32,6 +32,7 @@ const product_categorizer_1 = require("./product-categorizer");
 const product_memory_service_1 = require("./product-memory.service");
 const reports_service_1 = require("./reports.service");
 const splits_service_1 = require("./splits.service");
+const sub_names_service_1 = require("./sub-names.service");
 const staff_book_guard_1 = require("./staff-book.guard");
 const staff_rules_controller_1 = require("./staff-rules.controller");
 const staff_rules_service_1 = require("./staff-rules.service");
@@ -80,6 +81,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
             splits_service_1.SplitsService,
+            sub_names_service_1.SubNamesService,
             staff_book_guard_1.StaffBookGuard,
             staff_rules_service_1.StaffRulesService,
             statement_extractor_1.StatementExtractor,
@@ -101,6 +103,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
             splits_service_1.SplitsService,
+            sub_names_service_1.SubNamesService,
             tax_service_1.TaxService,
         ],
     })

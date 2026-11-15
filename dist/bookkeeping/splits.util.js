@@ -24,8 +24,8 @@ function splitProblem(parentAmount, amounts) {
     if (parentAmount === 0)
         return 'A $0.00 transaction cannot be split';
     for (const a of amounts) {
-        if (!Number.isFinite(a) || a <= 0)
-            return 'Every split needs an amount above $0.00';
+        if (!Number.isFinite(a) || a < 0)
+            return 'A split amount cannot be negative';
         if (Math.abs((0, reconcile_util_1.cents)(a) - a * 100) > 1e-6)
             return 'Amounts can have at most 2 decimals';
     }

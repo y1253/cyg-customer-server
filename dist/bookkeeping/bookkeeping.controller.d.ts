@@ -10,13 +10,14 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, RenameTaxLineDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
+import { SubNamesService, type SubNameView } from './sub-names.service';
 import { TaxService, type AgencyView, type NamesView, type TaxSettingsView } from './tax.service';
 import type { ReportsView } from './reports.util';
 export declare class BookkeepingController {
@@ -28,12 +29,13 @@ export declare class BookkeepingController {
     private readonly nameMemory;
     private readonly accounts;
     private readonly splits;
+    private readonly subNames;
     private readonly attachments;
     private readonly productMemory;
     private readonly fx;
     private readonly prisma;
     private readonly communications;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService);
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;
@@ -58,6 +60,15 @@ export declare class BookkeepingController {
     saveNameRule(scope: BookScope, dto: SaveNameRuleDto): Promise<NamesView>;
     editTransaction(scope: BookScope, id: number, dto: EditTransactionDto): Promise<void>;
     saveSplits(scope: BookScope, id: number, dto: SaveSplitsDto): Promise<void>;
+    duplicateSplit(scope: BookScope, id: number): Promise<{
+        id: number;
+    }>;
+    editSplit(scope: BookScope, id: number, dto: EditSplitDto): Promise<void>;
+    deleteSplit(scope: BookScope, id: number): Promise<void>;
+    setProduct(scope: BookScope, id: number, dto: SetProductDto): Promise<void>;
+    subNameList(scope: BookScope): Promise<SubNameView[]>;
+    setSubNameCategory(scope: BookScope, id: number, dto: SetSubNameCategoryDto): Promise<void>;
+    deleteSubName(scope: BookScope, id: number): Promise<void>;
     renameTaxLine(scope: BookScope, id: number, agencyId: number, dto: RenameTaxLineDto): Promise<void>;
     mergeNames(scope: BookScope, dto: MergeDto): Promise<NamesView>;
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;

@@ -432,7 +432,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'save_splits',
     description:
-      'Split a transaction into parts (each with a category and a positive amount; the parts may not exceed the transaction). An empty list removes its splits.',
+      'Split a transaction into parts (each with a category and an amount of $0.00 or more; the parts may not exceed the transaction). An empty list removes its splits.',
     parameters: obj(
       {
         transactionId: int,

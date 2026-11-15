@@ -125,7 +125,7 @@ export class ProductMemoryService {
 
   /** The Products tab: every item on the customer's receipts, with its category. */
   async products(scope: BookScope): Promise<ProductView[]> {
-    const rows = await this.itemRows(scope);
+    const rows = await this.itemRows(scope, true);
     const keys = [...new Set(rows.map((r) => itemKey(r.itemName)))];
     const [rules, memory] = await Promise.all([
       this.itemRules(scope),
@@ -222,12 +222,20 @@ export class ProductMemoryService {
     }
   }
 
-  /** The customer's item rows: splits with a receipt line, on statements in the ledger. */
-  private async itemRows(scope: BookScope): Promise<ItemRow[]> {
+  /**
+   * The customer's item rows: splits with a receipt line, on statements in the ledger.
+   * `withProducts`: also the transactions whose Product column is filled (a one-item
+   * receipt, step2 2026-11-15) — listed on the Products tab, but never moved by a product
+   * rule: a whole transaction keeps its name's one category.
+   */
+  private async itemRows(
+    scope: BookScope,
+    withProducts = false,
+  ): Promise<ItemRow[]> {
     const rows = await this.prisma.bankTransaction.findMany({
       where: {
         ...scopeWhere(scope),
-        splitOfId: { not: null },
+        ...(!withProducts && { splitOfId: { not: null } }),
         itemName: { not: null },
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },

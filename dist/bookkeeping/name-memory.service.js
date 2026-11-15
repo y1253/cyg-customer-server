@@ -228,6 +228,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.applyEdit(scope, id, input);
         await this.syncProvenance(scope);
     }
+    async setCategoryOfName(scope, name, category) {
+        const clean = (0, name_memory_util_1.cleanName)(name);
+        if (!clean)
+            return;
+        await this.setNameCategory(scope, clean, (0, chart_of_accounts_1.normalizeAccount)(category, await this.customAccountsOf(scope)));
+        await this.syncProvenance(scope);
+    }
     async mergeNames(scope, from, into) {
         await this.applyMerge(scope, from, into);
         await this.syncProvenance(scope);
@@ -596,6 +603,32 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             : null;
         const matched = toMatched(row);
         if (row.splitOfId) {
+            if (name && name !== row.name && input.scope === 'ALWAYS') {
+                const parent = await this.prisma.bankTransaction.findFirst({
+                    where: { id: row.splitOfId, ...(0, scope_1.scopeWhere)(scope) },
+                    select: { ...MATCH_SELECT, manualEdit: true },
+                });
+                const key = parent ? (0, name_memory_util_1.descriptionKey)(parent.description) : '';
+                if (!parent || !key) {
+                    throw new common_1.BadRequestException('This transaction has no description to remember. Apply the name to this split only.');
+                }
+                await this.guardLinks(scope, 'DESCRIPTION', key, name, input.replace);
+                if (parent.manualEdit) {
+                    await this.writeRows(scope, [toMatched(parent)], (r) => ({
+                        name,
+                        category: r.offsetAccount,
+                    }));
+                    await this.clearException(scope, parent.id);
+                }
+                await this.applyRule(scope, {
+                    matchType: 'DESCRIPTION',
+                    matchKey: key,
+                    name,
+                    category,
+                    scope: 'ALWAYS',
+                    replace: true,
+                });
+            }
             await this.writeRows(scope, [matched], (r) => ({
                 name: name ?? r.name,
                 category: category ?? r.offsetAccount,
@@ -750,6 +783,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             await this.setNameCategory(scope, target, category);
         await this.tax.mergeNameFields(scope, source, target);
         await this.tax.moveNameFiles(scope, [source], target);
+        await this.tax.moveSubNames(scope, [source], target);
         await this.prisma.ledgerNameAgency.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });

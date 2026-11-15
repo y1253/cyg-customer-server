@@ -23,7 +23,9 @@ describe('hand-made splits', () => {
   it('splits may add up to the whole transaction, never more', () => {
     expect(splitProblem(-100, [30, 70])).toBeNull();
     expect(splitProblem(-100, [60, 40.01])).toMatch(/more than/);
-    expect(splitProblem(100, [0])).toMatch(/above \$0\.00/);
+    // step2 (2026-11-15): a new split starts at $0.00.
+    expect(splitProblem(100, [0, 0, 100])).toBeNull();
+    expect(splitProblem(100, [-1])).toMatch(/negative/);
     expect(splitProblem(100, [1.005])).toMatch(/2 decimals/);
     expect(splitProblem(0, [1])).toMatch(/cannot be split/);
   });

@@ -92,7 +92,7 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
         return new Map(rules.map((r) => [r.itemKey, r.category]));
     }
     async products(scope) {
-        const rows = await this.itemRows(scope);
+        const rows = await this.itemRows(scope, true);
         const keys = [...new Set(rows.map((r) => (0, receipt_items_util_1.itemKey)(r.itemName)))];
         const [rules, memory] = await Promise.all([
             this.itemRules(scope),
@@ -158,11 +158,11 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
             });
         }
     }
-    async itemRows(scope) {
+    async itemRows(scope, withProducts = false) {
         const rows = await this.prisma.bankTransaction.findMany({
             where: {
                 ...(0, scope_1.scopeWhere)(scope),
-                splitOfId: { not: null },
+                ...(!withProducts && { splitOfId: { not: null } }),
                 itemName: { not: null },
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },

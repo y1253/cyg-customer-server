@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SetSubNameCategoryDto = exports.SetProductDto = exports.EditSplitDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -325,7 +325,7 @@ __decorate([
 ], SplitDto.prototype, "category", void 0);
 __decorate([
     (0, class_validator_1.IsNumber)({ maxDecimalPlaces: 2 }),
-    (0, class_validator_1.Min)(0.01),
+    (0, class_validator_1.Min)(0),
     __metadata("design:type", Number)
 ], SplitDto.prototype, "amount", void 0);
 __decorate([
@@ -344,6 +344,87 @@ __decorate([
     (0, class_transformer_1.Type)(() => SplitDto),
     __metadata("design:type", Array)
 ], SaveSplitsDto.prototype, "splits", void 0);
+class EditSplitDto {
+    amount;
+    name;
+    nameScope;
+    replace;
+    category;
+    categoryScope;
+    itemName;
+    always;
+}
+exports.EditSplitDto = EditSplitDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsNumber)({ maxDecimalPlaces: 2 }),
+    (0, class_validator_1.Min)(0),
+    __metadata("design:type", Number)
+], EditSplitDto.prototype, "amount", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], EditSplitDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsIn)(['ALWAYS', 'ONCE']),
+    __metadata("design:type", String)
+], EditSplitDto.prototype, "nameScope", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], EditSplitDto.prototype, "replace", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], EditSplitDto.prototype, "category", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsIn)(['ALL', 'SUB']),
+    __metadata("design:type", String)
+], EditSplitDto.prototype, "categoryScope", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], EditSplitDto.prototype, "itemName", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], EditSplitDto.prototype, "always", void 0);
+class SetProductDto {
+    itemName;
+}
+exports.SetProductDto = SetProductDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SetProductDto.prototype, "itemName", void 0);
+class SetSubNameCategoryDto {
+    category;
+}
+exports.SetSubNameCategoryDto = SetSubNameCategoryDto;
+__decorate([
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SetSubNameCategoryDto.prototype, "category", void 0);
 class RenameTaxLineDto {
     name;
 }

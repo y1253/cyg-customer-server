@@ -312,7 +312,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
     }
     async transactions(scope, statementIds) {
-        const [rows, statements, taxes, attached] = await Promise.all([
+        const [rows, statements, taxes, attached, subNames] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
@@ -342,7 +342,12 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 select: { id: true, kind: true, filename: true, transactionId: true },
                 orderBy: { id: 'asc' },
             }),
+            this.prisma.subName.findMany({
+                where: { bookId: scope.bookId },
+                select: { id: true, name: true },
+            }),
         ]);
+        const subNameOf = new Map(subNames.map((s) => [s.id, s]));
         const attachmentsOf = new Map();
         for (const a of attached) {
             const list = attachmentsOf.get(a.transactionId) ?? [];
@@ -360,6 +365,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             description: r.description,
             name: r.name,
             ...(r.itemName && { itemName: r.itemName }),
+            ...(r.subNameId !== null &&
+                subNameOf.has(r.subNameId) && { subName: subNameOf.get(r.subNameId) }),
             ...(r.exceptionRuleId !== null &&
                 r.ruleName &&
                 r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {

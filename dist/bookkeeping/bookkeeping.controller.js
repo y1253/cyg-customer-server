@@ -35,6 +35,7 @@ const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
 const reports_service_1 = require("./reports.service");
 const splits_service_1 = require("./splits.service");
+const sub_names_service_1 = require("./sub-names.service");
 const tax_service_1 = require("./tax.service");
 const statement_uploads_1 = require("./statement-uploads");
 function attachment(filename, inline = false) {
@@ -50,12 +51,13 @@ let BookkeepingController = class BookkeepingController {
     nameMemory;
     accounts;
     splits;
+    subNames;
     attachments;
     productMemory;
     fx;
     prisma;
     communications;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, attachments, productMemory, fx, prisma, communications) {
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, prisma, communications) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -64,6 +66,7 @@ let BookkeepingController = class BookkeepingController {
         this.nameMemory = nameMemory;
         this.accounts = accounts;
         this.splits = splits;
+        this.subNames = subNames;
         this.attachments = attachments;
         this.productMemory = productMemory;
         this.fx = fx;
@@ -140,6 +143,27 @@ let BookkeepingController = class BookkeepingController {
     }
     saveSplits(scope, id, dto) {
         return this.splits.save(scope, id, dto.splits);
+    }
+    duplicateSplit(scope, id) {
+        return this.splits.duplicate(scope, id);
+    }
+    editSplit(scope, id, dto) {
+        return this.splits.edit(scope, id, dto);
+    }
+    deleteSplit(scope, id) {
+        return this.splits.remove(scope, id);
+    }
+    setProduct(scope, id, dto) {
+        return this.splits.setProduct(scope, id, dto.itemName);
+    }
+    subNameList(scope) {
+        return this.subNames.list(scope);
+    }
+    setSubNameCategory(scope, id, dto) {
+        return this.subNames.setCategory(scope, id, dto.category);
+    }
+    deleteSubName(scope, id) {
+        return this.subNames.remove(scope, id);
     }
     async renameTaxLine(scope, id, agencyId, dto) {
         const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null);
@@ -455,6 +479,69 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, agency_dto_1.SaveSplitsDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "saveSplits", null);
+__decorate([
+    (0, common_1.Post)('transactions/:id/splits/duplicate'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "duplicateSplit", null);
+__decorate([
+    (0, common_1.Patch)('transactions/:id/split'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.EditSplitDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "editSplit", null);
+__decorate([
+    (0, common_1.Delete)('transactions/:id/split'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "deleteSplit", null);
+__decorate([
+    (0, common_1.Patch)('transactions/:id/product'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SetProductDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setProduct", null);
+__decorate([
+    (0, common_1.Get)('sub-names'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "subNameList", null);
+__decorate([
+    (0, common_1.Patch)('sub-names/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SetSubNameCategoryDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setSubNameCategory", null);
+__decorate([
+    (0, common_1.Delete)('sub-names/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "deleteSubName", null);
 __decorate([
     (0, common_1.Patch)('transactions/:id/taxes/:agencyId'),
     (0, common_1.HttpCode)(204),
@@ -779,6 +866,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         name_memory_service_1.NameMemoryService,
         customer_accounts_service_1.CustomerAccountsService,
         splits_service_1.SplitsService,
+        sub_names_service_1.SubNamesService,
         attachments_service_1.AttachmentsService,
         product_memory_service_1.ProductMemoryService,
         fx_service_1.FxService,

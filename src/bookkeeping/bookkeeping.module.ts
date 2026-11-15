@@ -26,6 +26,7 @@ import { ProductCategorizer } from './product-categorizer';
 import { ProductMemoryService } from './product-memory.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
+import { SubNamesService } from './sub-names.service';
 import { StaffBookGuard } from './staff-book.guard';
 import { StaffRulesController } from './staff-rules.controller';
 import { StaffRulesService } from './staff-rules.service';
@@ -71,6 +72,7 @@ import { OcrService } from './pipeline/ocr.service';
     ReportsService,
     RulesService,
     SplitsService,
+    SubNamesService,
     StaffBookGuard,
     StaffRulesService,
     StatementExtractor,
@@ -93,6 +95,7 @@ import { OcrService } from './pipeline/ocr.service';
     ReportsService,
     RulesService,
     SplitsService,
+    SubNamesService,
     TaxService,
   ],
 })

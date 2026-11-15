@@ -848,6 +848,13 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         if (!replace && parent.splits.length) {
             return 'The transaction is already split; use "Use receipt items" to replace its splits.';
         }
+        const named = reading.items.filter((i) => i.name?.trim());
+        if (named.length === 1) {
+            if (parent.splits.length)
+                await this.splits.save(scope, parent.id, []);
+            await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+            return null;
+        }
         const categoryFor = await this.products.categoriesFor(scope, reading.items.map((i) => i.name), { store: reading.vendor, parentCategory: parent.offsetAccount });
         const out = (0, receipt_items_util_1.itemSplits)(reading.items, reading.tax, Number(parent.amount), categoryFor);
         if ('problem' in out)

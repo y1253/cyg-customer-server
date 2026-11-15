@@ -32,6 +32,7 @@ import {
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
+import { subNameOf } from './sub-names.util';
 import {
   NAME_FIELD_KINDS,
   type AgencyRateDto,
@@ -1154,6 +1155,18 @@ export class TaxService {
     keys.delete(target);
     if (!keys.size) return;
     await this.moveNameFiles(scope, oldNames, newName);
+    await this.copyNameRow(scope, keys, target, newName);
+    // After the copy, so a new target row takes the old one's group and switches.
+    await this.moveSubNames(scope, oldNames, newName);
+  }
+
+  /** The old name's `LedgerName` settings onto a new row for `newName` (none there yet). */
+  private async copyNameRow(
+    scope: BookScope,
+    keys: ReadonlySet<string>,
+    target: string,
+    newName: string,
+  ): Promise<void> {
     const rows = await this.prisma.ledgerName.findMany({
       where: scopeWhere(scope),
       select: {
@@ -1177,6 +1190,67 @@ export class TaxService {
         manual: from.manual,
       },
     });
+  }
+
+  /**
+   * step2 (2026-11-15): a renamed / merged name takes its splits and sub-names with it. Rules
+   * never touch splits, so their `name` is renamed here; each sub-name moves to the new
+   * name's `LedgerName` ("<new> - <category>"), joining one the new name already has in the
+   * same category.
+   */
+  async moveSubNames(
+    scope: BookScope,
+    oldNames: readonly string[],
+    newName: string,
+  ): Promise<void> {
+    const target = nameTaxKey(newName);
+    const old = [
+      ...new Set(oldNames.map(nameTaxKey).filter((k) => k && k !== target)),
+    ];
+    if (!old.length) return;
+    // MySQL compares names case-insensitively.
+    await this.prisma.bankTransaction.updateMany({
+      where: { ...scopeWhere(scope), splitOfId: { not: null }, name: { in: old } },
+      data: { name: newName },
+    });
+    const names = await this.prisma.ledgerName.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, name: true },
+    });
+    const fromIds = names
+      .filter((n) => old.includes(nameTaxKey(n.name)))
+      .map((n) => n.id);
+    if (!fromIds.length) return;
+    const subs = await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId, nameId: { in: fromIds } },
+    });
+    if (!subs.length) return;
+    const into =
+      names.find((n) => nameTaxKey(n.name) === target)?.id ??
+      (
+        await this.prisma.ledgerName.create({
+          data: { ...scopeWhere(scope), name: newName },
+          select: { id: true },
+        })
+      ).id;
+    for (const sub of subs) {
+      const same = await this.prisma.subName.findFirst({
+        where: { bookId: scope.bookId, nameId: into, category: sub.category },
+        select: { id: true },
+      });
+      if (same) {
+        await this.prisma.bankTransaction.updateMany({
+          where: { ...scopeWhere(scope), subNameId: sub.id },
+          data: { subNameId: same.id },
+        });
+        await this.prisma.subName.delete({ where: { id: sub.id } });
+      } else {
+        await this.prisma.subName.update({
+          where: { id: sub.id },
+          data: { nameId: into, name: subNameOf(newName, sub.category) },
+        });
+      }
+    }
   }
 
   /**

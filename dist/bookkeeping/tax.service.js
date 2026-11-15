@@ -22,6 +22,7 @@ const attachment_name_util_1 = require("./attachment-name.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
+const sub_names_util_1 = require("./sub-names.util");
 const agency_dto_1 = require("./dto/agency.dto");
 const tax_util_1 = require("./tax.util");
 function parseNameFields(raw) {
@@ -765,6 +766,10 @@ let TaxService = class TaxService {
         if (!keys.size)
             return;
         await this.moveNameFiles(scope, oldNames, newName);
+        await this.copyNameRow(scope, keys, target, newName);
+        await this.moveSubNames(scope, oldNames, newName);
+    }
+    async copyNameRow(scope, keys, target, newName) {
         const rows = await this.prisma.ledgerName.findMany({
             where: (0, scope_1.scopeWhere)(scope),
             select: {
@@ -790,6 +795,56 @@ let TaxService = class TaxService {
                 manual: from.manual,
             },
         });
+    }
+    async moveSubNames(scope, oldNames, newName) {
+        const target = (0, tax_util_1.nameTaxKey)(newName);
+        const old = [
+            ...new Set(oldNames.map(tax_util_1.nameTaxKey).filter((k) => k && k !== target)),
+        ];
+        if (!old.length)
+            return;
+        await this.prisma.bankTransaction.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: { not: null }, name: { in: old } },
+            data: { name: newName },
+        });
+        const names = await this.prisma.ledgerName.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, name: true },
+        });
+        const fromIds = names
+            .filter((n) => old.includes((0, tax_util_1.nameTaxKey)(n.name)))
+            .map((n) => n.id);
+        if (!fromIds.length)
+            return;
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, nameId: { in: fromIds } },
+        });
+        if (!subs.length)
+            return;
+        const into = names.find((n) => (0, tax_util_1.nameTaxKey)(n.name) === target)?.id ??
+            (await this.prisma.ledgerName.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), name: newName },
+                select: { id: true },
+            })).id;
+        for (const sub of subs) {
+            const same = await this.prisma.subName.findFirst({
+                where: { bookId: scope.bookId, nameId: into, category: sub.category },
+                select: { id: true },
+            });
+            if (same) {
+                await this.prisma.bankTransaction.updateMany({
+                    where: { ...(0, scope_1.scopeWhere)(scope), subNameId: sub.id },
+                    data: { subNameId: same.id },
+                });
+                await this.prisma.subName.delete({ where: { id: sub.id } });
+            }
+            else {
+                await this.prisma.subName.update({
+                    where: { id: sub.id },
+                    data: { nameId: into, name: (0, sub_names_util_1.subNameOf)(newName, sub.category) },
+                });
+            }
+        }
     }
     async moveNameFiles(scope, oldNames, newName) {
         const keys = new Set(oldNames.map(attachment_name_util_1.nameKeyOf));

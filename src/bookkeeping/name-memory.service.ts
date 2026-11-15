@@ -349,6 +349,22 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await this.syncProvenance(scope);
   }
 
+  /** step2 (2026-11-15): a name's ONE category (`setNameCategory`) — every row of it moves. */
+  async setCategoryOfName(
+    scope: BookScope,
+    name: string,
+    category: string,
+  ): Promise<void> {
+    const clean = cleanName(name);
+    if (!clean) return;
+    await this.setNameCategory(
+      scope,
+      clean,
+      normalizeAccount(category, await this.customAccountsOf(scope)),
+    );
+    await this.syncProvenance(scope);
+  }
+
   /** See `applyMerge`. */
   async mergeNames(
     scope: BookScope,
@@ -951,6 +967,37 @@ export class NameMemoryService implements OnApplicationBootstrap {
     const matched = toMatched(row);
 
     if (row.splitOfId) {
+      // step2 (2026-11-15): "Always" on a split = its transaction's DESCRIPTION goes to the
+      // name (asked first when another name has it), and EVERYTHING moves — the
+      // transaction's own line too, an earlier one-time edit of it included (user's decision).
+      if (name && name !== row.name && input.scope === 'ALWAYS') {
+        const parent = await this.prisma.bankTransaction.findFirst({
+          where: { id: row.splitOfId, ...scopeWhere(scope) },
+          select: { ...MATCH_SELECT, manualEdit: true },
+        });
+        const key = parent ? descriptionKey(parent.description) : '';
+        if (!parent || !key) {
+          throw new BadRequestException(
+            'This transaction has no description to remember. Apply the name to this split only.',
+          );
+        }
+        await this.guardLinks(scope, 'DESCRIPTION', key, name, input.replace);
+        if (parent.manualEdit) {
+          await this.writeRows(scope, [toMatched(parent)], (r) => ({
+            name,
+            category: r.offsetAccount,
+          }));
+          await this.clearException(scope, parent.id);
+        }
+        await this.applyRule(scope, {
+          matchType: 'DESCRIPTION',
+          matchKey: key,
+          name,
+          category,
+          scope: 'ALWAYS',
+          replace: true,
+        });
+      }
       await this.writeRows(
         scope,
         [matched],
@@ -1180,6 +1227,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await this.tax.mergeNameFields(scope, source, target);
     // step2 (2026-11-11): its files and subfolders join the target's folder.
     await this.tax.moveNameFiles(scope, [source], target);
+    // step2 (2026-11-15): its splits and sub-names too (before its LedgerName goes).
+    await this.tax.moveSubNames(scope, [source], target);
     // The tax follows the target only: the merged name's own choices go.
     await this.prisma.ledgerNameAgency.deleteMany({
       where: { ...scopeWhere(scope), name: source },

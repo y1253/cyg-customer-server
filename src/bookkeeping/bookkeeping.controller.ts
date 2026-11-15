@@ -70,6 +70,9 @@ import {
   SetAccountCurrencyDto,
   ResetProductRuleDto,
   SaveSplitsDto,
+  EditSplitDto,
+  SetProductDto,
+  SetSubNameCategoryDto,
   SetAccountTypeDto,
   SaveNameRuleDto,
   SaveProductRuleDto,
@@ -84,6 +87,7 @@ import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
+import { SubNamesService, type SubNameView } from './sub-names.service';
 import {
   TaxService,
   type AgencyView,
@@ -119,6 +123,7 @@ export class BookkeepingController {
     private readonly nameMemory: NameMemoryService,
     private readonly accounts: CustomerAccountsService,
     private readonly splits: SplitsService,
+    private readonly subNames: SubNamesService,
     private readonly attachments: AttachmentsService,
     private readonly productMemory: ProductMemoryService,
     private readonly fx: FxService,
@@ -296,6 +301,74 @@ export class BookkeepingController {
     @Body() dto: SaveSplitsDto,
   ): Promise<void> {
     return this.splits.save(scope, id, dto.splits);
+  }
+
+  /** step2 (2026-11-15): Split in the ledger — one more split at $0.00, a copy of the row. */
+  @Post('transactions/:id/splits/duplicate')
+  duplicateSplit(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<{ id: number }> {
+    return this.splits.duplicate(scope, id);
+  }
+
+  /** step2 (2026-11-15): one split edited in place (amount, name, category, product). */
+  @Patch('transactions/:id/split')
+  @HttpCode(204)
+  editSplit(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: EditSplitDto,
+  ): Promise<void> {
+    return this.splits.edit(scope, id, dto);
+  }
+
+  /** step2 (2026-11-15): remove one split. */
+  @Delete('transactions/:id/split')
+  @HttpCode(204)
+  deleteSplit(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    return this.splits.remove(scope, id);
+  }
+
+  /** step2 (2026-11-15): a transaction's Product column. */
+  @Patch('transactions/:id/product')
+  @HttpCode(204)
+  setProduct(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetProductDto,
+  ): Promise<void> {
+    return this.splits.setProduct(scope, id, dto.itemName);
+  }
+
+  /** step2 (2026-11-15): the book's sub-names ("Walmart - Maintenance"), for the Names tab. */
+  @Get('sub-names')
+  subNameList(@Book() scope: BookScope): Promise<SubNameView[]> {
+    return this.subNames.list(scope);
+  }
+
+  /** step2 (2026-11-15): a sub-name's category — every row of it moves. */
+  @Patch('sub-names/:id')
+  @HttpCode(204)
+  setSubNameCategory(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetSubNameCategoryDto,
+  ): Promise<void> {
+    return this.subNames.setCategory(scope, id, dto.category);
+  }
+
+  /** step2 (2026-11-15): remove a sub-name — its rows go back to the name's category. */
+  @Delete('sub-names/:id')
+  @HttpCode(204)
+  deleteSubName(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    return this.subNames.remove(scope, id);
   }
 
   /** Name one tax line (an agency's tax on a row) — null puts the row's own name back. */

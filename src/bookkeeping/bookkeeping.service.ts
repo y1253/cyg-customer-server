@@ -139,8 +139,13 @@ export interface TransactionView {
   description: string;
   /** The payee / payer the AI read out of the description; null when it found none. */
   name: string | null;
-  /** On a split made for a receipt line: that line ("Pampers"). */
+  /** The receipt line the row is for ("Pampers") — the Product column. */
   itemName?: string | null;
+  /**
+   * step2 (2026-11-15): a split filed under a sub-name of its name ("Walmart - Maintenance",
+   * `SubName`) with that sub-name's own category. `name` stays the parent name.
+   */
+  subName?: { id: number; name: string };
   /**
    * step9: a one-time edit — the name the rules give this row (`ruleName`) that it is an
    * exception from. Absent = it follows the rules.
@@ -569,7 +574,7 @@ export class BookkeepingService {
     scope: BookScope,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const [rows, statements, taxes, attached] = await Promise.all([
+    const [rows, statements, taxes, attached, subNames] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           ...scopeWhere(scope),
@@ -601,7 +606,12 @@ export class BookkeepingService {
         select: { id: true, kind: true, filename: true, transactionId: true },
         orderBy: { id: 'asc' },
       }),
+      this.prisma.subName.findMany({
+        where: { bookId: scope.bookId },
+        select: { id: true, name: true },
+      }),
     ]);
+    const subNameOf = new Map(subNames.map((s) => [s.id, s]));
     const attachmentsOf = new Map<
       number,
       Array<{ id: number; kind: AttachmentKind; filename: string }>
@@ -625,6 +635,8 @@ export class BookkeepingService {
       description: r.description,
       name: r.name,
       ...(r.itemName && { itemName: r.itemName }),
+      ...(r.subNameId !== null &&
+        subNameOf.has(r.subNameId) && { subName: subNameOf.get(r.subNameId) }),
       ...(r.exceptionRuleId !== null &&
         r.ruleName &&
         r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {

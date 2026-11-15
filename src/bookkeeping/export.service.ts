@@ -27,6 +27,8 @@ export interface LedgerExportRow {
   postingDate: Date | null;
   name: string;
   description: string;
+  /** step2 (2026-11-15): the Product column — the receipt line the row is for. */
+  product?: string;
   amount: number;
   debitAccount: string;
   creditAccount: string;
@@ -129,7 +131,7 @@ export class LedgerExportService {
   }
 
   async rowsFor(scope: BookScope): Promise<LedgerExportRow[]> {
-    const [rows, statements, taxes] = await Promise.all([
+    const [rows, statements, taxes, subNames] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           ...scopeWhere(scope),
@@ -149,7 +151,12 @@ export class LedgerExportService {
       }),
       loadOpeningStatements(this.prisma, scope),
       this.tax.linesFor(scope),
+      this.prisma.subName.findMany({
+        where: { bookId: scope.bookId },
+        select: { id: true, name: true },
+      }),
     ]);
+    const subNameOf = new Map(subNames.map((s) => [s.id, s.name]));
     const byId = new Map(statements.map((s) => [s.id, s]));
     const openings = openingRows(statements);
     const totals = splitTotals(
@@ -160,9 +167,13 @@ export class LedgerExportService {
       statementId: r.statementId,
       pendingDate: r.pendingDate,
       postingDate: r.postingDate,
-      // A receipt item reads "Walmart · Pampers".
-      name: [r.name, r.itemName].filter(Boolean).join(' · '),
+      // step2 (2026-11-15): a split under a sub-name reads "Walmart - Maintenance".
+      name:
+        (r.subNameId !== null ? subNameOf.get(r.subNameId) : undefined) ??
+        r.name ??
+        '',
       description: r.description,
+      product: r.itemName ?? '',
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
       debitAccount: r.debitAccount,
       creditAccount: r.creditAccount,
@@ -305,6 +316,7 @@ export class LedgerExportService {
       },
       { header: 'Name', key: 'name', width: 24 },
       { header: 'Description', key: 'description', width: 46 },
+      { header: 'Product', key: 'product', width: 20 },
       {
         header: 'Amount',
         key: 'amount',
@@ -411,6 +423,7 @@ export class LedgerExportService {
         { label: 'Pending', width: 56 },
         { label: 'Name', width: 90 },
         { label: 'Description', width: 136 },
+        { label: 'Product', width: 70 },
         { label: 'Amount', width: 66, align: 'right' as const },
         { label: 'Debit', width: 114 },
         { label: 'Credit', width: 114 },
@@ -485,6 +498,7 @@ export class LedgerExportService {
           ISO(r.pendingDate),
           r.name,
           r.description,
+          r.product ?? '',
           MONEY(r.amount),
           r.debitAccount,
           r.creditAccount,

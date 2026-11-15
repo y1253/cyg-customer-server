@@ -9,6 +9,7 @@ export interface LedgerExportRow {
     postingDate: Date | null;
     name: string;
     description: string;
+    product?: string;
     amount: number;
     debitAccount: string;
     creditAccount: string;

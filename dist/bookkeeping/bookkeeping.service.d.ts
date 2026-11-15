@@ -54,6 +54,10 @@ export interface TransactionView {
     description: string;
     name: string | null;
     itemName?: string | null;
+    subName?: {
+        id: number;
+        name: string;
+    };
     exception?: {
         main: string;
     };

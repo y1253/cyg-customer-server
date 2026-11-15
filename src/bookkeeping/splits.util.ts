@@ -33,6 +33,7 @@ export function remainderOf(
  * Why a set of split amounts (positive, as the customer types them) cannot be taken out
  * of a bank amount — or null when it can. They must be real amounts in cents and may not
  * add up to MORE than the transaction (all of it is fine: nothing is left on the parent).
+ * step2 (2026-11-15): $0.00 is allowed — a new split starts at 0 and is filled in place.
  */
 export function splitProblem(
   parentAmount: number,
@@ -40,8 +41,8 @@ export function splitProblem(
 ): string | null {
   if (parentAmount === 0) return 'A $0.00 transaction cannot be split';
   for (const a of amounts) {
-    if (!Number.isFinite(a) || a <= 0)
-      return 'Every split needs an amount above $0.00';
+    if (!Number.isFinite(a) || a < 0)
+      return 'A split amount cannot be negative';
     if (Math.abs(cents(a) - a * 100) > 1e-6)
       return 'Amounts can have at most 2 decimals';
   }

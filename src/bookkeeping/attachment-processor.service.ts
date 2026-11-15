@@ -1191,6 +1191,14 @@ export class AttachmentProcessorService {
     if (!replace && parent.splits.length) {
       return 'The transaction is already split; use "Use receipt items" to replace its splits.';
     }
+    // step2 (2026-11-15): ONE item is no split — it fills the transaction's Product column.
+    // Its category stays the name's (a name has one category).
+    const named = reading.items.filter((i) => i.name?.trim());
+    if (named.length === 1) {
+      if (parent.splits.length) await this.splits.save(scope, parent.id, []);
+      await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+      return null;
+    }
     // The customer's rule, else the firm memory, else the AI (remembered), else the parent's.
     const categoryFor = await this.products.categoriesFor(
       scope,

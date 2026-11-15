@@ -71,6 +71,22 @@ export declare class SplitDto {
 export declare class SaveSplitsDto {
     splits: SplitDto[];
 }
+export declare class EditSplitDto {
+    amount?: number;
+    name?: string;
+    nameScope?: 'ALWAYS' | 'ONCE';
+    replace?: boolean;
+    category?: string;
+    categoryScope?: 'ALL' | 'SUB';
+    itemName?: string;
+    always?: boolean;
+}
+export declare class SetProductDto {
+    itemName: string;
+}
+export declare class SetSubNameCategoryDto {
+    category: string;
+}
 export declare class RenameTaxLineDto {
     name?: string | null;
 }
