@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import type { StartReason } from './opening-balance.util';
+import type { StartDerived, StartReason } from './opening-balance.util';
 import { describeCheck, type Check } from './reconcile.util';
 
 /**
@@ -16,13 +16,23 @@ import { describeCheck, type Check } from './reconcile.util';
  * - MISSING: a gap in the periods before it; the books start again here.
  * - NO_BALANCES: nothing proved its rows (UNVERIFIED — no balances, totals or running
  *   balance to check them against), even on the strong model (in the books as read).
- * Computed on READ, never stored, so a move / delete / retry never leaves a stale one.
+ * step9 (2026-11-15, user's request: "every statement should have a starting balance and the
+ * ending balance should match the running balance"):
+ * - RUNNING: the running balance printed on its last row does not reach its closing balance
+ *   (or, with no closing printed, opening ± the rows).
+ * - NO_OPENING: no starting balance printed AND none can be worked out (no closing either —
+ *   `openingChain` set it at $0, `derived: 'ZERO'`). A starting balance worked out from the
+ *   closing is NOT an error (user's decision).
+ * Since step9 the problems are SAVED (`StatementError`, `StatementErrorsService`): this file is
+ * the check — `statementErrors` gives every one, `statementProblem` the worst.
  */
 export type ProblemKind =
   | 'BALANCE'
   | 'ENDING'
+  | 'RUNNING'
   | 'MISMATCH'
   | 'MISSING'
+  | 'NO_OPENING'
   | 'NO_BALANCES';
 
 export interface StatementProblem {
@@ -31,13 +41,28 @@ export interface StatementProblem {
   title: string;
   /** One or two sentences with the figures. */
   text: string;
+  /** step9: the figures behind it, saved with the error (`StatementError.details`). */
+  details?: Record<string, unknown>;
 }
+
+/** Worst first — the order `statementErrors` lists them in. */
+export const PROBLEM_ORDER: ProblemKind[] = [
+  'BALANCE',
+  'ENDING',
+  'RUNNING',
+  'MISMATCH',
+  'MISSING',
+  'NO_OPENING',
+  'NO_BALANCES',
+];
 
 export const PROBLEM_TITLES: Record<ProblemKind, string> = {
   BALANCE: "Transactions don't match the balance",
   ENDING: "Ending balance doesn't match",
+  RUNNING: "Ending balance doesn't match the running balance",
   MISMATCH: "Statement didn't match",
   MISSING: 'Missing statements',
+  NO_OPENING: 'No starting balance',
   NO_BALANCES: "Couldn't check — balances not read",
 };
 const TOTALS_TITLE = "Transactions don't match the bank's totals";
@@ -61,25 +86,48 @@ export interface ProblemInput {
   rechecked?: boolean;
   /** One of them is being re-read right now. */
   rechecking?: boolean;
+  /**
+   * step9: the running balance printed on the statement's LAST row (`printedEnding`);
+   * absent / null = none printed, the running balance is not checked.
+   */
+  printedEnding?: number | null;
+  /** step9: how its starting balance was worked out (`openingChain`), when not read. */
+  startDerived?: StartDerived;
 }
 
-/** The statement's problem, or null when it has none. Pure. */
+/** The statement's worst problem, or null when it has none. Pure. */
 export function statementProblem(s: ProblemInput): StatementProblem | null {
-  if (s.status === 'NEEDS_REVIEW') {
-    const balance = storedChecks(s.verificationDetail).find(
-      (c) => c.name === 'balance' && c.page == null,
-    );
-    return {
-      kind: 'BALANCE',
-      title: !balance || balance.ok ? TOTALS_TITLE : PROBLEM_TITLES.BALANCE,
-      text:
-        s.error ??
-        "Its transactions don't add up to the statement's own balances. Nothing from it is in your books yet.",
-    };
-  }
-  if (s.status !== 'DONE') return null;
-  const ending = endingProblem(s);
-  if (ending) return ending;
+  return statementErrors(s)[0] ?? null;
+}
+
+/** step9: EVERY problem the statement has, worst first (`PROBLEM_ORDER`). Pure. */
+export function statementErrors(s: ProblemInput): StatementProblem[] {
+  if (s.status === 'NEEDS_REVIEW') return [balanceProblem(s)];
+  if (s.status !== 'DONE') return [];
+  return [
+    endingProblem(s),
+    runningProblem(s),
+    chainProblem(s),
+    noOpeningProblem(s),
+    noBalancesProblem(s),
+  ].filter((p): p is StatementProblem => p !== null);
+}
+
+function balanceProblem(s: ProblemInput): StatementProblem {
+  const balance = storedChecks(s.verificationDetail).find(
+    (c) => c.name === 'balance' && c.page == null,
+  );
+  return {
+    kind: 'BALANCE',
+    title: !balance || balance.ok ? TOTALS_TITLE : PROBLEM_TITLES.BALANCE,
+    text:
+      s.error ??
+      "Its transactions don't add up to the statement's own balances. Nothing from it is in your books yet.",
+  };
+}
+
+/** MISMATCH / MISSING: the account's books start again at this statement. */
+function chainProblem(s: ProblemInput): StatementProblem | null {
   const r = s.reason;
   if (r?.kind === 'MISMATCH') {
     const before = r.previousEnd
@@ -120,6 +168,29 @@ export function statementProblem(s: ProblemInput): StatementProblem | null {
       text: `No statement from ${longDay(r.from)} ${to}.${jump}${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
     };
   }
+  return null;
+}
+
+/**
+ * NO_OPENING (step9): no starting balance printed and none could be worked out — no closing
+ * balance either, so the books start this account at $0 here. Never a bank-feed month (built
+ * from the bank's own balances).
+ */
+function noOpeningProblem(s: ProblemInput): StatementProblem | null {
+  if (s.source === 'PLAID' || s.startDerived !== 'ZERO') return null;
+  if (s.openingBalance !== null || s.closingBalance !== null) return null;
+  return {
+    kind: 'NO_OPENING',
+    title: PROBLEM_TITLES.NO_OPENING,
+    text:
+      "We couldn't read a starting balance on this statement, and no closing balance to work one out from, so your books start this account at $0.00 here. " +
+      'Try again, or tell the AI the starting balance printed on it.',
+  };
+}
+
+function noBalancesProblem(s: ProblemInput): StatementProblem | null {
+  // NO_OPENING already says it when neither balance was read.
+  if (noOpeningProblem(s)) return null;
   // A bank-feed month has no printed balances to read — it is built from them. Only
   // UNVERIFIED: a statement proved by its printed totals or running balance IS checked, even
   // without a closing-balance line (TD prints none — 16 false alarms in book 2, 2026-11-11).
@@ -161,7 +232,69 @@ function endingProblem(s: ProblemInput): StatementProblem | null {
       `It starts at ${money(s.openingBalance)}; with the transactions we read (net ${moneyIn ? `${money(moneyIn)} in` : `${money(moneyOut)} out`}) it should end at ${money(should / 100)}, ` +
       `but the statement ends at ${money(s.closingBalance)} (off by ${money(Math.abs(ends - should) / 100)}). ` +
       'Its transactions are in your books as read — try again, or ask the AI to fix it.',
+    details: {
+      opening: s.openingBalance,
+      net: s.net,
+      expected: should / 100,
+      closing: s.closingBalance,
+    },
   };
+}
+
+/**
+ * RUNNING (step9): the running balance printed on the statement's last row is where the bank
+ * says it ends. It must be its closing balance — or, with none printed, opening ± the rows.
+ * Compared without sign (a card prints the balance OWED either way), never on a bank-feed
+ * month (its running balance is ours), and never when the reader judged the printed "balances"
+ * were not a running balance (its `runningBalance` check skipped).
+ */
+function runningProblem(s: ProblemInput): StatementProblem | null {
+  if (s.source === 'PLAID') return null;
+  if (s.printedEnding === undefined || s.printedEnding === null) return null;
+  const running = storedChecks(s.verificationDetail).find(
+    (c) => c.name === 'runningBalance' && c.page == null,
+  );
+  if (running?.skipped) return null;
+  const card = s.accountKind === 'CREDIT_CARD';
+  const c = (n: number) => Math.round(n * 100);
+  const target =
+    s.closingBalance !== null
+      ? { cents: c(s.closingBalance), what: 'its closing balance' }
+      : s.openingBalance !== null && s.net !== undefined
+        ? {
+            cents: c(s.openingBalance) + (card ? -1 : 1) * c(s.net),
+            what: 'its starting balance plus its transactions',
+          }
+        : null;
+  if (!target) return null;
+  const printed = c(s.printedEnding);
+  if (Math.abs(printed) === Math.abs(target.cents)) return null;
+  const off = Math.abs(Math.abs(printed) - Math.abs(target.cents));
+  return {
+    kind: 'RUNNING',
+    title: PROBLEM_TITLES.RUNNING,
+    text:
+      `The running balance on its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
+      'A transaction was probably misread or missed — try again, or ask the AI to fix it.',
+    details: { printedEnding: printed / 100, expected: target.cents / 100 },
+  };
+}
+
+/**
+ * The running balance printed on a statement's last row, in the bank's order: rows in
+ * `position` order, or — when they run newest first (the first dated row is later than the
+ * last) — the first printed balance. Null = no running balance printed. Pure.
+ */
+export function printedEnding(
+  rows: Array<{ balanceAfter: number | null; postingDate: string | null }>,
+): number | null {
+  const printed = rows.filter((r) => r.balanceAfter !== null);
+  if (printed.length === 0) return null;
+  const dated = rows.filter((r) => r.postingDate);
+  const newestFirst =
+    dated.length >= 2 &&
+    dated[0].postingDate! > dated[dated.length - 1].postingDate!;
+  return (newestFirst ? printed[0] : printed[printed.length - 1]).balanceAfter;
 }
 
 /**

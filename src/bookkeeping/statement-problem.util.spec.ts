@@ -1,6 +1,8 @@
 import {
   needsReviewText,
+  printedEnding,
   PROBLEM_TITLES,
+  statementErrors,
   statementProblem,
   type ProblemInput,
 } from './statement-problem.util';
@@ -260,5 +262,103 @@ describe('ENDING and the balance across a gap (step2, 2026-11-12)', () => {
     expect(p?.text).toContain(
       'The statement before it ends at $1,024.43; this one opens at $0.00.',
     );
+  });
+});
+
+describe('step9: running balance and starting balance', () => {
+  it('RUNNING when the last printed running balance misses the closing', () => {
+    const errors = statementErrors(done({ net: 50, printedEnding: 90 }));
+    expect(errors.map((e) => e.kind)).toEqual(['RUNNING']);
+    expect(errors[0].text).toContain('$90.00');
+    expect(errors[0].text).toContain('off by $10.00');
+  });
+
+  it('no RUNNING when it reaches the closing (either sign) or nothing is printed', () => {
+    expect(statementErrors(done({ net: 50, printedEnding: 100 }))).toEqual([]);
+    expect(statementErrors(done({ net: 50, printedEnding: -100 }))).toEqual([]);
+    expect(statementErrors(done({ net: 50, printedEnding: null }))).toEqual([]);
+    expect(
+      statementErrors(done({ net: 50, printedEnding: 90, source: 'PLAID' })),
+    ).toEqual([]);
+  });
+
+  it('no closing printed: the running balance is checked against opening + rows', () => {
+    const errors = statementErrors(
+      done({ closingBalance: null, net: 50, printedEnding: 99 }),
+    );
+    expect(errors.map((e) => e.kind)).toEqual(['RUNNING']);
+  });
+
+  it('a skipped runningBalance check (not a running balance) is not checked', () => {
+    expect(
+      statementErrors(
+        done({
+          net: 50,
+          printedEnding: 90,
+          verificationDetail: [
+            {
+              name: 'runningBalance',
+              expected: 3,
+              actual: 0,
+              ok: false,
+              skipped: 'not a running balance',
+            },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('NO_OPENING only when no starting balance could be worked out', () => {
+    const none = done({
+      openingBalance: null,
+      closingBalance: null,
+      startDerived: 'ZERO',
+      verification: 'UNVERIFIED',
+      verificationDetail: [],
+    });
+    expect(statementErrors(none).map((e) => e.kind)).toEqual(['NO_OPENING']);
+    // Worked out from the closing balance: not an error (user's decision).
+    expect(
+      statementErrors(done({ openingBalance: null, startDerived: 'CLOSING' })),
+    ).toEqual([]);
+  });
+
+  it('statementProblem is the worst of statementErrors', () => {
+    const p = statementProblem(
+      done({ net: 1, printedEnding: 90 }), // ENDING (50 + 1 ≠ 100) and RUNNING
+    );
+    expect(p?.kind).toBe('ENDING');
+    expect(
+      statementErrors(done({ net: 1, printedEnding: 90 })).map((e) => e.kind),
+    ).toEqual(['ENDING', 'RUNNING']);
+  });
+});
+
+describe('printedEnding', () => {
+  it('the last printed balance, oldest first', () => {
+    expect(
+      printedEnding([
+        { balanceAfter: 10, postingDate: '2026-01-01' },
+        { balanceAfter: null, postingDate: '2026-01-02' },
+        { balanceAfter: 30, postingDate: '2026-01-03' },
+        { balanceAfter: null, postingDate: '2026-01-04' },
+      ]),
+    ).toBe(30);
+  });
+
+  it('the first printed balance when the rows run newest first', () => {
+    expect(
+      printedEnding([
+        { balanceAfter: 30, postingDate: '2026-01-03' },
+        { balanceAfter: 10, postingDate: '2026-01-01' },
+      ]),
+    ).toBe(30);
+  });
+
+  it('null with no running balance', () => {
+    expect(
+      printedEnding([{ balanceAfter: null, postingDate: null }]),
+    ).toBeNull();
   });
 });

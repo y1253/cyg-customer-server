@@ -25,6 +25,7 @@ const account_identity_util_1 = require("../bookkeeping/account-identity.util");
 const chart_of_accounts_1 = require("../bookkeeping/chart-of-accounts");
 const ledger_util_1 = require("../bookkeeping/ledger.util");
 const name_memory_service_1 = require("../bookkeeping/name-memory.service");
+const statement_errors_service_1 = require("../bookkeeping/statement-errors.service");
 const name_memory_util_1 = require("../bookkeeping/name-memory.util");
 const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
@@ -61,13 +62,14 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     outbox;
     messenger;
     rules;
+    errors;
     logger = new common_1.Logger(BankFeedSyncService_1.name);
     running = new Map();
     again = new Set();
     lastRefreshAt = new Map();
     noteLoggedOn = new Map();
     refreshUnsupportedLogged = false;
-    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules) {
+    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules, errors) {
         this.prisma = prisma;
         this.plaid = plaid;
         this.config = config;
@@ -76,6 +78,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         this.outbox = outbox;
         this.messenger = messenger;
         this.rules = rules;
+        this.errors = errors;
     }
     get key() {
         return (this.config.get('ENCRYPTION_KEY')?.replace(/^"|"$/g, '').trim() ??
@@ -591,6 +594,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             else
                 await this.dropAccount(account);
         }
+        this.errors?.refreshSoon((0, scope_1.scopeOf)(item));
     }
     async dropAccount(account) {
         const { count } = await this.prisma.bankStatement.deleteMany({
@@ -867,6 +871,7 @@ __decorate([
 exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(7, (0, common_1.Optional)()),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         plaid_client_1.PlaidClient,
         config_1.ConfigService,
@@ -874,7 +879,8 @@ exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __de
         bank_row_categorizer_1.BankRowCategorizer,
         customer_outbox_service_1.CustomerOutbox,
         customer_messenger_service_1.CustomerMessenger,
-        rules_service_1.RulesService])
+        rules_service_1.RulesService,
+        statement_errors_service_1.StatementErrorsService])
 ], BankFeedSyncService);
 function sameDay(a, b) {
     return (a === null && b === null) || (!!a && !!b && day(a) === day(b));

@@ -14,6 +14,7 @@ import { itemKey } from './receipt-items.util';
 import { scopeWhere, type BookScope } from './scope';
 import { signedLike, splitProblem } from './splits.util';
 import { SubNamesService } from './sub-names.service';
+import { syncParentSubNames } from './sub-name-parents';
 import { TaxService } from './tax.service';
 
 export interface SplitInput {
@@ -162,6 +163,7 @@ export class SplitsService {
         await this.products.saveRule(scope, r.itemName, r.category);
       }
     }
+    await syncParentSubNames(this.prisma, scope, [id]);
   }
 
   /**
@@ -192,7 +194,7 @@ export class SplitsService {
     }
     const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
     const category = row.offsetAccount;
-    return this.prisma.bankTransaction.create({
+    const made = await this.prisma.bankTransaction.create({
       data: {
         ...scopeWhere(scope),
         statementId: parent.statementId,
@@ -212,6 +214,9 @@ export class SplitsService {
       },
       select: { id: true },
     });
+    // step9: a copied split keeps its sub-name — the transaction then has one too.
+    await syncParentSubNames(this.prisma, scope, [parent.id]);
+    return made;
   }
 
   /**
@@ -276,7 +281,9 @@ export class SplitsService {
       const category = await this.accounts.validCategory(scope, input.category);
       const current = await this.findSplit(scope, id);
       const owner = cleanName(current.name);
-      const ofName = owner ? await this.names.categoryOfName(scope, owner) : null;
+      const ofName = owner
+        ? await this.names.categoryOfName(scope, owner)
+        : null;
       if (owner && input.categoryScope === 'ALL') {
         await this.names.setCategoryOfName(scope, owner, category);
         await this.setCategory(scope, id, category, null);
@@ -296,12 +303,15 @@ export class SplitsService {
       const after = await this.findSplit(scope, id);
       await this.products.saveRule(scope, itemName, after.offsetAccount);
     }
+    // step9: a split with a sub-name gives its transaction one too ("<name> - <category>").
+    await syncParentSubNames(this.prisma, scope, [parent.id]);
   }
 
   /** step2 (2026-11-15): one split removed; what it took goes back to its transaction. */
   async remove(scope: BookScope, id: number): Promise<void> {
-    await this.findSplit(scope, id);
+    const split = await this.findSplit(scope, id);
     await this.prisma.bankTransaction.delete({ where: { id } });
+    await syncParentSubNames(this.prisma, scope, [split.splitOfId!]);
   }
 
   /**

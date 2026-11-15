@@ -24,6 +24,8 @@ export interface StatementRow {
   verification?: string | null;
   /** step2 (2026-11-11): what is wrong with it, as the customer sees it on Bank feeds. */
   problem?: { kind: string; title: string; text: string } | null;
+  /** step9: every saved open error (`StatementError`), worst first. */
+  errors?: Array<{ id: number; kind: string; title: string; source: string }>;
 }
 
 export interface StatementQuery {
@@ -132,6 +134,13 @@ export function listStatements(rows: StatementRow[], q: StatementQuery = {}) {
       ...(r.verification && { verification: r.verification }),
       ...(r.error && { error: r.error }),
       ...(r.problem && { problem: `${r.problem.title}: ${r.problem.text}` }),
+      ...(r.errors?.length && {
+        errors: r.errors.map((e) => ({
+          errorId: e.id,
+          title: e.title,
+          ...(e.source === 'AI' && { addedByAi: true }),
+        })),
+      }),
     })),
   };
 }

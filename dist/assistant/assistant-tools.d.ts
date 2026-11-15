@@ -94,6 +94,8 @@ export declare class AssistantTools {
     private readonly contacts?;
     private readonly customColumns?;
     constructor(prisma: PrismaService, bookkeeping: BookkeepingService, reports: ReportsService, tax: TaxService, accounts: CustomerAccountsService, attachments: AttachmentsService, processor: AttachmentProcessorService, names: NameMemoryService, splits: SplitsService, rules: RulesService, links: FileLinkService, messenger?: CustomerMessenger | undefined, aiSchedules?: AiSchedulesStore | undefined, history?: CommunicationsHistory | undefined, outbox?: CustomerOutbox | undefined, contacts?: AiContactsService | undefined, customColumns?: CustomColumnsService | undefined);
+    private get statementErrors();
+    private readonly errorsService?;
     private readonly logger;
     private issueHandler;
     setIssueHandler(handler: IssueHandler): void;

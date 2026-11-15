@@ -16,6 +16,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
+const sub_name_parents_1 = require("./sub-name-parents");
 const tax_service_1 = require("./tax.service");
 const reports_util_1 = require("./reports.util");
 const name_memory_util_1 = require("./name-memory.util");
@@ -321,6 +322,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     },
                 });
             }
+            await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
         }
         catch (err) {
             this.logger.warn(`provenance of ${(0, scope_1.bookLabel)(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`);

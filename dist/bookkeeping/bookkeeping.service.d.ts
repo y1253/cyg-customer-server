@@ -7,6 +7,7 @@ import { type StartDerived, type StartReason } from './opening-balance.util';
 import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import { type StatementProblem } from './statement-problem.util';
+import { StatementErrorsService, type StatementErrorView } from './statement-errors.service';
 import { TaxService } from './tax.service';
 import { type BookScope } from './scope';
 import { FxService } from './fx.service';
@@ -43,6 +44,7 @@ export interface StatementView {
         reason?: StartReason;
     } | null;
     problem: StatementProblem | null;
+    errors?: StatementErrorView[];
 }
 export interface TransactionView {
     key: string;
@@ -102,8 +104,9 @@ export declare class BookkeepingService {
     private readonly tax;
     private readonly images;
     private readonly fx;
+    private readonly errors?;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService, errors?: StatementErrorsService | undefined);
     upload(scope: BookScope, files: Express.Multer.File[]): Promise<StatementView[]>;
     generateIfFree(scope: BookScope): Promise<{
         queued: number;

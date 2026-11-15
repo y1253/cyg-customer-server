@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -41,8 +42,13 @@ import { StatementProcessorService } from './statement-processor.service';
 import { StatementImagesService } from './statement-images.service';
 import {
   statementProblem,
+  type ProblemKind,
   type StatementProblem,
 } from './statement-problem.util';
+import {
+  StatementErrorsService,
+  type StatementErrorView,
+} from './statement-errors.service';
 import { changeFeed } from '../assistant/change-feed';
 import { TaxService } from './tax.service';
 import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
@@ -118,6 +124,11 @@ export interface StatementView {
    * before it, or no balance could be read (`statementProblem`). Null = nothing.
    */
   problem: StatementProblem | null;
+  /**
+   * step9 (2026-11-15): every open problem, SAVED (`StatementError`), worst first — `problem`
+   * is the first of them. Only `list()` fills it; empty = none.
+   */
+  errors?: StatementErrorView[];
 }
 
 export interface TransactionView {
@@ -286,6 +297,8 @@ function toView(
     rechecking?: boolean;
     /** Σ its own rows: the ending is checked (step2, 2026-11-12) and shown. */
     net?: number;
+    /** step9: its saved open errors (`StatementError`) — used instead of the checks. */
+    saved?: StatementErrorView[];
   } = {},
 ): StatementView {
   const opening = s.openingBalance === null ? null : Number(s.openingBalance);
@@ -322,16 +335,43 @@ function toView(
     processedAt: s.processedAt,
     movedByCustomer: s.accountNameByCustomer !== null,
     source: s.source,
-    problem: statementProblem({
-      ...s,
-      openingBalance: opening,
-      closingBalance: closing,
-      net: extra.net,
-      reason: extra.reason,
-      rechecked: extra.rechecked,
-      rechecking: extra.rechecking,
-    }),
+    problem: extra.saved
+      ? (savedProblem(extra.saved) ?? null)
+      : statementProblem({
+          ...s,
+          openingBalance: opening,
+          closingBalance: closing,
+          net: extra.net,
+          reason: extra.reason,
+          rechecked: extra.rechecked,
+          rechecking: extra.rechecking,
+        }),
+    ...(extra.saved && { errors: extra.saved }),
   };
+}
+
+/** step9: the worst saved error as the badge's `problem`. */
+function savedProblem(
+  saved: StatementErrorView[],
+): StatementProblem | undefined {
+  const e = saved[0];
+  return e && { kind: e.kind as ProblemKind, title: e.title, text: e.text };
+}
+
+/**
+ * step9: a statement whose saved errors may be out of date — never checked, or read again
+ * since the last check (a hook that missed). Its book is refreshed and it is checked on read.
+ */
+function staleErrors(s: BankStatement): boolean {
+  if (
+    s.status !== StatementStatus.DONE &&
+    s.status !== StatementStatus.NEEDS_REVIEW
+  )
+    return false;
+  return (
+    s.errorsCheckedAt === null ||
+    (s.processedAt !== null && s.processedAt > s.errorsCheckedAt)
+  );
 }
 
 export interface StatementBalancesResult {
@@ -427,6 +467,8 @@ export class BookkeepingService {
     private readonly tax: TaxService,
     private readonly images: StatementImagesService,
     private readonly fx: FxService,
+    /** step9: the saved statement errors. Optional for specs that build this by hand. */
+    @Optional() private readonly errors?: StatementErrorsService,
   ) {}
 
   /**
@@ -516,27 +558,29 @@ export class BookkeepingService {
   }
 
   async list(scope: BookScope): Promise<StatementView[]> {
-    const [rows, currencies, opening] = await Promise.all([
+    const [rows, currencies, opening, saved] = await Promise.all([
       this.prisma.bankStatement.findMany({
         where: { ...scopeWhere(scope), deletedAt: null },
         orderBy: { createdAt: 'desc' },
       }),
       accountCurrencies(this.prisma, scope),
       loadOpeningStatements(this.prisma, scope),
+      this.errors?.openFor(scope),
     ]);
+    // step9: the problems are saved; one never checked (or read since) is checked here
+    // while its book is refreshed in the background.
+    if (rows.some(staleErrors)) this.errors?.refreshSoon(scope);
     // The same rows the ledger shows as "Starting balance", so the folders agree with it.
     const starts = new Map(
-      [...startsByAccount(openingChain(opening)).values()]
-        .flat()
-        .map((s) => [
-          s.statementId,
-          {
-            date: s.date,
-            amount: s.amount,
-            ...(s.derived && { derived: s.derived }),
-            reason: s.reason,
-          },
-        ]),
+      [...startsByAccount(openingChain(opening)).values()].flat().map((s) => [
+        s.statementId,
+        {
+          date: s.date,
+          amount: s.amount,
+          ...(s.derived && { derived: s.derived }),
+          reason: s.reason,
+        },
+      ]),
     );
     const byId = new Map(rows.map((r) => [r.id, r]));
     const nets = new Map(
@@ -556,6 +600,7 @@ export class BookkeepingService {
         ...toView(r, currencies, {
           reason,
           net: nets.get(r.id),
+          ...(saved && !staleErrors(r) && { saved: saved.get(r.id) ?? [] }),
           rechecked:
             r.chainRereadAt !== null && previous?.chainRereadAt != null,
           // The strong re-read of the pair is queued or running (the earlier one, or
@@ -872,6 +917,7 @@ export class BookkeepingService {
       },
     });
     this.processor.processSoon();
+    this.errors?.refreshSoon(scope);
     return toView(row);
   }
 
@@ -1017,9 +1063,13 @@ export class BookkeepingService {
         ),
       },
     });
+    // step9: its saved errors follow the new balances at once (and say so to the AI).
+    await this.errors?.refreshBook(scope);
+    const saved = await this.errors?.openFor(scope, [s.id]);
     return {
       statement: toView(checked, undefined, {
         net: Number(sum._sum.amount ?? 0),
+        ...(saved && { saved: saved.get(s.id) ?? [] }),
       }),
       ...fit,
       ...(fit.balancesMatch !== true && {
@@ -1044,6 +1094,7 @@ export class BookkeepingService {
     await this.images.removeFor(scope, s.id);
     // step2: its neighbours may no longer carry over.
     await this.processor.recheckChains(scope, [s.accountName]);
+    this.errors?.refreshSoon(scope);
   }
 
   /**
@@ -1147,6 +1198,7 @@ export class BookkeepingService {
     // balance that no longer carries over in either one is re-read on the strong model.
     changeFeed.bump(scope.customerId);
     await this.processor.recheckChains(scope, [old, name]);
+    this.errors?.refreshSoon(scope);
     return toView(row);
   }
 

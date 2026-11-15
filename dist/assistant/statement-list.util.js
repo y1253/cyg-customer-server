@@ -76,6 +76,13 @@ function listStatements(rows, q = {}) {
             ...(r.verification && { verification: r.verification }),
             ...(r.error && { error: r.error }),
             ...(r.problem && { problem: `${r.problem.title}: ${r.problem.text}` }),
+            ...(r.errors?.length && {
+                errors: r.errors.map((e) => ({
+                    errorId: e.id,
+                    title: e.title,
+                    ...(e.source === 'AI' && { addedByAi: true }),
+                })),
+            }),
         })),
     };
 }

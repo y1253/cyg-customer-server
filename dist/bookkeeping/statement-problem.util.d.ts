@@ -1,12 +1,14 @@
 import type { Prisma } from '@prisma/client';
-import type { StartReason } from './opening-balance.util';
+import type { StartDerived, StartReason } from './opening-balance.util';
 import { type Check } from './reconcile.util';
-export type ProblemKind = 'BALANCE' | 'ENDING' | 'MISMATCH' | 'MISSING' | 'NO_BALANCES';
+export type ProblemKind = 'BALANCE' | 'ENDING' | 'RUNNING' | 'MISMATCH' | 'MISSING' | 'NO_OPENING' | 'NO_BALANCES';
 export interface StatementProblem {
     kind: ProblemKind;
     title: string;
     text: string;
+    details?: Record<string, unknown>;
 }
+export declare const PROBLEM_ORDER: ProblemKind[];
 export declare const PROBLEM_TITLES: Record<ProblemKind, string>;
 export interface ProblemInput {
     status: string;
@@ -21,8 +23,15 @@ export interface ProblemInput {
     reason?: StartReason | null;
     rechecked?: boolean;
     rechecking?: boolean;
+    printedEnding?: number | null;
+    startDerived?: StartDerived;
 }
 export declare function statementProblem(s: ProblemInput): StatementProblem | null;
+export declare function statementErrors(s: ProblemInput): StatementProblem[];
+export declare function printedEnding(rows: Array<{
+    balanceAfter: number | null;
+    postingDate: string | null;
+}>): number | null;
 export declare function needsReviewText(input: {
     rereads: number;
     checks: Check[];

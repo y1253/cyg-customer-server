@@ -33,6 +33,7 @@ import { StaffRulesService } from './staff-rules.service';
 import { StatementExtractor } from './statement-extractor';
 import { StatementImagesService } from './statement-images.service';
 import { StatementProcessorService } from './statement-processor.service';
+import { StatementErrorsService } from './statement-errors.service';
 import { TaxService } from './tax.service';
 import { CommunicationsService } from './communications.service';
 import { DocumentPipeline } from './pipeline/document-pipeline';
@@ -75,6 +76,7 @@ import { OcrService } from './pipeline/ocr.service';
     SubNamesService,
     StaffBookGuard,
     StaffRulesService,
+    StatementErrorsService,
     StatementExtractor,
     StatementImagesService,
     StatementProcessorService,
@@ -95,6 +97,7 @@ import { OcrService } from './pipeline/ocr.service';
     ReportsService,
     RulesService,
     SplitsService,
+    StatementErrorsService,
     SubNamesService,
     TaxService,
   ],

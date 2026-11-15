@@ -16,6 +16,12 @@ export interface StatementRow {
         title: string;
         text: string;
     } | null;
+    errors?: Array<{
+        id: number;
+        kind: string;
+        title: string;
+        source: string;
+    }>;
 }
 export interface StatementQuery {
     account?: string | null;
@@ -29,6 +35,11 @@ export declare const MAX_STATEMENT_LIMIT = 100;
 export declare const NOT_SORTED = "Not sorted yet";
 export declare function listStatements(rows: StatementRow[], q?: StatementQuery): {
     statements: {
+        errors?: {
+            addedByAi?: boolean | undefined;
+            errorId: number;
+            title: string;
+        }[] | undefined;
         problem?: string | undefined;
         error?: string | undefined;
         verification?: string | undefined;

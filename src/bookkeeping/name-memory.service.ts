@@ -15,6 +15,7 @@ import {
 } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
+import { syncParentSubNames } from './sub-name-parents';
 import { TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
@@ -490,6 +491,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
           },
         });
       }
+      // step9: a split transaction's own sub-name follows its name and category.
+      await syncParentSubNames(this.prisma, scope);
     } catch (err) {
       this.logger.warn(
         `provenance of ${bookLabel(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`,

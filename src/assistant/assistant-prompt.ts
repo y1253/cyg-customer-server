@@ -194,6 +194,12 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       'balances cannot be set — suggest checking the account start date or reconnecting.',
     '7. When they would rather talk, use call_me (about = this statement): the call knows ' +
       'this chat and can make the same fixes while on the phone.',
+    '8. Its errors are SAVED (list_statement_errors): each with an errorId, a kind and the ' +
+      "text the customer sees. A check's error clears by itself once its cause is fixed — " +
+      'after set_statement_balances or a re-read, read the list again and say only what it ' +
+      'shows; never call it fixed while it is listed. When the customer says something is ' +
+      'wrong that no listed error covers (a transaction missing, a wrong date), record it ' +
+      'with add_statement_error, and resolve_statement_error it once it really is fixed.',
   ].join('\n'),
   files: [
     '',

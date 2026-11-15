@@ -22,6 +22,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const attachments_service_1 = require("../bookkeeping/attachments.service");
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
+const statement_errors_service_1 = require("../bookkeeping/statement-errors.service");
 const customer_accounts_service_1 = require("../bookkeeping/customer-accounts.service");
 const name_memory_service_1 = require("../bookkeeping/name-memory.service");
 const reports_service_1 = require("../bookkeeping/reports.service");
@@ -87,6 +88,14 @@ exports.READ_TOOLS = [
                 ],
             },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
+        }),
+    },
+    {
+        name: 'list_statement_errors',
+        description: "step9: the statements' SAVED errors (each with errorId, statementId, kind, title, the customer's text, source SYSTEM = a check found it / AI = recorded by an AI). Open ones only unless includeResolved. Kinds: BALANCE (rows don't match its balances — needs review), ENDING (opening ± rows ≠ closing), RUNNING (the running balance on its last row ≠ its closing), MISMATCH / MISSING (doesn't carry over from the statement before / a gap), NO_OPENING (no starting balance printed and none could be worked out), NO_BALANCES (balances not read, nothing checked), OTHER (an AI recorded it). A check's error clears by itself once its cause is fixed. Read it after every statement fix and say only what it shows.",
+        parameters: obj({
+            statementId: int,
+            includeResolved: { type: 'boolean' },
         }),
     },
     {
@@ -355,6 +364,30 @@ const WRITE_TOOLS = [
                 description: "Why, in the customer's words",
             },
         }, ['statementId', 'reason']),
+    },
+    {
+        name: 'add_statement_error',
+        description: 'step9: record a problem with a statement that no check sees — the customer says something on it is wrong (a transaction missing, a wrong date…) and it is not fixed yet. Shown on the statement on Bank feeds until resolved. Never for something list_statement_errors already lists.',
+        parameters: obj({
+            statementId: int,
+            title: {
+                type: 'string',
+                description: 'A few words, e.g. "Missing a deposit"',
+            },
+            text: {
+                type: 'string',
+                description: 'One or two plain sentences for the customer: what is wrong and what will fix it',
+            },
+            note: { type: 'string', description: "Why — the customer's words" },
+        }, ['statementId', 'title', 'text']),
+    },
+    {
+        name: 'resolve_statement_error',
+        description: "step9: mark a statement error fixed. A check's error (source SYSTEM) is checked again first: when the check still fails it stays open and the result says why — fix the cause (set_statement_balances with the printed figures, or retry_statement) instead. An error an AI recorded is resolved on your word — only once it really is fixed.",
+        parameters: obj({
+            errorId: int,
+            note: { type: 'string', description: 'What fixed it' },
+        }, ['errorId']),
     },
     {
         name: 'delete_attachment',
@@ -669,6 +702,12 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
         this.contacts = contacts;
         this.customColumns = customColumns;
     }
+    get statementErrors() {
+        if (!this.errorsService)
+            throw new Error('statement errors are not available');
+        return this.errorsService;
+    }
+    errorsService;
     logger = new common_1.Logger(AssistantTools_1.name);
     issueHandler = null;
     setIssueHandler(handler) {
@@ -850,6 +889,17 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                         status: s(a.status),
                         limit: n(a.limit),
                     })),
+                };
+            }
+            case 'list_statement_errors': {
+                const statementId = n(a.statementId);
+                return {
+                    content: json({
+                        errors: await this.statementErrors.list(scope, {
+                            ...(statementId && { statementId }),
+                            includeResolved: a.includeResolved === true,
+                        }),
+                    }),
                 };
             }
             case 'search_transactions': {
@@ -1373,6 +1423,44 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     balancesMatch: result.balancesMatch,
                     expectedClosing: result.expectedClosing,
                     ...(result.advice && { advice: result.advice }),
+                    openErrors: (result.statement.errors ?? []).map((e) => ({
+                        errorId: e.id,
+                        title: e.title,
+                        text: e.text,
+                    })),
+                });
+            }
+            case 'add_statement_error': {
+                const title = s(a.title);
+                const text = s(a.text);
+                if (!title || !text)
+                    throw new Error('give a title and a text');
+                const error = await this.statementErrors.add(scope, {
+                    statementId: id(a.statementId),
+                    title,
+                    text,
+                    note: s(a.note) ?? undefined,
+                });
+                return done(`Noted a problem on statement #${error.statementId}: ${error.title}`, {
+                    ok: true,
+                    error,
+                });
+            }
+            case 'resolve_statement_error': {
+                const result = await this.statementErrors.resolve(scope, id(a.errorId), s(a.note) ?? undefined);
+                if (!result.resolved) {
+                    return {
+                        content: json({ ok: false, ...result }),
+                        action: {
+                            tool: name,
+                            ok: false,
+                            summary: `Statement error #${result.error.id} is still there`,
+                        },
+                    };
+                }
+                return done(`Marked fixed: ${result.error.title}`, {
+                    ok: true,
+                    error: result.error,
                 });
             }
             case 'delete_attachment': {
@@ -1486,6 +1574,11 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
     }
 };
 exports.AssistantTools = AssistantTools;
+__decorate([
+    (0, common_1.Optional)(),
+    (0, common_1.Inject)(statement_errors_service_1.StatementErrorsService),
+    __metadata("design:type", statement_errors_service_1.StatementErrorsService)
+], AssistantTools.prototype, "errorsService", void 0);
 exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(12, (0, common_1.Optional)()),

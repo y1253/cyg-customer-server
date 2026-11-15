@@ -8,6 +8,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var SubNamesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SubNamesService = void 0;
 const common_1 = require("@nestjs/common");
@@ -15,35 +16,41 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
-const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
 const sub_names_util_1 = require("./sub-names.util");
-let SubNamesService = class SubNamesService {
+const sub_name_parents_1 = require("./sub-name-parents");
+let SubNamesService = SubNamesService_1 = class SubNamesService {
     prisma;
     names;
     accounts;
+    logger = new common_1.Logger(SubNamesService_1.name);
     constructor(prisma, names, accounts) {
         this.prisma = prisma;
         this.names = names;
         this.accounts = accounts;
     }
+    onApplicationBootstrap() {
+        setTimeout(() => void this.backfillParents(), 70_000).unref();
+    }
+    async backfillParents() {
+        try {
+            const books = await this.prisma.bankTransaction.groupBy({
+                by: ['customerId', 'bookId', 'companyId'],
+                where: { splitOfId: { not: null }, subNameId: { not: null } },
+            });
+            let changed = 0;
+            for (const b of books)
+                changed += await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, b);
+            if (changed) {
+                this.logger.log(`gave ${changed} split transaction(s) their own sub-name`);
+            }
+        }
+        catch (err) {
+            this.logger.warn(`parent sub-names not synced: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
     async ensure(scope, parent, category) {
-        const nameId = await this.ledgerNameId(scope, parent);
-        const found = await this.prisma.subName.findFirst({
-            where: { bookId: scope.bookId, nameId, category },
-            select: { id: true, name: true },
-        });
-        if (found)
-            return found;
-        return this.prisma.subName.create({
-            data: {
-                ...(0, scope_1.scopeWhere)(scope),
-                nameId,
-                name: (0, sub_names_util_1.subNameOf)(parent, category),
-                category,
-            },
-            select: { id: true, name: true },
-        });
+        return (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, parent, category);
     }
     async list(scope) {
         const subs = await this.prisma.subName.findMany({
@@ -88,12 +95,18 @@ let SubNamesService = class SubNamesService {
         const sub = await this.get(scope, id);
         const category = await this.accounts.validCategory(scope, rawCategory);
         const parent = await this.parentName(sub.nameId);
-        if (parent && (await this.names.categoryOfName(scope, parent)) === category) {
+        if (parent &&
+            (await this.names.categoryOfName(scope, parent)) === category) {
             await this.remove(scope, id);
             return;
         }
         const other = await this.prisma.subName.findFirst({
-            where: { bookId: scope.bookId, nameId: sub.nameId, category, id: { not: id } },
+            where: {
+                bookId: scope.bookId,
+                nameId: sub.nameId,
+                category,
+                id: { not: id },
+            },
             select: { id: true },
         });
         const target = other?.id ?? id;
@@ -109,6 +122,7 @@ let SubNamesService = class SubNamesService {
         await this.moveRows(scope, id, target, category);
         if (other)
             await this.prisma.subName.delete({ where: { id } });
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
     }
     async remove(scope, id) {
         const sub = await this.get(scope, id);
@@ -117,20 +131,7 @@ let SubNamesService = class SubNamesService {
             sub.category;
         await this.moveRows(scope, id, null, category);
         await this.prisma.subName.delete({ where: { id } });
-    }
-    async ledgerNameId(scope, name) {
-        const clean = (0, name_memory_util_1.cleanName)(name) ?? name;
-        const found = await this.prisma.ledgerName.findFirst({
-            where: { ...(0, scope_1.scopeWhere)(scope), name: clean },
-            select: { id: true },
-        });
-        if (found)
-            return found.id;
-        const made = await this.prisma.ledgerName.create({
-            data: { ...(0, scope_1.scopeWhere)(scope), name: clean },
-            select: { id: true },
-        });
-        return made.id;
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
     }
     async get(scope, id) {
         const sub = await this.prisma.subName.findFirst({
@@ -178,7 +179,7 @@ let SubNamesService = class SubNamesService {
     }
 };
 exports.SubNamesService = SubNamesService;
-exports.SubNamesService = SubNamesService = __decorate([
+exports.SubNamesService = SubNamesService = SubNamesService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         name_memory_service_1.NameMemoryService,

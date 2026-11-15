@@ -1,33 +1,57 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROBLEM_TITLES = void 0;
+exports.PROBLEM_TITLES = exports.PROBLEM_ORDER = void 0;
 exports.statementProblem = statementProblem;
+exports.statementErrors = statementErrors;
+exports.printedEnding = printedEnding;
 exports.needsReviewText = needsReviewText;
 exports.money = money;
 const reconcile_util_1 = require("./reconcile.util");
+exports.PROBLEM_ORDER = [
+    'BALANCE',
+    'ENDING',
+    'RUNNING',
+    'MISMATCH',
+    'MISSING',
+    'NO_OPENING',
+    'NO_BALANCES',
+];
 exports.PROBLEM_TITLES = {
     BALANCE: "Transactions don't match the balance",
     ENDING: "Ending balance doesn't match",
+    RUNNING: "Ending balance doesn't match the running balance",
     MISMATCH: "Statement didn't match",
     MISSING: 'Missing statements',
+    NO_OPENING: 'No starting balance',
     NO_BALANCES: "Couldn't check — balances not read",
 };
 const TOTALS_TITLE = "Transactions don't match the bank's totals";
 function statementProblem(s) {
-    if (s.status === 'NEEDS_REVIEW') {
-        const balance = storedChecks(s.verificationDetail).find((c) => c.name === 'balance' && c.page == null);
-        return {
-            kind: 'BALANCE',
-            title: !balance || balance.ok ? TOTALS_TITLE : exports.PROBLEM_TITLES.BALANCE,
-            text: s.error ??
-                "Its transactions don't add up to the statement's own balances. Nothing from it is in your books yet.",
-        };
-    }
+    return statementErrors(s)[0] ?? null;
+}
+function statementErrors(s) {
+    if (s.status === 'NEEDS_REVIEW')
+        return [balanceProblem(s)];
     if (s.status !== 'DONE')
-        return null;
-    const ending = endingProblem(s);
-    if (ending)
-        return ending;
+        return [];
+    return [
+        endingProblem(s),
+        runningProblem(s),
+        chainProblem(s),
+        noOpeningProblem(s),
+        noBalancesProblem(s),
+    ].filter((p) => p !== null);
+}
+function balanceProblem(s) {
+    const balance = storedChecks(s.verificationDetail).find((c) => c.name === 'balance' && c.page == null);
+    return {
+        kind: 'BALANCE',
+        title: !balance || balance.ok ? TOTALS_TITLE : exports.PROBLEM_TITLES.BALANCE,
+        text: s.error ??
+            "Its transactions don't add up to the statement's own balances. Nothing from it is in your books yet.",
+    };
+}
+function chainProblem(s) {
     const r = s.reason;
     if (r?.kind === 'MISMATCH') {
         const before = r.previousEnd
@@ -64,6 +88,23 @@ function statementProblem(s) {
             text: `No statement from ${longDay(r.from)} ${to}.${jump}${restart} Upload the missing statement${r.to && monthsBetween(r.from, r.to) > 1 ? 's' : ''} to fix it.`,
         };
     }
+    return null;
+}
+function noOpeningProblem(s) {
+    if (s.source === 'PLAID' || s.startDerived !== 'ZERO')
+        return null;
+    if (s.openingBalance !== null || s.closingBalance !== null)
+        return null;
+    return {
+        kind: 'NO_OPENING',
+        title: exports.PROBLEM_TITLES.NO_OPENING,
+        text: "We couldn't read a starting balance on this statement, and no closing balance to work one out from, so your books start this account at $0.00 here. " +
+            'Try again, or tell the AI the starting balance printed on it.',
+    };
+}
+function noBalancesProblem(s) {
+    if (noOpeningProblem(s))
+        return null;
     if (s.source !== 'PLAID' && s.verification === 'UNVERIFIED') {
         const which = s.openingBalance === null && s.closingBalance === null
             ? 'opening or closing balance'
@@ -97,7 +138,54 @@ function endingProblem(s) {
         text: `It starts at ${money(s.openingBalance)}; with the transactions we read (net ${moneyIn ? `${money(moneyIn)} in` : `${money(moneyOut)} out`}) it should end at ${money(should / 100)}, ` +
             `but the statement ends at ${money(s.closingBalance)} (off by ${money(Math.abs(ends - should) / 100)}). ` +
             'Its transactions are in your books as read — try again, or ask the AI to fix it.',
+        details: {
+            opening: s.openingBalance,
+            net: s.net,
+            expected: should / 100,
+            closing: s.closingBalance,
+        },
     };
+}
+function runningProblem(s) {
+    if (s.source === 'PLAID')
+        return null;
+    if (s.printedEnding === undefined || s.printedEnding === null)
+        return null;
+    const running = storedChecks(s.verificationDetail).find((c) => c.name === 'runningBalance' && c.page == null);
+    if (running?.skipped)
+        return null;
+    const card = s.accountKind === 'CREDIT_CARD';
+    const c = (n) => Math.round(n * 100);
+    const target = s.closingBalance !== null
+        ? { cents: c(s.closingBalance), what: 'its closing balance' }
+        : s.openingBalance !== null && s.net !== undefined
+            ? {
+                cents: c(s.openingBalance) + (card ? -1 : 1) * c(s.net),
+                what: 'its starting balance plus its transactions',
+            }
+            : null;
+    if (!target)
+        return null;
+    const printed = c(s.printedEnding);
+    if (Math.abs(printed) === Math.abs(target.cents))
+        return null;
+    const off = Math.abs(Math.abs(printed) - Math.abs(target.cents));
+    return {
+        kind: 'RUNNING',
+        title: exports.PROBLEM_TITLES.RUNNING,
+        text: `The running balance on its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
+            'A transaction was probably misread or missed — try again, or ask the AI to fix it.',
+        details: { printedEnding: printed / 100, expected: target.cents / 100 },
+    };
+}
+function printedEnding(rows) {
+    const printed = rows.filter((r) => r.balanceAfter !== null);
+    if (printed.length === 0)
+        return null;
+    const dated = rows.filter((r) => r.postingDate);
+    const newestFirst = dated.length >= 2 &&
+        dated[0].postingDate > dated[dated.length - 1].postingDate;
+    return (newestFirst ? printed[0] : printed[printed.length - 1]).balanceAfter;
 }
 function needsReviewText(input) {
     const failed = input.checks.filter((c) => !c.ok && !c.skipped);

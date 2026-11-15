@@ -40,6 +40,7 @@ const queue_retry_1 = require("./queue-retry");
 Object.defineProperty(exports, "claimableAt", { enumerable: true, get: function () { return queue_retry_1.claimableAt; } });
 Object.defineProperty(exports, "MAX_ATTEMPTS", { enumerable: true, get: function () { return queue_retry_1.MAX_ATTEMPTS; } });
 const scope_1 = require("./scope");
+const statement_errors_service_1 = require("./statement-errors.service");
 const CONCURRENCY = 2;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 15 * 60_000;
@@ -51,9 +52,10 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     names;
     images;
     rules;
+    errors;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax, names, images, rules) {
+    constructor(prisma, storage, extractor, tax, names, images, rules, errors) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
@@ -61,6 +63,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         this.names = names;
         this.images = images;
         this.rules = rules;
+        this.errors = errors;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -120,6 +123,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 const row = due[next++];
                 await (0, ai_usage_context_1.withAiUsage)({ ...(0, scope_1.scopeOf)(row), feature: 'STATEMENT' }, () => this.processOne(row));
                 change_feed_1.changeFeed.bump(row.customerId);
+                this.errors?.refreshSoon((0, scope_1.scopeOf)(row));
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, due.length) }, worker));
@@ -394,13 +398,15 @@ __decorate([
 exports.StatementProcessorService = StatementProcessorService = StatementProcessorService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(6, (0, common_1.Optional)()),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
         tax_service_1.TaxService,
         name_memory_service_1.NameMemoryService,
         statement_images_service_1.StatementImagesService,
-        rules_service_1.RulesService])
+        rules_service_1.RulesService,
+        statement_errors_service_1.StatementErrorsService])
 ], StatementProcessorService);
 function isoDay(d) {
     return d ? d.toISOString().slice(0, 10) : null;

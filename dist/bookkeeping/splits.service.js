@@ -22,6 +22,7 @@ const receipt_items_util_1 = require("./receipt-items.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const sub_names_service_1 = require("./sub-names.service");
+const sub_name_parents_1 = require("./sub-name-parents");
 const tax_service_1 = require("./tax.service");
 const DONE_STATEMENT = { deletedAt: null, status: client_1.StatementStatus.DONE };
 let SplitsService = class SplitsService {
@@ -118,6 +119,7 @@ let SplitsService = class SplitsService {
                 await this.products.saveRule(scope, r.itemName, r.category);
             }
         }
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [id]);
     }
     async duplicate(scope, id) {
         const row = await this.prisma.bankTransaction.findFirst({
@@ -144,7 +146,7 @@ let SplitsService = class SplitsService {
         }
         const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
         const category = row.offsetAccount;
-        return this.prisma.bankTransaction.create({
+        const made = await this.prisma.bankTransaction.create({
             data: {
                 ...(0, scope_1.scopeWhere)(scope),
                 statementId: parent.statementId,
@@ -163,6 +165,8 @@ let SplitsService = class SplitsService {
             },
             select: { id: true },
         });
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [parent.id]);
+        return made;
     }
     async edit(scope, id, input) {
         const split = await this.findSplit(scope, id);
@@ -212,7 +216,9 @@ let SplitsService = class SplitsService {
             const category = await this.accounts.validCategory(scope, input.category);
             const current = await this.findSplit(scope, id);
             const owner = (0, name_memory_util_1.cleanName)(current.name);
-            const ofName = owner ? await this.names.categoryOfName(scope, owner) : null;
+            const ofName = owner
+                ? await this.names.categoryOfName(scope, owner)
+                : null;
             if (owner && input.categoryScope === 'ALL') {
                 await this.names.setCategoryOfName(scope, owner, category);
                 await this.setCategory(scope, id, category, null);
@@ -232,10 +238,12 @@ let SplitsService = class SplitsService {
             const after = await this.findSplit(scope, id);
             await this.products.saveRule(scope, itemName, after.offsetAccount);
         }
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [parent.id]);
     }
     async remove(scope, id) {
-        await this.findSplit(scope, id);
+        const split = await this.findSplit(scope, id);
         await this.prisma.bankTransaction.delete({ where: { id } });
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [split.splitOfId]);
     }
     async setProduct(scope, id, itemName) {
         const row = await this.prisma.bankTransaction.findFirst({

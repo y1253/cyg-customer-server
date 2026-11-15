@@ -27,6 +27,7 @@ import { sweepStaleStaging } from './statement-uploads';
 import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, type BookScope } from './scope';
+import { StatementErrorsService } from './statement-errors.service';
 
 export { claimableAt, MAX_ATTEMPTS };
 
@@ -58,6 +59,8 @@ export class StatementProcessorService {
     private readonly images: StatementImagesService,
     /** step11: the book's learned rules, read before the statement is. Optional for specs. */
     @Optional() private readonly rules?: RulesService,
+    /** step9: the book's saved statement errors follow every read. Optional for specs. */
+    @Optional() private readonly errors?: StatementErrorsService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -139,6 +142,8 @@ export class StatementProcessorService {
         );
         // step12h: an open page of this customer refreshes by itself.
         changeFeed.bump(row.customerId);
+        // step9: its (and its neighbours') saved errors follow the new reading.
+        this.errors?.refreshSoon(scopeOf(row));
       }
     };
     await Promise.all(

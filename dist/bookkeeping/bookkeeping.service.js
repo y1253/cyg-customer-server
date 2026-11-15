@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var BookkeepingService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingService = void 0;
@@ -33,6 +36,7 @@ const statement_pdf_1 = require("./statement-pdf");
 const statement_processor_service_1 = require("./statement-processor.service");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_problem_util_1 = require("./statement-problem.util");
+const statement_errors_service_1 = require("./statement-errors.service");
 const change_feed_1 = require("../assistant/change-feed");
 const tax_service_1 = require("./tax.service");
 const scope_1 = require("./scope");
@@ -140,16 +144,30 @@ function toView(s, currencies = new Map(), extra = {}) {
         processedAt: s.processedAt,
         movedByCustomer: s.accountNameByCustomer !== null,
         source: s.source,
-        problem: (0, statement_problem_util_1.statementProblem)({
-            ...s,
-            openingBalance: opening,
-            closingBalance: closing,
-            net: extra.net,
-            reason: extra.reason,
-            rechecked: extra.rechecked,
-            rechecking: extra.rechecking,
-        }),
+        problem: extra.saved
+            ? (savedProblem(extra.saved) ?? null)
+            : (0, statement_problem_util_1.statementProblem)({
+                ...s,
+                openingBalance: opening,
+                closingBalance: closing,
+                net: extra.net,
+                reason: extra.reason,
+                rechecked: extra.rechecked,
+                rechecking: extra.rechecking,
+            }),
+        ...(extra.saved && { errors: extra.saved }),
     };
+}
+function savedProblem(saved) {
+    const e = saved[0];
+    return e && { kind: e.kind, title: e.title, text: e.text };
+}
+function staleErrors(s) {
+    if (s.status !== client_1.StatementStatus.DONE &&
+        s.status !== client_1.StatementStatus.NEEDS_REVIEW)
+        return false;
+    return (s.errorsCheckedAt === null ||
+        (s.processedAt !== null && s.processedAt > s.errorsCheckedAt));
 }
 function balanceFit(opening, closing, net, card) {
     if (opening === null)
@@ -203,8 +221,9 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     tax;
     images;
     fx;
+    errors;
     logger = new common_1.Logger(BookkeepingService_1.name);
-    constructor(prisma, storage, openai, processor, tax, images, fx) {
+    constructor(prisma, storage, openai, processor, tax, images, fx, errors) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
@@ -212,6 +231,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.tax = tax;
         this.images = images;
         this.fx = fx;
+        this.errors = errors;
     }
     async upload(scope, files) {
         try {
@@ -269,17 +289,18 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         return { queued: count, taxing: false };
     }
     async list(scope) {
-        const [rows, currencies, opening] = await Promise.all([
+        const [rows, currencies, opening, saved] = await Promise.all([
             this.prisma.bankStatement.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
                 orderBy: { createdAt: 'desc' },
             }),
             (0, opening_balance_query_1.accountCurrencies)(this.prisma, scope),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
+            this.errors?.openFor(scope),
         ]);
-        const starts = new Map([...(0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingChain)(opening)).values()]
-            .flat()
-            .map((s) => [
+        if (rows.some(staleErrors))
+            this.errors?.refreshSoon(scope);
+        const starts = new Map([...(0, opening_balance_util_1.startsByAccount)((0, opening_balance_util_1.openingChain)(opening)).values()].flat().map((s) => [
             s.statementId,
             {
                 date: s.date,
@@ -302,6 +323,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 ...toView(r, currencies, {
                     reason,
                     net: nets.get(r.id),
+                    ...(saved && !staleErrors(r) && { saved: saved.get(r.id) ?? [] }),
                     rechecked: r.chainRereadAt !== null && previous?.chainRereadAt != null,
                     rechecking: busy(previous) ||
                         (r.chainRereadAt !== null &&
@@ -538,6 +560,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             },
         });
         this.processor.processSoon();
+        this.errors?.refreshSoon(scope);
         return toView(row);
     }
     async retryProblems(scope) {
@@ -638,9 +661,12 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 verificationDetail: withBalanceCheck(row.verificationDetail, fit, row.closingBalance === null ? null : Number(row.closingBalance)),
             },
         });
+        await this.errors?.refreshBook(scope);
+        const saved = await this.errors?.openFor(scope, [s.id]);
         return {
             statement: toView(checked, undefined, {
                 net: Number(sum._sum.amount ?? 0),
+                ...(saved && { saved: saved.get(s.id) ?? [] }),
             }),
             ...fit,
             ...(fit.balancesMatch !== true && {
@@ -658,6 +684,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
         await this.images.removeFor(scope, s.id);
         await this.processor.recheckChains(scope, [s.accountName]);
+        this.errors?.refreshSoon(scope);
     }
     async moveStatement(scope, id, rawName) {
         const s = await this.owned(scope, id);
@@ -738,6 +765,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.logger.log(`${(0, scope_1.bookLabel)(scope)}: statement #${s.id} moved "${old}" -> "${name}"`);
         change_feed_1.changeFeed.bump(scope.customerId);
         await this.processor.recheckChains(scope, [old, name]);
+        this.errors?.refreshSoon(scope);
         return toView(row);
     }
     async owned(scope, id) {
@@ -752,13 +780,15 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
 exports.BookkeepingService = BookkeepingService;
 exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
         statement_processor_service_1.StatementProcessorService,
         tax_service_1.TaxService,
         statement_images_service_1.StatementImagesService,
-        fx_service_1.FxService])
+        fx_service_1.FxService,
+        statement_errors_service_1.StatementErrorsService])
 ], BookkeepingService);
 function rereadable(s) {
     if (s.source === 'PLAID')

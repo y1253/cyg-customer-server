@@ -7,6 +7,7 @@ import { StatementImagesService } from './statement-images.service';
 import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { type BookScope } from './scope';
+import { StatementErrorsService } from './statement-errors.service';
 export { claimableAt, MAX_ATTEMPTS };
 export declare class StatementProcessorService {
     private readonly prisma;
@@ -16,9 +17,10 @@ export declare class StatementProcessorService {
     private readonly names;
     private readonly images;
     private readonly rules?;
+    private readonly errors?;
     private readonly logger;
     private sweeping;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined, errors?: StatementErrorsService | undefined);
     processSoon(): void;
     recheckChains(scope: BookScope, accountNames: Array<string | null> | null): Promise<void>;
     cleanStaging(): Promise<void>;

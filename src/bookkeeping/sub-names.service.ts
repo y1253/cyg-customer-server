@@ -1,11 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnApplicationBootstrap,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
-import { cleanName } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
 import { subNameOf } from './sub-names.util';
+import { ensureSubName, syncParentSubNames } from './sub-name-parents';
 
 /** A sub-name as the Names tab shows it under its parent. */
 export interface SubNameView {
@@ -24,14 +29,47 @@ export interface SubNameView {
  * still count it under that name) and points at a `SubName` — "<name> - <category>" — whose
  * category it takes. One sub-name per (name, category) in a book; changing a sub-name's
  * category moves every row of it, removing it puts them back in the name's category.
+ * step9 (2026-11-15): the transaction a sub-named split came from gets its own sub-name,
+ * "<name> - <its category>" (`syncParentSubNames`), so the Names tab lists every part of it.
  */
 @Injectable()
-export class SubNamesService {
+export class SubNamesService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(SubNamesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly names: NameMemoryService,
     private readonly accounts: CustomerAccountsService,
   ) {}
+
+  /**
+   * step9: transactions split before their own sub-name existed get it — 70 s after start,
+   * every book with a sub-named split (idempotent: nothing changes once they have it).
+   */
+  onApplicationBootstrap(): void {
+    setTimeout(() => void this.backfillParents(), 70_000).unref();
+  }
+
+  async backfillParents(): Promise<void> {
+    try {
+      const books = await this.prisma.bankTransaction.groupBy({
+        by: ['customerId', 'bookId', 'companyId'],
+        where: { splitOfId: { not: null }, subNameId: { not: null } },
+      });
+      let changed = 0;
+      for (const b of books)
+        changed += await syncParentSubNames(this.prisma, b);
+      if (changed) {
+        this.logger.log(
+          `gave ${changed} split transaction(s) their own sub-name`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `parent sub-names not synced: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /** The sub-name of `parent` in `category`, made (with the parent's `LedgerName`) if new. */
   async ensure(
@@ -39,21 +77,7 @@ export class SubNamesService {
     parent: string,
     category: string,
   ): Promise<{ id: number; name: string }> {
-    const nameId = await this.ledgerNameId(scope, parent);
-    const found = await this.prisma.subName.findFirst({
-      where: { bookId: scope.bookId, nameId, category },
-      select: { id: true, name: true },
-    });
-    if (found) return found;
-    return this.prisma.subName.create({
-      data: {
-        ...scopeWhere(scope),
-        nameId,
-        name: subNameOf(parent, category),
-        category,
-      },
-      select: { id: true, name: true },
-    });
+    return ensureSubName(this.prisma, scope, parent, category);
   }
 
   /** Every sub-name of the book with its parent and how many rows it has. */
@@ -109,12 +133,20 @@ export class SubNamesService {
     const sub = await this.get(scope, id);
     const category = await this.accounts.validCategory(scope, rawCategory);
     const parent = await this.parentName(sub.nameId);
-    if (parent && (await this.names.categoryOfName(scope, parent)) === category) {
+    if (
+      parent &&
+      (await this.names.categoryOfName(scope, parent)) === category
+    ) {
       await this.remove(scope, id);
       return;
     }
     const other = await this.prisma.subName.findFirst({
-      where: { bookId: scope.bookId, nameId: sub.nameId, category, id: { not: id } },
+      where: {
+        bookId: scope.bookId,
+        nameId: sub.nameId,
+        category,
+        id: { not: id },
+      },
       select: { id: true },
     });
     const target = other?.id ?? id;
@@ -129,6 +161,7 @@ export class SubNamesService {
     }
     await this.moveRows(scope, id, target, category);
     if (other) await this.prisma.subName.delete({ where: { id } });
+    await syncParentSubNames(this.prisma, scope);
   }
 
   /** Remove a sub-name: its rows go back to the parent name's category. */
@@ -140,22 +173,7 @@ export class SubNamesService {
       sub.category;
     await this.moveRows(scope, id, null, category);
     await this.prisma.subName.delete({ where: { id } });
-  }
-
-  /** The parent's `LedgerName` id — the row is made when the name has none yet. */
-  private async ledgerNameId(scope: BookScope, name: string): Promise<number> {
-    const clean = cleanName(name) ?? name;
-    // MySQL compares names case-insensitively, as the unique key does.
-    const found = await this.prisma.ledgerName.findFirst({
-      where: { ...scopeWhere(scope), name: clean },
-      select: { id: true },
-    });
-    if (found) return found.id;
-    const made = await this.prisma.ledgerName.create({
-      data: { ...scopeWhere(scope), name: clean },
-      select: { id: true },
-    });
-    return made.id;
+    await syncParentSubNames(this.prisma, scope);
   }
 
   private async get(scope: BookScope, id: number) {

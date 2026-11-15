@@ -19,6 +19,7 @@ import {
   type ExtractedTransaction,
 } from '../bookkeeping/ledger.util';
 import { NameMemoryService } from '../bookkeeping/name-memory.service';
+import { StatementErrorsService } from '../bookkeeping/statement-errors.service';
 import { resolveRow } from '../bookkeeping/name-memory.util';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
@@ -122,6 +123,8 @@ export class BankFeedSyncService {
     private readonly outbox: CustomerOutbox,
     private readonly messenger: CustomerMessenger,
     @Optional() private readonly rules?: RulesService,
+    /** step9: the book's saved statement errors follow every rebuild. */
+    @Optional() private readonly errors?: StatementErrorsService,
   ) {}
 
   private get key(): string {
@@ -793,6 +796,7 @@ export class BankFeedSyncService {
       if (account.shared) await this.rebuildAccount(item, account);
       else await this.dropAccount(account);
     }
+    this.errors?.refreshSoon(scopeOf(item));
   }
 
   /**

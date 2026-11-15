@@ -39,6 +39,7 @@ const staff_rules_service_1 = require("./staff-rules.service");
 const statement_extractor_1 = require("./statement-extractor");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_processor_service_1 = require("./statement-processor.service");
+const statement_errors_service_1 = require("./statement-errors.service");
 const tax_service_1 = require("./tax.service");
 const communications_service_1 = require("./communications.service");
 const document_pipeline_1 = require("./pipeline/document-pipeline");
@@ -84,6 +85,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             sub_names_service_1.SubNamesService,
             staff_book_guard_1.StaffBookGuard,
             staff_rules_service_1.StaffRulesService,
+            statement_errors_service_1.StatementErrorsService,
             statement_extractor_1.StatementExtractor,
             statement_images_service_1.StatementImagesService,
             statement_processor_service_1.StatementProcessorService,
@@ -103,6 +105,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
             splits_service_1.SplitsService,
+            statement_errors_service_1.StatementErrorsService,
             sub_names_service_1.SubNamesService,
             tax_service_1.TaxService,
         ],
