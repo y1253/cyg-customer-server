@@ -12,7 +12,6 @@ export interface SubNameView {
     category: string;
     rows: number;
     total: number;
-    tax?: boolean;
     group: string | null;
     fields: NameField[];
     renamed: boolean;
@@ -39,10 +38,7 @@ export declare class SubNamesService implements OnApplicationBootstrap {
         name: string;
     }>;
     list(scope: BookScope): Promise<SubNameView[]>;
-    private agencyNames;
     private rowTotals;
-    private taxTotals;
-    private refuseTax;
     setCategory(scope: BookScope, id: number, rawCategory: string): Promise<void>;
     setSettings(scope: BookScope, id: number, input: SubNameSettings): Promise<void>;
     private refuseTaken;

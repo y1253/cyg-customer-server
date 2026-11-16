@@ -8,4 +8,3 @@ export declare function ledgerNameId(prisma: PrismaService, scope: BookScope, na
 export declare function dropUnusedSubName(prisma: PrismaService, id: number | null): Promise<void>;
 export declare function deleteSubName(prisma: PrismaService, id: number): Promise<void>;
 export declare function syncParentSubNames(prisma: PrismaService, scope: BookScope, parentIds?: number[]): Promise<number>;
-export declare function syncTaxSubNames(prisma: PrismaService, scope: BookScope): Promise<number>;

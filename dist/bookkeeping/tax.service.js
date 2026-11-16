@@ -22,8 +22,7 @@ const name_memory_util_1 = require("./name-memory.util");
 const attachment_name_util_1 = require("./attachment-name.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
-const splits_util_1 = require("./splits.util");
-const sub_name_parents_1 = require("./sub-name-parents");
+const split_rules_service_1 = require("./split-rules.service");
 const sub_names_util_1 = require("./sub-names.util");
 const agency_dto_1 = require("./dto/agency.dto");
 const tax_util_1 = require("./tax.util");
@@ -51,15 +50,35 @@ const toAgency = (a) => ({
     name: a.name,
     rates: KIND_ORDER.flatMap((kind) => {
         const r = a.rates.find((x) => x.kind === kind);
-        return r ? [{ kind, rate: Number(r.rate) }] : [];
+        return r
+            ? [
+                {
+                    kind,
+                    mode: r.mode,
+                    rate: Number(r.rate),
+                    amount: r.amount === null ? null : Number(r.amount),
+                },
+            ]
+            : [];
     }),
+    category: a.category,
     active: a.active,
 });
 function rateRows(rates) {
     if (new Set(rates.map((r) => r.kind)).size !== rates.length) {
-        throw new common_1.BadRequestException('Give each kind of tax only one rate');
+        throw new common_1.BadRequestException('Give In and Out only one rate each');
     }
-    return rates.map((r) => ({ kind: r.kind, rate: r.rate.toFixed(3) }));
+    return rates.map((r) => {
+        const mode = r.mode ?? 'PERCENT';
+        if (mode === 'FIXED') {
+            if (r.amount === undefined || r.amount <= 0)
+                throw new common_1.BadRequestException('Give the fixed amount');
+            return { kind: r.kind, mode, rate: '0.000', amount: r.amount.toFixed(2) };
+        }
+        if (r.rate === undefined)
+            throw new common_1.BadRequestException('Give the percentage');
+        return { kind: r.kind, mode, rate: r.rate.toFixed(3), amount: null };
+    });
 }
 const typeOfCategory = (category, ctx) => {
     const type = (0, chart_of_accounts_1.typeFor)(category, ctx);
@@ -73,9 +92,11 @@ const DONE = { deletedAt: null, status: client_1.StatementStatus.DONE };
 let TaxService = class TaxService {
     prisma;
     accounts;
-    constructor(prisma, accounts) {
+    splitRules;
+    constructor(prisma, accounts, splitRules) {
         this.prisma = prisma;
         this.accounts = accounts;
+        this.splitRules = splitRules;
     }
     async settings(scope) {
         const agencies = await this.prisma.taxAgency.findMany({
@@ -87,10 +108,12 @@ let TaxService = class TaxService {
     }
     async createAgency(scope, dto) {
         const name = await this.checkName(scope, dto.name);
+        const category = await this.ruleCategory(scope, dto.category, name);
         const row = await this.prisma.taxAgency.create({
             data: {
                 ...(0, scope_1.scopeWhere)(scope),
                 name,
+                category: category ?? null,
                 active: dto.active ?? true,
                 rates: { create: rateRows(dto.rates) },
             },
@@ -99,21 +122,31 @@ let TaxService = class TaxService {
         return toAgency(row);
     }
     async updateAgency(scope, id, dto) {
-        await this.ownedAgency(scope, id);
+        const current = await this.ownedAgency(scope, id);
         const name = dto.name === undefined
             ? undefined
             : await this.checkName(scope, dto.name, id);
+        const category = await this.ruleCategory(scope, dto.category, name ?? current.name);
         const rates = dto.rates && rateRows(dto.rates);
         const row = await this.prisma.taxAgency.update({
             where: { id },
             data: {
                 name,
+                category,
                 active: dto.active,
                 ...(rates && { rates: { deleteMany: {}, create: rates } }),
             },
             include: { rates: true },
         });
         return toAgency(row);
+    }
+    async ruleCategory(scope, raw, name) {
+        if (raw === undefined)
+            return undefined;
+        const clean = raw?.trim();
+        if (!clean || clean.toLowerCase() === name.toLowerCase())
+            return null;
+        return this.accounts.validCategory(scope, clean);
     }
     async removeAgency(scope, id) {
         await this.ownedAgency(scope, id);
@@ -132,13 +165,13 @@ let TaxService = class TaxService {
             where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
         });
         if (!a)
-            throw new common_1.NotFoundException('Agency not found');
+            throw new common_1.NotFoundException('Split rule not found');
         return a;
     }
     async checkName(scope, raw, exceptId) {
         const name = raw.trim();
         if (!name)
-            throw new common_1.BadRequestException('Give the agency a name');
+            throw new common_1.BadRequestException('Give the split rule a name');
         const lower = name.toLowerCase();
         if (chart_of_accounts_1.ACCOUNT_NAMES.some((n) => n.toLowerCase() === lower)) {
             throw new common_1.BadRequestException(`"${name}" is already an account name — choose another`);
@@ -152,7 +185,7 @@ let TaxService = class TaxService {
             select: { name: true },
         });
         if (others.some((o) => o.name.toLowerCase() === lower)) {
-            throw new common_1.BadRequestException(`You already have an agency "${name}"`);
+            throw new common_1.BadRequestException(`You already have a split rule "${name}"`);
         }
         return name;
     }
@@ -170,82 +203,6 @@ let TaxService = class TaxService {
             this.agencyNames(scope),
         ]);
         return { overrides, custom, liabilities: new Set(agencies) };
-    }
-    linesFor(scope, statementIds) {
-        return this.compute(scope, {
-            ...(statementIds?.length && { statementId: { in: statementIds } }),
-        });
-    }
-    async compute(scope, where) {
-        const out = new Map();
-        const picks = await this.prisma.ledgerNameAgency.findMany({
-            where: (0, scope_1.scopeWhere)(scope),
-            select: { name: true, agencyId: true, lineName: true },
-        });
-        if (!picks.length)
-            return out;
-        const [agencyRows, rows, named, ctx] = await Promise.all([
-            this.prisma.taxAgency.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, active: true },
-                include: { rates: true },
-                orderBy: { createdAt: 'asc' },
-            }),
-            this.prisma.bankTransaction.findMany({
-                where: { ...where, ...(0, scope_1.scopeWhere)(scope), statement: DONE },
-                select: {
-                    id: true,
-                    name: true,
-                    offsetAccount: true,
-                    amount: true,
-                    splitOfId: true,
-                    subNameId: true,
-                },
-            }),
-            this.prisma.transactionTax.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), name: { not: null } },
-                select: { transactionId: true, agencyId: true, name: true },
-            }),
-            this.typeContext(scope),
-        ]);
-        const ownSubs = await this.ownAgencySubNames(scope);
-        const agencies = agencyRows.map((a) => ({
-            id: a.id,
-            name: a.name,
-            rates: Object.fromEntries(a.rates.map((r) => [r.kind, Number(r.rate)])),
-        }));
-        const agenciesOf = new Map();
-        for (const p of picks) {
-            const key = (0, tax_util_1.nameTaxKey)(p.name);
-            agenciesOf.set(key, [...(agenciesOf.get(key) ?? []), p.agencyId]);
-        }
-        const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
-        const sized = rows.map((r) => ({
-            id: r.id,
-            name: (r.subNameId && ownSubs.get(r.subNameId)) || r.name,
-            offsetAccount: r.offsetAccount,
-            amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
-        }));
-        const amountOf = new Map(sized.map((r) => [r.id, r.amount]));
-        const nameOf = new Map(named.map((n) => [`${n.transactionId}:${n.agencyId}`, n.name]));
-        const alwaysOf = new Map(picks.flatMap((p) => p.lineName ? [[`${(0, tax_util_1.nameTaxKey)(p.name)}:${p.agencyId}`, p.lineName]] : []));
-        const rowNameOf = new Map(sized.map((r) => [r.id, (0, tax_util_1.nameTaxKey)(r.name)]));
-        for (const [id, lines] of (0, tax_util_1.nameTaxLines)(sized, agenciesOf, agencies, ctx)) {
-            out.set(id, lines.map((l) => ({
-                ...l,
-                name: nameOf.get(`${id}:${l.agencyId}`) ??
-                    alwaysOf.get(`${rowNameOf.get(id)}:${l.agencyId}`) ??
-                    null,
-                amount: (0, tax_util_1.taxAmount)(amountOf.get(id) ?? 0, l.rate),
-            })));
-        }
-        return out;
-    }
-    async ownAgencySubNames(scope) {
-        const subs = await this.prisma.subName.findMany({
-            where: { bookId: scope.bookId, ownAgencies: true },
-            select: { id: true, name: true },
-        });
-        return new Map(subs.map((s) => [s.id, s.name]));
     }
     async names(scope) {
         const [groups, named, nameless, picks, rules, ctx] = await Promise.all([
@@ -702,7 +659,6 @@ let TaxService = class TaxService {
         if (!clean)
             throw new common_1.BadRequestException('Which name?');
         await this.writePicks(scope, clean, agencyIds);
-        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
         return this.names(scope);
     }
     async writePicks(scope, clean, agencyIds) {
@@ -712,7 +668,7 @@ let TaxService = class TaxService {
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, id: { in: ids } },
             });
             if (owned !== ids.length)
-                throw new common_1.NotFoundException('Agency not found');
+                throw new common_1.NotFoundException('Split rule not found');
         }
         const key = (0, tax_util_1.nameTaxKey)(clean);
         const existing = await this.prisma.ledgerNameAgency.findMany({
@@ -721,6 +677,7 @@ let TaxService = class TaxService {
         });
         const mine = existing.filter((e) => (0, tax_util_1.nameTaxKey)(e.name) === key);
         const kept = new Set(mine.filter((e) => ids.includes(e.agencyId)).map((e) => e.agencyId));
+        const added = ids.filter((agencyId) => !kept.has(agencyId));
         await this.prisma.$transaction([
             this.prisma.ledgerNameAgency.deleteMany({
                 where: {
@@ -730,15 +687,16 @@ let TaxService = class TaxService {
                 },
             }),
             this.prisma.ledgerNameAgency.createMany({
-                data: ids
-                    .filter((agencyId) => !kept.has(agencyId))
-                    .map((agencyId) => ({
+                data: added.map((agencyId) => ({
                     ...(0, scope_1.scopeWhere)(scope),
                     name: clean,
                     agencyId,
+                    appliedAt: new Date(),
                 })),
             }),
         ]);
+        if (added.length)
+            await this.splitRules.apply(scope, { names: [clean], ruleIds: added });
     }
     async moveSubNameKeys(scope, oldName, newName) {
         const from = (0, tax_util_1.nameTaxKey)(oldName);
@@ -803,10 +761,10 @@ let TaxService = class TaxService {
                 ...(0, scope_1.scopeWhere)(scope),
                 name: newName,
                 agencyId,
+                appliedAt: new Date(),
             })),
             skipDuplicates: true,
         });
-        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
     }
     async carryNameSettings(scope, oldNames, newName) {
         const keys = new Set(oldNames.map(tax_util_1.nameTaxKey));
@@ -926,74 +884,13 @@ let TaxService = class TaxService {
             data: { name: (0, attachment_name_util_1.nameKeyOf)(newName) },
         });
     }
-    async renameLine(scope, transactionId, agencyId, name, nameScope = 'ONCE') {
-        const lines = await this.compute(scope, {
-            OR: [{ id: transactionId }, { splitOfId: transactionId }],
-        });
-        const line = lines.get(transactionId)?.find((l) => l.agencyId === agencyId);
-        if (!line)
-            return false;
-        if (nameScope === 'ALWAYS') {
-            const row = await this.prisma.bankTransaction.findFirst({
-                where: { ...(0, scope_1.scopeWhere)(scope), id: transactionId },
-                select: { name: true, subNameId: true },
-            });
-            const own = row?.subNameId
-                ? (await this.ownAgencySubNames(scope)).get(row.subNameId)
-                : undefined;
-            const key = (0, tax_util_1.nameTaxKey)(own ?? row?.name);
-            const picks = (await this.prisma.ledgerNameAgency.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), agencyId },
-                select: { id: true, name: true },
-            })).filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === key);
-            if (!picks.length)
-                return false;
-            const sameName = (await this.prisma.bankTransaction.findMany({
-                where: {
-                    ...(0, scope_1.scopeWhere)(scope),
-                    ...(own
-                        ? { subNameId: row.subNameId }
-                        : { name: row?.name ?? null }),
-                },
-                select: { id: true },
-            })).map((r) => r.id);
-            await this.prisma.$transaction([
-                this.prisma.ledgerNameAgency.updateMany({
-                    where: { id: { in: picks.map((p) => p.id) } },
-                    data: { lineName: name },
-                }),
-                this.prisma.transactionTax.updateMany({
-                    where: {
-                        ...(0, scope_1.scopeWhere)(scope),
-                        agencyId,
-                        transactionId: { in: sameName },
-                    },
-                    data: { name: null },
-                }),
-            ]);
-            return true;
-        }
-        await this.prisma.transactionTax.upsert({
-            where: { transactionId_agencyId: { transactionId, agencyId } },
-            create: {
-                ...(0, scope_1.scopeWhere)(scope),
-                transactionId,
-                agencyId,
-                kind: line.kind,
-                rate: line.rate.toFixed(3),
-                amount: line.amount.toFixed(2),
-                name,
-            },
-            update: { name },
-        });
-        return true;
-    }
 };
 exports.TaxService = TaxService;
 exports.TaxService = TaxService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        customer_accounts_service_1.CustomerAccountsService])
+        customer_accounts_service_1.CustomerAccountsService,
+        split_rules_service_1.SplitRulesService])
 ], TaxService);
 const MAX_DESCRIPTIONS = 25;
 const TOTAL_SELECT = { id: true, amount: true, splitOfId: true };

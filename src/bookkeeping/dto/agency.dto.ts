@@ -1,4 +1,4 @@
-import { TaxKind } from '@prisma/client';
+import { SplitRateMode, TaxKind } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -22,31 +22,53 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
-/** One rate of an agency; `rate` is a percent (10 = 10%). */
+/**
+ * One rate of a split rule (step9 part 4: was a tax agency's). `kind` SALES = In (money
+ * received), PURCHASE = Out (money spent). PERCENT: `rate` is a percent (10 = 10%), included
+ * in the amount; FIXED: `amount` is split out of each row.
+ */
 export class AgencyRateDto {
   @IsEnum(TaxKind)
   kind!: TaxKind;
 
+  @IsOptional()
+  @IsEnum(SplitRateMode)
+  mode?: SplitRateMode;
+
+  @IsOptional()
   @IsNumber({ maxDecimalPlaces: 3 }, { message: 'Rate must be a number' })
   @Min(0)
   @Max(100)
-  rate!: number;
+  rate?: number;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 }, { message: 'Amount must be a number' })
+  @Min(0.01, { message: 'A fixed amount must be more than 0' })
+  @Max(999999999)
+  amount?: number;
 }
 
-/** `POST /api/bookkeeping/agencies` — a tax agency with a Sales and/or Purchase rate. */
+/** `POST /api/bookkeeping/agencies` — a split rule with an In and/or an Out rate. */
 export class CreateAgencyDto {
   @Transform(trim)
   @IsString()
-  @IsNotEmpty({ message: 'Give the agency a name' })
+  @IsNotEmpty({ message: 'Give the split rule a name' })
   @MaxLength(191)
   name!: string;
 
   @IsArray()
-  @ArrayMinSize(1, { message: 'Give the agency a Sales or a Purchase rate' })
+  @ArrayMinSize(1, { message: 'Give the split rule an In or an Out rate' })
   @ArrayMaxSize(2)
   @ValidateNested({ each: true })
   @Type(() => AgencyRateDto)
   rates!: AgencyRateDto[];
+
+  /** Where its splits post; null / absent = the rule's own name. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  category?: string | null;
 
   @IsOptional()
   @IsBoolean()
@@ -58,17 +80,24 @@ export class UpdateAgencyDto {
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @IsNotEmpty({ message: 'Give the agency a name' })
+  @IsNotEmpty({ message: 'Give the split rule a name' })
   @MaxLength(191)
   name?: string;
 
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(1, { message: 'Give the agency a Sales or a Purchase rate' })
+  @ArrayMinSize(1, { message: 'Give the split rule an In or an Out rate' })
   @ArrayMaxSize(2)
   @ValidateNested({ each: true })
   @Type(() => AgencyRateDto)
   rates?: AgencyRateDto[];
+
+  /** '' / null = the rule's own name. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  category?: string | null;
 
   @IsOptional()
   @IsBoolean()
@@ -76,7 +105,10 @@ export class UpdateAgencyDto {
 }
 
 /** `PATCH /api/bookkeeping/tax` — the sales-tax switch. */
-/** `PUT /api/bookkeeping/names/agencies` — the agencies that tax one payee name. */
+/**
+ * `PUT /api/bookkeeping/names/agencies` — the split rules of one payee name. A rule added
+ * splits the name's existing rows once (and every new row); one removed leaves its splits.
+ */
 export class SetNameAgenciesDto {
   @Transform(trim)
   @IsString()
@@ -374,20 +406,6 @@ export class SetSubNameCategoryDto {
   @IsNotEmpty()
   @MaxLength(191)
   category!: string;
-}
-
-/** `PATCH /api/bookkeeping/transactions/:id/taxes/:agencyId` — a tax line's own name. */
-export class RenameTaxLineDto {
-  @IsOptional()
-  @Transform(trim)
-  @IsString()
-  @MaxLength(191)
-  name?: string | null;
-
-  /** step9: ONCE (default) = this line only; ALWAYS = every line of this name and agency. */
-  @IsOptional()
-  @IsIn(['ONCE', 'ALWAYS'])
-  scope?: 'ONCE' | 'ALWAYS';
 }
 
 /** `PATCH /api/bookkeeping/attachments/:id` — attach to a transaction, or `null` to detach. */

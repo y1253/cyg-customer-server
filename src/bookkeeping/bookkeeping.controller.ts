@@ -58,7 +58,6 @@ import {
   CreateAgencyDto,
   EditTransactionDto,
   MoveStatementDto,
-  RenameTaxLineDto,
   ResetNameRuleDto,
   ResetAccountTypeDto,
   MergeAccountsDto,
@@ -381,28 +380,6 @@ export class BookkeepingController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
     return this.subNames.remove(scope, id);
-  }
-
-  /**
-   * Name one tax line (an agency's tax on a row) — null puts the row's own name back.
-   * step9: `scope` ALWAYS names every line of the row's name and that agency.
-   */
-  @Patch('transactions/:id/taxes/:agencyId')
-  @HttpCode(204)
-  async renameTaxLine(
-    @Book() scope: BookScope,
-    @Param('id', ParseIntPipe) id: number,
-    @Param('agencyId', ParseIntPipe) agencyId: number,
-    @Body() dto: RenameTaxLineDto,
-  ): Promise<void> {
-    const ok = await this.tax.renameLine(
-      scope,
-      id,
-      agencyId,
-      dto.name?.trim() || null,
-      dto.scope ?? 'ONCE',
-    );
-    if (!ok) throw new NotFoundException('Tax line not found');
   }
 
   /**

@@ -4,6 +4,7 @@ import { type TypeContext } from './chart-of-accounts';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import { type BookScope } from './scope';
+import { SplitRulesService } from './split-rules.service';
 import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
 export interface AgencyView {
@@ -11,8 +12,11 @@ export interface AgencyView {
     name: string;
     rates: Array<{
         kind: TaxKind;
+        mode: 'PERCENT' | 'FIXED';
         rate: number;
+        amount: number | null;
     }>;
+    category: string | null;
     active: boolean;
 }
 export type NameType = 'CUSTOMER' | 'SUPPLIER' | 'OTHER';
@@ -99,32 +103,23 @@ export interface NameGroupView {
     id?: number;
 }
 export declare const BUILTIN_GROUPS: NameGroupView[];
-export interface StoredTax {
-    agencyId: number;
-    agency: string;
-    name: string | null;
-    kind: TaxKind;
-    rate: number;
-    amount: number;
-}
 export interface TaxSettingsView {
     agencies: AgencyView[];
 }
 export declare class TaxService {
     private readonly prisma;
     private readonly accounts;
-    constructor(prisma: PrismaService, accounts: CustomerAccountsService);
+    private readonly splitRules;
+    constructor(prisma: PrismaService, accounts: CustomerAccountsService, splitRules: SplitRulesService);
     settings(scope: BookScope): Promise<TaxSettingsView>;
     createAgency(scope: BookScope, dto: CreateAgencyDto): Promise<AgencyView>;
     updateAgency(scope: BookScope, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
+    private ruleCategory;
     removeAgency(scope: BookScope, id: number): Promise<void>;
     private ownedAgency;
     private checkName;
     agencyNames(scope: BookScope): Promise<string[]>;
     typeContext(scope: BookScope): Promise<TypeContext>;
-    linesFor(scope: BookScope, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
-    private compute;
-    ownAgencySubNames(scope: BookScope): Promise<Map<number, string>>;
     names(scope: BookScope): Promise<NamesView>;
     private namesOfFiles;
     addName(scope: BookScope, rawName: string, group: string | null): Promise<string>;
@@ -149,6 +144,5 @@ export declare class TaxService {
     private copyNameRow;
     moveSubNames(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     moveNameFiles(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
-    renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null, nameScope?: 'ONCE' | 'ALWAYS'): Promise<boolean>;
 }
 export declare function cleanNameFields(input: NameFieldDto[]): Prisma.InputJsonValue | typeof Prisma.DbNull;

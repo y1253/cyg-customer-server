@@ -266,7 +266,7 @@ const WRITE_TOOLS = [
     },
     {
         name: 'set_name_group',
-        description: 'Put a payee name in a Names-tab group: CUSTOMER, SUPPLIER, OTHER, or one of the customer\'s own groups by its key ("g12", from list_names → groups). A label only — its categories and tax do not change. Leave group out to make it follow its category again. To make a new group (e.g. "Employees") pass newGroup instead.',
+        description: 'Put a payee name in a Names-tab group: CUSTOMER, SUPPLIER, OTHER, or one of the customer\'s own groups by its key ("g12", from list_names → groups). A label only — its categories and split rules do not change. Leave group out to make it follow its category again. To make a new group (e.g. "Employees") pass newGroup instead.',
         parameters: obj({
             name: str,
             group: str,
@@ -278,17 +278,17 @@ const WRITE_TOOLS = [
     },
     {
         name: 'merge_names',
-        description: 'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and tax of "into", and later rows follow. Tax agencies and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
+        description: 'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and split rules of "into", and later rows follow. Split rules and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
         parameters: obj({ from: str, into: str }, ['from', 'into']),
     },
     {
         name: 'merge_accounts',
-        description: 'Merge account "from" into account "into" (categories, or two bank / card accounts with a Bank feeds folder — never a folder account with one without a folder): every row, rule and statement of "from" moves to "into". name = what the merged account is called (optional, default "into"; for two bank folders the site suggests both last-4s, e.g. "TD 4562 & 5845" or "TD 4562 & BMO 5352"). Tax agencies cannot be merged. Cannot be undone; only when the customer asks to merge / combine two accounts.',
+        description: 'Merge account "from" into account "into" (categories, or two bank / card accounts with a Bank feeds folder — never a folder account with one without a folder): every row, rule and statement of "from" moves to "into". name = what the merged account is called (optional, default "into"; for two bank folders the site suggests both last-4s, e.g. "TD 4562 & 5845" or "TD 4562 & BMO 5352"). Split rule accounts cannot be merged. Cannot be undone; only when the customer asks to merge / combine two accounts.',
         parameters: obj({ from: str, into: str, name: str }, ['from', 'into']),
     },
     {
         name: 'rename_account',
-        description: `Rename an account (a category, or a bank / card account and its Bank feeds folder): every row, rule, statement and setting of "from" takes the new name "to"; the connected bank files under it too. A standard chart category becomes the customer's own under the new name and keeps catching new rows. Not for tax agencies, Uncategorized, Owner's Loan, Exchange Gain or Loss or Retained Earnings. A name already in use is refused — merge_accounts instead. Only when the customer asks to rename an account.`,
+        description: `Rename an account (a category, or a bank / card account and its Bank feeds folder): every row, rule, statement and setting of "from" takes the new name "to"; the connected bank files under it too. A standard chart category becomes the customer's own under the new name and keeps catching new rows. Not for split rules, Uncategorized, Owner's Loan, Exchange Gain or Loss or Retained Earnings. A name already in use is refused — merge_accounts instead. Only when the customer asks to rename an account.`,
         parameters: obj({ from: str, to: str }, ['from', 'to']),
     },
     {

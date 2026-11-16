@@ -68,10 +68,11 @@ export interface TransactionView {
     debitAccount: string;
     creditAccount: string;
     statementLabel: string;
-    kind?: 'opening' | 'tax' | 'split' | 'fx';
-    taxRate?: number;
-    taxAgencyId?: number;
-    rowName?: string | null;
+    kind?: 'opening' | 'split' | 'fx';
+    splitRule?: {
+        id: number;
+        name: string;
+    };
     attachments?: Array<{
         id: number;
         kind: AttachmentKind;

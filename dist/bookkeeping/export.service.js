@@ -17,7 +17,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LedgerExportService = void 0;
 exports.netOf = netOf;
-exports.exportRowWithTaxes = exportRowWithTaxes;
 const common_1 = require("@nestjs/common");
 const exceljs_1 = __importDefault(require("exceljs"));
 const pdfkit_1 = __importDefault(require("pdfkit"));
@@ -29,8 +28,6 @@ const statement_label_1 = require("./statement-label");
 const fx_service_1 = require("./fx.service");
 const custom_columns_service_1 = require("./custom-columns.service");
 const scope_1 = require("./scope");
-const tax_service_1 = require("./tax.service");
-const tax_util_1 = require("./tax.util");
 function customCellsOf(r, custom) {
     if (!custom)
         return [];
@@ -41,23 +38,6 @@ const BRAND = '#169F96';
 function netOf(rows) {
     return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
 }
-function exportRowWithTaxes(row, offsetAccount, lines) {
-    if (!lines.length)
-        return [row];
-    const split = (0, tax_util_1.taxSplit)({ ...row, offsetAccount }, lines);
-    return [
-        { ...row, amount: split.parent.amount },
-        ...split.taxes.map((e, i) => ({
-            ...row,
-            split: undefined,
-            name: lines[i].name ?? row.name,
-            amount: e.amount,
-            debitAccount: e.debitAccount,
-            creditAccount: e.creditAccount,
-            tax: true,
-        })),
-    ];
-}
 const ISO = (d) => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n) => n.toLocaleString('en-US', {
     minimumFractionDigits: 2,
@@ -65,12 +45,10 @@ const MONEY = (n) => n.toLocaleString('en-US', {
 });
 let LedgerExportService = class LedgerExportService {
     prisma;
-    tax;
     fx;
     customColumns;
-    constructor(prisma, tax, fx, customColumns) {
+    constructor(prisma, fx, customColumns) {
         this.prisma = prisma;
-        this.tax = tax;
         this.fx = fx;
         this.customColumns = customColumns;
     }
@@ -83,7 +61,7 @@ let LedgerExportService = class LedgerExportService {
             : undefined;
     }
     async rowsFor(scope) {
-        const [rows, statements, taxes, subNames] = await Promise.all([
+        const [rows, statements, subNames] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
@@ -102,7 +80,6 @@ let LedgerExportService = class LedgerExportService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
-            this.tax.linesFor(scope),
             this.prisma.subName.findMany({
                 where: { bookId: scope.bookId },
                 select: { id: true, name: true },
@@ -164,10 +141,8 @@ let LedgerExportService = class LedgerExportService {
             })),
         ].sort((a, b) => (0, opening_balance_util_1.ledgerOrder)({ ...a, postingDate: a.row.postingDate }, { ...b, postingDate: b.row.postingDate }));
         const out = sorted.flatMap((p) => [
-            ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
-            ...(splitsOf.get(p.id) ?? [])
-                .sort((a, b) => a.id - b.id)
-                .flatMap((c) => exportRowWithTaxes(exportRow(c), c.offsetAccount, taxes.get(c.id) ?? [])),
+            p.row,
+            ...(splitsOf.get(p.id) ?? []).sort((a, b) => a.id - b.id).map(exportRow),
         ]);
         const fx = await this.fx.context(scope, statements);
         if (!fx.anyForeign)
@@ -446,9 +421,8 @@ let LedgerExportService = class LedgerExportService {
 exports.LedgerExportService = LedgerExportService;
 exports.LedgerExportService = LedgerExportService = __decorate([
     (0, common_1.Injectable)(),
-    __param(3, (0, common_1.Optional)()),
+    __param(2, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        tax_service_1.TaxService,
         fx_service_1.FxService,
         custom_columns_service_1.CustomColumnsService])
 ], LedgerExportService);

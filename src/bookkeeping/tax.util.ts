@@ -65,51 +65,6 @@ export function includedTaxes(
   return out.map((c) => c / 100);
 }
 
-/** The tax included in `amount` at `rate` alone (one agency on the row). */
-export const taxAmount = (amount: number, rate: number): number =>
-  includedTaxes(amount, [rate])[0];
-
-/** A ledger entry as the tax split sees it: the bank side is the one that is not the offset. */
-export interface SplitEntry {
-  amount: number;
-  offsetAccount: string;
-  debitAccount: string;
-  creditAccount: string;
-}
-
-/**
- * Splits a taxed bank row into the row WITHOUT its tax and one line per agency, the tax
- * INCLUDED in the bank amount (`includedTaxes`): a $100 sale at 10% becomes a $90.91 sale
- * and a $9.09 tax line, which add back to the $100 the bank moved — so the ledger total
- * matches the statement again. Amounts come from each line's RATE, never a stored amount,
- * so rows tagged while tax was still "on top" read correctly with no migration.
- * Each tax line keeps the row's bank side and puts the agency where the row's own account was:
- *  - sales:    DEBIT the bank, CREDIT the agency (tax collected is owed);
- *  - purchase: DEBIT the agency, CREDIT the bank (tax paid is claimed back).
- */
-export function taxSplit<E extends SplitEntry>(
-  parent: E,
-  lines: Array<{ agency: string; rate: number }>,
-): { parent: E; taxes: SplitEntry[] } {
-  if (!lines.length) return { parent, taxes: [] };
-  const sign = parent.amount < 0 ? -1 : 1;
-  const swap = (account: string, agency: string) =>
-    account === parent.offsetAccount ? agency : account;
-  const amounts = includedTaxes(
-    parent.amount,
-    lines.map((t) => t.rate),
-  );
-  const taxes = lines.map((t, i) => ({
-    amount: sign * amounts[i],
-    offsetAccount: t.agency,
-    debitAccount: swap(parent.debitAccount, t.agency),
-    creditAccount: swap(parent.creditAccount, t.agency),
-  }));
-  const taxCents = amounts.reduce((n, a) => n + Math.round(a * 100), 0);
-  const net = (cents(parent.amount) - sign * taxCents) / 100;
-  return { parent: { ...parent, amount: net }, taxes };
-}
-
 /** The key a payee's agencies are stored under: lower-cased, "Unclarified name" for none. */
 export const nameTaxKey = (name: string | null | undefined): string =>
   (name?.trim() || UNCLARIFIED_NAME).toLowerCase();
@@ -122,7 +77,7 @@ export interface NameTaxRow {
   amount: number;
 }
 
-/** One tax on one row, before it is split out of the bank amount (`taxSplit`). */
+/** One tax on one row (HISTORY: read only by the step9 part 4 conversion, `convertBook`). */
 export interface NameTax {
   agencyId: number;
   agency: string;
@@ -131,6 +86,8 @@ export interface NameTax {
 }
 
 /**
+ * HISTORY since step9 part 4 (2026-11-15): kept only for the one-time conversion of the
+ * tax lines computed on read into rule splits (`SplitRulesService.convertBook`).
  * Which agencies tax which rows — decided by the row's NAME, with no AI (user's decision
  * 2026-10-14). Each agency picked for the name (`agenciesOf`, keyed `nameTaxKey`) that has
  * a rate for the row's kind gives it one line: a Customer (income) row takes the SALES

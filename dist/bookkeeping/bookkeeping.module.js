@@ -44,6 +44,7 @@ const tax_service_1 = require("./tax.service");
 const communications_service_1 = require("./communications.service");
 const document_pipeline_1 = require("./pipeline/document-pipeline");
 const ocr_service_1 = require("./pipeline/ocr.service");
+const split_rules_service_1 = require("./split-rules.service");
 let BookkeepingModule = class BookkeepingModule {
 };
 exports.BookkeepingModule = BookkeepingModule;
@@ -81,6 +82,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             product_memory_service_1.ProductMemoryService,
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
+            split_rules_service_1.SplitRulesService,
             splits_service_1.SplitsService,
             sub_names_service_1.SubNamesService,
             staff_book_guard_1.StaffBookGuard,
@@ -104,6 +106,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             name_memory_service_1.NameMemoryService,
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
+            split_rules_service_1.SplitRulesService,
             splits_service_1.SplitsService,
             statement_errors_service_1.StatementErrorsService,
             sub_names_service_1.SubNamesService,

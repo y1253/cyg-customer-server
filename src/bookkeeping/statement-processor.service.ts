@@ -24,6 +24,7 @@ import { ERROR_DETAIL_MAX, failureReason } from './statement-errors';
 import { relinkPlan, type LinkedRow } from './reread-relink.util';
 import { StatementImagesService } from './statement-images.service';
 import { sweepStaleStaging } from './statement-uploads';
+import { SplitRulesService } from './split-rules.service';
 import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, type BookScope } from './scope';
@@ -61,6 +62,8 @@ export class StatementProcessorService {
     @Optional() private readonly rules?: RulesService,
     /** step9: the book's saved statement errors follow every read. Optional for specs. */
     @Optional() private readonly errors?: StatementErrorsService,
+    /** step9 part 4: the names' split rules split the new rows. Optional for specs. */
+    @Optional() private readonly splitRules?: SplitRulesService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -316,6 +319,17 @@ export class StatementProcessorService {
         }),
       ]);
       if (linked.length) await this.relinkReceipts(row.id, linked, !mismatch);
+      if (!mismatch && this.splitRules) {
+        // step9 part 4: every new row gets its name's split rules, once (never throws).
+        const made = await this.prisma.bankTransaction.findMany({
+          where: { statementId: row.id, splitOfId: null },
+          select: { id: true },
+        });
+        await this.splitRules.applyToNew(
+          scope,
+          made.map((m) => m.id),
+        );
+      }
       if (!mismatch) {
         // Cheque / deposit-slip images become attachments on their rows (never fails).
         await this.images.harvest(

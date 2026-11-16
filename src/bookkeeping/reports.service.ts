@@ -26,7 +26,6 @@ import {
 } from './statement-errors.service';
 import { statementLabel } from './statement-label';
 import { TaxService } from './tax.service';
-import { taxSplit } from './tax.util';
 
 const day = (d: Date | null): string | null =>
   d ? d.toISOString().slice(0, 10) : null;
@@ -55,7 +54,7 @@ export class ReportsService {
       deletedAt: null,
       status: StatementStatus.DONE,
     };
-    const [rows, statements, taxes, agencies, customTypes, overrides] =
+    const [rows, statements, agencies, customTypes, overrides] =
       await Promise.all([
         this.prisma.bankTransaction.findMany({
           where: { ...scopeWhere(scope), statement: done },
@@ -74,7 +73,6 @@ export class ReportsService {
           },
         }),
         loadOpeningStatements(this.prisma, scope),
-        this.tax.linesFor(scope),
         this.tax.agencyNames(scope),
         this.accounts.types(scope),
         this.accounts.overrides(scope),
@@ -141,17 +139,16 @@ export class ReportsService {
         // The bank is whichever side is not the offset (see `doubleEntry`).
         const bankAccount =
           Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
-        // A taxed row is split like the ledger shows it: the tax taken OUT of the bank
-        // amount, each tax line against the agency.
-        const split = taxSplit({ ...r, amount }, taxes.get(r.id) ?? []);
         const rowDate = day(r.postingDate) ?? day(r.pendingDate);
-        return [split.parent, ...split.taxes].map((e) => ({
-          ...home(r.statementId, rowDate, e.amount, bankAccount),
-          offsetAccount: e.offsetAccount,
-          bankAccount,
-          date,
-          name: r.name,
-        }));
+        return [
+          {
+            ...home(r.statementId, rowDate, amount, bankAccount),
+            offsetAccount: r.offsetAccount,
+            bankAccount,
+            date,
+            name: r.name,
+          },
+        ];
       }),
     ];
     const revaluations = fx.revaluations(entries).map(

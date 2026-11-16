@@ -57,7 +57,7 @@ const has = (hay: string | null | undefined, needle: string) =>
 /**
  * Real transactions and splits that match every filter given, newest first, plus the count
  * and the total of ALL matches (so "how much did I spend at Costco" is right even past the
- * row limit). Starting balances, tax lines and FX revaluations are not transactions.
+ * row limit). Starting balances and FX revaluations are not transactions.
  */
 export function filterTransactions(
   rows: readonly LedgerRow[],

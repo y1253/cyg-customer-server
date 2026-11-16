@@ -60,7 +60,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         return (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, parent, category);
     }
     async list(scope) {
-        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope).catch((err) => this.logger.warn(`tax sub-names not synced: ${err instanceof Error ? err.message : String(err)}`));
         const subs = await this.prisma.subName.findMany({
             where: { bookId: scope.bookId },
             orderBy: { name: 'asc' },
@@ -84,7 +83,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         ]);
         const parentOf = new Map(parents.map((p) => [p.id, p.name]));
         const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
-        const agencies = await this.agencyNames(scope);
         const picks = await this.prisma.ledgerNameAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), agency: { deletedAt: null } },
             select: { name: true, agencyId: true },
@@ -93,26 +91,18 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         const picksOf = (name) => picks
             .filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === (0, tax_util_1.nameTaxKey)(name))
             .map((p) => p.agencyId);
-        const [rowTotals, taxTotals] = await Promise.all([
-            this.rowTotals(scope, subs.map((s) => s.id)),
-            this.taxTotals(scope, subs.filter((s) => agencies.has(s.category)), parentOf),
-        ]);
+        const rowTotals = await this.rowTotals(scope, subs.map((s) => s.id));
         return subs.flatMap((s) => {
             const parent = parentOf.get(s.nameId);
-            const tax = agencies.has(s.category);
-            const total = tax
-                ? (taxTotals.get(s.id) ?? { cents: 0, rows: 0 })
-                : { cents: rowTotals.get(s.id) ?? 0, rows: rowsOf.get(s.id) ?? 0 };
-            return parent && !(tax && !total.rows)
+            return parent
                 ? [
                     {
                         id: s.id,
                         parent,
                         name: s.name,
                         category: s.category,
-                        rows: total.rows,
-                        total: total.cents / 100,
-                        ...(tax && { tax: true }),
+                        rows: rowsOf.get(s.id) ?? 0,
+                        total: (rowTotals.get(s.id) ?? 0) / 100,
                         group: s.group,
                         fields: (0, tax_service_1.parseNameFields)(s.fields),
                         renamed: s.renamed,
@@ -122,13 +112,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                 ]
                 : [];
         });
-    }
-    async agencyNames(scope) {
-        const rows = await this.prisma.taxAgency.findMany({
-            where: (0, scope_1.scopeWhere)(scope),
-            select: { name: true },
-        });
-        return new Set(rows.map((r) => r.name));
     }
     async rowTotals(scope, ids) {
         const out = new Map();
@@ -153,45 +136,8 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         }
         return out;
     }
-    async taxTotals(scope, subs, parentOf) {
-        const out = new Map();
-        if (!subs.length)
-            return out;
-        const lines = await this.tax.linesFor(scope);
-        if (!lines.size)
-            return out;
-        const rows = await this.prisma.bankTransaction.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), id: { in: [...lines.keys()] } },
-            select: { id: true, name: true, amount: true },
-        });
-        const subOf = new Map(subs.flatMap((s) => {
-            const parent = parentOf.get(s.nameId);
-            return parent
-                ? [[`${(0, tax_util_1.nameTaxKey)(parent)}|${s.category}`, s.id]]
-                : [];
-        }));
-        for (const r of rows) {
-            const sign = Number(r.amount) < 0 ? -1 : 1;
-            for (const l of lines.get(r.id) ?? []) {
-                const id = subOf.get(`${(0, tax_util_1.nameTaxKey)(r.name)}|${l.agency}`);
-                if (id === undefined)
-                    continue;
-                const t = out.get(id) ?? { cents: 0, rows: 0 };
-                t.cents += sign * Math.round(l.amount * 100);
-                t.rows++;
-                out.set(id, t);
-            }
-        }
-        return out;
-    }
-    async refuseTax(scope, sub) {
-        if ((await this.agencyNames(scope)).has(sub.category)) {
-            throw new common_1.BadRequestException("This sub-name holds a tax line — it follows the name's tax agency. Change the name's agencies instead.");
-        }
-    }
     async setCategory(scope, id, rawCategory) {
         const sub = await this.get(scope, id);
-        await this.refuseTax(scope, sub);
         const category = await this.accounts.validCategory(scope, rawCategory);
         const parent = await this.parentName(sub.nameId);
         if (parent &&
@@ -237,7 +183,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
     }
     async setSettings(scope, id, input) {
         const sub = await this.get(scope, id);
-        await this.refuseTax(scope, sub);
         const parent = await this.parentName(sub.nameId);
         let name = sub.name;
         const data = {};
@@ -263,7 +208,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
             await this.tax.moveSubNameKeys(scope, sub.name, name);
         if (input.agencyIds !== undefined)
             await this.tax.writePicks(scope, name, input.agencyIds ?? []);
-        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
     }
     async refuseTaken(scope, name, id) {
         const [asName, asSub] = await Promise.all([
@@ -287,7 +231,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
     }
     async remove(scope, id) {
         const sub = await this.get(scope, id);
-        await this.refuseTax(scope, sub);
         const parent = await this.parentName(sub.nameId);
         const category = (parent && (await this.names.categoryOfName(scope, parent))) ??
             sub.category;

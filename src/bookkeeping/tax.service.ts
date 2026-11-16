@@ -31,8 +31,7 @@ import {
 } from './attachment-name.util';
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
-import { remainderOf, splitTotals } from './splits.util';
-import { syncTaxSubNames } from './sub-name-parents';
+import { SplitRulesService } from './split-rules.service';
 import { subNameOf } from './sub-names.util';
 import {
   NAME_FIELD_KINDS,
@@ -42,19 +41,21 @@ import {
   type NameFieldKind,
   type UpdateAgencyDto,
 } from './dto/agency.dto';
-import {
-  nameTaxKey,
-  nameTaxLines,
-  taxAmount,
-  type Agency,
-  type TaxKind,
-} from './tax.util';
+import { nameTaxKey, type TaxKind } from './tax.util';
 
+/** step9 part 4 (2026-11-15): a split rule (was a tax agency). */
 export interface AgencyView {
   id: number;
   name: string;
-  /** At most one per kind, SALES first. */
-  rates: Array<{ kind: TaxKind; rate: number }>;
+  /** At most one per kind (SALES = In, PURCHASE = Out), In first. */
+  rates: Array<{
+    kind: TaxKind;
+    mode: 'PERCENT' | 'FIXED';
+    rate: number;
+    amount: number | null;
+  }>;
+  /** Where its splits post; null = its own name. */
+  category: string | null;
   active: boolean;
 }
 
@@ -72,7 +73,7 @@ export interface NameView {
   rows: number;
   /** What its rows add up to, as the bank moved it (tax included; a split parent counts what is left). */
   total: number;
-  /** The tax agencies that tax this name's rows (none = not taxed, the default). */
+  /** The split rules picked for this name (none = the default). */
   agencyIds: number[];
   /**
    * The descriptions the AI put under this name (one per description key, most rows first,
@@ -211,18 +212,6 @@ export const BUILTIN_GROUPS: NameGroupView[] = [
   { key: 'OTHER', label: 'Other' },
 ];
 
-/** One tax line on a row, as the ledger, exports and reports read it. */
-export interface StoredTax {
-  agencyId: number;
-  agency: string;
-  /** The customer's own name for the line; null = the transaction's name. */
-  name: string | null;
-  kind: TaxKind;
-  rate: number;
-  /** Included in the bank amount, positive (display only — readers split by `rate`). */
-  amount: number;
-}
-
 export interface TaxSettingsView {
   agencies: AgencyView[];
 }
@@ -234,17 +223,37 @@ const toAgency = (a: TaxAgency & { rates: TaxAgencyRate[] }): AgencyView => ({
   name: a.name,
   rates: KIND_ORDER.flatMap((kind) => {
     const r = a.rates.find((x) => x.kind === kind);
-    return r ? [{ kind, rate: Number(r.rate) }] : [];
+    return r
+      ? [
+          {
+            kind,
+            mode: r.mode,
+            rate: Number(r.rate),
+            amount: r.amount === null ? null : Number(r.amount),
+          },
+        ]
+      : [];
   }),
+  category: a.category,
   active: a.active,
 });
 
-/** The rates as stored; one kind given twice is refused. */
+/** The rates as stored; one direction given twice, or a rate without its number, is refused. */
 function rateRows(rates: AgencyRateDto[]) {
   if (new Set(rates.map((r) => r.kind)).size !== rates.length) {
-    throw new BadRequestException('Give each kind of tax only one rate');
+    throw new BadRequestException('Give In and Out only one rate each');
   }
-  return rates.map((r) => ({ kind: r.kind, rate: r.rate.toFixed(3) }));
+  return rates.map((r) => {
+    const mode = r.mode ?? 'PERCENT';
+    if (mode === 'FIXED') {
+      if (r.amount === undefined || r.amount <= 0)
+        throw new BadRequestException('Give the fixed amount');
+      return { kind: r.kind, mode, rate: '0.000', amount: r.amount.toFixed(2) };
+    }
+    if (r.rate === undefined)
+      throw new BadRequestException('Give the percentage');
+    return { kind: r.kind, mode, rate: r.rate.toFixed(3), amount: null };
+  });
 }
 
 const typeOfCategory = (category: string, ctx: TypeContext): NameType => {
@@ -257,19 +266,20 @@ const typeOfCategory = (category: string, ctx: TypeContext): NameType => {
 const DONE = { deletedAt: null, status: StatementStatus.DONE };
 
 /**
- * Sales tax: the customer's agencies and which NAMES each one taxes (`LedgerNameAgency`).
- * There is no AI step and no switch (user's decision 2026-10-14): a row is taxed by the
- * agencies picked for its payee name, computed on READ (`linesFor`) — the single choke
- * point for the ledger, both exports and the reports — so a change shows at once.
+ * Split rules (step9 part 4, 2026-11-15 — were "tax agencies") and which NAMES each one is
+ * picked for (`LedgerNameAgency`), plus the Names tab. A pick splits the name's rows once
+ * (`SplitRulesService`): the splits are regular splits afterwards. Until step9 part 4 the
+ * agencies taxed the rows on READ; those lines were converted to splits once.
  */
 @Injectable()
 export class TaxService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: CustomerAccountsService,
+    private readonly splitRules: SplitRulesService,
   ) {}
 
-  // ---- agencies ----
+  // ---- split rules (the `TaxAgency` rows) ----
 
   async settings(scope: BookScope): Promise<TaxSettingsView> {
     const agencies = await this.prisma.taxAgency.findMany({
@@ -285,10 +295,12 @@ export class TaxService {
     dto: CreateAgencyDto,
   ): Promise<AgencyView> {
     const name = await this.checkName(scope, dto.name);
+    const category = await this.ruleCategory(scope, dto.category, name);
     const row = await this.prisma.taxAgency.create({
       data: {
         ...scopeWhere(scope),
         name,
+        category: category ?? null,
         active: dto.active ?? true,
         rates: { create: rateRows(dto.rates) },
       },
@@ -302,16 +314,23 @@ export class TaxService {
     id: number,
     dto: UpdateAgencyDto,
   ): Promise<AgencyView> {
-    await this.ownedAgency(scope, id);
+    const current = await this.ownedAgency(scope, id);
     const name =
       dto.name === undefined
         ? undefined
         : await this.checkName(scope, dto.name, id);
+    const category = await this.ruleCategory(
+      scope,
+      dto.category,
+      name ?? current.name,
+    );
     const rates = dto.rates && rateRows(dto.rates);
+    // A change applies to rows split from now on; the splits already written stay.
     const row = await this.prisma.taxAgency.update({
       where: { id },
       data: {
         name,
+        category,
         active: dto.active,
         // Replaces every rate: deleteMany then create, in the same update.
         ...(rates && { rates: { deleteMany: {}, create: rates } }),
@@ -321,7 +340,22 @@ export class TaxService {
     return toAgency(row);
   }
 
-  /** Soft delete; the names it taxed lose it (their `LedgerNameAgency` rows go). */
+  /**
+   * A rule's category: undefined = unchanged, ''/null = its own name, else a chart / own
+   * category (never its own name — that is the default).
+   */
+  private async ruleCategory(
+    scope: BookScope,
+    raw: string | null | undefined,
+    name: string,
+  ): Promise<string | null | undefined> {
+    if (raw === undefined) return undefined;
+    const clean = raw?.trim();
+    if (!clean || clean.toLowerCase() === name.toLowerCase()) return null;
+    return this.accounts.validCategory(scope, clean);
+  }
+
+  /** Soft delete; the names it was picked for lose it (the splits it made stay). */
   async removeAgency(scope: BookScope, id: number): Promise<void> {
     await this.ownedAgency(scope, id);
     await this.prisma.$transaction([
@@ -339,18 +373,18 @@ export class TaxService {
     const a = await this.prisma.taxAgency.findFirst({
       where: { id, ...scopeWhere(scope), deletedAt: null },
     });
-    if (!a) throw new NotFoundException('Agency not found');
+    if (!a) throw new NotFoundException('Split rule not found');
     return a;
   }
 
-  /** The agency's name is an account name on the ledger — it must not collide. */
+  /** The rule's name can be an account name on the ledger — it must not collide. */
   private async checkName(
     scope: BookScope,
     raw: string,
     exceptId?: number,
   ): Promise<string> {
     const name = raw.trim();
-    if (!name) throw new BadRequestException('Give the agency a name');
+    if (!name) throw new BadRequestException('Give the split rule a name');
     const lower = name.toLowerCase();
     if (ACCOUNT_NAMES.some((n) => n.toLowerCase() === lower)) {
       throw new BadRequestException(
@@ -366,12 +400,15 @@ export class TaxService {
       select: { name: true },
     });
     if (others.some((o) => o.name.toLowerCase() === lower)) {
-      throw new BadRequestException(`You already have an agency "${name}"`);
+      throw new BadRequestException(`You already have a split rule "${name}"`);
     }
     return name;
   }
 
-  /** Every agency name — they are LIABILITY accounts in the reports. */
+  /**
+   * Every rule name (removed ones too: splits may post to them) — LIABILITY accounts in the
+   * reports. A rule with its own category posts there, so its name is simply never used.
+   */
   async agencyNames(scope: BookScope): Promise<string[]> {
     const rows = await this.prisma.taxAgency.findMany({
       where: scopeWhere(scope),
@@ -388,112 +425,6 @@ export class TaxService {
       this.agencyNames(scope),
     ]);
     return { overrides, custom, liabilities: new Set(agencies) };
-  }
-
-  // ---- reading ----
-
-  /**
-   * The tax lines of the customer's DONE rows (and splits), per transaction id — decided
-   * by each row's payee NAME (`nameTaxLines`), on read. `statementIds` narrows it.
-   */
-  linesFor(
-    scope: BookScope,
-    statementIds?: number[],
-  ): Promise<Map<number, StoredTax[]>> {
-    return this.compute(scope, {
-      ...(statementIds?.length && { statementId: { in: statementIds } }),
-    });
-  }
-
-  private async compute(
-    scope: BookScope,
-    where: Prisma.BankTransactionWhereInput,
-  ): Promise<Map<number, StoredTax[]>> {
-    const out = new Map<number, StoredTax[]>();
-    const picks = await this.prisma.ledgerNameAgency.findMany({
-      where: scopeWhere(scope),
-      select: { name: true, agencyId: true, lineName: true },
-    });
-    if (!picks.length) return out;
-    const [agencyRows, rows, named, ctx] = await Promise.all([
-      this.prisma.taxAgency.findMany({
-        where: { ...scopeWhere(scope), deletedAt: null, active: true },
-        include: { rates: true },
-        orderBy: { createdAt: 'asc' },
-      }),
-      this.prisma.bankTransaction.findMany({
-        where: { ...where, ...scopeWhere(scope), statement: DONE },
-        select: {
-          id: true,
-          name: true,
-          offsetAccount: true,
-          amount: true,
-          splitOfId: true,
-          subNameId: true,
-        },
-      }),
-      this.prisma.transactionTax.findMany({
-        where: { ...scopeWhere(scope), name: { not: null } },
-        select: { transactionId: true, agencyId: true, name: true },
-      }),
-      this.typeContext(scope),
-    ]);
-    // step9 part 3: a row of a sub-name with its own agencies is taxed by the sub-name's.
-    const ownSubs = await this.ownAgencySubNames(scope);
-    const agencies: Agency[] = agencyRows.map((a) => ({
-      id: a.id,
-      name: a.name,
-      rates: Object.fromEntries(a.rates.map((r) => [r.kind, Number(r.rate)])),
-    }));
-    const agenciesOf = new Map<string, number[]>();
-    for (const p of picks) {
-      const key = nameTaxKey(p.name);
-      agenciesOf.set(key, [...(agenciesOf.get(key) ?? []), p.agencyId]);
-    }
-    // A split-off part is taxed on its own; its parent only on what is left of it.
-    const totals = splitTotals(
-      rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })),
-    );
-    const sized = rows.map((r) => ({
-      id: r.id,
-      name: (r.subNameId && ownSubs.get(r.subNameId)) || r.name,
-      offsetAccount: r.offsetAccount,
-      amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
-    }));
-    const amountOf = new Map(sized.map((r) => [r.id, r.amount]));
-    const nameOf = new Map(
-      named.map((n) => [`${n.transactionId}:${n.agencyId}`, n.name]),
-    );
-    // step9: a tax line renamed with "Always" — every line of that name and agency.
-    const alwaysOf = new Map(
-      picks.flatMap((p) =>
-        p.lineName ? [[`${nameTaxKey(p.name)}:${p.agencyId}`, p.lineName]] : [],
-      ),
-    );
-    const rowNameOf = new Map(sized.map((r) => [r.id, nameTaxKey(r.name)]));
-    for (const [id, lines] of nameTaxLines(sized, agenciesOf, agencies, ctx)) {
-      out.set(
-        id,
-        lines.map((l) => ({
-          ...l,
-          name:
-            nameOf.get(`${id}:${l.agencyId}`) ??
-            alwaysOf.get(`${rowNameOf.get(id)}:${l.agencyId}`) ??
-            null,
-          amount: taxAmount(amountOf.get(id) ?? 0, l.rate),
-        })),
-      );
-    }
-    return out;
-  }
-
-  /** step9 part 3: the sub-names taxed by their own picks — id → the name they are keyed by. */
-  async ownAgencySubNames(scope: BookScope): Promise<Map<number, string>> {
-    const subs = await this.prisma.subName.findMany({
-      where: { bookId: scope.bookId, ownAgencies: true },
-      select: { id: true, name: true },
-    });
-    return new Map(subs.map((s) => [s.id, s.name]));
   }
 
   // ---- names ----
@@ -1069,8 +1000,9 @@ export class TaxService {
   }
 
   /**
-   * Which agencies tax one name — the whole set (empty = not taxed). Applies on read
-   * (`linesFor`), so the ledger, exports and reports show it at once.
+   * The split rules of one name — the whole set. step9 part 4: a rule added splits the
+   * name's existing rows NOW, once (`SplitRulesService.apply`), and every new row later; a
+   * rule removed only stops — the splits it made are regular splits and stay.
    */
   async setNameAgencies(
     scope: BookScope,
@@ -1080,13 +1012,12 @@ export class TaxService {
     const clean = name.trim();
     if (!clean) throw new BadRequestException('Which name?');
     await this.writePicks(scope, clean, agencyIds);
-    await syncTaxSubNames(this.prisma, scope);
     return this.names(scope);
   }
 
   /**
-   * The agencies picked for `clean` (a name, or step9 part 3 a sub-name's name): a pick
-   * that stays is kept (with its tax lines' "Always" name), the others go, new ones come.
+   * The rules picked for `clean` (a name, or step9 part 3 a sub-name's name): a pick that
+   * stays is kept, the others go, new ones come — and split the rows of `clean` at once.
    */
   async writePicks(
     scope: BookScope,
@@ -1098,19 +1029,20 @@ export class TaxService {
       const owned = await this.prisma.taxAgency.count({
         where: { ...scopeWhere(scope), deletedAt: null, id: { in: ids } },
       });
-      if (owned !== ids.length) throw new NotFoundException('Agency not found');
+      if (owned !== ids.length)
+        throw new NotFoundException('Split rule not found');
     }
     const key = nameTaxKey(clean);
     const existing = await this.prisma.ledgerNameAgency.findMany({
       where: scopeWhere(scope),
       select: { id: true, name: true, agencyId: true },
     });
-    // MySQL compares case-insensitively; matched the same way here. A pick that stays is
-    // kept (with its tax lines' "Always" name, step9).
+    // MySQL compares case-insensitively; matched the same way here.
     const mine = existing.filter((e) => nameTaxKey(e.name) === key);
     const kept = new Set(
       mine.filter((e) => ids.includes(e.agencyId)).map((e) => e.agencyId),
     );
+    const added = ids.filter((agencyId) => !kept.has(agencyId));
     await this.prisma.$transaction([
       this.prisma.ledgerNameAgency.deleteMany({
         where: {
@@ -1120,15 +1052,16 @@ export class TaxService {
         },
       }),
       this.prisma.ledgerNameAgency.createMany({
-        data: ids
-          .filter((agencyId) => !kept.has(agencyId))
-          .map((agencyId) => ({
-            ...scopeWhere(scope),
-            name: clean,
-            agencyId,
-          })),
+        data: added.map((agencyId) => ({
+          ...scopeWhere(scope),
+          name: clean,
+          agencyId,
+          appliedAt: new Date(),
+        })),
       }),
     ]);
+    if (added.length)
+      await this.splitRules.apply(scope, { names: [clean], ruleIds: added });
   }
 
   /**
@@ -1186,8 +1119,8 @@ export class TaxService {
   }
 
   /**
-   * A rename carries the names' agencies over to the new name (`saveRule`): the new name
-   * is taxed by every agency any of the old ones was.
+   * A rename carries the names' split rules over to the new name (`saveRule`): its new rows
+   * get every rule any of the old names had. The rows already split keep their splits.
    */
   async carryAgencies(
     scope: BookScope,
@@ -1217,10 +1150,10 @@ export class TaxService {
         ...scopeWhere(scope),
         name: newName,
         agencyId,
+        appliedAt: new Date(),
       })),
       skipDuplicates: true,
     });
-    await syncTaxSubNames(this.prisma, scope);
   }
 
   /**
@@ -1373,85 +1306,6 @@ export class TaxService {
       where: { ...scopeWhere(scope), name: { in: [...keys] } },
       data: { name: nameKeyOf(newName) },
     });
-  }
-
-  /**
-   * Renames one tax line — the agency's tax on one transaction (or split). Null puts the
-   * transaction's own name back. False when the row has no such line. The name is kept in
-   * `TransactionTax` (with a snapshot of the line), keyed by row and agency.
-   */
-  async renameLine(
-    scope: BookScope,
-    transactionId: number,
-    agencyId: number,
-    name: string | null,
-    /** step9: ALWAYS = every tax line of this agency on the transaction's name. */
-    nameScope: 'ONCE' | 'ALWAYS' = 'ONCE',
-  ): Promise<boolean> {
-    const lines = await this.compute(scope, {
-      OR: [{ id: transactionId }, { splitOfId: transactionId }],
-    });
-    const line = lines.get(transactionId)?.find((l) => l.agencyId === agencyId);
-    if (!line) return false;
-    if (nameScope === 'ALWAYS') {
-      const row = await this.prisma.bankTransaction.findFirst({
-        where: { ...scopeWhere(scope), id: transactionId },
-        select: { name: true, subNameId: true },
-      });
-      // step9 part 3: a row taxed by its sub-name's own agencies — that sub-name's lines.
-      const own = row?.subNameId
-        ? (await this.ownAgencySubNames(scope)).get(row.subNameId)
-        : undefined;
-      const key = nameTaxKey(own ?? row?.name);
-      const picks = (
-        await this.prisma.ledgerNameAgency.findMany({
-          where: { ...scopeWhere(scope), agencyId },
-          select: { id: true, name: true },
-        })
-      ).filter((p) => nameTaxKey(p.name) === key);
-      if (!picks.length) return false;
-      const sameName = (
-        await this.prisma.bankTransaction.findMany({
-          where: {
-            ...scopeWhere(scope),
-            ...(own
-              ? { subNameId: row!.subNameId }
-              : { name: row?.name ?? null }),
-          },
-          select: { id: true },
-        })
-      ).map((r) => r.id);
-      await this.prisma.$transaction([
-        this.prisma.ledgerNameAgency.updateMany({
-          where: { id: { in: picks.map((p) => p.id) } },
-          data: { lineName: name },
-        }),
-        // The one-time names of that name's lines give way: they all follow it now.
-        this.prisma.transactionTax.updateMany({
-          where: {
-            ...scopeWhere(scope),
-            agencyId,
-            transactionId: { in: sameName },
-          },
-          data: { name: null },
-        }),
-      ]);
-      return true;
-    }
-    await this.prisma.transactionTax.upsert({
-      where: { transactionId_agencyId: { transactionId, agencyId } },
-      create: {
-        ...scopeWhere(scope),
-        transactionId,
-        agencyId,
-        kind: line.kind,
-        rate: line.rate.toFixed(3),
-        amount: line.amount.toFixed(2),
-        name,
-      },
-      update: { name },
-    });
-    return true;
   }
 }
 

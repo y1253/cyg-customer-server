@@ -19,6 +19,7 @@ import {
   type ExtractedTransaction,
 } from '../bookkeeping/ledger.util';
 import { NameMemoryService } from '../bookkeeping/name-memory.service';
+import { SplitRulesService } from '../bookkeeping/split-rules.service';
 import { StatementErrorsService } from '../bookkeeping/statement-errors.service';
 import { resolveRow } from '../bookkeeping/name-memory.util';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
@@ -125,6 +126,8 @@ export class BankFeedSyncService {
     @Optional() private readonly rules?: RulesService,
     /** step9: the book's saved statement errors follow every rebuild. */
     @Optional() private readonly errors?: StatementErrorsService,
+    /** step9 part 4: the names' split rules split the new rows. */
+    @Optional() private readonly splitRules?: SplitRulesService,
   ) {}
 
   private get key(): string {
@@ -1085,6 +1088,20 @@ export class BankFeedSyncService {
       });
     }
     this.logger.log(`item #${item.id}: ${data.length} new ledger row(s)`);
+    if (this.splitRules && data.length) {
+      // step9 part 4: each new row gets its name's split rules, once (never throws).
+      const made = await this.prisma.bankTransaction.findMany({
+        where: {
+          ...scopeWhere(scope),
+          externalId: { in: data.map((d) => d.externalId) },
+        },
+        select: { id: true },
+      });
+      await this.splitRules.applyToNew(
+        scope,
+        made.map((m) => m.id),
+      );
+    }
   }
 
   /**

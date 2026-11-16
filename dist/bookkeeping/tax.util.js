@@ -1,9 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.nameTaxKey = exports.taxAmount = exports.fits = exports.rateFor = exports.TYPE_OF = void 0;
+exports.nameTaxKey = exports.fits = exports.rateFor = exports.TYPE_OF = void 0;
 exports.kindOf = kindOf;
 exports.includedTaxes = includedTaxes;
-exports.taxSplit = taxSplit;
 exports.nameTaxLines = nameTaxLines;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 const reconcile_util_1 = require("./reconcile.util");
@@ -31,24 +30,6 @@ function includedTaxes(amount, rates) {
     const drift = allTax - out.reduce((n, c) => n + c, 0);
     out[out.length - 1] += drift;
     return out.map((c) => c / 100);
-}
-const taxAmount = (amount, rate) => includedTaxes(amount, [rate])[0];
-exports.taxAmount = taxAmount;
-function taxSplit(parent, lines) {
-    if (!lines.length)
-        return { parent, taxes: [] };
-    const sign = parent.amount < 0 ? -1 : 1;
-    const swap = (account, agency) => account === parent.offsetAccount ? agency : account;
-    const amounts = includedTaxes(parent.amount, lines.map((t) => t.rate));
-    const taxes = lines.map((t, i) => ({
-        amount: sign * amounts[i],
-        offsetAccount: t.agency,
-        debitAccount: swap(parent.debitAccount, t.agency),
-        creditAccount: swap(parent.creditAccount, t.agency),
-    }));
-    const taxCents = amounts.reduce((n, a) => n + Math.round(a * 100), 0);
-    const net = ((0, reconcile_util_1.cents)(parent.amount) - sign * taxCents) / 100;
-    return { parent: { ...parent, amount: net }, taxes };
 }
 const nameTaxKey = (name) => (name?.trim() || reports_util_1.UNCLARIFIED_NAME).toLowerCase();
 exports.nameTaxKey = nameTaxKey;

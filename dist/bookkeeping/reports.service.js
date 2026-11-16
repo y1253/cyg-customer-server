@@ -26,7 +26,6 @@ const scope_1 = require("./scope");
 const statement_errors_service_1 = require("./statement-errors.service");
 const statement_label_1 = require("./statement-label");
 const tax_service_1 = require("./tax.service");
-const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 let ReportsService = class ReportsService {
     prisma;
@@ -47,7 +46,7 @@ let ReportsService = class ReportsService {
             deletedAt: null,
             status: client_1.StatementStatus.DONE,
         };
-        const [rows, statements, taxes, agencies, customTypes, overrides] = await Promise.all([
+        const [rows, statements, agencies, customTypes, overrides] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), statement: done },
                 select: {
@@ -65,7 +64,6 @@ let ReportsService = class ReportsService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
-            this.tax.linesFor(scope),
             this.tax.agencyNames(scope),
             this.accounts.types(scope),
             this.accounts.overrides(scope),
@@ -108,15 +106,16 @@ let ReportsService = class ReportsService {
                     day(r.pendingDate) ??
                     day(r.statement.periodEnd);
                 const bankAccount = Number(r.amount) < 0 ? r.creditAccount : r.debitAccount;
-                const split = (0, tax_util_1.taxSplit)({ ...r, amount }, taxes.get(r.id) ?? []);
                 const rowDate = day(r.postingDate) ?? day(r.pendingDate);
-                return [split.parent, ...split.taxes].map((e) => ({
-                    ...home(r.statementId, rowDate, e.amount, bankAccount),
-                    offsetAccount: e.offsetAccount,
-                    bankAccount,
-                    date,
-                    name: r.name,
-                }));
+                return [
+                    {
+                        ...home(r.statementId, rowDate, amount, bankAccount),
+                        offsetAccount: r.offsetAccount,
+                        bankAccount,
+                        date,
+                        name: r.name,
+                    },
+                ];
             }),
         ];
         const revaluations = fx.revaluations(entries).map((f) => ({

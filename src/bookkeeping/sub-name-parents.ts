@@ -1,7 +1,6 @@
 import type { PrismaService } from '../prisma/prisma.service';
 import { nameKeyOf } from './attachment-name.util';
 import { cleanName } from './name-memory.util';
-import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { parentSubName, subNameOf } from './sub-names.util';
 
@@ -183,87 +182,4 @@ export async function syncParentSubNames(
     if (!used) await deleteSubName(prisma, id);
   }
   return changed;
-}
-
-/**
- * step9 (2026-11-15, user's request: "the tax agency sheet should behave like a split"): a
- * tax line is a part of its row taken out by percentage, so each name taxed by an agency has
- * the sub-name "<name> - <agency>" — every tax line of that name and agency is under it
- * (the ledger finds it by name + agency; no row points at it). Made for every name's picked
- * active agency; one no longer picked (or of a renamed / removed agency) goes once no row
- * points at it. "Unclarified name" gets none. Returns how many were made.
- */
-export async function syncTaxSubNames(
-  prisma: PrismaService,
-  scope: BookScope,
-): Promise<number> {
-  const [picks, agencies, names, subs] = await Promise.all([
-    prisma.ledgerNameAgency.findMany({
-      where: {
-        ...scopeWhere(scope),
-        agency: { deletedAt: null, active: true },
-      },
-      select: { name: true, agency: { select: { name: true } } },
-    }),
-    prisma.taxAgency.findMany({
-      where: scopeWhere(scope),
-      select: { name: true },
-    }),
-    prisma.ledgerName.findMany({
-      where: scopeWhere(scope),
-      select: { id: true, name: true },
-    }),
-    prisma.subName.findMany({
-      where: { bookId: scope.bookId },
-      select: { id: true, nameId: true, category: true, name: true },
-    }),
-  ]);
-  const unclarified = UNCLARIFIED_NAME.toLowerCase();
-  const nameOf = new Map(names.map((n) => [n.id, n.name.toLowerCase()]));
-  const key = (name: string, category: string) =>
-    `${name.trim().toLowerCase()}|${category}`;
-  // step9 part 3: a sub-name's own pick taxes its rows, which count under the parent —
-  // their tax lines are the parent's tax sub-name ("Walmart - GST").
-  const parentOfSub = new Map(
-    subs.flatMap((s) => {
-      const parent = names.find((n) => n.id === s.nameId)?.name;
-      return parent ? [[s.name.trim().toLowerCase(), parent] as const] : [];
-    }),
-  );
-  const want = new Map<string, { name: string; agency: string }>();
-  for (const p of picks) {
-    const name = parentOfSub.get(p.name.trim().toLowerCase()) ?? p.name;
-    if (!name.trim() || name.trim().toLowerCase() === unclarified) continue;
-    want.set(key(name, p.agency.name), { name, agency: p.agency.name });
-  }
-  const have = new Set(
-    subs.flatMap((s) => {
-      const n = nameOf.get(s.nameId);
-      return n ? [key(n, s.category)] : [];
-    }),
-  );
-  let made = 0;
-  for (const [k, w] of want) {
-    if (have.has(k)) continue;
-    await ensureSubName(prisma, scope, w.name, w.agency);
-    made++;
-  }
-  // Stale tax sub-names: in an agency's name (any agency of the book, removed ones too),
-  // not wanted, and no row pointing at them.
-  const agencyNames = new Set(agencies.map((a) => a.name));
-  const stale = subs.filter((s) => {
-    const n = nameOf.get(s.nameId);
-    return agencyNames.has(s.category) && !(n && want.has(key(n, s.category)));
-  });
-  if (stale.length) {
-    const used = await prisma.bankTransaction.groupBy({
-      by: ['subNameId'],
-      where: { subNameId: { in: stale.map((s) => s.id) } },
-    });
-    const usedIds = new Set(used.map((u) => u.subNameId));
-    const drop = stale.filter((s) => !usedIds.has(s.id)).map((s) => s.id);
-    if (drop.length)
-      await prisma.subName.deleteMany({ where: { id: { in: drop } } });
-  }
-  return made;
 }

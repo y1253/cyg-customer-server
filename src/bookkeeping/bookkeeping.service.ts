@@ -53,9 +53,7 @@ import { changeFeed } from '../assistant/change-feed';
 import { TaxService } from './tax.service';
 import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
-import type { StoredTax } from './tax.service';
 import { FxService, type FxContext, type FxEntry } from './fx.service';
-import { nameTaxKey, taxSplit } from './tax.util';
 
 export interface StatementView {
   id: number;
@@ -134,15 +132,12 @@ export interface StatementView {
 export interface TransactionView {
   /**
    * Unique per row, the React key: `t:<transaction>`, `s:<split>`, `o:<statement>`,
-   * `x:<tax line>`.
+   * `f:<fx row>`.
    */
   key: string;
-  /**
-   * The transaction's id; for a tax row, the id of the row it taxes (a transaction or a
-   * split). 0 on a starting balance.
-   */
+  /** The transaction's (or split's) id. 0 on a starting balance. */
   id: number;
-  /** On a split, and on a split's tax rows: the transaction it was split from. */
+  /** On a split: the transaction it was split from. */
   splitOfId?: number;
   statementId: number;
   pendingDate: string | null;
@@ -170,18 +165,12 @@ export interface TransactionView {
   statementLabel: string;
   /**
    * `opening`: the statement's printed starting balance, offset to Owner's Loan — never
-   * stored. `tax`: an agency's tax on the row just above it (`TransactionTax`), taken OUT
-   * of that row: the row above shows its amount without tax, and the two add back to what
-   * the bank moved. `split`: a part the customer split off the transaction above by hand,
-   * with its own name, category and taxes; the transaction shows what is left of it.
+   * stored. `split`: a part split off the transaction above (by hand, or by a split rule),
+   * with its own name and category; the transaction shows what is left of it.
    */
-  kind?: 'opening' | 'tax' | 'split' | 'fx';
-  /** On a tax row: the agency's rate, a percent. */
-  taxRate?: number;
-  /** On a tax row: the agency — the key for renaming the line. */
-  taxAgencyId?: number;
-  /** step9: on a tax row, the name of the row it taxes (its "Always" rename covers that name). */
-  rowName?: string | null;
+  kind?: 'opening' | 'split' | 'fx';
+  /** step9 part 4 (2026-11-15): on a split a split rule wrote — that rule. */
+  splitRule?: { id: number; name: string };
   /** On a transaction row: its receipts, cheques and voice notes. */
   attachments?: Array<{ id: number; kind: AttachmentKind; filename: string }>;
   /**
@@ -258,43 +247,6 @@ function withFx(
       v,
     ];
   });
-}
-
-/**
- * A row without its tax, then one line per agency (named by the customer, or as the row).
- * step9 (2026-11-15): a line not renamed shows its own sub-name "<name> - <agency>"
- * (`taxSubName`), never the row's.
- */
-function withTaxLines(
-  p: TransactionView,
-  lines: StoredTax[] | undefined,
-  taxSubName: (
-    name: string | null,
-    agency: string,
-  ) => { id: number; name: string } | undefined = () => undefined,
-): TransactionView[] {
-  if (!lines?.length) return [p];
-  const split = taxSplit(p, lines);
-  return [
-    split.parent,
-    ...split.taxes.map(
-      (entry, i): TransactionView => ({
-        ...p,
-        ...entry,
-        key: `x:${p.id}:${lines[i].agencyId}`,
-        attachments: undefined,
-        name: lines[i].name ?? p.name,
-        subName:
-          lines[i].name === null
-            ? taxSubName(p.name, lines[i].agency)
-            : undefined,
-        kind: 'tax',
-        taxRate: lines[i].rate,
-        taxAgencyId: lines[i].agencyId,
-        rowName: p.name,
-      }),
-    ),
-  ];
 }
 
 /**
@@ -634,7 +586,7 @@ export class BookkeepingService {
     scope: BookScope,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const [rows, statements, taxes, attached, subNames] = await Promise.all([
+    const [rows, statements, rules, attached, subNames] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           ...scopeWhere(scope),
@@ -656,7 +608,10 @@ export class BookkeepingService {
       // ALL done statements: the chain decides which ones start fresh, even when the
       // ledger is filtered to a few of them.
       loadOpeningStatements(this.prisma, scope),
-      this.tax.linesFor(scope, statementIds),
+      this.prisma.taxAgency.findMany({
+        where: scopeWhere(scope),
+        select: { id: true, name: true },
+      }),
       this.prisma.transactionAttachment.findMany({
         where: {
           ...scopeWhere(scope),
@@ -674,24 +629,7 @@ export class BookkeepingService {
     const subNameOf = new Map(
       subNames.map((s) => [s.id, { id: s.id, name: s.name }]),
     );
-    // step9: a tax line's sub-name, by its row's name and its agency.
-    const subParents = subNames.length
-      ? await this.prisma.ledgerName.findMany({
-          where: { id: { in: [...new Set(subNames.map((s) => s.nameId))] } },
-          select: { id: true, name: true },
-        })
-      : [];
-    const parentNameOf = new Map(subParents.map((n) => [n.id, n.name]));
-    const taxSubs = new Map(
-      subNames.flatMap((s) => {
-        const parent = parentNameOf.get(s.nameId);
-        return parent
-          ? [[`${nameTaxKey(parent)}|${s.category}`, subNameOf.get(s.id)!] as const]
-          : [];
-      }),
-    );
-    const taxSubName = (name: string | null, agency: string) =>
-      name ? taxSubs.get(`${nameTaxKey(name)}|${agency}`) : undefined;
+    const ruleOf = new Map(rules.map((r) => [r.id, r]));
     const attachmentsOf = new Map<
       number,
       Array<{ id: number; kind: AttachmentKind; filename: string }>
@@ -728,6 +666,8 @@ export class BookkeepingService {
       creditAccount: r.creditAccount,
       statementLabel: statementLabel(r.statement),
       ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' as const }),
+      ...(r.splitRuleId !== null &&
+        ruleOf.has(r.splitRuleId) && { splitRule: ruleOf.get(r.splitRuleId) }),
       ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
     });
     const splitsOf = new Map<number, TransactionView[]>();
@@ -778,18 +718,10 @@ export class BookkeepingService {
         },
       })),
     ];
-    // Newest first. A taxed row shows its amount without tax, its tax lines directly under
-    // it; then its splits, each followed by its own tax lines.
+    // Newest first; a transaction's splits (rule splits too) directly under it.
     const sorted = keyed.sort((a, b) => -ledgerOrder(a, b)).map((k) => k.view);
     const views = sorted.flatMap((p): TransactionView[] =>
-      p.kind
-        ? [p]
-        : [
-            ...withTaxLines(p, taxes.get(p.id), taxSubName),
-            ...(splitsOf.get(p.id) ?? []).flatMap((c) =>
-              withTaxLines(c, taxes.get(c.id), taxSubName),
-            ),
-          ],
+      p.kind ? [p] : [p, ...(splitsOf.get(p.id) ?? [])],
     );
     const ctx = await this.fx.context(scope, statements);
     return ctx.anyForeign ? withFx(views, ctx, byId) : views;

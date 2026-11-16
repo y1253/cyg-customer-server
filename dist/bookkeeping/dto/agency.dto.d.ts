@@ -1,16 +1,20 @@
-import { TaxKind } from '@prisma/client';
+import { SplitRateMode, TaxKind } from '@prisma/client';
 export declare class AgencyRateDto {
     kind: TaxKind;
-    rate: number;
+    mode?: SplitRateMode;
+    rate?: number;
+    amount?: number;
 }
 export declare class CreateAgencyDto {
     name: string;
     rates: AgencyRateDto[];
+    category?: string | null;
     active?: boolean;
 }
 export declare class UpdateAgencyDto {
     name?: string;
     rates?: AgencyRateDto[];
+    category?: string | null;
     active?: boolean;
 }
 export declare class SetNameAgenciesDto {
@@ -86,10 +90,6 @@ export declare class SetProductDto {
 }
 export declare class SetSubNameCategoryDto {
     category: string;
-}
-export declare class RenameTaxLineDto {
-    name?: string | null;
-    scope?: 'ONCE' | 'ALWAYS';
 }
 export declare class SetAttachmentTransactionDto {
     transactionId: number | null;

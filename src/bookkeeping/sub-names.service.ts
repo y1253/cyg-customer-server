@@ -19,7 +19,6 @@ import {
   deleteSubName,
   ensureSubName,
   syncParentSubNames,
-  syncTaxSubNames,
 } from './sub-name-parents';
 import {
   cleanNameFields,
@@ -39,17 +38,14 @@ export interface SubNameView {
   category: string;
   rows: number;
   /**
-   * step9 (2026-11-15): Σ of its money, in the bank's sign, tax included — a row its own
-   * share (a split its amount, a transaction what its splits leave); a tax sub-name the tax
-   * lines of that name and agency.
+   * step9 (2026-11-15): Σ of its money, in the bank's sign — a row its own share (a split its
+   * amount, a transaction what its splits leave).
    */
   total: number;
-  /** step9: the sub-name of a name's tax lines for one agency ("Walmart - GST"). */
-  tax?: boolean;
   /**
    * step9 part 3 (2026-11-15): every setting a name has. `group` null = the parent's;
    * `renamed` = the customer named it (a category change keeps the name); `ownAgencies` =
-   * taxed by `agencyIds` (its own picks), else by the parent's.
+   * split by `agencyIds` (its own split rules, step9 part 4), else by the parent's.
    */
   group: string | null;
   fields: NameField[];
@@ -64,7 +60,7 @@ export interface SubNameSettings {
   name?: string;
   group?: string | null;
   fields?: NameFieldDto[];
-  /** null = follow the parent's agencies again; [] = untaxed. */
+  /** null = follow the parent's split rules again; [] = none. */
   agencyIds?: number[] | null;
 }
 
@@ -128,12 +124,6 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   /** Every sub-name of the book with its parent, how many rows it has and its total. */
   async list(scope: BookScope): Promise<SubNameView[]> {
-    // step9: the tax sub-names follow the names' agencies (never fails the list).
-    await syncTaxSubNames(this.prisma, scope).catch((err: unknown) =>
-      this.logger.warn(
-        `tax sub-names not synced: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
     const subs = await this.prisma.subName.findMany({
       where: { bookId: scope.bookId },
       orderBy: { name: 'asc' },
@@ -156,7 +146,6 @@ export class SubNamesService implements OnApplicationBootstrap {
     ]);
     const parentOf = new Map(parents.map((p) => [p.id, p.name]));
     const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
-    const agencies = await this.agencyNames(scope);
     const picks = await this.prisma.ledgerNameAgency.findMany({
       where: { ...scopeWhere(scope), agency: { deletedAt: null } },
       select: { name: true, agencyId: true },
@@ -166,34 +155,21 @@ export class SubNamesService implements OnApplicationBootstrap {
       picks
         .filter((p) => nameTaxKey(p.name) === nameTaxKey(name))
         .map((p) => p.agencyId);
-    const [rowTotals, taxTotals] = await Promise.all([
-      this.rowTotals(
-        scope,
-        subs.map((s) => s.id),
-      ),
-      this.taxTotals(
-        scope,
-        subs.filter((s) => agencies.has(s.category)),
-        parentOf,
-      ),
-    ]);
+    const rowTotals = await this.rowTotals(
+      scope,
+      subs.map((s) => s.id),
+    );
     return subs.flatMap((s) => {
       const parent = parentOf.get(s.nameId);
-      const tax = agencies.has(s.category);
-      const total = tax
-        ? (taxTotals.get(s.id) ?? { cents: 0, rows: 0 })
-        : { cents: rowTotals.get(s.id) ?? 0, rows: rowsOf.get(s.id) ?? 0 };
-      // An agency with no rate for the name's kind gives it no tax line: nothing to list.
-      return parent && !(tax && !total.rows)
+      return parent
         ? [
             {
               id: s.id,
               parent,
               name: s.name,
               category: s.category,
-              rows: total.rows,
-              total: total.cents / 100,
-              ...(tax && { tax: true }),
+              rows: rowsOf.get(s.id) ?? 0,
+              total: (rowTotals.get(s.id) ?? 0) / 100,
               group: s.group,
               fields: parseNameFields(s.fields),
               renamed: s.renamed,
@@ -203,15 +179,6 @@ export class SubNamesService implements OnApplicationBootstrap {
           ]
         : [];
     });
-  }
-
-  /** The book's tax agency names (removed ones too) — a sub-name in one is a tax sub-name. */
-  private async agencyNames(scope: BookScope): Promise<Set<string>> {
-    const rows = await this.prisma.taxAgency.findMany({
-      where: scopeWhere(scope),
-      select: { name: true },
-    });
-    return new Set(rows.map((r) => r.name));
   }
 
   /**
@@ -248,54 +215,6 @@ export class SubNamesService implements OnApplicationBootstrap {
     return out;
   }
 
-  /** Per tax sub-name: Σ of its name's tax lines of that agency (cents, bank sign), and how many. */
-  private async taxTotals(
-    scope: BookScope,
-    subs: Array<{ id: number; nameId: number; category: string }>,
-    parentOf: ReadonlyMap<number, string>,
-  ): Promise<Map<number, { cents: number; rows: number }>> {
-    const out = new Map<number, { cents: number; rows: number }>();
-    if (!subs.length) return out;
-    const lines = await this.tax.linesFor(scope);
-    if (!lines.size) return out;
-    const rows = await this.prisma.bankTransaction.findMany({
-      where: { ...scopeWhere(scope), id: { in: [...lines.keys()] } },
-      select: { id: true, name: true, amount: true },
-    });
-    const subOf = new Map(
-      subs.flatMap((s) => {
-        const parent = parentOf.get(s.nameId);
-        return parent
-          ? [[`${nameTaxKey(parent)}|${s.category}`, s.id] as const]
-          : [];
-      }),
-    );
-    for (const r of rows) {
-      const sign = Number(r.amount) < 0 ? -1 : 1;
-      for (const l of lines.get(r.id) ?? []) {
-        const id = subOf.get(`${nameTaxKey(r.name)}|${l.agency}`);
-        if (id === undefined) continue;
-        const t = out.get(id) ?? { cents: 0, rows: 0 };
-        t.cents += sign * Math.round(l.amount * 100);
-        t.rows++;
-        out.set(id, t);
-      }
-    }
-    return out;
-  }
-
-  /** A tax sub-name follows its agency: its category is never changed or removed by hand. */
-  private async refuseTax(
-    scope: BookScope,
-    sub: { category: string },
-  ): Promise<void> {
-    if ((await this.agencyNames(scope)).has(sub.category)) {
-      throw new BadRequestException(
-        "This sub-name holds a tax line — it follows the name's tax agency. Change the name's agencies instead.",
-      );
-    }
-  }
-
   /**
    * A sub-name's category: renamed to "<parent> - <category>" and every row of it moves.
    * Its parent's own category → the sub-name is no longer needed and goes. Another
@@ -307,7 +226,6 @@ export class SubNamesService implements OnApplicationBootstrap {
     rawCategory: string,
   ): Promise<void> {
     const sub = await this.get(scope, id);
-    await this.refuseTax(scope, sub);
     const category = await this.accounts.validCategory(scope, rawCategory);
     const parent = await this.parentName(sub.nameId);
     if (
@@ -359,8 +277,9 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   /**
    * step9 part 3 (user: "a subname should have all the settings like a regular name has"):
-   * its own name, group, profile and tax agencies. Its folder is keyed by its name like a
-   * name's (files / folders follow a rename). A tax sub-name follows its agency: refused.
+   * its own name, group, profile and split rules (step9 part 4: a rule given to it splits
+   * its rows once, now). Its folder is keyed by its name like a name's (files / folders
+   * follow a rename).
    */
   async setSettings(
     scope: BookScope,
@@ -368,7 +287,6 @@ export class SubNamesService implements OnApplicationBootstrap {
     input: SubNameSettings,
   ): Promise<void> {
     const sub = await this.get(scope, id);
-    await this.refuseTax(scope, sub);
     const parent = await this.parentName(sub.nameId);
     let name = sub.name;
     const data: Prisma.SubNameUpdateInput = {};
@@ -393,7 +311,6 @@ export class SubNamesService implements OnApplicationBootstrap {
       await this.tax.moveSubNameKeys(scope, sub.name, name);
     if (input.agencyIds !== undefined)
       await this.tax.writePicks(scope, name, input.agencyIds ?? []);
-    await syncTaxSubNames(this.prisma, scope);
   }
 
   /** A sub-name's own name may not be another name's or sub-name's of the book. */
@@ -429,7 +346,6 @@ export class SubNamesService implements OnApplicationBootstrap {
   /** Remove a sub-name: its rows go back to the parent name's category. */
   async remove(scope: BookScope, id: number): Promise<void> {
     const sub = await this.get(scope, id);
-    await this.refuseTax(scope, sub);
     const parent = await this.parentName(sub.nameId);
     const category =
       (parent && (await this.names.categoryOfName(scope, parent))) ??

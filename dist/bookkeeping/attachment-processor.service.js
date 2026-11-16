@@ -40,6 +40,7 @@ const name_memory_util_1 = require("./name-memory.util");
 const product_memory_service_1 = require("./product-memory.service");
 const receipt_items_util_1 = require("./receipt-items.util");
 const reconcile_util_1 = require("./reconcile.util");
+const split_rules_service_1 = require("./split-rules.service");
 const splits_service_1 = require("./splits.service");
 const queue_retry_1 = require("./queue-retry");
 const scope_1 = require("./scope");
@@ -163,9 +164,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
     names;
     rules;
     pipeline;
+    splitRules;
     logger = new common_1.Logger(AttachmentProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, splits, products, names, rules, pipeline) {
+    constructor(prisma, storage, extractor, splits, products, names, rules, pipeline, splitRules) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
@@ -174,6 +176,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         this.names = names;
         this.rules = rules;
         this.pipeline = pipeline;
+        this.splitRules = splitRules;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -833,7 +836,13 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             where: { id: attachmentId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
             include: {
                 transaction: {
-                    include: { splits: { select: { id: true }, take: 1 } },
+                    include: {
+                        splits: {
+                            where: { splitRuleId: null },
+                            select: { id: true },
+                            take: 1,
+                        },
+                    },
                 },
             },
         });
@@ -850,9 +859,9 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         }
         const named = reading.items.filter((i) => i.name?.trim());
         if (named.length === 1) {
-            if (parent.splits.length)
-                await this.splits.save(scope, parent.id, []);
+            await this.splits.save(scope, parent.id, []);
             await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+            await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
             return null;
         }
         const categoryFor = await this.products.categoriesFor(scope, reading.items.map((i) => i.name), { store: reading.vendor, parentCategory: parent.offsetAccount });
@@ -865,6 +874,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             category: s.category,
             amount: s.amount,
         })));
+        await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
         return null;
     }
 };
@@ -879,6 +889,7 @@ exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProc
     (0, common_1.Injectable)(),
     __param(6, (0, common_1.Optional)()),
     __param(7, (0, common_1.Optional)()),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         attachment_extractor_1.AttachmentExtractor,
@@ -886,6 +897,7 @@ exports.AttachmentProcessorService = AttachmentProcessorService = AttachmentProc
         product_memory_service_1.ProductMemoryService,
         name_memory_service_1.NameMemoryService,
         rules_service_1.RulesService,
-        document_pipeline_1.DocumentPipeline])
+        document_pipeline_1.DocumentPipeline,
+        split_rules_service_1.SplitRulesService])
 ], AttachmentProcessorService);
 //# sourceMappingURL=attachment-processor.service.js.map

@@ -13,12 +13,10 @@ import { statementLabel } from './statement-label';
 import { FxService, type FxEntry } from './fx.service';
 import { CustomColumnsService } from './custom-columns.service';
 import { scopeWhere, type BookScope } from './scope';
-import { TaxService } from './tax.service';
-import { taxSplit } from './tax.util';
 
 export interface LedgerExportRow {
   /**
-   * The transaction's id — and the SAME id on each of its tax lines and splits, so the
+   * The transaction's id — and the SAME id on each of its splits, so the
    * customer can see in Excel which lines belong to one transaction. Null on a
    * starting-balance row.
    */
@@ -33,9 +31,9 @@ export interface LedgerExportRow {
   debitAccount: string;
   creditAccount: string;
   statement: string;
-  /** A tax line under the row above it (its tax, taken out of that row): grey italic. */
+  /** HISTORY (tax lines on read, gone since step9 part 4): grey italic. Never set now. */
   tax?: boolean;
-  /** A part the customer split off the transaction above by hand: grey. */
+  /** A part split off the transaction above (by hand or a split rule): grey. */
   split?: boolean;
   /** Not a cell: the statement it belongs to (for the home-currency conversion). */
   statementId?: number;
@@ -68,38 +66,12 @@ function customCellsOf(
 const BRAND = '#169F96';
 
 /**
- * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). A taxed row
- * and its tax lines add back to the bank amount, so this is the statements' net change.
+ * Sum in whole cents: adding 150 float amounts drifts (-5808.8399999999965). A split row
+ * and its splits add back to the bank amount, so this is the statements' net change.
  */
 export function netOf(rows: Array<{ amount: number }>): number {
   return rows.reduce((cents, r) => cents + Math.round(r.amount * 100), 0) / 100;
 }
-/**
- * One exported transaction followed by its tax lines: the row WITHOUT its tax, each line
- * against its agency — and every line carrying the transaction's own `id`, which is how the
- * customer sees in Excel that they are one transaction.
- */
-export function exportRowWithTaxes(
-  row: Omit<LedgerExportRow, 'tax'>,
-  offsetAccount: string,
-  lines: Array<{ agency: string; rate: number; name?: string | null }>,
-): LedgerExportRow[] {
-  if (!lines.length) return [row];
-  const split = taxSplit({ ...row, offsetAccount }, lines);
-  return [
-    { ...row, amount: split.parent.amount },
-    ...split.taxes.map((e, i) => ({
-      ...row,
-      split: undefined,
-      name: lines[i].name ?? row.name,
-      amount: e.amount,
-      debitAccount: e.debitAccount,
-      creditAccount: e.creditAccount,
-      tax: true,
-    })),
-  ];
-}
-
 const ISO = (d: Date | null): string => (d ? d.toISOString().slice(0, 10) : '');
 const MONEY = (n: number): string =>
   n.toLocaleString('en-US', {
@@ -116,7 +88,6 @@ const MONEY = (n: number): string =>
 export class LedgerExportService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly tax: TaxService,
     private readonly fx: FxService,
     @Optional() private readonly customColumns?: CustomColumnsService,
   ) {}
@@ -131,7 +102,7 @@ export class LedgerExportService {
   }
 
   async rowsFor(scope: BookScope): Promise<LedgerExportRow[]> {
-    const [rows, statements, taxes, subNames] = await Promise.all([
+    const [rows, statements, subNames] = await Promise.all([
       this.prisma.bankTransaction.findMany({
         where: {
           ...scopeWhere(scope),
@@ -150,7 +121,6 @@ export class LedgerExportService {
         },
       }),
       loadOpeningStatements(this.prisma, scope),
-      this.tax.linesFor(scope),
       this.prisma.subName.findMany({
         where: { bookId: scope.bookId },
         select: { id: true, name: true },
@@ -187,7 +157,7 @@ export class LedgerExportService {
     }
 
     // Oldest first: a statement's Starting balance row comes before its first row, and
-    // each row's tax lines sit directly under it.
+    // each row's splits sit directly under it.
     const sorted = [
       ...rows
         .filter((r) => !r.splitOfId)
@@ -222,18 +192,10 @@ export class LedgerExportService {
         { ...b, postingDate: b.row.postingDate },
       ),
     );
-    // Each transaction, then its splits — every one followed by its own tax lines.
-    const out = sorted.flatMap((p) => [
-      ...exportRowWithTaxes(p.row, p.offsetAccount, taxes.get(p.id) ?? []),
-      ...(splitsOf.get(p.id) ?? [])
-        .sort((a, b) => a.id - b.id)
-        .flatMap((c) =>
-          exportRowWithTaxes(
-            exportRow(c),
-            c.offsetAccount,
-            taxes.get(c.id) ?? [],
-          ),
-        ),
+    // Each transaction, then its splits (step9 part 4: a split rule's too).
+    const out = sorted.flatMap((p): LedgerExportRow[] => [
+      p.row,
+      ...(splitsOf.get(p.id) ?? []).sort((a, b) => a.id - b.id).map(exportRow),
     ]);
     const fx = await this.fx.context(scope, statements);
     if (!fx.anyForeign) return out;

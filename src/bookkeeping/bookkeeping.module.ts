@@ -38,6 +38,7 @@ import { TaxService } from './tax.service';
 import { CommunicationsService } from './communications.service';
 import { DocumentPipeline } from './pipeline/document-pipeline';
 import { OcrService } from './pipeline/ocr.service';
+import { SplitRulesService } from './split-rules.service';
 
 @Module({
   imports: [CustomerAuthModule],
@@ -72,6 +73,7 @@ import { OcrService } from './pipeline/ocr.service';
     ProductMemoryService,
     ReportsService,
     RulesService,
+    SplitRulesService,
     SplitsService,
     SubNamesService,
     StaffBookGuard,
@@ -96,6 +98,7 @@ import { OcrService } from './pipeline/ocr.service';
     NameMemoryService,
     ReportsService,
     RulesService,
+    SplitRulesService,
     SplitsService,
     StatementErrorsService,
     SubNamesService,

@@ -2,7 +2,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FxService } from './fx.service';
 import { CustomColumnsService } from './custom-columns.service';
 import { type BookScope } from './scope';
-import { TaxService } from './tax.service';
 export interface LedgerExportRow {
     id: number | null;
     pendingDate: Date | null;
@@ -28,17 +27,11 @@ export interface ExportCustomColumns {
 export declare function netOf(rows: Array<{
     amount: number;
 }>): number;
-export declare function exportRowWithTaxes(row: Omit<LedgerExportRow, 'tax'>, offsetAccount: string, lines: Array<{
-    agency: string;
-    rate: number;
-    name?: string | null;
-}>): LedgerExportRow[];
 export declare class LedgerExportService {
     private readonly prisma;
-    private readonly tax;
     private readonly fx;
     private readonly customColumns?;
-    constructor(prisma: PrismaService, tax: TaxService, fx: FxService, customColumns?: CustomColumnsService | undefined);
+    constructor(prisma: PrismaService, fx: FxService, customColumns?: CustomColumnsService | undefined);
     customFor(scope: BookScope): Promise<ExportCustomColumns | undefined>;
     rowsFor(scope: BookScope): Promise<LedgerExportRow[]>;
     excel(rows: LedgerExportRow[], customerName: string, custom?: ExportCustomColumns): Promise<Buffer>;

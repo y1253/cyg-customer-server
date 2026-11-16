@@ -39,6 +39,7 @@ import { cleanName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
 import { itemSplits } from './receipt-items.util';
 import { cents } from './reconcile.util';
+import { SplitRulesService } from './split-rules.service';
 import { SplitsService } from './splits.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, storagePrefix, type BookScope } from './scope';
@@ -248,6 +249,8 @@ export class AttachmentProcessorService {
     @Optional() private readonly rules?: RulesService,
     /** step2: the local reading pipeline (OCR, PDF text, spreadsheets). Optional for specs. */
     @Optional() private readonly pipeline?: DocumentPipeline,
+    /** step9 part 4: the name's split rules split the receipt's items. Optional for specs. */
+    @Optional() private readonly splitRules?: SplitRulesService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -1174,7 +1177,14 @@ export class AttachmentProcessorService {
       where: { id: attachmentId, ...scopeWhere(scope), deletedAt: null },
       include: {
         transaction: {
-          include: { splits: { select: { id: true }, take: 1 } },
+          // step9 part 4: a split a split rule wrote never stops the items.
+          include: {
+            splits: {
+              where: { splitRuleId: null },
+              select: { id: true },
+              take: 1,
+            },
+          },
         },
       },
     });
@@ -1195,8 +1205,9 @@ export class AttachmentProcessorService {
     // Its category stays the name's (a name has one category).
     const named = reading.items.filter((i) => i.name?.trim());
     if (named.length === 1) {
-      if (parent.splits.length) await this.splits.save(scope, parent.id, []);
+      await this.splits.save(scope, parent.id, []);
       await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+      await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
       return null;
     }
     // The customer's rule, else the firm memory, else the AI (remembered), else the parent's.
@@ -1222,6 +1233,9 @@ export class AttachmentProcessorService {
         amount: s.amount,
       })),
     );
+    // step9 part 4: the items replaced every split, the rule splits too — the name's
+    // rules split the items again (each its own share).
+    await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
     return null;
   }
 }

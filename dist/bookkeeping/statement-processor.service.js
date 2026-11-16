@@ -35,6 +35,7 @@ const statement_errors_1 = require("./statement-errors");
 const reread_relink_util_1 = require("./reread-relink.util");
 const statement_images_service_1 = require("./statement-images.service");
 const statement_uploads_1 = require("./statement-uploads");
+const split_rules_service_1 = require("./split-rules.service");
 const tax_service_1 = require("./tax.service");
 const queue_retry_1 = require("./queue-retry");
 Object.defineProperty(exports, "claimableAt", { enumerable: true, get: function () { return queue_retry_1.claimableAt; } });
@@ -53,9 +54,10 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     images;
     rules;
     errors;
+    splitRules;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax, names, images, rules, errors) {
+    constructor(prisma, storage, extractor, tax, names, images, rules, errors, splitRules) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
@@ -64,6 +66,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         this.images = images;
         this.rules = rules;
         this.errors = errors;
+        this.splitRules = splitRules;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -244,6 +247,13 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             ]);
             if (linked.length)
                 await this.relinkReceipts(row.id, linked, !mismatch);
+            if (!mismatch && this.splitRules) {
+                const made = await this.prisma.bankTransaction.findMany({
+                    where: { statementId: row.id, splitOfId: null },
+                    select: { id: true },
+                });
+                await this.splitRules.applyToNew(scope, made.map((m) => m.id));
+            }
             if (!mismatch) {
                 await this.images.harvest({
                     ...row,
@@ -399,6 +409,7 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
     (0, common_1.Injectable)(),
     __param(6, (0, common_1.Optional)()),
     __param(7, (0, common_1.Optional)()),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
@@ -406,7 +417,8 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
         name_memory_service_1.NameMemoryService,
         statement_images_service_1.StatementImagesService,
         rules_service_1.RulesService,
-        statement_errors_service_1.StatementErrorsService])
+        statement_errors_service_1.StatementErrorsService,
+        split_rules_service_1.SplitRulesService])
 ], StatementProcessorService);
 function isoDay(d) {
     return d ? d.toISOString().slice(0, 10) : null;

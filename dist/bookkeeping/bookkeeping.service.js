@@ -42,7 +42,6 @@ const tax_service_1 = require("./tax.service");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const fx_service_1 = require("./fx.service");
-const tax_util_1 = require("./tax.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 function withFx(views, ctx, statements) {
     const entries = [];
@@ -92,28 +91,6 @@ function withFx(views, ctx, statements) {
             v,
         ];
     });
-}
-function withTaxLines(p, lines, taxSubName = () => undefined) {
-    if (!lines?.length)
-        return [p];
-    const split = (0, tax_util_1.taxSplit)(p, lines);
-    return [
-        split.parent,
-        ...split.taxes.map((entry, i) => ({
-            ...p,
-            ...entry,
-            key: `x:${p.id}:${lines[i].agencyId}`,
-            attachments: undefined,
-            name: lines[i].name ?? p.name,
-            subName: lines[i].name === null
-                ? taxSubName(p.name, lines[i].agency)
-                : undefined,
-            kind: 'tax',
-            taxRate: lines[i].rate,
-            taxAgencyId: lines[i].agencyId,
-            rowName: p.name,
-        })),
-    ];
 }
 function toView(s, currencies = new Map(), extra = {}) {
     const opening = s.openingBalance === null ? null : Number(s.openingBalance);
@@ -338,7 +315,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
     }
     async transactions(scope, statementIds) {
-        const [rows, statements, taxes, attached, subNames] = await Promise.all([
+        const [rows, statements, rules, attached, subNames] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
@@ -358,7 +335,10 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 },
             }),
             (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope),
-            this.tax.linesFor(scope, statementIds),
+            this.prisma.taxAgency.findMany({
+                where: (0, scope_1.scopeWhere)(scope),
+                select: { id: true, name: true },
+            }),
             this.prisma.transactionAttachment.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
@@ -374,20 +354,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             }),
         ]);
         const subNameOf = new Map(subNames.map((s) => [s.id, { id: s.id, name: s.name }]));
-        const subParents = subNames.length
-            ? await this.prisma.ledgerName.findMany({
-                where: { id: { in: [...new Set(subNames.map((s) => s.nameId))] } },
-                select: { id: true, name: true },
-            })
-            : [];
-        const parentNameOf = new Map(subParents.map((n) => [n.id, n.name]));
-        const taxSubs = new Map(subNames.flatMap((s) => {
-            const parent = parentNameOf.get(s.nameId);
-            return parent
-                ? [[`${(0, tax_util_1.nameTaxKey)(parent)}|${s.category}`, subNameOf.get(s.id)]]
-                : [];
-        }));
-        const taxSubName = (name, agency) => name ? taxSubs.get(`${(0, tax_util_1.nameTaxKey)(name)}|${agency}`) : undefined;
+        const ruleOf = new Map(rules.map((r) => [r.id, r]));
         const attachmentsOf = new Map();
         for (const a of attached) {
             const list = attachmentsOf.get(a.transactionId) ?? [];
@@ -418,6 +385,8 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             creditAccount: r.creditAccount,
             statementLabel: (0, statement_label_1.statementLabel)(r.statement),
             ...(r.splitOfId && { splitOfId: r.splitOfId, kind: 'split' }),
+            ...(r.splitRuleId !== null &&
+                ruleOf.has(r.splitRuleId) && { splitRule: ruleOf.get(r.splitRuleId) }),
             ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
         });
         const splitsOf = new Map();
@@ -463,12 +432,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             })),
         ];
         const sorted = keyed.sort((a, b) => -(0, opening_balance_util_1.ledgerOrder)(a, b)).map((k) => k.view);
-        const views = sorted.flatMap((p) => p.kind
-            ? [p]
-            : [
-                ...withTaxLines(p, taxes.get(p.id), taxSubName),
-                ...(splitsOf.get(p.id) ?? []).flatMap((c) => withTaxLines(c, taxes.get(c.id), taxSubName)),
-            ]);
+        const views = sorted.flatMap((p) => p.kind ? [p] : [p, ...(splitsOf.get(p.id) ?? [])]);
         const ctx = await this.fx.context(scope, statements);
         return ctx.anyForeign ? withFx(views, ctx, byId) : views;
     }

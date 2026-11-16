@@ -168,11 +168,6 @@ let BookkeepingController = class BookkeepingController {
     deleteSubName(scope, id) {
         return this.subNames.remove(scope, id);
     }
-    async renameTaxLine(scope, id, agencyId, dto) {
-        const ok = await this.tax.renameLine(scope, id, agencyId, dto.name?.trim() || null, dto.scope ?? 'ONCE');
-        if (!ok)
-            throw new common_1.NotFoundException('Tax line not found');
-    }
     async mergeNames(scope, dto) {
         await this.nameMemory.mergeNames(scope, dto.from, dto.into);
         return this.tax.names(scope);
@@ -555,17 +550,6 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "deleteSubName", null);
-__decorate([
-    (0, common_1.Patch)('transactions/:id/taxes/:agencyId'),
-    (0, common_1.HttpCode)(204),
-    __param(0, (0, book_scope_guard_1.Book)()),
-    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
-    __param(2, (0, common_1.Param)('agencyId', common_1.ParseIntPipe)),
-    __param(3, (0, common_1.Body)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Number, Number, agency_dto_1.RenameTaxLineDto]),
-    __metadata("design:returntype", Promise)
-], BookkeepingController.prototype, "renameTaxLine", null);
 __decorate([
     (0, common_1.Post)('names/merge'),
     (0, common_1.HttpCode)(200),
