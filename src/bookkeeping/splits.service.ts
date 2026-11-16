@@ -311,7 +311,7 @@ export class SplitsService {
   async remove(scope: BookScope, id: number): Promise<void> {
     const split = await this.findSplit(scope, id);
     await this.prisma.bankTransaction.delete({ where: { id } });
-    await dropUnusedSubName(this.prisma, split.subNameId);
+    await dropUnusedSubName(this.prisma, scope, split.subNameId);
     await syncParentSubNames(this.prisma, scope, [split.splitOfId!]);
   }
 
@@ -373,6 +373,6 @@ export class SplitsService {
       },
     });
     if (split.subNameId !== subNameId)
-      await dropUnusedSubName(this.prisma, split.subNameId);
+      await dropUnusedSubName(this.prisma, scope, split.subNameId);
   }
 }

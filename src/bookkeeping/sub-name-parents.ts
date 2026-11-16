@@ -51,13 +51,19 @@ export async function ledgerNameId(
   return made.id;
 }
 
-/** A sub-name no row points at any more is removed (a split deleted or moved out of it). */
+/**
+ * A sub-name no row points at any more is removed (a split deleted or moved out of it).
+ * Counted within its book, so `idx_bank_transaction_sub_name (bookId, subNameId)` serves it.
+ */
 export async function dropUnusedSubName(
   prisma: PrismaService,
+  scope: BookScope,
   id: number | null,
 ): Promise<void> {
   if (!id) return;
-  const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
+  const used = await prisma.bankTransaction.count({
+    where: { bookId: scope.bookId, subNameId: id },
+  });
   if (!used) await deleteSubName(prisma, id);
 }
 
@@ -177,7 +183,7 @@ export async function syncParentSubNames(
   // A sub-name only the transaction had (none of its splits) goes with it.
   for (const id of dropped) {
     const used = await prisma.bankTransaction.count({
-      where: { subNameId: id },
+      where: { bookId: scope.bookId, subNameId: id },
     });
     if (!used) await deleteSubName(prisma, id);
   }

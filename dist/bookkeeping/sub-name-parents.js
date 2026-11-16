@@ -41,10 +41,12 @@ async function ledgerNameId(prisma, scope, name) {
     });
     return made.id;
 }
-async function dropUnusedSubName(prisma, id) {
+async function dropUnusedSubName(prisma, scope, id) {
     if (!id)
         return;
-    const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
+    const used = await prisma.bankTransaction.count({
+        where: { bookId: scope.bookId, subNameId: id },
+    });
     if (!used)
         await deleteSubName(prisma, id);
 }
@@ -141,7 +143,7 @@ async function syncParentSubNames(prisma, scope, parentIds) {
     }
     for (const id of dropped) {
         const used = await prisma.bankTransaction.count({
-            where: { subNameId: id },
+            where: { bookId: scope.bookId, subNameId: id },
         });
         if (!used)
             await deleteSubName(prisma, id);
