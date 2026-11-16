@@ -38,6 +38,7 @@ const pdf_images_1 = require("./pdf-images");
 const pdf_text_1 = require("./pipeline/pdf-text");
 const tool_results_1 = require("./pipeline/tool-results");
 const cheque_caption_util_1 = require("./cheque-caption.util");
+const statement_order_util_1 = require("./statement-order.util");
 const reconcile_util_1 = require("./reconcile.util");
 const sign_repair_1 = require("./sign-repair");
 const statement_errors_1 = require("./statement-errors");
@@ -669,9 +670,7 @@ function balancesFromRunning(rows, verification) {
     const running = verification.checks.find((c) => c.name === 'runningBalance' && c.page == null);
     if (!running?.ok || !rows.length)
         return null;
-    const first = rows[0].postingDate ?? '';
-    const last = rows[rows.length - 1].postingDate ?? '';
-    const ordered = first && last && first > last ? [...rows].reverse() : rows;
+    const ordered = (0, statement_order_util_1.chronological)([...rows]);
     const c = (n) => Math.round(n * 100);
     const sign = verification.balanceSign;
     const end = ordered[ordered.length - 1].balanceAfter;

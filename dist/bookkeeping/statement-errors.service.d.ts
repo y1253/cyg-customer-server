@@ -12,6 +12,7 @@ export declare class StatementErrorsService implements OnApplicationBootstrap {
     private timer;
     constructor(prisma: PrismaService);
     onApplicationBootstrap(): void;
+    putInDateOrder(): Promise<void>;
     backfill(): Promise<void>;
     refreshSoon(scope: BookScope): void;
     refreshBook(scope: BookScope): Promise<number>;

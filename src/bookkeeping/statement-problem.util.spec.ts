@@ -347,13 +347,108 @@ describe('printedEnding', () => {
     ).toBe(30);
   });
 
-  it('the first printed balance when the rows run newest first', () => {
+  it('the newest printed balance when the rows run newest first', () => {
     expect(
       printedEnding([
-        { balanceAfter: 30, postingDate: '2026-01-03' },
-        { balanceAfter: 10, postingDate: '2026-01-01' },
+        { balanceAfter: 30, postingDate: '2026-01-03', amount: 20 },
+        { balanceAfter: 10, postingDate: '2026-01-01', amount: 10 },
       ]),
     ).toBe(30);
+  });
+
+  it('carries the last printed balance through the rows after it', () => {
+    expect(
+      printedEnding([
+        { balanceAfter: 100, postingDate: '2026-01-01', amount: 100 },
+        { balanceAfter: null, postingDate: '2026-01-02', amount: -40 },
+        { balanceAfter: null, postingDate: '2026-01-03', amount: -10 },
+      ]),
+    ).toBe(50);
+  });
+
+  it('a card: what is owed goes up with a purchase', () => {
+    expect(
+      printedEnding(
+        [
+          { balanceAfter: 100, postingDate: '2026-01-01', amount: -100 },
+          { balanceAfter: null, postingDate: '2026-01-02', amount: -25 },
+        ],
+        true,
+      ),
+    ).toBe(125);
+  });
+
+  // Production, 2026-11-16: Wise #340 prints the newest row at the top of page 1 and no
+  // running balance was read on its 11 newest rows. It said "$3,544.12 vs closing $0.00".
+  const wise340 = [
+    ['2025-11-03', -1000, null],
+    ['2025-11-03', 1000, null],
+    ['2025-10-28', -2000, null],
+    ['2025-10-28', 2000, null],
+    ['2025-10-27', -1000, null],
+    ['2025-10-27', 1000, null],
+    ['2025-09-29', -2000, null],
+    ['2025-09-29', 2000, null],
+    ['2025-09-28', -3000, null],
+    ['2025-09-28', 3000, null],
+    ['2025-09-25', -3544.12, null],
+    ['2025-09-22', 3500, 3544.12],
+    ['2025-09-19', -5.88, 44.12],
+    ['2025-09-18', 50, 50],
+    ['2025-09-18', -2300, 0],
+    ['2025-09-18', 2300, 2300],
+    ['2025-09-16', -2800, 0],
+    ['2025-09-16', 2800, 2800],
+  ].map(([postingDate, amount, balanceAfter]) => ({
+    postingDate: postingDate as string,
+    amount: amount as number,
+    balanceAfter: balanceAfter as number | null,
+  }));
+
+  it('Wise #340 (newest first) ends at its $0.00 closing', () => {
+    expect(printedEnding(wise340)).toBe(0);
+    expect(printedEnding([...wise340].reverse())).toBe(0);
+    expect(
+      statementErrors(
+        done({
+          openingBalance: 0,
+          closingBalance: 0,
+          net: 0,
+          printedEnding: printedEnding(wise340),
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('Wise #336: $3 on Dec 11 and the rows after it end at $0.00', () => {
+    const rows = [
+      ['2025-12-28', -4035, null],
+      ['2025-12-28', 4025, null],
+      ['2025-12-26', -6465, null],
+      ['2025-12-25', 6475, null],
+      ['2025-12-24', -840, null],
+      ['2025-12-24', 840, null],
+      ['2025-12-23', -905, null],
+      ['2025-12-23', 900, null],
+      ['2025-12-18', -550, null],
+      ['2025-12-17', 555, null],
+      ['2025-12-16', -1243, null],
+      ['2025-12-16', 1240, null],
+      ['2025-12-11', -1050, 3],
+      ['2025-12-10', 1050, 1053],
+      ['2025-12-10', -697, 3],
+      ['2025-12-09', 700, 700],
+    ].map(([postingDate, amount, balanceAfter]) => ({
+      postingDate: postingDate as string,
+      amount: amount as number,
+      balanceAfter: balanceAfter as number | null,
+    }));
+    expect(printedEnding(rows)).toBe(0);
+  });
+
+  it('a row really missing still shows', () => {
+    // Drop the newest row: the rows after $3,544.12 now end at $1,000.
+    expect(printedEnding(wise340.slice(1))).toBe(1000);
   });
 
   it('null with no running balance', () => {

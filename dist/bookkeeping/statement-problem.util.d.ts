@@ -31,7 +31,8 @@ export declare function statementErrors(s: ProblemInput): StatementProblem[];
 export declare function printedEnding(rows: Array<{
     balanceAfter: number | null;
     postingDate: string | null;
-}>): number | null;
+    amount?: number | null;
+}>, card?: boolean): number | null;
 export declare function needsReviewText(input: {
     rereads: number;
     checks: Check[];

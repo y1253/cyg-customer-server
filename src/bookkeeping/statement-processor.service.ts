@@ -29,6 +29,7 @@ import { TaxService } from './tax.service';
 import { claimableAt, MAX_ATTEMPTS } from './queue-retry';
 import { scopeOf, scopeWhere, type BookScope } from './scope';
 import { StatementErrorsService } from './statement-errors.service';
+import { chronological } from './statement-order.util';
 
 export { claimableAt, MAX_ATTEMPTS };
 
@@ -224,9 +225,11 @@ export class StatementProcessorService {
       // fees and interest with no payee are named after the bank.
       // step9: the statement id lets the customer's one-time edits (EXCEPTION rules) find
       // their rows again on a re-read.
+      // 2026-11-16: saved oldest first whatever order the bank printed (Wise prints the
+      // newest at the top of page 1), so `position` follows the dates.
       const { lines, customAccounts } = await this.names.resolveStatement(
         scope,
-        extracted.transactions,
+        chronological(extracted.transactions),
         extracted.bankName,
         row.id,
       );

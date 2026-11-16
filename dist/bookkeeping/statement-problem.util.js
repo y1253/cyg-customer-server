@@ -7,6 +7,7 @@ exports.printedEnding = printedEnding;
 exports.needsReviewText = needsReviewText;
 exports.money = money;
 const reconcile_util_1 = require("./reconcile.util");
+const statement_order_util_1 = require("./statement-order.util");
 exports.PROBLEM_ORDER = [
     'BALANCE',
     'ENDING',
@@ -173,19 +174,27 @@ function runningProblem(s) {
     return {
         kind: 'RUNNING',
         title: exports.PROBLEM_TITLES.RUNNING,
-        text: `The running balance on its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
+        text: `The running balance after its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
             'A transaction was probably misread or missed — try again, or ask the AI to fix it.',
         details: { printedEnding: printed / 100, expected: target.cents / 100 },
     };
 }
-function printedEnding(rows) {
-    const printed = rows.filter((r) => r.balanceAfter !== null);
-    if (printed.length === 0)
+function printedEnding(rows, card = false) {
+    const ordered = (0, statement_order_util_1.chronological)(rows);
+    let k = -1;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+        if (ordered[i].balanceAfter !== null) {
+            k = i;
+            break;
+        }
+    }
+    if (k < 0)
         return null;
-    const dated = rows.filter((r) => r.postingDate);
-    const newestFirst = dated.length >= 2 &&
-        dated[0].postingDate > dated[dated.length - 1].postingDate;
-    return (newestFirst ? printed[0] : printed[printed.length - 1]).balanceAfter;
+    const direction = (0, statement_order_util_1.balanceDirection)(ordered, card);
+    const after = ordered
+        .slice(k + 1)
+        .reduce((t, r) => t + Math.round((r.amount ?? 0) * 100), 0);
+    return (Math.round(ordered[k].balanceAfter * 100) + direction * after) / 100;
 }
 function needsReviewText(input) {
     const failed = input.checks.filter((c) => !c.ok && !c.skipped);

@@ -19,6 +19,7 @@ import {
 } from './pipeline/pdf-text';
 import { pageTextHint } from './pipeline/tool-results';
 import { dropChequeCaptions } from './cheque-caption.util';
+import { chronological } from './statement-order.util';
 import {
   describeCheck,
   perPageBoxes,
@@ -1029,7 +1030,7 @@ export function closingOf(
  * statement that prints no "closing balance" line — TD's last row just carries the final
  * running balance ("OVERDRAFT INTEREST 2.32 FEB29 2,261.00OD"), and the prompt forbids
  * copying it (2026-11-11: 16 TD statements "couldn't be checked" in book 2, every row right).
- * Oldest-first or newest-first, by the rows' dates. closing = the printed balance on the
+ * Oldest-first or newest-first, by the rows' dates (`runsNewestFirst`). closing = the printed balance on the
  * last row in time (null when that row prints none); opening = the first printed balance
  * less the rows up to it. Null unless the reading is VERIFIED with a passing running
  * balance. Pure; also used on stored rows (`scripts/derive-statement-balances.ts`).
@@ -1047,9 +1048,7 @@ export function balancesFromRunning(
     (c) => c.name === 'runningBalance' && c.page == null,
   );
   if (!running?.ok || !rows.length) return null;
-  const first = rows[0].postingDate ?? '';
-  const last = rows[rows.length - 1].postingDate ?? '';
-  const ordered = first && last && first > last ? [...rows].reverse() : rows;
+  const ordered = chronological([...rows]);
   const c = (n: number) => Math.round(n * 100);
   const sign = verification.balanceSign;
   const end = ordered[ordered.length - 1].balanceAfter;

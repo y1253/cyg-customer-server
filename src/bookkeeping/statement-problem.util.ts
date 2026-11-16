@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { StartDerived, StartReason } from './opening-balance.util';
 import { describeCheck, type Check } from './reconcile.util';
+import { balanceDirection, chronological } from './statement-order.util';
 
 /**
  * step2 (2026-11-11, user's request): every problem a read statement can have is ONE of
@@ -87,8 +88,8 @@ export interface ProblemInput {
   /** One of them is being re-read right now. */
   rechecking?: boolean;
   /**
-   * step9: the running balance printed on the statement's LAST row (`printedEnding`);
-   * absent / null = none printed, the running balance is not checked.
+   * step9: where the running balance ends after the statement's last transaction by date
+   * (`printedEnding`); absent / null = none printed, the running balance is not checked.
    */
   printedEnding?: number | null;
   /** step9: how its starting balance was worked out (`openingChain`), when not read. */
@@ -274,27 +275,42 @@ function runningProblem(s: ProblemInput): StatementProblem | null {
     kind: 'RUNNING',
     title: PROBLEM_TITLES.RUNNING,
     text:
-      `The running balance on its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
+      `The running balance after its last transaction is ${money(printed / 100)}, but ${target.what} comes to ${money(target.cents / 100)} (off by ${money(off / 100)}). ` +
       'A transaction was probably misread or missed — try again, or ask the AI to fix it.',
     details: { printedEnding: printed / 100, expected: target.cents / 100 },
   };
 }
 
 /**
- * The running balance printed on a statement's last row, in the bank's order: rows in
- * `position` order, or — when they run newest first (the first dated row is later than the
- * last) — the first printed balance. Null = no running balance printed. Pure.
+ * Where a statement's running balance ends after its LAST transaction (2026-11-16): the rows
+ * in date order (`chronological` — some banks print newest first), the last printed balance,
+ * carried through every row after it that prints none (balance ± amount, the direction read
+ * off the chain — a card's balance owed goes down with money in). Wise #340 printed no balance
+ * on its 11 newest rows; the last printed one ($3,544.12) plus those rows is its $0.00
+ * closing. Null = no running balance printed. Pure.
  */
 export function printedEnding(
-  rows: Array<{ balanceAfter: number | null; postingDate: string | null }>,
+  rows: Array<{
+    balanceAfter: number | null;
+    postingDate: string | null;
+    amount?: number | null;
+  }>,
+  card = false,
 ): number | null {
-  const printed = rows.filter((r) => r.balanceAfter !== null);
-  if (printed.length === 0) return null;
-  const dated = rows.filter((r) => r.postingDate);
-  const newestFirst =
-    dated.length >= 2 &&
-    dated[0].postingDate! > dated[dated.length - 1].postingDate!;
-  return (newestFirst ? printed[0] : printed[printed.length - 1]).balanceAfter;
+  const ordered = chronological(rows);
+  let k = -1;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (ordered[i].balanceAfter !== null) {
+      k = i;
+      break;
+    }
+  }
+  if (k < 0) return null;
+  const direction = balanceDirection(ordered, card);
+  const after = ordered
+    .slice(k + 1)
+    .reduce((t, r) => t + Math.round((r.amount ?? 0) * 100), 0);
+  return (Math.round(ordered[k].balanceAfter! * 100) + direction * after) / 100;
 }
 
 /**

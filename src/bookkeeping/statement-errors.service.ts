@@ -21,6 +21,7 @@ import {
   type OpenError,
   type StatementErrorView,
 } from './statement-errors.util';
+import { chronological } from './statement-order.util';
 
 export type { StatementErrorView } from './statement-errors.util';
 
@@ -52,6 +53,94 @@ export class StatementErrorsService implements OnApplicationBootstrap {
 
   onApplicationBootstrap(): void {
     setTimeout(() => void this.backfill(), 90_000).unref();
+    setTimeout(() => void this.putInDateOrder(), 100_000).unref();
+  }
+
+  /**
+   * 2026-11-16: statements saved before rows were stored by date (`chronological` in the
+   * processor) — one whose rows are not in date order (Wise newest first, BMO #146 printed
+   * both ways) gets `position` = its place by date, splits included (they share their
+   * parent's). Then every book it touched, and every book with an open RUNNING error (the
+   * check now carries the last printed balance through the rows after it), is checked again.
+   * Runs at every start; rows already in date order are left alone, so it is idempotent.
+   * Never throws.
+   */
+  async putInDateOrder(): Promise<void> {
+    try {
+      const statements = await this.prisma.bankStatement.findMany({
+        where: {
+          deletedAt: null,
+          source: { not: 'PLAID' },
+          status: { in: [StatementStatus.DONE, StatementStatus.NEEDS_REVIEW] },
+        },
+        select: { id: true, customerId: true, bookId: true, companyId: true },
+        orderBy: { id: 'asc' },
+      });
+      const books = new Map<number, BookScope>();
+      let moved = 0;
+      for (let i = 0; i < statements.length; i += 50) {
+        const chunk = statements.slice(i, i + 50);
+        const rows = await this.prisma.bankTransaction.findMany({
+          where: {
+            statementId: { in: chunk.map((s) => s.id) },
+            splitOfId: null,
+          },
+          select: {
+            id: true,
+            statementId: true,
+            postingDate: true,
+            amount: true,
+            balanceAfter: true,
+          },
+          orderBy: [{ statementId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
+        });
+        const byStatement = new Map<number, typeof rows>();
+        for (const r of rows) {
+          const list = byStatement.get(r.statementId) ?? [];
+          list.push(r);
+          byStatement.set(r.statementId, list);
+        }
+        for (const s of chunk) {
+          const list = byStatement.get(s.id);
+          if (!list || list.length < 2) continue;
+          const ordered = chronological(
+            list.map((r) => ({
+              id: r.id,
+              postingDate: day(r.postingDate),
+              amount: Number(r.amount),
+              balanceAfter:
+                r.balanceAfter === null ? null : Number(r.balanceAfter),
+            })),
+          );
+          if (ordered.every((r, i) => r.id === list[i].id)) continue;
+          // One UPDATE per statement; a split takes its parent's new position.
+          const cases = Prisma.join(
+            ordered.map((r, i) => Prisma.sql`WHEN ${r.id} THEN ${i}`),
+            ' ',
+          );
+          await this.prisma.$executeRaw`
+            UPDATE BankTransaction
+            SET position = CASE COALESCE(splitOfId, id) ${cases} ELSE position END
+            WHERE statementId = ${s.id}`;
+          this.logger.log(`statement #${s.id}: rows put in date order`);
+          books.set(s.bookId, scopeOf(s));
+          moved++;
+        }
+      }
+      const running = await this.prisma.statementError.findMany({
+        where: { kind: 'RUNNING', resolvedAt: null },
+        select: { customerId: true, bookId: true, companyId: true },
+        distinct: ['bookId'],
+      });
+      for (const r of running) books.set(r.bookId, scopeOf(r));
+      for (const b of books.values()) await this.refreshBook(b);
+      if (moved || books.size)
+        this.logger.log(
+          `date order: ${moved} statement(s) re-ordered, ${books.size} book(s) re-checked`,
+        );
+    } catch (err) {
+      this.logger.error(`date order failed: ${message(err)}`);
+    }
   }
 
   /** Check every book with a read statement that was never checked — once. */
@@ -206,19 +295,25 @@ export class StatementErrorsService implements OnApplicationBootstrap {
             statementId: true,
             balanceAfter: true,
             postingDate: true,
+            amount: true,
           },
           orderBy: [{ statementId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
         })
       : [];
     const rowsOf = new Map<
       number,
-      Array<{ balanceAfter: number | null; postingDate: string | null }>
+      Array<{
+        balanceAfter: number | null;
+        postingDate: string | null;
+        amount: number;
+      }>
     >();
     for (const t of balances) {
       const list = rowsOf.get(t.statementId) ?? [];
       list.push({
         balanceAfter: t.balanceAfter === null ? null : Number(t.balanceAfter),
         postingDate: day(t.postingDate),
+        amount: Number(t.amount),
       });
       rowsOf.set(t.statementId, list);
     }
@@ -248,7 +343,7 @@ export class StatementErrorsService implements OnApplicationBootstrap {
             r.chainRereadAt !== null && previous?.chainRereadAt != null,
           rechecking: rereading,
           printedEnding: rowsOf.has(r.id)
-            ? printedEnding(rowsOf.get(r.id)!)
+            ? printedEnding(rowsOf.get(r.id)!, r.accountKind === 'CREDIT_CARD')
             : undefined,
           startDerived: start?.derived,
         }),

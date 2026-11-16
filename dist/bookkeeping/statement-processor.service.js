@@ -42,6 +42,7 @@ Object.defineProperty(exports, "claimableAt", { enumerable: true, get: function 
 Object.defineProperty(exports, "MAX_ATTEMPTS", { enumerable: true, get: function () { return queue_retry_1.MAX_ATTEMPTS; } });
 const scope_1 = require("./scope");
 const statement_errors_service_1 = require("./statement-errors.service");
+const statement_order_util_1 = require("./statement-order.util");
 const CONCURRENCY = 2;
 const BATCH = 6;
 const STALE_PROCESSING_MS = 15 * 60_000;
@@ -176,7 +177,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 this.logger.log(`statement #${row.id}: account "${extracted.accountName}" filed as "${accountName}"`);
             }
             const bank = accountName ?? 'Bank account';
-            const { lines, customAccounts } = await this.names.resolveStatement(scope, extracted.transactions, extracted.bankName, row.id);
+            const { lines, customAccounts } = await this.names.resolveStatement(scope, (0, statement_order_util_1.chronological)(extracted.transactions), extracted.bankName, row.id);
             const rows = (0, ledger_util_1.buildLedgerRows)(lines, bank, customAccounts);
             const { verification, checks } = extracted.verification;
             const runs = row.runs + 1;

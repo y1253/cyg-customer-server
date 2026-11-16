@@ -20,6 +20,7 @@ const opening_balance_util_1 = require("./opening-balance.util");
 const scope_1 = require("./scope");
 const statement_problem_util_1 = require("./statement-problem.util");
 const statement_errors_util_1 = require("./statement-errors.util");
+const statement_order_util_1 = require("./statement-order.util");
 const day = (d) => (d ? d.toISOString().slice(0, 10) : null);
 let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsService {
     prisma;
@@ -32,6 +33,80 @@ let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsSer
     }
     onApplicationBootstrap() {
         setTimeout(() => void this.backfill(), 90_000).unref();
+        setTimeout(() => void this.putInDateOrder(), 100_000).unref();
+    }
+    async putInDateOrder() {
+        try {
+            const statements = await this.prisma.bankStatement.findMany({
+                where: {
+                    deletedAt: null,
+                    source: { not: 'PLAID' },
+                    status: { in: [client_1.StatementStatus.DONE, client_1.StatementStatus.NEEDS_REVIEW] },
+                },
+                select: { id: true, customerId: true, bookId: true, companyId: true },
+                orderBy: { id: 'asc' },
+            });
+            const books = new Map();
+            let moved = 0;
+            for (let i = 0; i < statements.length; i += 50) {
+                const chunk = statements.slice(i, i + 50);
+                const rows = await this.prisma.bankTransaction.findMany({
+                    where: {
+                        statementId: { in: chunk.map((s) => s.id) },
+                        splitOfId: null,
+                    },
+                    select: {
+                        id: true,
+                        statementId: true,
+                        postingDate: true,
+                        amount: true,
+                        balanceAfter: true,
+                    },
+                    orderBy: [{ statementId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
+                });
+                const byStatement = new Map();
+                for (const r of rows) {
+                    const list = byStatement.get(r.statementId) ?? [];
+                    list.push(r);
+                    byStatement.set(r.statementId, list);
+                }
+                for (const s of chunk) {
+                    const list = byStatement.get(s.id);
+                    if (!list || list.length < 2)
+                        continue;
+                    const ordered = (0, statement_order_util_1.chronological)(list.map((r) => ({
+                        id: r.id,
+                        postingDate: day(r.postingDate),
+                        amount: Number(r.amount),
+                        balanceAfter: r.balanceAfter === null ? null : Number(r.balanceAfter),
+                    })));
+                    if (ordered.every((r, i) => r.id === list[i].id))
+                        continue;
+                    const cases = client_1.Prisma.join(ordered.map((r, i) => client_1.Prisma.sql `WHEN ${r.id} THEN ${i}`), ' ');
+                    await this.prisma.$executeRaw `
+            UPDATE BankTransaction
+            SET position = CASE COALESCE(splitOfId, id) ${cases} ELSE position END
+            WHERE statementId = ${s.id}`;
+                    this.logger.log(`statement #${s.id}: rows put in date order`);
+                    books.set(s.bookId, (0, scope_1.scopeOf)(s));
+                    moved++;
+                }
+            }
+            const running = await this.prisma.statementError.findMany({
+                where: { kind: 'RUNNING', resolvedAt: null },
+                select: { customerId: true, bookId: true, companyId: true },
+                distinct: ['bookId'],
+            });
+            for (const r of running)
+                books.set(r.bookId, (0, scope_1.scopeOf)(r));
+            for (const b of books.values())
+                await this.refreshBook(b);
+            if (moved || books.size)
+                this.logger.log(`date order: ${moved} statement(s) re-ordered, ${books.size} book(s) re-checked`);
+        }
+        catch (err) {
+            this.logger.error(`date order failed: ${message(err)}`);
+        }
     }
     async backfill() {
         try {
@@ -161,6 +236,7 @@ let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsSer
                     statementId: true,
                     balanceAfter: true,
                     postingDate: true,
+                    amount: true,
                 },
                 orderBy: [{ statementId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
             })
@@ -171,6 +247,7 @@ let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsSer
             list.push({
                 balanceAfter: t.balanceAfter === null ? null : Number(t.balanceAfter),
                 postingDate: day(t.postingDate),
+                amount: Number(t.amount),
             });
             rowsOf.set(t.statementId, list);
         }
@@ -193,7 +270,7 @@ let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsSer
                 rechecked: r.chainRereadAt !== null && previous?.chainRereadAt != null,
                 rechecking: rereading,
                 printedEnding: rowsOf.has(r.id)
-                    ? (0, statement_problem_util_1.printedEnding)(rowsOf.get(r.id))
+                    ? (0, statement_problem_util_1.printedEnding)(rowsOf.get(r.id), r.accountKind === 'CREDIT_CARD')
                     : undefined,
                 startDerived: start?.derived,
             }));
