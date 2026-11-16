@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { type TypeContext } from './chart-of-accounts';
 import { CustomerAccountsService } from './customer-accounts.service';
@@ -123,9 +124,11 @@ export declare class TaxService {
     typeContext(scope: BookScope): Promise<TypeContext>;
     linesFor(scope: BookScope, statementIds?: number[]): Promise<Map<number, StoredTax[]>>;
     private compute;
+    ownAgencySubNames(scope: BookScope): Promise<Map<number, string>>;
     names(scope: BookScope): Promise<NamesView>;
     private namesOfFiles;
     addName(scope: BookScope, rawName: string, group: string | null): Promise<string>;
+    checkGroup(scope: BookScope, group: string | null): Promise<void>;
     setNameGroup(scope: BookScope, rawName: string, group: string | null): Promise<void>;
     setNameFields(scope: BookScope, rawName: string, input: NameFieldDto[]): Promise<void>;
     mergeNameFields(scope: BookScope, source: string, target: string): Promise<void>;
@@ -138,6 +141,9 @@ export declare class TaxService {
         description: string;
     }>>;
     setNameAgencies(scope: BookScope, name: string, agencyIds: number[]): Promise<NamesView>;
+    writePicks(scope: BookScope, clean: string, agencyIds: number[]): Promise<void>;
+    moveSubNameKeys(scope: BookScope, oldName: string, newName: string): Promise<void>;
+    dropSubNameKeys(scope: BookScope, name: string, parent: string | null): Promise<void>;
     carryAgencies(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     carryNameSettings(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     private copyNameRow;
@@ -145,3 +151,4 @@ export declare class TaxService {
     moveNameFiles(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;
     renameLine(scope: BookScope, transactionId: number, agencyId: number, name: string | null, nameScope?: 'ONCE' | 'ALWAYS'): Promise<boolean>;
 }
+export declare function cleanNameFields(input: NameFieldDto[]): Prisma.InputJsonValue | typeof Prisma.DbNull;

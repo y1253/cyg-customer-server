@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SetSubNameCategoryDto = exports.SetProductDto = exports.EditSplitDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SubNameSettingsDto = exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.RenameTaxLineDto = exports.SetSubNameCategoryDto = exports.SetProductDto = exports.EditSplitDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -590,4 +590,39 @@ __decorate([
     (0, class_transformer_1.Type)(() => NameFieldDto),
     __metadata("design:type", Array)
 ], SetNameFieldsDto.prototype, "fields", void 0);
+class SubNameSettingsDto {
+    name;
+    group;
+    fields;
+    agencyIds;
+}
+exports.SubNameSettingsDto = SubNameSettingsDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], SubNameSettingsDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.Matches)(/^(CUSTOMER|SUPPLIER|OTHER|g\d+)$/, { message: 'Pick a group' }),
+    __metadata("design:type", Object)
+], SubNameSettingsDto.prototype, "group", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(30),
+    (0, class_validator_1.ValidateNested)({ each: true }),
+    (0, class_transformer_1.Type)(() => NameFieldDto),
+    __metadata("design:type", Array)
+], SubNameSettingsDto.prototype, "fields", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsArray)(),
+    (0, class_validator_1.ArrayMaxSize)(50),
+    (0, class_validator_1.IsInt)({ each: true }),
+    __metadata("design:type", Object)
+], SubNameSettingsDto.prototype, "agencyIds", void 0);
 //# sourceMappingURL=agency.dto.js.map

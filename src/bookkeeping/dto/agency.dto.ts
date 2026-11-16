@@ -512,3 +512,34 @@ export class SetNameFieldsDto {
   @Type(() => NameFieldDto)
   fields!: NameFieldDto[];
 }
+
+/**
+ * step9 part 3 (2026-11-15): `PATCH /api/bookkeeping/sub-names/:id/settings` — a sub-name's
+ * own name ('' = "<parent> - <category>" again), group (null = the parent's), profile and
+ * agencies (null = follow the parent's, [] = untaxed). An absent field is unchanged.
+ */
+export class SubNameSettingsDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(191)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(CUSTOMER|SUPPLIER|OTHER|g\d+)$/, { message: 'Pick a group' })
+  group?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => NameFieldDto)
+  fields?: NameFieldDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  agencyIds?: number[] | null;
+}

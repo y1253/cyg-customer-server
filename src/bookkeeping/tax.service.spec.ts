@@ -2,9 +2,22 @@ import type { PrismaService } from '../prisma/prisma.service';
 import type { CustomerAccountsService } from './customer-accounts.service';
 import { TaxService } from './tax.service';
 
-/** A customer with one Staples purchase of $105, $42 of it split off by hand. */
-function setup(picks: Array<{ name: string; agencyId: number }>) {
+/**
+ * A customer with one Staples purchase of $105, $42 of it split off by hand — in the
+ * sub-name "Staples - Supplies" (id 9) when `ownSub` gives it its own agencies.
+ */
+function setup(
+  picks: Array<{ name: string; agencyId: number }>,
+  ownSub = false,
+) {
   const prisma = {
+    subName: {
+      findMany: jest
+        .fn()
+        .mockResolvedValue(
+          ownSub ? [{ id: 9, name: 'Staples - Supplies' }] : [],
+        ),
+    },
     ledgerNameAgency: { findMany: jest.fn().mockResolvedValue(picks) },
     taxAgency: {
       findMany: jest.fn().mockResolvedValue([
@@ -27,6 +40,7 @@ function setup(picks: Array<{ name: string; agencyId: number }>) {
           amount: -42,
           offsetAccount: 'Supplies',
           splitOfId: 1,
+          subNameId: 9,
         },
       ]),
     },
@@ -76,5 +90,20 @@ describe('TaxService.linesFor (tax decided per name, on read)', () => {
     expect(lines.get(2)).toEqual([
       expect.objectContaining({ agencyId: 5, name: null, amount: 2 }),
     ]);
+  });
+
+  it("step9 part 3: a sub-name with its own agencies taxes its rows by them, not the parent's", async () => {
+    const { tax } = setup(
+      [
+        { name: 'Staples', agencyId: 5 },
+        { name: 'staples - supplies', agencyId: 6 },
+      ],
+      true,
+    );
+    const lines = await tax.linesFor({ customerId: 7, companyId: null });
+    // The parent's row keeps GST; the sub-name's split follows ITS pick (QST, no purchase
+    // rate on it → untaxed), not the parent's GST.
+    expect(lines.get(1)).toEqual([expect.objectContaining({ agencyId: 5 })]);
+    expect(lines.get(2)).toBeUndefined();
   });
 });

@@ -1,9 +1,10 @@
 import { type OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
+import type { NameFieldDto } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
 import { type BookScope } from './scope';
-import { TaxService } from './tax.service';
+import { TaxService, type NameField } from './tax.service';
 export interface SubNameView {
     id: number;
     parent: string;
@@ -12,6 +13,17 @@ export interface SubNameView {
     rows: number;
     total: number;
     tax?: boolean;
+    group: string | null;
+    fields: NameField[];
+    renamed: boolean;
+    ownAgencies: boolean;
+    agencyIds: number[];
+}
+export interface SubNameSettings {
+    name?: string;
+    group?: string | null;
+    fields?: NameFieldDto[];
+    agencyIds?: number[] | null;
 }
 export declare class SubNamesService implements OnApplicationBootstrap {
     private readonly prisma;
@@ -32,6 +44,8 @@ export declare class SubNamesService implements OnApplicationBootstrap {
     private taxTotals;
     private refuseTax;
     setCategory(scope: BookScope, id: number, rawCategory: string): Promise<void>;
+    setSettings(scope: BookScope, id: number, input: SubNameSettings): Promise<void>;
+    private refuseTaken;
     remove(scope: BookScope, id: number): Promise<void>;
     private get;
     private parentName;

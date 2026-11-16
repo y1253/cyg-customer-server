@@ -5,20 +5,28 @@ import {
   NotFoundException,
   type OnApplicationBootstrap,
 } from '@nestjs/common';
-import { StatementStatus } from '@prisma/client';
+import { Prisma, StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
+import type { NameFieldDto } from './dto/agency.dto';
 import { doubleEntry } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
+import { nameKey } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import { subNameOf } from './sub-names.util';
 import {
+  deleteSubName,
   ensureSubName,
   syncParentSubNames,
   syncTaxSubNames,
 } from './sub-name-parents';
-import { TaxService } from './tax.service';
+import {
+  cleanNameFields,
+  parseNameFields,
+  TaxService,
+  type NameField,
+} from './tax.service';
 import { nameTaxKey } from './tax.util';
 
 /** A sub-name as the Names tab shows it under its parent. */
@@ -38,6 +46,26 @@ export interface SubNameView {
   total: number;
   /** step9: the sub-name of a name's tax lines for one agency ("Walmart - GST"). */
   tax?: boolean;
+  /**
+   * step9 part 3 (2026-11-15): every setting a name has. `group` null = the parent's;
+   * `renamed` = the customer named it (a category change keeps the name); `ownAgencies` =
+   * taxed by `agencyIds` (its own picks), else by the parent's.
+   */
+  group: string | null;
+  fields: NameField[];
+  renamed: boolean;
+  ownAgencies: boolean;
+  agencyIds: number[];
+}
+
+/** step9 part 3: what `PATCH sub-names/:id/settings` may change (absent = unchanged). */
+export interface SubNameSettings {
+  /** '' = back to "<parent> - <category>". */
+  name?: string;
+  group?: string | null;
+  fields?: NameFieldDto[];
+  /** null = follow the parent's agencies again; [] = untaxed. */
+  agencyIds?: number[] | null;
 }
 
 /**
@@ -129,6 +157,15 @@ export class SubNamesService implements OnApplicationBootstrap {
     const parentOf = new Map(parents.map((p) => [p.id, p.name]));
     const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
     const agencies = await this.agencyNames(scope);
+    const picks = await this.prisma.ledgerNameAgency.findMany({
+      where: { ...scopeWhere(scope), agency: { deletedAt: null } },
+      select: { name: true, agencyId: true },
+      orderBy: { agencyId: 'asc' },
+    });
+    const picksOf = (name: string) =>
+      picks
+        .filter((p) => nameTaxKey(p.name) === nameTaxKey(name))
+        .map((p) => p.agencyId);
     const [rowTotals, taxTotals] = await Promise.all([
       this.rowTotals(
         scope,
@@ -157,6 +194,11 @@ export class SubNamesService implements OnApplicationBootstrap {
               rows: total.rows,
               total: total.cents / 100,
               ...(tax && { tax: true }),
+              group: s.group,
+              fields: parseNameFields(s.fields),
+              renamed: s.renamed,
+              ownAgencies: s.ownAgencies,
+              agencyIds: s.ownAgencies ? picksOf(s.name) : [],
             },
           ]
         : [];
@@ -286,17 +328,102 @@ export class SubNamesService implements OnApplicationBootstrap {
     });
     const target = other?.id ?? id;
     if (!other) {
+      // step9 part 3: a name the customer gave it stays; its settings follow a new one.
+      const name =
+        parent && !sub.renamed ? subNameOf(parent, category) : sub.name;
       await this.prisma.subName.update({
         where: { id },
-        data: {
-          category,
-          ...(parent && { name: subNameOf(parent, category) }),
-        },
+        data: { category, name },
       });
+      await this.tax.moveSubNameKeys(scope, sub.name, name);
     }
     await this.moveRows(scope, id, target, category);
-    if (other) await this.prisma.subName.delete({ where: { id } });
+    if (other) {
+      // Joining another sub-name: its own settings win; this one's fill what it lacks.
+      const into = await this.get(scope, other.id);
+      await this.prisma.subName.update({
+        where: { id: into.id },
+        data: {
+          ...(!into.group && sub.group && { group: sub.group }),
+          ...(into.fields == null &&
+            sub.fields != null && {
+              fields: sub.fields as Prisma.InputJsonValue,
+            }),
+        },
+      });
+      await this.tax.moveSubNameKeys(scope, sub.name, into.name);
+      await this.prisma.subName.delete({ where: { id } });
+    }
     await syncParentSubNames(this.prisma, scope);
+  }
+
+  /**
+   * step9 part 3 (user: "a subname should have all the settings like a regular name has"):
+   * its own name, group, profile and tax agencies. Its folder is keyed by its name like a
+   * name's (files / folders follow a rename). A tax sub-name follows its agency: refused.
+   */
+  async setSettings(
+    scope: BookScope,
+    id: number,
+    input: SubNameSettings,
+  ): Promise<void> {
+    const sub = await this.get(scope, id);
+    await this.refuseTax(scope, sub);
+    const parent = await this.parentName(sub.nameId);
+    let name = sub.name;
+    const data: Prisma.SubNameUpdateInput = {};
+    if (input.name !== undefined) {
+      const auto = subNameOf(parent ?? sub.name, sub.category);
+      const typed = input.name.replace(/\s+/g, ' ').trim().slice(0, 191);
+      name = typed || auto;
+      if (nameKey(name) !== nameKey(sub.name))
+        await this.refuseTaken(scope, name, id);
+      data.name = name;
+      data.renamed = nameKey(name) !== nameKey(auto);
+    }
+    if (input.group !== undefined) {
+      await this.tax.checkGroup(scope, input.group);
+      data.group = input.group;
+    }
+    if (input.fields !== undefined) data.fields = cleanNameFields(input.fields);
+    if (input.agencyIds !== undefined)
+      data.ownAgencies = input.agencyIds !== null;
+    await this.prisma.subName.update({ where: { id }, data });
+    if (name !== sub.name)
+      await this.tax.moveSubNameKeys(scope, sub.name, name);
+    if (input.agencyIds !== undefined)
+      await this.tax.writePicks(scope, name, input.agencyIds ?? []);
+    await syncTaxSubNames(this.prisma, scope);
+  }
+
+  /** A sub-name's own name may not be another name's or sub-name's of the book. */
+  private async refuseTaken(
+    scope: BookScope,
+    name: string,
+    id: number,
+  ): Promise<void> {
+    // MySQL compares names case-insensitively.
+    const [asName, asSub] = await Promise.all([
+      this.prisma.ledgerName.findFirst({
+        where: { ...scopeWhere(scope), name },
+        select: { id: true },
+      }),
+      this.prisma.subName.findFirst({
+        where: { bookId: scope.bookId, name, id: { not: id } },
+        select: { id: true },
+      }),
+    ]);
+    const used =
+      asName ||
+      asSub ||
+      (await this.prisma.bankTransaction.findFirst({
+        where: { ...scopeWhere(scope), name },
+        select: { id: true },
+      }));
+    if (used)
+      throw new BadRequestException(
+        `“${name}” is already a name — pick another`,
+      );
   }
 
   /** Remove a sub-name: its rows go back to the parent name's category. */
@@ -308,7 +435,7 @@ export class SubNamesService implements OnApplicationBootstrap {
       (parent && (await this.names.categoryOfName(scope, parent))) ??
       sub.category;
     await this.moveRows(scope, id, null, category);
-    await this.prisma.subName.delete({ where: { id } });
+    await deleteSubName(this.prisma, id);
     await syncParentSubNames(this.prisma, scope);
   }
 

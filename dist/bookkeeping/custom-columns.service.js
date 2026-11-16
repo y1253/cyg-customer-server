@@ -25,7 +25,10 @@ let CustomColumnsService = class CustomColumnsService {
             ? await this.prisma.customColumnAnswer.findMany({
                 where: {
                     customColumnId: { in: columns.map((c) => c.id) },
-                    transaction: { ...(0, scope_1.scopeWhere)(scope) },
+                    transaction: {
+                        ...(0, scope_1.scopeWhere)(scope),
+                        statement: { deletedAt: null },
+                    },
                 },
                 select: {
                     customColumnId: true,
@@ -161,6 +164,13 @@ let CustomColumnsService = class CustomColumnsService {
             select: { id: true },
         });
         const keep = new Set(c.options.flatMap((o) => o.id && had.some((h) => h.id === o.id) ? [o.id] : []));
+        const repoint = await this.checkAnswers(row.id, {
+            ...c,
+            options: c.options.map((o) => ({
+                ...o,
+                id: o.id && keep.has(o.id) ? o.id : undefined,
+            })),
+        }, new Set(had.map((h) => h.id)));
         await this.prisma.$transaction([
             this.prisma.customColumn.update({
                 where: { id: row.id },
@@ -189,6 +199,71 @@ let CustomColumnsService = class CustomColumnsService {
                     data: { customColumnId: row.id, label: o.label, sortOrder: i },
                 })),
         ]);
+        if (c.type === 'DROPDOWN' && repoint.length) {
+            const options = await this.prisma.customColumnDropDown.findMany({
+                where: { customColumnId: row.id, deletedAt: null },
+                select: { id: true, label: true },
+            });
+            for (const r of repoint) {
+                const o = options.find((x) => x.label === r.label);
+                if (o)
+                    await this.prisma.customColumnAnswer.update({
+                        where: { id: r.id },
+                        data: { dropDownId: o.id, value: o.label },
+                    });
+            }
+        }
+    }
+    async checkAnswers(columnId, col, liveBefore) {
+        const answers = await this.prisma.customColumnAnswer.findMany({
+            where: { customColumnId: columnId },
+            select: {
+                id: true,
+                value: true,
+                dropDownId: true,
+                transaction: {
+                    select: {
+                        id: true,
+                        description: true,
+                        name: true,
+                        postingDate: true,
+                        pendingDate: true,
+                        statement: { select: { deletedAt: true } },
+                    },
+                },
+            },
+            orderBy: { transactionId: 'asc' },
+        });
+        const problems = [];
+        const repoint = [];
+        for (const a of answers) {
+            if (a.transaction.statement.deletedAt)
+                continue;
+            const fit = (0, custom_column_util_1.storedAnswerFit)(col, a, liveBefore);
+            if (fit.label)
+                repoint.push({ id: a.id, label: fit.label });
+            if (!fit.problem)
+                continue;
+            const t = a.transaction;
+            const day = t.postingDate ?? t.pendingDate;
+            problems.push({
+                transactionId: t.id,
+                date: day ? day.toISOString().slice(0, 10) : null,
+                description: t.name ?? t.description,
+                value: a.value ?? '',
+                problem: fit.problem,
+            });
+        }
+        if (problems.length) {
+            const n = problems.length;
+            throw new common_1.BadRequestException({
+                statusCode: 400,
+                message: `${n} answer${n === 1 ? '' : 's'} already in this column ${n === 1 ? 'does' : 'do'} not fit the new rules — fix ${n === 1 ? 'it' : 'them'} first, or keep the old rules`,
+                total: n,
+                problems: problems.slice(0, 50),
+            });
+        }
+        return repoint;
     }
     async remove(scope, id) {
         const row = await this.owned(scope, id);

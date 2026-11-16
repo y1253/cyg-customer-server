@@ -11,6 +11,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TaxService = exports.BUILTIN_GROUPS = void 0;
 exports.parseNameFields = parseNameFields;
+exports.cleanNameFields = cleanNameFields;
 const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const phone_number_util_1 = require("../customer-auth/phone-number.util");
@@ -197,6 +198,7 @@ let TaxService = class TaxService {
                     offsetAccount: true,
                     amount: true,
                     splitOfId: true,
+                    subNameId: true,
                 },
             }),
             this.prisma.transactionTax.findMany({
@@ -205,6 +207,7 @@ let TaxService = class TaxService {
             }),
             this.typeContext(scope),
         ]);
+        const ownSubs = await this.ownAgencySubNames(scope);
         const agencies = agencyRows.map((a) => ({
             id: a.id,
             name: a.name,
@@ -218,7 +221,7 @@ let TaxService = class TaxService {
         const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
         const sized = rows.map((r) => ({
             id: r.id,
-            name: r.name,
+            name: (r.subNameId && ownSubs.get(r.subNameId)) || r.name,
             offsetAccount: r.offsetAccount,
             amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
         }));
@@ -236,6 +239,13 @@ let TaxService = class TaxService {
             })));
         }
         return out;
+    }
+    async ownAgencySubNames(scope) {
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, ownAgencies: true },
+            select: { id: true, name: true },
+        });
+        return new Map(subs.map((s) => [s.id, s.name]));
     }
     async names(scope) {
         const [groups, named, nameless, picks, rules, ctx] = await Promise.all([
@@ -437,6 +447,11 @@ let TaxService = class TaxService {
             names.sort((a, b) => a.name.localeCompare(b.name));
         }
         const listed = new Set(names.map((n) => (0, name_memory_util_1.nameKey)(n.name)));
+        for (const s of await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId },
+            select: { name: true },
+        }))
+            listed.add((0, name_memory_util_1.nameKey)(s.name));
         const extra = [
             ...placed.filter((l) => l.manual).map((l) => l.name),
             ...fileNames,
@@ -535,22 +550,25 @@ let TaxService = class TaxService {
         });
         return name;
     }
+    async checkGroup(scope, group) {
+        if (!group || !/^g\d+$/.test(group))
+            return;
+        const own = await this.prisma.customerNameGroup.findFirst({
+            where: {
+                id: Number(group.slice(1)),
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+            },
+            select: { id: true },
+        });
+        if (!own)
+            throw new common_1.BadRequestException('That group no longer exists');
+    }
     async setNameGroup(scope, rawName, group) {
         const name = rawName.trim();
         if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
             throw new common_1.BadRequestException('Pick a name');
-        if (group && /^g\d+$/.test(group)) {
-            const own = await this.prisma.customerNameGroup.findFirst({
-                where: {
-                    id: Number(group.slice(1)),
-                    ...(0, scope_1.scopeWhere)(scope),
-                    deletedAt: null,
-                },
-                select: { id: true },
-            });
-            if (!own)
-                throw new common_1.BadRequestException('That group no longer exists');
-        }
+        await this.checkGroup(scope, group);
         const existing = await this.prisma.ledgerName.findFirst({
             where: { ...(0, scope_1.scopeWhere)(scope), name },
             select: { id: true },
@@ -571,29 +589,7 @@ let TaxService = class TaxService {
         const name = rawName.trim();
         if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
             throw new common_1.BadRequestException('Pick a name');
-        const fields = input.flatMap((f) => {
-            const value = f.value.trim();
-            if (!value)
-                return [];
-            if (f.kind === 'PHONE') {
-                const e164 = (0, phone_number_util_1.toE164)(value);
-                if (!e164)
-                    throw new common_1.BadRequestException(`“${value}” is not a phone number (add the country code if outside Canada / the US)`);
-                return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
-            }
-            if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-                throw new common_1.BadRequestException(`“${value}” is not an email address`);
-            return [
-                {
-                    kind: f.kind,
-                    label: f.label.trim(),
-                    value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
-                },
-            ];
-        });
-        const data = fields.length
-            ? fields
-            : client_1.Prisma.DbNull;
+        const data = cleanNameFields(input);
         const existing = await this.prisma.ledgerName.findFirst({
             where: { ...(0, scope_1.scopeWhere)(scope), name },
             select: { id: true },
@@ -604,7 +600,7 @@ let TaxService = class TaxService {
                 data: { fields: data },
             });
         }
-        else if (fields.length) {
+        else if (data !== client_1.Prisma.DbNull) {
             await this.prisma.ledgerName.create({
                 data: { ...(0, scope_1.scopeWhere)(scope), name, fields: data },
             });
@@ -705,6 +701,11 @@ let TaxService = class TaxService {
         const clean = name.trim();
         if (!clean)
             throw new common_1.BadRequestException('Which name?');
+        await this.writePicks(scope, clean, agencyIds);
+        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
+        return this.names(scope);
+    }
+    async writePicks(scope, clean, agencyIds) {
         const ids = [...new Set(agencyIds)];
         if (ids.length) {
             const owned = await this.prisma.taxAgency.count({
@@ -738,8 +739,47 @@ let TaxService = class TaxService {
                 })),
             }),
         ]);
-        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
-        return this.names(scope);
+    }
+    async moveSubNameKeys(scope, oldName, newName) {
+        const from = (0, tax_util_1.nameTaxKey)(oldName);
+        const to = (0, tax_util_1.nameTaxKey)(newName);
+        if (from === to)
+            return;
+        const picks = await this.prisma.ledgerNameAgency.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, name: true },
+        });
+        const mine = picks.filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === from);
+        if (mine.length) {
+            const theirs = picks.some((p) => (0, tax_util_1.nameTaxKey)(p.name) === to);
+            const ids = mine.map((p) => p.id);
+            if (theirs)
+                await this.prisma.ledgerNameAgency.deleteMany({
+                    where: { id: { in: ids } },
+                });
+            else
+                await this.prisma.ledgerNameAgency.updateMany({
+                    where: { id: { in: ids } },
+                    data: { name: newName },
+                });
+        }
+        await this.moveNameFiles(scope, [oldName], newName);
+    }
+    async dropSubNameKeys(scope, name, parent) {
+        const key = (0, tax_util_1.nameTaxKey)(name);
+        const picks = await this.prisma.ledgerNameAgency.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, name: true },
+        });
+        const ids = picks
+            .filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === key)
+            .map((p) => p.id);
+        if (ids.length)
+            await this.prisma.ledgerNameAgency.deleteMany({
+                where: { id: { in: ids } },
+            });
+        if (parent)
+            await this.moveNameFiles(scope, [name], parent);
     }
     async carryAgencies(scope, oldNames, newName) {
         const keys = new Set(oldNames.map(tax_util_1.nameTaxKey));
@@ -846,12 +886,20 @@ let TaxService = class TaxService {
                     data: { subNameId: same.id },
                 });
                 await this.prisma.subName.delete({ where: { id: sub.id } });
+                const kept = await this.prisma.subName.findUnique({
+                    where: { id: same.id },
+                    select: { name: true },
+                });
+                if (kept)
+                    await this.moveSubNameKeys(scope, sub.name, kept.name);
             }
             else {
+                const name = sub.renamed ? sub.name : (0, sub_names_util_1.subNameOf)(newName, sub.category);
                 await this.prisma.subName.update({
                     where: { id: sub.id },
-                    data: { nameId: into, name: (0, sub_names_util_1.subNameOf)(newName, sub.category) },
+                    data: { nameId: into, name },
                 });
+                await this.moveSubNameKeys(scope, sub.name, name);
             }
         }
     }
@@ -888,9 +936,12 @@ let TaxService = class TaxService {
         if (nameScope === 'ALWAYS') {
             const row = await this.prisma.bankTransaction.findFirst({
                 where: { ...(0, scope_1.scopeWhere)(scope), id: transactionId },
-                select: { name: true },
+                select: { name: true, subNameId: true },
             });
-            const key = (0, tax_util_1.nameTaxKey)(row?.name);
+            const own = row?.subNameId
+                ? (await this.ownAgencySubNames(scope)).get(row.subNameId)
+                : undefined;
+            const key = (0, tax_util_1.nameTaxKey)(own ?? row?.name);
             const picks = (await this.prisma.ledgerNameAgency.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), agencyId },
                 select: { id: true, name: true },
@@ -898,7 +949,12 @@ let TaxService = class TaxService {
             if (!picks.length)
                 return false;
             const sameName = (await this.prisma.bankTransaction.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), name: row?.name ?? null },
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    ...(own
+                        ? { subNameId: row.subNameId }
+                        : { name: row?.name ?? null }),
+                },
                 select: { id: true },
             })).map((r) => r.id);
             await this.prisma.$transaction([
@@ -1037,5 +1093,30 @@ function groupDescriptions(rows, rulesById) {
         descriptionsOf,
         exceptionOf: new Map([...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]])),
     };
+}
+function cleanNameFields(input) {
+    const fields = input.flatMap((f) => {
+        const value = f.value.trim();
+        if (!value)
+            return [];
+        if (f.kind === 'PHONE') {
+            const e164 = (0, phone_number_util_1.toE164)(value);
+            if (!e164)
+                throw new common_1.BadRequestException(`“${value}” is not a phone number (add the country code if outside Canada / the US)`);
+            return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
+        }
+        if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+            throw new common_1.BadRequestException(`“${value}” is not an email address`);
+        return [
+            {
+                kind: f.kind,
+                label: f.label.trim(),
+                value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
+            },
+        ];
+    });
+    return fields.length
+        ? fields
+        : client_1.Prisma.DbNull;
 }
 //# sourceMappingURL=tax.service.js.map

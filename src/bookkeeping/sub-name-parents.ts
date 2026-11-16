@@ -1,4 +1,5 @@
 import type { PrismaService } from '../prisma/prisma.service';
+import { nameKeyOf } from './attachment-name.util';
 import { cleanName } from './name-memory.util';
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
@@ -58,7 +59,42 @@ export async function dropUnusedSubName(
 ): Promise<void> {
   if (!id) return;
   const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
-  if (!used) await prisma.subName.deleteMany({ where: { id } });
+  if (!used) await deleteSubName(prisma, id);
+}
+
+/**
+ * step9 part 3: a sub-name is deleted with its own settings — its agency picks (keyed by
+ * its name) go, and the files filed under it go back to its parent name.
+ */
+export async function deleteSubName(
+  prisma: PrismaService,
+  id: number,
+): Promise<void> {
+  const sub = await prisma.subName.findUnique({ where: { id } });
+  if (!sub) return;
+  const parent = await prisma.ledgerName.findUnique({
+    where: { id: sub.nameId },
+    select: { name: true },
+  });
+  // MySQL compares names case-insensitively.
+  await prisma.$transaction([
+    prisma.ledgerNameAgency.deleteMany({
+      where: { bookId: sub.bookId, name: sub.name },
+    }),
+    ...(parent
+      ? [
+          prisma.transactionAttachment.updateMany({
+            where: { bookId: sub.bookId, nameOverride: sub.name },
+            data: { nameOverride: parent.name },
+          }),
+          prisma.nameFolder.updateMany({
+            where: { bookId: sub.bookId, name: nameKeyOf(sub.name) },
+            data: { name: nameKeyOf(parent.name) },
+          }),
+        ]
+      : []),
+    prisma.subName.deleteMany({ where: { id } }),
+  ]);
 }
 
 /**
@@ -144,7 +180,7 @@ export async function syncParentSubNames(
     const used = await prisma.bankTransaction.count({
       where: { subNameId: id },
     });
-    if (!used) await prisma.subName.deleteMany({ where: { id } });
+    if (!used) await deleteSubName(prisma, id);
   }
   return changed;
 }
@@ -179,17 +215,26 @@ export async function syncTaxSubNames(
     }),
     prisma.subName.findMany({
       where: { bookId: scope.bookId },
-      select: { id: true, nameId: true, category: true },
+      select: { id: true, nameId: true, category: true, name: true },
     }),
   ]);
   const unclarified = UNCLARIFIED_NAME.toLowerCase();
   const nameOf = new Map(names.map((n) => [n.id, n.name.toLowerCase()]));
   const key = (name: string, category: string) =>
     `${name.trim().toLowerCase()}|${category}`;
+  // step9 part 3: a sub-name's own pick taxes its rows, which count under the parent —
+  // their tax lines are the parent's tax sub-name ("Walmart - GST").
+  const parentOfSub = new Map(
+    subs.flatMap((s) => {
+      const parent = names.find((n) => n.id === s.nameId)?.name;
+      return parent ? [[s.name.trim().toLowerCase(), parent] as const] : [];
+    }),
+  );
   const want = new Map<string, { name: string; agency: string }>();
   for (const p of picks) {
-    if (!p.name.trim() || p.name.trim().toLowerCase() === unclarified) continue;
-    want.set(key(p.name, p.agency.name), { name: p.name, agency: p.agency.name });
+    const name = parentOfSub.get(p.name.trim().toLowerCase()) ?? p.name;
+    if (!name.trim() || name.trim().toLowerCase() === unclarified) continue;
+    want.set(key(name, p.agency.name), { name, agency: p.agency.name });
   }
   const have = new Set(
     subs.flatMap((s) => {
@@ -208,9 +253,7 @@ export async function syncTaxSubNames(
   const agencyNames = new Set(agencies.map((a) => a.name));
   const stale = subs.filter((s) => {
     const n = nameOf.get(s.nameId);
-    return (
-      agencyNames.has(s.category) && !(n && want.has(key(n, s.category)))
-    );
+    return agencyNames.has(s.category) && !(n && want.has(key(n, s.category)));
   });
   if (stale.length) {
     const used = await prisma.bankTransaction.groupBy({
@@ -219,7 +262,8 @@ export async function syncTaxSubNames(
     });
     const usedIds = new Set(used.map((u) => u.subNameId));
     const drop = stale.filter((s) => !usedIds.has(s.id)).map((s) => s.id);
-    if (drop.length) await prisma.subName.deleteMany({ where: { id: { in: drop } } });
+    if (drop.length)
+      await prisma.subName.deleteMany({ where: { id: { in: drop } } });
   }
   return made;
 }

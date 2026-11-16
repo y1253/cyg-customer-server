@@ -73,6 +73,7 @@ import {
   EditSplitDto,
   SetProductDto,
   SetSubNameCategoryDto,
+  SubNameSettingsDto,
   SetAccountTypeDto,
   SaveNameRuleDto,
   SaveProductRuleDto,
@@ -359,6 +360,17 @@ export class BookkeepingController {
     @Body() dto: SetSubNameCategoryDto,
   ): Promise<void> {
     return this.subNames.setCategory(scope, id, dto.category);
+  }
+
+  /** step9 part 3 (2026-11-15): a sub-name's own name, group, profile and agencies. */
+  @Patch('sub-names/:id/settings')
+  @HttpCode(204)
+  setSubNameSettings(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SubNameSettingsDto,
+  ): Promise<void> {
+    return this.subNames.setSettings(scope, id, dto);
   }
 
   /** step2 (2026-11-15): remove a sub-name — its rows go back to the name's category. */

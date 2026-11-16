@@ -8,6 +8,7 @@ import {
   answerProblem,
   cleanColumn,
   MAX_CUSTOM_COLUMNS,
+  storedAnswerFit,
   type ColumnInput,
   type CustomColumnType,
 } from './custom-column.util';
@@ -56,7 +57,11 @@ export class CustomColumnsService {
       ? await this.prisma.customColumnAnswer.findMany({
           where: {
             customColumnId: { in: columns.map((c) => c.id) },
-            transaction: { ...scopeWhere(scope) },
+            // step9 part 3: only rows still in the ledger (as the rule check counts them).
+            transaction: {
+              ...scopeWhere(scope),
+              statement: { deletedAt: null },
+            },
           },
           select: {
             customColumnId: true,
@@ -192,8 +197,10 @@ export class CustomColumnsService {
   }
 
   /**
-   * Name, rules and options. A changed type keeps the answers only when they still fit
-   * (answers that break the new rules stay stored but the cell shows them as wrong).
+   * Name, rules and options. step9 part 3 (2026-11-15, user's decision): new rules that an
+   * answer already entered breaks are REFUSED — 400 with `problems` (the rows to fix, first
+   * 50) and `total`; nothing is saved. A text answer that names a new dropdown option is
+   * re-pointed to it. `required` never blocks (an empty cell already shows "Required").
    */
   async update(
     scope: BookScope,
@@ -213,6 +220,17 @@ export class CustomColumnsService {
       c.options.flatMap((o) =>
         o.id && had.some((h) => h.id === o.id) ? [o.id] : [],
       ),
+    );
+    const repoint = await this.checkAnswers(
+      row.id,
+      {
+        ...c,
+        options: c.options.map((o) => ({
+          ...o,
+          id: o.id && keep.has(o.id) ? o.id : undefined,
+        })),
+      },
+      new Set(had.map((h) => h.id)),
     );
     await this.prisma.$transaction([
       this.prisma.customColumn.update({
@@ -244,6 +262,84 @@ export class CustomColumnsService {
             }),
       ),
     ]);
+    if (c.type === 'DROPDOWN' && repoint.length) {
+      const options = await this.prisma.customColumnDropDown.findMany({
+        where: { customColumnId: row.id, deletedAt: null },
+        select: { id: true, label: true },
+      });
+      for (const r of repoint) {
+        const o = options.find((x) => x.label === r.label);
+        if (o)
+          await this.prisma.customColumnAnswer.update({
+            where: { id: r.id },
+            data: { dropDownId: o.id, value: o.label },
+          });
+      }
+    }
+  }
+
+  /**
+   * The column's stored answers against its new rules: throws the rows that break them;
+   * returns the text answers to re-point to a new dropdown option of the same label.
+   */
+  private async checkAnswers(
+    columnId: number,
+    col: Parameters<typeof storedAnswerFit>[0],
+    liveBefore: ReadonlySet<number>,
+  ): Promise<Array<{ id: number; label: string }>> {
+    const answers = await this.prisma.customColumnAnswer.findMany({
+      where: { customColumnId: columnId },
+      select: {
+        id: true,
+        value: true,
+        dropDownId: true,
+        transaction: {
+          select: {
+            id: true,
+            description: true,
+            name: true,
+            postingDate: true,
+            pendingDate: true,
+            statement: { select: { deletedAt: true } },
+          },
+        },
+      },
+      orderBy: { transactionId: 'asc' },
+    });
+    const problems: Array<{
+      transactionId: number;
+      date: string | null;
+      description: string;
+      value: string;
+      problem: string;
+    }> = [];
+    const repoint: Array<{ id: number; label: string }> = [];
+    for (const a of answers) {
+      // An answer on a deleted statement's row is not in the ledger: it never blocks.
+      if (a.transaction.statement.deletedAt) continue;
+      const fit = storedAnswerFit(col, a, liveBefore);
+      if (fit.label) repoint.push({ id: a.id, label: fit.label });
+      if (!fit.problem) continue;
+      const t = a.transaction;
+      const day = t.postingDate ?? t.pendingDate;
+      problems.push({
+        transactionId: t.id,
+        date: day ? day.toISOString().slice(0, 10) : null,
+        description: t.name ?? t.description,
+        value: a.value ?? '',
+        problem: fit.problem,
+      });
+    }
+    if (problems.length) {
+      const n = problems.length;
+      throw new BadRequestException({
+        statusCode: 400,
+        message: `${n} answer${n === 1 ? '' : 's'} already in this column ${n === 1 ? 'does' : 'do'} not fit the new rules — fix ${n === 1 ? 'it' : 'them'} first, or keep the old rules`,
+        total: n,
+        problems: problems.slice(0, 50),
+      });
+    }
+    return repoint;
   }
 
   async remove(scope: BookScope, id: number): Promise<void> {

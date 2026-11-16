@@ -162,6 +162,9 @@ let BookkeepingController = class BookkeepingController {
     setSubNameCategory(scope, id, dto) {
         return this.subNames.setCategory(scope, id, dto.category);
     }
+    setSubNameSettings(scope, id, dto) {
+        return this.subNames.setSettings(scope, id, dto);
+    }
     deleteSubName(scope, id) {
         return this.subNames.remove(scope, id);
     }
@@ -533,6 +536,16 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, agency_dto_1.SetSubNameCategoryDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "setSubNameCategory", null);
+__decorate([
+    (0, common_1.Patch)('sub-names/:id/settings'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SubNameSettingsDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setSubNameSettings", null);
 __decorate([
     (0, common_1.Delete)('sub-names/:id'),
     (0, common_1.HttpCode)(204),

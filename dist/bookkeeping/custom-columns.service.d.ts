@@ -41,6 +41,7 @@ export declare class CustomColumnsService {
     create(scope: BookScope, input: ColumnInput): Promise<void>;
     private owned;
     update(scope: BookScope, id: number, input: ColumnInput): Promise<void>;
+    private checkAnswers;
     remove(scope: BookScope, id: number): Promise<void>;
     reorder(scope: BookScope, ids: number[]): Promise<void>;
     copy(scope: BookScope, fromBookId: number): Promise<number>;

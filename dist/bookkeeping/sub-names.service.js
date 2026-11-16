@@ -17,6 +17,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
+const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const sub_names_util_1 = require("./sub-names.util");
@@ -84,6 +85,14 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         const parentOf = new Map(parents.map((p) => [p.id, p.name]));
         const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
         const agencies = await this.agencyNames(scope);
+        const picks = await this.prisma.ledgerNameAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), agency: { deletedAt: null } },
+            select: { name: true, agencyId: true },
+            orderBy: { agencyId: 'asc' },
+        });
+        const picksOf = (name) => picks
+            .filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === (0, tax_util_1.nameTaxKey)(name))
+            .map((p) => p.agencyId);
         const [rowTotals, taxTotals] = await Promise.all([
             this.rowTotals(scope, subs.map((s) => s.id)),
             this.taxTotals(scope, subs.filter((s) => agencies.has(s.category)), parentOf),
@@ -104,6 +113,11 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                         rows: total.rows,
                         total: total.cents / 100,
                         ...(tax && { tax: true }),
+                        group: s.group,
+                        fields: (0, tax_service_1.parseNameFields)(s.fields),
+                        renamed: s.renamed,
+                        ownAgencies: s.ownAgencies,
+                        agencyIds: s.ownAgencies ? picksOf(s.name) : [],
                     },
                 ]
                 : [];
@@ -196,18 +210,80 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         });
         const target = other?.id ?? id;
         if (!other) {
+            const name = parent && !sub.renamed ? (0, sub_names_util_1.subNameOf)(parent, category) : sub.name;
             await this.prisma.subName.update({
                 where: { id },
-                data: {
-                    category,
-                    ...(parent && { name: (0, sub_names_util_1.subNameOf)(parent, category) }),
-                },
+                data: { category, name },
             });
+            await this.tax.moveSubNameKeys(scope, sub.name, name);
         }
         await this.moveRows(scope, id, target, category);
-        if (other)
+        if (other) {
+            const into = await this.get(scope, other.id);
+            await this.prisma.subName.update({
+                where: { id: into.id },
+                data: {
+                    ...(!into.group && sub.group && { group: sub.group }),
+                    ...(into.fields == null &&
+                        sub.fields != null && {
+                        fields: sub.fields,
+                    }),
+                },
+            });
+            await this.tax.moveSubNameKeys(scope, sub.name, into.name);
             await this.prisma.subName.delete({ where: { id } });
+        }
         await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
+    }
+    async setSettings(scope, id, input) {
+        const sub = await this.get(scope, id);
+        await this.refuseTax(scope, sub);
+        const parent = await this.parentName(sub.nameId);
+        let name = sub.name;
+        const data = {};
+        if (input.name !== undefined) {
+            const auto = (0, sub_names_util_1.subNameOf)(parent ?? sub.name, sub.category);
+            const typed = input.name.replace(/\s+/g, ' ').trim().slice(0, 191);
+            name = typed || auto;
+            if ((0, name_memory_util_1.nameKey)(name) !== (0, name_memory_util_1.nameKey)(sub.name))
+                await this.refuseTaken(scope, name, id);
+            data.name = name;
+            data.renamed = (0, name_memory_util_1.nameKey)(name) !== (0, name_memory_util_1.nameKey)(auto);
+        }
+        if (input.group !== undefined) {
+            await this.tax.checkGroup(scope, input.group);
+            data.group = input.group;
+        }
+        if (input.fields !== undefined)
+            data.fields = (0, tax_service_1.cleanNameFields)(input.fields);
+        if (input.agencyIds !== undefined)
+            data.ownAgencies = input.agencyIds !== null;
+        await this.prisma.subName.update({ where: { id }, data });
+        if (name !== sub.name)
+            await this.tax.moveSubNameKeys(scope, sub.name, name);
+        if (input.agencyIds !== undefined)
+            await this.tax.writePicks(scope, name, input.agencyIds ?? []);
+        await (0, sub_name_parents_1.syncTaxSubNames)(this.prisma, scope);
+    }
+    async refuseTaken(scope, name, id) {
+        const [asName, asSub] = await Promise.all([
+            this.prisma.ledgerName.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name },
+                select: { id: true },
+            }),
+            this.prisma.subName.findFirst({
+                where: { bookId: scope.bookId, name, id: { not: id } },
+                select: { id: true },
+            }),
+        ]);
+        const used = asName ||
+            asSub ||
+            (await this.prisma.bankTransaction.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name },
+                select: { id: true },
+            }));
+        if (used)
+            throw new common_1.BadRequestException(`“${name}” is already a name — pick another`);
     }
     async remove(scope, id) {
         const sub = await this.get(scope, id);
@@ -216,7 +292,7 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         const category = (parent && (await this.names.categoryOfName(scope, parent))) ??
             sub.category;
         await this.moveRows(scope, id, null, category);
-        await this.prisma.subName.delete({ where: { id } });
+        await (0, sub_name_parents_1.deleteSubName)(this.prisma, id);
         await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
     }
     async get(scope, id) {

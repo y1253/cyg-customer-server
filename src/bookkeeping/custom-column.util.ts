@@ -126,3 +126,39 @@ export function answerProblem(
   }
   return null;
 }
+
+/** A stored answer, as `CustomColumnAnswer` holds it. */
+export interface StoredAnswer {
+  value: string | null;
+  dropDownId: number | null;
+}
+
+/**
+ * step9 part 3 (2026-11-15, user: "if he makes number only and before he entered a string it
+ * should come up error"): does a stored answer still fit the column's NEW rules? A DROPDOWN
+ * answer fits while its option is kept, or when its text is one of the new options (it is
+ * re-pointed: `label`); a typed answer is checked like a new one (`answerProblem` — a
+ * dropdown's answer is its label). An answer whose option was removed BEFORE this change
+ * (`liveBefore` lacks it) is already blank and never blocks.
+ */
+export function storedAnswerFit(
+  col: Pick<CleanColumn, 'type' | 'minChars' | 'maxChars' | 'options'>,
+  a: StoredAnswer,
+  liveBefore: ReadonlySet<number>,
+): { problem: string | null; label?: string } {
+  const text = (a.value ?? '').trim();
+  if (a.dropDownId !== null && !liveBefore.has(a.dropDownId))
+    return { problem: null };
+  if (col.type === 'DROPDOWN') {
+    if (a.dropDownId !== null && col.options.some((o) => o.id === a.dropDownId))
+      return { problem: null };
+    if (!text) return { problem: null };
+    const match = col.options.find(
+      (o) => o.label.trim().toLowerCase() === text.toLowerCase(),
+    );
+    return match
+      ? { problem: null, label: match.label }
+      : { problem: `Not one of the options` };
+  }
+  return { problem: answerProblem(col, text) };
+}

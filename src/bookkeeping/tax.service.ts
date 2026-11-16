@@ -429,6 +429,7 @@ export class TaxService {
           offsetAccount: true,
           amount: true,
           splitOfId: true,
+          subNameId: true,
         },
       }),
       this.prisma.transactionTax.findMany({
@@ -437,6 +438,8 @@ export class TaxService {
       }),
       this.typeContext(scope),
     ]);
+    // step9 part 3: a row of a sub-name with its own agencies is taxed by the sub-name's.
+    const ownSubs = await this.ownAgencySubNames(scope);
     const agencies: Agency[] = agencyRows.map((a) => ({
       id: a.id,
       name: a.name,
@@ -453,7 +456,7 @@ export class TaxService {
     );
     const sized = rows.map((r) => ({
       id: r.id,
-      name: r.name,
+      name: (r.subNameId && ownSubs.get(r.subNameId)) || r.name,
       offsetAccount: r.offsetAccount,
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
     }));
@@ -482,6 +485,15 @@ export class TaxService {
       );
     }
     return out;
+  }
+
+  /** step9 part 3: the sub-names taxed by their own picks — id → the name they are keyed by. */
+  async ownAgencySubNames(scope: BookScope): Promise<Map<number, string>> {
+    const subs = await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId, ownAgencies: true },
+      select: { id: true, name: true },
+    });
+    return new Map(subs.map((s) => [s.id, s.name]));
   }
 
   // ---- names ----
@@ -734,6 +746,12 @@ export class TaxService {
     // step2 (2026-11-11): a name with files but no transactions — or added by hand — is
     // still listed (its folder holds the files), unlike an empty chart category.
     const listed = new Set(names.map((n) => nameKey(n.name)));
+    // step9 part 3: a sub-name's own folder is listed under its parent, not as a name.
+    for (const s of await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId },
+      select: { name: true },
+    }))
+      listed.add(nameKey(s.name));
     const extra = [
       ...placed.filter((l) => l.manual).map((l) => l.name),
       ...fileNames,
@@ -863,6 +881,20 @@ export class TaxService {
    * step9: put a name in a Names-tab group — a label only (its accounts and tax stay).
    * `group` null = follow its category again. One `LedgerName` row per name and book.
    */
+  /** A customer's own group (`g<id>`) must still exist; a built-in one always does. */
+  async checkGroup(scope: BookScope, group: string | null): Promise<void> {
+    if (!group || !/^g\d+$/.test(group)) return;
+    const own = await this.prisma.customerNameGroup.findFirst({
+      where: {
+        id: Number(group.slice(1)),
+        ...scopeWhere(scope),
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!own) throw new BadRequestException('That group no longer exists');
+  }
+
   async setNameGroup(
     scope: BookScope,
     rawName: string,
@@ -871,17 +903,7 @@ export class TaxService {
     const name = rawName.trim();
     if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
       throw new BadRequestException('Pick a name');
-    if (group && /^g\d+$/.test(group)) {
-      const own = await this.prisma.customerNameGroup.findFirst({
-        where: {
-          id: Number(group.slice(1)),
-          ...scopeWhere(scope),
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-      if (!own) throw new BadRequestException('That group no longer exists');
-    }
+    await this.checkGroup(scope, group);
     const existing = await this.prisma.ledgerName.findFirst({
       where: { ...scopeWhere(scope), name },
       select: { id: true },
@@ -911,30 +933,7 @@ export class TaxService {
     const name = rawName.trim();
     if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
       throw new BadRequestException('Pick a name');
-    const fields = input.flatMap((f): NameField[] => {
-      const value = f.value.trim();
-      if (!value) return [];
-      if (f.kind === 'PHONE') {
-        const e164 = toE164(value);
-        if (!e164)
-          throw new BadRequestException(
-            `“${value}” is not a phone number (add the country code if outside Canada / the US)`,
-          );
-        return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
-      }
-      if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-        throw new BadRequestException(`“${value}” is not an email address`);
-      return [
-        {
-          kind: f.kind,
-          label: f.label.trim(),
-          value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
-        },
-      ];
-    });
-    const data = fields.length
-      ? (fields as unknown as Prisma.InputJsonValue)
-      : Prisma.DbNull;
+    const data = cleanNameFields(input);
     const existing = await this.prisma.ledgerName.findFirst({
       where: { ...scopeWhere(scope), name },
       select: { id: true },
@@ -944,7 +943,7 @@ export class TaxService {
         where: { id: existing.id },
         data: { fields: data },
       });
-    } else if (fields.length) {
+    } else if (data !== Prisma.DbNull) {
       await this.prisma.ledgerName.create({
         data: { ...scopeWhere(scope), name, fields: data },
       });
@@ -984,7 +983,6 @@ export class TaxService {
         data: { ...scopeWhere(scope), name: target, fields },
       });
   }
-
   /** step9: a new Names-tab group of the customer's own ("Employees"). */
   async createNameGroup(
     scope: BookScope,
@@ -1081,6 +1079,20 @@ export class TaxService {
   ): Promise<NamesView> {
     const clean = name.trim();
     if (!clean) throw new BadRequestException('Which name?');
+    await this.writePicks(scope, clean, agencyIds);
+    await syncTaxSubNames(this.prisma, scope);
+    return this.names(scope);
+  }
+
+  /**
+   * The agencies picked for `clean` (a name, or step9 part 3 a sub-name's name): a pick
+   * that stays is kept (with its tax lines' "Always" name), the others go, new ones come.
+   */
+  async writePicks(
+    scope: BookScope,
+    clean: string,
+    agencyIds: number[],
+  ): Promise<void> {
     const ids = [...new Set(agencyIds)];
     if (ids.length) {
       const owned = await this.prisma.taxAgency.count({
@@ -1117,8 +1129,60 @@ export class TaxService {
           })),
       }),
     ]);
-    await syncTaxSubNames(this.prisma, scope);
-    return this.names(scope);
+  }
+
+  /**
+   * step9 part 3: a sub-name's name changed — its agency picks (keyed by its name) and the
+   * files filed under it follow. When `into` already has picks (a merge), the old ones go.
+   */
+  async moveSubNameKeys(
+    scope: BookScope,
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    const from = nameTaxKey(oldName);
+    const to = nameTaxKey(newName);
+    if (from === to) return;
+    const picks = await this.prisma.ledgerNameAgency.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, name: true },
+    });
+    const mine = picks.filter((p) => nameTaxKey(p.name) === from);
+    if (mine.length) {
+      const theirs = picks.some((p) => nameTaxKey(p.name) === to);
+      const ids = mine.map((p) => p.id);
+      if (theirs)
+        await this.prisma.ledgerNameAgency.deleteMany({
+          where: { id: { in: ids } },
+        });
+      else
+        await this.prisma.ledgerNameAgency.updateMany({
+          where: { id: { in: ids } },
+          data: { name: newName },
+        });
+    }
+    await this.moveNameFiles(scope, [oldName], newName);
+  }
+
+  /** step9 part 3: a sub-name that goes takes its own picks with it (files go to `parent`). */
+  async dropSubNameKeys(
+    scope: BookScope,
+    name: string,
+    parent: string | null,
+  ): Promise<void> {
+    const key = nameTaxKey(name);
+    const picks = await this.prisma.ledgerNameAgency.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, name: true },
+    });
+    const ids = picks
+      .filter((p) => nameTaxKey(p.name) === key)
+      .map((p) => p.id);
+    if (ids.length)
+      await this.prisma.ledgerNameAgency.deleteMany({
+        where: { id: { in: ids } },
+      });
+    if (parent) await this.moveNameFiles(scope, [name], parent);
   }
 
   /**
@@ -1262,11 +1326,19 @@ export class TaxService {
           data: { subNameId: same.id },
         });
         await this.prisma.subName.delete({ where: { id: sub.id } });
+        const kept = await this.prisma.subName.findUnique({
+          where: { id: same.id },
+          select: { name: true },
+        });
+        if (kept) await this.moveSubNameKeys(scope, sub.name, kept.name);
       } else {
+        // step9 part 3: a name the customer gave it stays; its settings follow a new one.
+        const name = sub.renamed ? sub.name : subNameOf(newName, sub.category);
         await this.prisma.subName.update({
           where: { id: sub.id },
-          data: { nameId: into, name: subNameOf(newName, sub.category) },
+          data: { nameId: into, name },
         });
+        await this.moveSubNameKeys(scope, sub.name, name);
       }
     }
   }
@@ -1324,9 +1396,13 @@ export class TaxService {
     if (nameScope === 'ALWAYS') {
       const row = await this.prisma.bankTransaction.findFirst({
         where: { ...scopeWhere(scope), id: transactionId },
-        select: { name: true },
+        select: { name: true, subNameId: true },
       });
-      const key = nameTaxKey(row?.name);
+      // step9 part 3: a row taxed by its sub-name's own agencies — that sub-name's lines.
+      const own = row?.subNameId
+        ? (await this.ownAgencySubNames(scope)).get(row.subNameId)
+        : undefined;
+      const key = nameTaxKey(own ?? row?.name);
       const picks = (
         await this.prisma.ledgerNameAgency.findMany({
           where: { ...scopeWhere(scope), agencyId },
@@ -1336,7 +1412,12 @@ export class TaxService {
       if (!picks.length) return false;
       const sameName = (
         await this.prisma.bankTransaction.findMany({
-          where: { ...scopeWhere(scope), name: row?.name ?? null },
+          where: {
+            ...scopeWhere(scope),
+            ...(own
+              ? { subNameId: row!.subNameId }
+              : { name: row?.name ?? null }),
+          },
           select: { id: true },
         })
       ).map((r) => r.id);
@@ -1545,4 +1626,38 @@ function groupDescriptions(
       [...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]]),
     ),
   };
+}
+
+/**
+ * step2 (2026-11-09): a name's (step9 part 3: or sub-name's) profile, cleaned — a phone in
+ * E.164 (400 when it is not one), an email lower-cased; empty values are dropped. DbNull
+ * when nothing is left.
+ */
+export function cleanNameFields(
+  input: NameFieldDto[],
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  const fields = input.flatMap((f): NameField[] => {
+    const value = f.value.trim();
+    if (!value) return [];
+    if (f.kind === 'PHONE') {
+      const e164 = toE164(value);
+      if (!e164)
+        throw new BadRequestException(
+          `“${value}” is not a phone number (add the country code if outside Canada / the US)`,
+        );
+      return [{ kind: f.kind, label: f.label.trim(), value: e164 }];
+    }
+    if (f.kind === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+      throw new BadRequestException(`“${value}” is not an email address`);
+    return [
+      {
+        kind: f.kind,
+        label: f.label.trim(),
+        value: f.kind === 'EMAIL' ? value.toLowerCase() : value,
+      },
+    ];
+  });
+  return fields.length
+    ? (fields as unknown as Prisma.InputJsonValue)
+    : Prisma.DbNull;
 }

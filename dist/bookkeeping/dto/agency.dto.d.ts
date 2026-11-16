@@ -126,3 +126,9 @@ export declare class SetNameFieldsDto {
     name: string;
     fields: NameFieldDto[];
 }
+export declare class SubNameSettingsDto {
+    name?: string;
+    group?: string | null;
+    fields?: NameFieldDto[];
+    agencyIds?: number[] | null;
+}

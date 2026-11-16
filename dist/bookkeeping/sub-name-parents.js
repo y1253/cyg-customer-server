@@ -3,8 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureSubName = ensureSubName;
 exports.ledgerNameId = ledgerNameId;
 exports.dropUnusedSubName = dropUnusedSubName;
+exports.deleteSubName = deleteSubName;
 exports.syncParentSubNames = syncParentSubNames;
 exports.syncTaxSubNames = syncTaxSubNames;
+const attachment_name_util_1 = require("./attachment-name.util");
 const name_memory_util_1 = require("./name-memory.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
@@ -46,7 +48,34 @@ async function dropUnusedSubName(prisma, id) {
         return;
     const used = await prisma.bankTransaction.count({ where: { subNameId: id } });
     if (!used)
-        await prisma.subName.deleteMany({ where: { id } });
+        await deleteSubName(prisma, id);
+}
+async function deleteSubName(prisma, id) {
+    const sub = await prisma.subName.findUnique({ where: { id } });
+    if (!sub)
+        return;
+    const parent = await prisma.ledgerName.findUnique({
+        where: { id: sub.nameId },
+        select: { name: true },
+    });
+    await prisma.$transaction([
+        prisma.ledgerNameAgency.deleteMany({
+            where: { bookId: sub.bookId, name: sub.name },
+        }),
+        ...(parent
+            ? [
+                prisma.transactionAttachment.updateMany({
+                    where: { bookId: sub.bookId, nameOverride: sub.name },
+                    data: { nameOverride: parent.name },
+                }),
+                prisma.nameFolder.updateMany({
+                    where: { bookId: sub.bookId, name: (0, attachment_name_util_1.nameKeyOf)(sub.name) },
+                    data: { name: (0, attachment_name_util_1.nameKeyOf)(parent.name) },
+                }),
+            ]
+            : []),
+        prisma.subName.deleteMany({ where: { id } }),
+    ]);
 }
 async function syncParentSubNames(prisma, scope, parentIds) {
     const parents = await prisma.bankTransaction.findMany({
@@ -117,7 +146,7 @@ async function syncParentSubNames(prisma, scope, parentIds) {
             where: { subNameId: id },
         });
         if (!used)
-            await prisma.subName.deleteMany({ where: { id } });
+            await deleteSubName(prisma, id);
     }
     return changed;
 }
@@ -140,17 +169,22 @@ async function syncTaxSubNames(prisma, scope) {
         }),
         prisma.subName.findMany({
             where: { bookId: scope.bookId },
-            select: { id: true, nameId: true, category: true },
+            select: { id: true, nameId: true, category: true, name: true },
         }),
     ]);
     const unclarified = reports_util_1.UNCLARIFIED_NAME.toLowerCase();
     const nameOf = new Map(names.map((n) => [n.id, n.name.toLowerCase()]));
     const key = (name, category) => `${name.trim().toLowerCase()}|${category}`;
+    const parentOfSub = new Map(subs.flatMap((s) => {
+        const parent = names.find((n) => n.id === s.nameId)?.name;
+        return parent ? [[s.name.trim().toLowerCase(), parent]] : [];
+    }));
     const want = new Map();
     for (const p of picks) {
-        if (!p.name.trim() || p.name.trim().toLowerCase() === unclarified)
+        const name = parentOfSub.get(p.name.trim().toLowerCase()) ?? p.name;
+        if (!name.trim() || name.trim().toLowerCase() === unclarified)
             continue;
-        want.set(key(p.name, p.agency.name), { name: p.name, agency: p.agency.name });
+        want.set(key(name, p.agency.name), { name, agency: p.agency.name });
     }
     const have = new Set(subs.flatMap((s) => {
         const n = nameOf.get(s.nameId);
@@ -166,7 +200,7 @@ async function syncTaxSubNames(prisma, scope) {
     const agencyNames = new Set(agencies.map((a) => a.name));
     const stale = subs.filter((s) => {
         const n = nameOf.get(s.nameId);
-        return (agencyNames.has(s.category) && !(n && want.has(key(n, s.category))));
+        return agencyNames.has(s.category) && !(n && want.has(key(n, s.category)));
     });
     if (stale.length) {
         const used = await prisma.bankTransaction.groupBy({

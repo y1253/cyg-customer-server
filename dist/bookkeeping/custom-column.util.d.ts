@@ -32,3 +32,11 @@ export interface CleanColumn {
 }
 export declare function cleanColumn(input: ColumnInput): CleanColumn | string;
 export declare function answerProblem(rules: CustomColumnRules, raw: string): string | null;
+export interface StoredAnswer {
+    value: string | null;
+    dropDownId: number | null;
+}
+export declare function storedAnswerFit(col: Pick<CleanColumn, 'type' | 'minChars' | 'maxChars' | 'options'>, a: StoredAnswer, liveBefore: ReadonlySet<number>): {
+    problem: string | null;
+    label?: string;
+};

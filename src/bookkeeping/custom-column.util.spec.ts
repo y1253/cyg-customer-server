@@ -1,4 +1,8 @@
-import { answerProblem, cleanColumn } from './custom-column.util';
+import {
+  answerProblem,
+  cleanColumn,
+  storedAnswerFit,
+} from './custom-column.util';
 
 describe('cleanColumn', () => {
   it('a dropdown keeps its options in order, trimmed, no blanks', () => {
@@ -76,5 +80,64 @@ describe('answerProblem', () => {
       'At most 5 characters',
     );
     expect(answerProblem(rules('TEXT', 3, 5), 'abcd')).toBeNull();
+  });
+});
+
+describe('storedAnswerFit (step9 part 3: new rules vs answers already entered)', () => {
+  const col = (
+    type: 'TEXT' | 'LETTERS' | 'NUMBER' | 'DROPDOWN',
+    options: Array<{ id?: number; label: string }> = [],
+    minChars: number | null = null,
+  ) => ({ type, minChars, maxChars: null, options });
+  const live = new Set([1, 2]);
+
+  it('switched to Number: a text answer breaks it, a number fits', () => {
+    expect(
+      storedAnswerFit(col('NUMBER'), { value: 'abc', dropDownId: null }, live),
+    ).toEqual({ problem: 'Numbers only' });
+    expect(
+      storedAnswerFit(col('NUMBER'), { value: '12.5', dropDownId: null }, live)
+        .problem,
+    ).toBeNull();
+  });
+
+  it('a new minimum breaks a shorter answer', () => {
+    expect(
+      storedAnswerFit(
+        col('TEXT', [], 4),
+        { value: 'ab', dropDownId: null },
+        live,
+      ).problem,
+    ).toBe('At least 4 characters');
+  });
+
+  it('a dropdown option removed while used breaks it; a kept one fits', () => {
+    const c = col('DROPDOWN', [{ id: 2, label: 'B' }]);
+    expect(
+      storedAnswerFit(c, { value: 'A', dropDownId: 1 }, live).problem,
+    ).toBe('Not one of the options');
+    expect(
+      storedAnswerFit(c, { value: 'B', dropDownId: 2 }, live).problem,
+    ).toBeNull();
+  });
+
+  it('text → dropdown: an answer naming a new option is re-pointed', () => {
+    const c = col('DROPDOWN', [{ label: 'Yes' }, { label: 'No' }]);
+    expect(
+      storedAnswerFit(c, { value: ' yes ', dropDownId: null }, live),
+    ).toEqual({
+      problem: null,
+      label: 'Yes',
+    });
+    expect(
+      storedAnswerFit(c, { value: 'maybe', dropDownId: null }, live).problem,
+    ).toBe('Not one of the options');
+  });
+
+  it('an answer whose option was already gone never blocks', () => {
+    expect(
+      storedAnswerFit(col('NUMBER'), { value: 'old', dropDownId: 9 }, live)
+        .problem,
+    ).toBeNull();
   });
 });

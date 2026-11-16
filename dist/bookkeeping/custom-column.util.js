@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_ANSWER_CHARS = exports.MAX_OPTIONS = exports.MAX_CUSTOM_COLUMNS = exports.CUSTOM_COLUMN_TYPES = void 0;
 exports.cleanColumn = cleanColumn;
 exports.answerProblem = answerProblem;
+exports.storedAnswerFit = storedAnswerFit;
 exports.CUSTOM_COLUMN_TYPES = [
     'TEXT',
     'LETTERS',
@@ -89,5 +90,21 @@ function answerProblem(rules, raw) {
         return `At most ${rules.maxChars} character${rules.maxChars === 1 ? '' : 's'}`;
     }
     return null;
+}
+function storedAnswerFit(col, a, liveBefore) {
+    const text = (a.value ?? '').trim();
+    if (a.dropDownId !== null && !liveBefore.has(a.dropDownId))
+        return { problem: null };
+    if (col.type === 'DROPDOWN') {
+        if (a.dropDownId !== null && col.options.some((o) => o.id === a.dropDownId))
+            return { problem: null };
+        if (!text)
+            return { problem: null };
+        const match = col.options.find((o) => o.label.trim().toLowerCase() === text.toLowerCase());
+        return match
+            ? { problem: null, label: match.label }
+            : { problem: `Not one of the options` };
+    }
+    return { problem: answerProblem(col, text) };
 }
 //# sourceMappingURL=custom-column.util.js.map
