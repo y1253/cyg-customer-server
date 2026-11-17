@@ -16,6 +16,7 @@ import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import { subNameOf } from './sub-names.util';
 import {
+  copyParentPicks,
   deleteSubName,
   ensureSubName,
   syncParentSubNames,
@@ -86,7 +87,10 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   /**
    * step9: transactions split before their own sub-name existed get it — 70 s after start,
-   * every book with a sub-named split (idempotent: nothing changes once they have it).
+   * every book with a split or a sub-name (idempotent: nothing changes once they have it).
+   * step9 (2026-11-17, second request): and every row of a wrapper name its category's
+   * sub-name (`fileUnderSubNames`), and a sub-name that followed its parent's split rules
+   * gets its own copy of them (`adoptParentPicks`).
    */
   onApplicationBootstrap(): void {
     setTimeout(() => void this.backfillParents(), 70_000).unref();
@@ -94,22 +98,54 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   async backfillParents(): Promise<void> {
     try {
-      const books = await this.prisma.bankTransaction.groupBy({
-        by: ['customerId', 'bookId', 'companyId'],
-        where: { splitOfId: { not: null }, subNameId: { not: null } },
-      });
+      const [split, named] = await Promise.all([
+        this.prisma.bankTransaction.groupBy({
+          by: ['customerId', 'bookId', 'companyId'],
+          where: { splitOfId: { not: null }, splitRuleId: null },
+        }),
+        this.prisma.subName.groupBy({
+          by: ['customerId', 'bookId', 'companyId'],
+        }),
+      ]);
+      const books = new Map(
+        [...split, ...named].map((b) => [b.bookId, b] as const),
+      );
       let changed = 0;
-      for (const b of books)
+      for (const b of books.values()) {
+        await this.adoptParentPicks(b);
         changed += await syncParentSubNames(this.prisma, b);
+      }
       if (changed) {
-        this.logger.log(
-          `gave ${changed} split transaction(s) their own sub-name`,
-        );
+        this.logger.log(`filed ${changed} row(s) under their sub-name`);
       }
     } catch (err) {
       this.logger.warn(
         `parent sub-names not synced: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  /**
+   * step9 (2026-11-17, second request): a sub-name made before sub-names had their own split
+   * rules (`ownAgencies` false = followed its parent's) gets a copy of its parent's picks —
+   * the parent is a wrapper now, with no settings of its own. A split rule's own sub-name
+   * (only rule splits under it) takes none.
+   */
+  private async adoptParentPicks(scope: BookScope): Promise<void> {
+    const subs = await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId, ownAgencies: false },
+      select: { id: true, nameId: true, name: true },
+    });
+    for (const s of subs) {
+      const hand = await this.prisma.bankTransaction.count({
+        where: { bookId: scope.bookId, subNameId: s.id, splitRuleId: null },
+      });
+      const parent = hand ? await this.parentName(s.nameId) : null;
+      if (parent) await copyParentPicks(this.prisma, scope, parent, s.name);
+      await this.prisma.subName.update({
+        where: { id: s.id },
+        data: { ownAgencies: true },
+      });
     }
   }
 
@@ -217,8 +253,9 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   /**
    * A sub-name's category: renamed to "<parent> - <category>" and every row of it moves.
-   * Its parent's own category → the sub-name is no longer needed and goes. Another
-   * sub-name of the parent already in that category → the rows join it.
+   * Another sub-name of the parent already in that category → the rows join it. step9
+   * (2026-11-17, second request): the parent's own category no longer removes it — every row
+   * of a wrapper name sits under a sub-name.
    */
   async setCategory(
     scope: BookScope,
@@ -228,13 +265,6 @@ export class SubNamesService implements OnApplicationBootstrap {
     const sub = await this.get(scope, id);
     const category = await this.accounts.validCategory(scope, rawCategory);
     const parent = await this.parentName(sub.nameId);
-    if (
-      parent &&
-      (await this.names.categoryOfName(scope, parent)) === category
-    ) {
-      await this.remove(scope, id);
-      return;
-    }
     const other = await this.prisma.subName.findFirst({
       where: {
         bookId: scope.bookId,
@@ -343,10 +373,36 @@ export class SubNamesService implements OnApplicationBootstrap {
       );
   }
 
-  /** Remove a sub-name: its rows go back to the parent name's category. */
+  /**
+   * Remove a sub-name: its rows go back to the parent name's category. step9 (2026-11-17,
+   * second request): only its parent's LAST sub-name, and only while no transaction of the
+   * parent is split (a split names its transaction) — the parent is a regular name again.
+   * Otherwise its category joins it to another sub-name.
+   */
   async remove(scope: BookScope, id: number): Promise<void> {
     const sub = await this.get(scope, id);
     const parent = await this.parentName(sub.nameId);
+    const others = await this.prisma.subName.count({
+      where: { bookId: scope.bookId, nameId: sub.nameId, id: { not: id } },
+    });
+    if (others)
+      throw new BadRequestException(
+        'Change its category to join another sub-name — every row of the name stays under one',
+      );
+    const split = parent
+      ? await this.prisma.bankTransaction.count({
+          where: {
+            ...scopeWhere(scope),
+            name: parent,
+            splitOfId: null,
+            splits: { some: { splitRuleId: null } },
+          },
+        })
+      : 0;
+    if (split)
+      throw new BadRequestException(
+        `“${parent}” has split transactions — they keep it under sub-names`,
+      );
     const category =
       (parent && (await this.names.categoryOfName(scope, parent))) ??
       sub.category;

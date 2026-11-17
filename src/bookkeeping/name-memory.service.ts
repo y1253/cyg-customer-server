@@ -15,7 +15,12 @@ import {
 } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
-import { dropUnusedSubName, syncParentSubNames } from './sub-name-parents';
+import {
+  dropUnusedSubName,
+  fileUnderSubNames,
+  refuseWrapper,
+  syncParentSubNames,
+} from './sub-name-parents';
 import { TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
@@ -338,6 +343,17 @@ export class NameMemoryService implements OnApplicationBootstrap {
     scope: BookScope,
     input: Parameters<NameMemoryService['applyRule']>[1],
   ): Promise<void> {
+    // step9 (2026-11-17, second request): a name with sub-names has no settings of its own —
+    // its category and its description rules go to one of its sub-names. Renaming it is fine.
+    if (input.matchType === 'NAME') {
+      if (input.category)
+        await refuseWrapper(this.prisma, scope, input.name ?? input.matchKey);
+    } else if (
+      input.subNameId == null &&
+      (input.matchType === 'CONTAINS' || (input.scope ?? 'ALWAYS') === 'ALWAYS')
+    ) {
+      await refuseWrapper(this.prisma, scope, input.name);
+    }
     await this.applyRule(scope, input);
     await this.syncProvenance(scope);
   }
@@ -360,6 +376,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
   ): Promise<void> {
     const clean = cleanName(name);
     if (!clean) return;
+    await refuseWrapper(this.prisma, scope, clean);
     await this.setNameCategory(
       scope,
       clean,
@@ -374,6 +391,9 @@ export class NameMemoryService implements OnApplicationBootstrap {
     from: string,
     into: string,
   ): Promise<void> {
+    // step9 (2026-11-17, second request): nothing is merged into or out of a wrapper name.
+    await refuseWrapper(this.prisma, scope, from);
+    await refuseWrapper(this.prisma, scope, into);
     await this.applyMerge(scope, from, into);
     await this.syncProvenance(scope);
   }
@@ -432,7 +452,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
           manualEdit: false,
           subNameId: { not: null },
           name: { not: null },
-          splits: { some: { splitRuleId: null, subNameId: { not: null } } },
+          // step9 (2026-11-17, second request): any split the customer made.
+          splits: { some: { splitRuleId: null } },
         },
         select: { id: true, description: true, name: true, subNameId: true },
         orderBy: { id: 'desc' },
@@ -478,6 +499,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
         category: back.get(nameKey(r.name ?? '')) ?? r.offsetAccount,
         subNameId: null,
       }));
+      // A wrapper name's rows go straight back under the sub-name of their category.
+      await fileUnderSubNames(this.prisma, scope);
       await dropUnusedSubName(this.prisma, scope, oldSubId);
       return;
     }
@@ -798,6 +821,11 @@ export class NameMemoryService implements OnApplicationBootstrap {
       scope?: EditScope;
       /** step2: take the description from the name it is linked to now (`guardLinks`). */
       replace?: boolean;
+      /**
+       * step9 (2026-11-17, second request): DESCRIPTION — the sub-name of `name` its rows go
+       * under (a description dropped on a sub-name); its category comes with it.
+       */
+      subNameId?: number | null;
     },
   ): Promise<void> {
     const matchKey = ruleKeyOf(input.matchType, input.matchKey);
@@ -875,6 +903,30 @@ export class NameMemoryService implements OnApplicationBootstrap {
     }
 
     const editScope = input.scope ?? 'ALWAYS';
+    if (name && input.subNameId != null) {
+      const sub = await this.subNameOf(scope, input.subNameId, name);
+      if (editScope === 'ALWAYS') {
+        await this.upsertRule(
+          previous,
+          { ...where, name, category: sub.category, subNameId: sub.id },
+          { name, category: sub.category, subNameId: sub.id },
+        );
+      }
+      const rows = await this.matchingRows(
+        scope,
+        'DESCRIPTION',
+        matchKey,
+        new Set(),
+        editScope === 'ONCE',
+      );
+      await this.writeRows(
+        scope,
+        rows,
+        () => ({ name, category: sub.category, subNameId: sub.id }),
+        editScope === 'ONCE',
+      );
+      return;
+    }
     if (name) {
       const target = await this.categoryOfName(scope, name);
       if (editScope === 'ALWAYS') {
@@ -1506,6 +1558,27 @@ export class NameMemoryService implements OnApplicationBootstrap {
    * Create or update one rule. Not a compound-key upsert: the key holds companyId, which is
    * NULL for the general book, and Prisma cannot address a NULL through a unique key.
    */
+  /** step9 (2026-11-17, second request): a sub-name of `name` in the book, or a 400. */
+  private async subNameOf(
+    scope: BookScope,
+    id: number,
+    name: string,
+  ): Promise<{ id: number; category: string }> {
+    const sub = await this.prisma.subName.findFirst({
+      where: { id, bookId: scope.bookId, customerId: scope.customerId },
+      select: { id: true, nameId: true, category: true },
+    });
+    const parent = sub
+      ? await this.prisma.ledgerName.findUnique({
+          where: { id: sub.nameId },
+          select: { name: true },
+        })
+      : null;
+    if (!sub || !parent || nameKey(parent.name) !== nameKey(name))
+      throw new BadRequestException(`That is not a sub-name of “${name}”.`);
+    return sub;
+  }
+
   private async upsertRule(
     existing: { id: number } | null,
     create: Prisma.CustomerNameRuleUncheckedCreateInput,
@@ -1588,7 +1661,17 @@ export class NameMemoryService implements OnApplicationBootstrap {
       const name = fallbackName(out.name, category, row.description);
       const subChanged =
         out.subNameId !== undefined && out.subNameId !== row.subNameId;
-      if (name === row.name && category === row.offsetAccount && !subChanged)
+      // step9 part 2: a row already under the sub-name still records the rule that files it.
+      const ruleChanged =
+        out.personalRuleId !== undefined &&
+        row.personalRuleId !== undefined &&
+        out.personalRuleId !== row.personalRuleId;
+      if (
+        name === row.name &&
+        category === row.offsetAccount &&
+        !subChanged &&
+        !ruleChanged
+      )
         return [];
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
@@ -1622,6 +1705,7 @@ const MATCH_SELECT = {
   debitAccount: true,
   creditAccount: true,
   subNameId: true,
+  personalRuleId: true,
 } as const;
 
 const ruleKeyOf = (matchType: RuleMatchType, raw: string): string =>
@@ -1649,6 +1733,7 @@ export interface MatchedRow {
   debitAccount: string;
   creditAccount: string;
   subNameId?: number | null;
+  personalRuleId?: number | null;
 }
 
 function toMatched(r: {
@@ -1660,6 +1745,7 @@ function toMatched(r: {
   debitAccount: string;
   creditAccount: string;
   subNameId?: number | null;
+  personalRuleId?: number | null;
 }): MatchedRow {
   return {
     id: r.id,
@@ -1670,5 +1756,6 @@ function toMatched(r: {
     debitAccount: r.debitAccount,
     creditAccount: r.creditAccount,
     subNameId: r.subNameId ?? null,
+    personalRuleId: r.personalRuleId ?? null,
   };
 }

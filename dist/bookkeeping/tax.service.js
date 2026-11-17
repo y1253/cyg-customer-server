@@ -23,6 +23,7 @@ const attachment_name_util_1 = require("./attachment-name.util");
 const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const split_rules_service_1 = require("./split-rules.service");
+const sub_name_parents_1 = require("./sub-name-parents");
 const sub_names_util_1 = require("./sub-names.util");
 const agency_dto_1 = require("./dto/agency.dto");
 const tax_util_1 = require("./tax.util");
@@ -36,7 +37,13 @@ function parseNameFields(raw) {
         const kind = agency_dto_1.NAME_FIELD_KINDS.includes(o.kind ?? '')
             ? o.kind
             : 'TEXT';
-        return [{ kind, label: typeof o.label === 'string' ? o.label : '', value: o.value }];
+        return [
+            {
+                kind,
+                label: typeof o.label === 'string' ? o.label : '',
+                value: o.value,
+            },
+        ];
     });
 }
 exports.BUILTIN_GROUPS = [
@@ -219,6 +226,7 @@ let TaxService = class TaxService {
                     name: true,
                     description: true,
                     offsetAccount: true,
+                    subNameId: true,
                 },
             }),
             this.prisma.bankTransaction.findMany({
@@ -294,6 +302,11 @@ let TaxService = class TaxService {
             },
         ]));
         const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
+        const subDescriptions = Object.fromEntries([
+            ...groupDescriptions(named.flatMap((r) => r.subNameId
+                ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
+                : []), rulesById).descriptionsOf,
+        ].map(([k, v]) => [Number(k.slice(1)), v]));
         const shareOf = rowShares([...named, ...nameless]);
         const totalOf = new Map();
         for (const r of named) {
@@ -461,7 +474,13 @@ let TaxService = class TaxService {
             category: r.category,
             rows: descriptions.filter((t) => (0, name_memory_util_1.descriptionContains)(t.description, r.matchKey)).length,
         }));
-        return { names, unrecognized, containsRules, groups: groupList };
+        return {
+            names,
+            unrecognized,
+            containsRules,
+            groups: groupList,
+            subDescriptions,
+        };
     }
     async namesOfFiles(scope) {
         const rows = await this.prisma.transactionAttachment.findMany({
@@ -540,6 +559,7 @@ let TaxService = class TaxService {
         const name = rawName.trim();
         if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
             throw new common_1.BadRequestException('Pick a name');
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, name);
         await this.checkGroup(scope, group);
         const existing = await this.prisma.ledgerName.findFirst({
             where: { ...(0, scope_1.scopeWhere)(scope), name },
@@ -561,6 +581,7 @@ let TaxService = class TaxService {
         const name = rawName.trim();
         if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
             throw new common_1.BadRequestException('Pick a name');
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, name);
         const data = cleanNameFields(input);
         const existing = await this.prisma.ledgerName.findFirst({
             where: { ...(0, scope_1.scopeWhere)(scope), name },
@@ -673,6 +694,7 @@ let TaxService = class TaxService {
         const clean = name.trim();
         if (!clean)
             throw new common_1.BadRequestException('Which name?');
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, clean);
         await this.writePicks(scope, clean, agencyIds);
         return this.names(scope);
     }
@@ -826,7 +848,11 @@ let TaxService = class TaxService {
         if (!old.length)
             return;
         await this.prisma.bankTransaction.updateMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: { not: null }, name: { in: old } },
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                splitOfId: { not: null },
+                name: { in: old },
+            },
             data: { name: newName },
         });
         const names = await this.prisma.ledgerName.findMany({

@@ -47,6 +47,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     private applyMerge;
     private applyReset;
     private reresolveAfterContains;
+    private subNameOf;
     private upsertRule;
     private matchingRows;
     private writeRows;
@@ -60,4 +61,5 @@ export interface MatchedRow {
     debitAccount: string;
     creditAccount: string;
     subNameId?: number | null;
+    personalRuleId?: number | null;
 }

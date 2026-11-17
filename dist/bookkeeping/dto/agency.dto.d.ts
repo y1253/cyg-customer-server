@@ -28,6 +28,7 @@ export declare class SaveNameRuleDto {
     category?: string | null;
     scope?: 'ALWAYS' | 'ONCE';
     replace?: boolean;
+    subNameId?: number | null;
 }
 export declare class ResetNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';

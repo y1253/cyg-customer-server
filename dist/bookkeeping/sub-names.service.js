@@ -41,19 +41,45 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
     }
     async backfillParents() {
         try {
-            const books = await this.prisma.bankTransaction.groupBy({
-                by: ['customerId', 'bookId', 'companyId'],
-                where: { splitOfId: { not: null }, subNameId: { not: null } },
-            });
+            const [split, named] = await Promise.all([
+                this.prisma.bankTransaction.groupBy({
+                    by: ['customerId', 'bookId', 'companyId'],
+                    where: { splitOfId: { not: null }, splitRuleId: null },
+                }),
+                this.prisma.subName.groupBy({
+                    by: ['customerId', 'bookId', 'companyId'],
+                }),
+            ]);
+            const books = new Map([...split, ...named].map((b) => [b.bookId, b]));
             let changed = 0;
-            for (const b of books)
+            for (const b of books.values()) {
+                await this.adoptParentPicks(b);
                 changed += await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, b);
+            }
             if (changed) {
-                this.logger.log(`gave ${changed} split transaction(s) their own sub-name`);
+                this.logger.log(`filed ${changed} row(s) under their sub-name`);
             }
         }
         catch (err) {
             this.logger.warn(`parent sub-names not synced: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    async adoptParentPicks(scope) {
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, ownAgencies: false },
+            select: { id: true, nameId: true, name: true },
+        });
+        for (const s of subs) {
+            const hand = await this.prisma.bankTransaction.count({
+                where: { bookId: scope.bookId, subNameId: s.id, splitRuleId: null },
+            });
+            const parent = hand ? await this.parentName(s.nameId) : null;
+            if (parent)
+                await (0, sub_name_parents_1.copyParentPicks)(this.prisma, scope, parent, s.name);
+            await this.prisma.subName.update({
+                where: { id: s.id },
+                data: { ownAgencies: true },
+            });
         }
     }
     async ensure(scope, parent, category) {
@@ -140,11 +166,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         const sub = await this.get(scope, id);
         const category = await this.accounts.validCategory(scope, rawCategory);
         const parent = await this.parentName(sub.nameId);
-        if (parent &&
-            (await this.names.categoryOfName(scope, parent)) === category) {
-            await this.remove(scope, id);
-            return;
-        }
         const other = await this.prisma.subName.findFirst({
             where: {
                 bookId: scope.bookId,
@@ -232,6 +253,23 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
     async remove(scope, id) {
         const sub = await this.get(scope, id);
         const parent = await this.parentName(sub.nameId);
+        const others = await this.prisma.subName.count({
+            where: { bookId: scope.bookId, nameId: sub.nameId, id: { not: id } },
+        });
+        if (others)
+            throw new common_1.BadRequestException('Change its category to join another sub-name — every row of the name stays under one');
+        const split = parent
+            ? await this.prisma.bankTransaction.count({
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    name: parent,
+                    splitOfId: null,
+                    splits: { some: { splitRuleId: null } },
+                },
+            })
+            : 0;
+        if (split)
+            throw new common_1.BadRequestException(`“${parent}” has split transactions — they keep it under sub-names`);
         const category = (parent && (await this.names.categoryOfName(scope, parent))) ??
             sub.category;
         await this.moveRows(scope, id, null, category);

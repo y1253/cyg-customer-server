@@ -97,6 +97,7 @@ export interface NamesView {
     unrecognized: UnrecognizedView[];
     containsRules: ContainsRuleView[];
     groups: NameGroupView[];
+    subDescriptions: Record<number, NameDescriptionView[]>;
 }
 export interface NameGroupView {
     key: string;

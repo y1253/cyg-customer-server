@@ -139,6 +139,7 @@ class SaveNameRuleDto {
     category;
     scope;
     replace;
+    subNameId;
 }
 exports.SaveNameRuleDto = SaveNameRuleDto;
 __decorate([
@@ -175,6 +176,11 @@ __decorate([
     (0, class_validator_1.IsBoolean)(),
     __metadata("design:type", Boolean)
 ], SaveNameRuleDto.prototype, "replace", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsInt)(),
+    __metadata("design:type", Object)
+], SaveNameRuleDto.prototype, "subNameId", void 0);
 class ResetNameRuleDto {
     matchType;
     matchKey;

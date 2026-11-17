@@ -16,7 +16,6 @@ const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
-const reconcile_util_1 = require("./reconcile.util");
 const scope_1 = require("./scope");
 const split_rules_util_1 = require("./split-rules.util");
 const splits_util_1 = require("./splits.util");
@@ -76,7 +75,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         let made = 0;
         const touched = [];
         for (const p of parents) {
-            const lines = this.linesOf(p, ownSubs);
+            const lines = [this.lineOf(p, ownSubs)];
             const done = new Set(p.splits
                 .filter((s) => s.splitRuleId !== null)
                 .map((s) => `${s.ruleSourceId}:${s.splitRuleId}`));
@@ -103,6 +102,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         if (!transactionIds.length)
             return;
         try {
+            await (0, sub_name_parents_1.fileUnderSubNames)(this.prisma, scope);
             const made = await this.apply(scope, { transactionIds });
             if (made)
                 this.logger.log(`book ${scope.bookId}: ${made} rule split(s) on ${transactionIds.length} new row(s)`);
@@ -128,10 +128,8 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             or.push({ name: { in: target.names } });
             if (keys.has((0, tax_util_1.nameTaxKey)(null)))
                 or.push({ name: null });
-            if (subIds.length) {
+            if (subIds.length)
                 or.push({ subNameId: { in: subIds } });
-                or.push({ splits: { some: { subNameId: { in: subIds } } } });
-            }
         }
         return this.prisma.bankTransaction.findMany({
             where: {
@@ -144,29 +142,17 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             include: { splits: { orderBy: { id: 'asc' } } },
         });
     }
-    linesOf(p, ownSubs, everySplit = false) {
-        const keyOf = (r) => (0, tax_util_1.nameTaxKey)((r.subNameId !== null && ownSubs.get(r.subNameId)) || r.name);
+    lineOf(p, ownSubs) {
         const totals = (0, splits_util_1.splitTotals)(p.splits.map((s) => ({
             splitOfId: s.splitOfId,
             amount: Number(s.amount),
         })));
-        return [
-            {
-                parentId: p.id,
-                sourceId: p.id,
-                key: keyOf(p),
-                amount: (0, splits_util_1.remainderOf)({ ...p, amount: Number(p.amount) }, totals),
-            },
-            ...p.splits
-                .filter((s) => s.splitRuleId === null &&
-                (everySplit || (s.subNameId !== null && ownSubs.has(s.subNameId))))
-                .map((s) => ({
-                parentId: p.id,
-                sourceId: s.id,
-                key: keyOf(s),
-                amount: Number(s.amount),
-            })),
-        ];
+        return {
+            parentId: p.id,
+            sourceId: p.id,
+            key: (0, tax_util_1.nameTaxKey)((p.subNameId !== null && ownSubs.get(p.subNameId)) || p.name),
+            amount: (0, splits_util_1.remainderOf)({ ...p, amount: Number(p.amount) }, totals),
+        };
     }
     async write(scope, p, line, splits, names = []) {
         const parentAmount = Number(p.amount);
@@ -176,42 +162,29 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             if (subOf.has(s.category))
                 continue;
             subOf.set(s.category, p.name && s.category !== p.offsetAccount
-                ? (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, p.name, s.category)).id
+                ? (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, p.name, s.category, false))
+                    .id
                 : null);
         }
-        const taken = splits.reduce((n, s) => n + (0, reconcile_util_1.cents)(s.amount), 0);
-        await this.prisma.$transaction([
-            ...splits.map((s, i) => this.prisma.bankTransaction.create({
-                data: {
-                    ...(0, scope_1.scopeWhere)(scope),
-                    statementId: p.statementId,
-                    position: p.position,
-                    pendingDate: p.pendingDate,
-                    postingDate: p.postingDate,
-                    description: p.description,
-                    name: names[i] ?? p.name,
-                    subNameId: names[i] ? null : subOf.get(s.category),
-                    amount: (0, splits_util_1.signedLike)(parentAmount, s.amount).toFixed(2),
-                    offsetAccount: s.category,
-                    ...(0, ledger_util_1.doubleEntry)(parentAmount, bank, s.category),
-                    manualEdit: true,
-                    splitOfId: p.id,
-                    parentSplitId: line.sourceId !== p.id ? line.sourceId : null,
-                    splitRuleId: s.ruleId,
-                    ruleSourceId: line.sourceId,
-                },
-            })),
-            ...(line.sourceId !== p.id
-                ? [
-                    this.prisma.bankTransaction.update({
-                        where: { id: line.sourceId },
-                        data: {
-                            amount: (0, splits_util_1.signedLike)(parentAmount, Math.max(0, Math.abs((0, reconcile_util_1.cents)(line.amount)) - taken) / 100).toFixed(2),
-                        },
-                    }),
-                ]
-                : []),
-        ]);
+        await this.prisma.$transaction(splits.map((s, i) => this.prisma.bankTransaction.create({
+            data: {
+                ...(0, scope_1.scopeWhere)(scope),
+                statementId: p.statementId,
+                position: p.position,
+                pendingDate: p.pendingDate,
+                postingDate: p.postingDate,
+                description: p.description,
+                name: names[i] ?? p.name,
+                subNameId: names[i] ? null : subOf.get(s.category),
+                amount: (0, splits_util_1.signedLike)(parentAmount, s.amount).toFixed(2),
+                offsetAccount: s.category,
+                ...(0, ledger_util_1.doubleEntry)(parentAmount, bank, s.category),
+                manualEdit: true,
+                splitOfId: p.id,
+                splitRuleId: s.ruleId,
+                ruleSourceId: line.sourceId,
+            },
+        })));
         return splits.length;
     }
     onApplicationBootstrap() {
@@ -275,13 +248,11 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         });
         let made = 0;
         for (const p of parents) {
-            const lines = this.linesOf(p, ownSubs, true);
+            const lines = [this.lineOf(p, ownSubs)];
             const taxed = (0, tax_util_1.nameTaxLines)(lines.map((l) => ({
                 id: l.sourceId,
                 name: l.key,
-                offsetAccount: l.sourceId === p.id
-                    ? p.offsetAccount
-                    : p.splits.find((s) => s.id === l.sourceId).offsetAccount,
+                offsetAccount: p.offsetAccount,
                 amount: l.amount,
             })), agenciesOf, agencies, ctx);
             if (!taxed.size)

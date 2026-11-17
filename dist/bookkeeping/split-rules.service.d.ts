@@ -18,7 +18,7 @@ export declare class SplitRulesService implements OnApplicationBootstrap {
     applyToNew(scope: BookScope, transactionIds: number[]): Promise<void>;
     private ownRuleSubNames;
     private parentsFor;
-    private linesOf;
+    private lineOf;
     private write;
     onApplicationBootstrap(): void;
     convertAll(): Promise<void>;

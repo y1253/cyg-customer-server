@@ -33,6 +33,7 @@ export declare class SubNamesService implements OnApplicationBootstrap {
     constructor(prisma: PrismaService, names: NameMemoryService, accounts: CustomerAccountsService, tax: TaxService);
     onApplicationBootstrap(): void;
     backfillParents(): Promise<void>;
+    private adoptParentPicks;
     ensure(scope: BookScope, parent: string, category: string): Promise<{
         id: number;
         name: string;

@@ -8,8 +8,16 @@ export interface ParentRow {
   name: string | null;
   /** Its own category (`offsetAccount`). */
   category: string;
-  /** At least one of its splits has a sub-name. */
-  hasSubSplits: boolean;
+  /**
+   * It is split: a split the customer made, or one with a sub-name. step9 (2026-11-17,
+   * second request): ANY split names the transaction at once, even one left in its category.
+   */
+  hasSplits: boolean;
+  /**
+   * step9 (2026-11-17, second request): its name has sub-names — a wrapper ("rubber band")
+   * whose every row sits under the sub-name of its category, split or not.
+   */
+  nameHasSubs?: boolean;
   /** The sub-name it has now (parent name + category), if any. */
   current: { parent: string; category: string } | null;
   /**
@@ -30,7 +38,7 @@ export function parentSubName(p: ParentRow): {
   change: boolean;
 } {
   const want =
-    p.hasSubSplits && p.name
+    (p.hasSplits || p.nameHasSubs) && p.name
       ? { parent: p.name, category: p.category }
       : p.fromRule
         ? p.current
@@ -42,4 +50,39 @@ export function parentSubName(p: ParentRow): {
         p.current.parent.toLowerCase() === want.parent.toLowerCase() &&
         p.current.category === want.category;
   return { want, change: !same };
+}
+
+/** step9 (2026-11-17, second request): a row as `subNameFiling` sees it. */
+export interface FilingRow {
+  id: number;
+  name: string | null;
+  /** Its category (`offsetAccount`). */
+  category: string;
+  subNameId: number | null;
+}
+
+/**
+ * step9 (2026-11-17, second request — "Walmart should get like a rubber band to wrap up all
+ * under him"): a name with sub-names is only a wrapper; every row of it sits under the
+ * sub-name of its own category. The rows not there yet (no sub-name, or one of another
+ * category or name) with the (name, category) they belong under. `wrappers` = lower-cased
+ * name to its `LedgerName` id; `subs` = sub-name id to its parent and category. Pure.
+ */
+export function subNameFiling(
+  rows: readonly FilingRow[],
+  wrappers: ReadonlyMap<string, number>,
+  subs: ReadonlyMap<number, { nameId: number; category: string }>,
+): { id: number; name: string; category: string }[] {
+  const out: { id: number; name: string; category: string }[] = [];
+  for (const r of rows) {
+    const name = r.name?.trim();
+    const nameId = name
+      ? wrappers.get(name.replace(/\s+/g, ' ').toLowerCase())
+      : undefined;
+    if (!name || nameId === undefined) continue;
+    const sub = r.subNameId !== null ? subs.get(r.subNameId) : undefined;
+    if (sub && sub.nameId === nameId && sub.category === r.category) continue;
+    out.push({ id: r.id, name, category: r.category });
+  }
+  return out;
 }

@@ -224,6 +224,14 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         }
     }
     async saveRule(scope, input) {
+        if (input.matchType === 'NAME') {
+            if (input.category)
+                await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, input.name ?? input.matchKey);
+        }
+        else if (input.subNameId == null &&
+            (input.matchType === 'CONTAINS' || (input.scope ?? 'ALWAYS') === 'ALWAYS')) {
+            await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, input.name);
+        }
         await this.applyRule(scope, input);
         await this.syncProvenance(scope);
     }
@@ -235,10 +243,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const clean = (0, name_memory_util_1.cleanName)(name);
         if (!clean)
             return;
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, clean);
         await this.setNameCategory(scope, clean, (0, chart_of_accounts_1.normalizeAccount)(category, await this.customAccountsOf(scope)));
         await this.syncProvenance(scope);
     }
     async mergeNames(scope, from, into) {
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, from);
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, into);
         await this.applyMerge(scope, from, into);
         await this.syncProvenance(scope);
     }
@@ -273,7 +284,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 manualEdit: false,
                 subNameId: { not: null },
                 name: { not: null },
-                splits: { some: { splitRuleId: null, subNameId: { not: null } } },
+                splits: { some: { splitRuleId: null } },
             },
             select: { id: true, description: true, name: true, subNameId: true },
             orderBy: { id: 'desc' },
@@ -311,6 +322,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 category: back.get((0, name_memory_util_1.nameKey)(r.name ?? '')) ?? r.offsetAccount,
                 subNameId: null,
             }));
+            await (0, sub_name_parents_1.fileUnderSubNames)(this.prisma, scope);
             await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, oldSubId);
             return;
         }
@@ -590,6 +602,15 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             return;
         }
         const editScope = input.scope ?? 'ALWAYS';
+        if (name && input.subNameId != null) {
+            const sub = await this.subNameOf(scope, input.subNameId, name);
+            if (editScope === 'ALWAYS') {
+                await this.upsertRule(previous, { ...where, name, category: sub.category, subNameId: sub.id }, { name, category: sub.category, subNameId: sub.id });
+            }
+            const rows = await this.matchingRows(scope, 'DESCRIPTION', matchKey, new Set(), editScope === 'ONCE');
+            await this.writeRows(scope, rows, () => ({ name, category: sub.category, subNameId: sub.id }), editScope === 'ONCE');
+            return;
+        }
         if (name) {
             const target = await this.categoryOfName(scope, name);
             if (editScope === 'ALWAYS') {
@@ -974,6 +995,21 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             return { name: out.name, category: out.category };
         });
     }
+    async subNameOf(scope, id, name) {
+        const sub = await this.prisma.subName.findFirst({
+            where: { id, bookId: scope.bookId, customerId: scope.customerId },
+            select: { id: true, nameId: true, category: true },
+        });
+        const parent = sub
+            ? await this.prisma.ledgerName.findUnique({
+                where: { id: sub.nameId },
+                select: { name: true },
+            })
+            : null;
+        if (!sub || !parent || (0, name_memory_util_1.nameKey)(parent.name) !== (0, name_memory_util_1.nameKey)(name))
+            throw new common_1.BadRequestException(`That is not a sub-name of “${name}”.`);
+        return sub;
+    }
     async upsertRule(existing, create, update) {
         if (existing) {
             await this.prisma.customerNameRule.update({
@@ -1023,7 +1059,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             const category = out.category;
             const name = (0, name_memory_util_1.fallbackName)(out.name, category, row.description);
             const subChanged = out.subNameId !== undefined && out.subNameId !== row.subNameId;
-            if (name === row.name && category === row.offsetAccount && !subChanged)
+            const ruleChanged = out.personalRuleId !== undefined &&
+                row.personalRuleId !== undefined &&
+                out.personalRuleId !== row.personalRuleId;
+            if (name === row.name &&
+                category === row.offsetAccount &&
+                !subChanged &&
+                !ruleChanged)
                 return [];
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
             return [
@@ -1062,6 +1104,7 @@ const MATCH_SELECT = {
     debitAccount: true,
     creditAccount: true,
     subNameId: true,
+    personalRuleId: true,
 };
 const ruleKeyOf = (matchType, raw) => matchType === 'NAME'
     ? (0, name_memory_util_1.nameKey)(raw)
@@ -1083,6 +1126,7 @@ function toMatched(r) {
         debitAccount: r.debitAccount,
         creditAccount: r.creditAccount,
         subNameId: r.subNameId ?? null,
+        personalRuleId: r.personalRuleId ?? null,
     };
 }
 //# sourceMappingURL=name-memory.service.js.map

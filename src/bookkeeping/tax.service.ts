@@ -32,6 +32,7 @@ import {
 import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { SplitRulesService } from './split-rules.service';
+import { refuseWrapper } from './sub-name-parents';
 import { subNameOf } from './sub-names.util';
 import {
   NAME_FIELD_KINDS,
@@ -133,7 +134,13 @@ export function parseNameFields(raw: unknown): NameField[] {
     const kind = (NAME_FIELD_KINDS as readonly string[]).includes(o.kind ?? '')
       ? o.kind!
       : 'TEXT';
-    return [{ kind, label: typeof o.label === 'string' ? o.label : '', value: o.value }];
+    return [
+      {
+        kind,
+        label: typeof o.label === 'string' ? o.label : '',
+        value: o.value,
+      },
+    ];
   });
 }
 
@@ -197,6 +204,11 @@ export interface NamesView {
   containsRules: ContainsRuleView[];
   /** step9: the Names-tab groups — the built-in three, then the customer's own. */
   groups: NameGroupView[];
+  /**
+   * step9 (2026-11-17, second request): each sub-name's descriptions (by sub-name id) — a
+   * name with sub-names is only a wrapper, its sub-names hold its descriptions.
+   */
+  subDescriptions: Record<number, NameDescriptionView[]>;
 }
 
 /** step9: a Names-tab group. `key` is what `LedgerName.group` stores. */
@@ -453,6 +465,7 @@ export class TaxService {
           name: true,
           description: true,
           offsetAccount: true,
+          subNameId: true,
         },
       }),
       this.prisma.bankTransaction.findMany({
@@ -537,6 +550,19 @@ export class TaxService {
     const { descriptionsOf, exceptionOf } = groupDescriptions(
       [...named, ...nameless],
       rulesById,
+    );
+    // step9 (2026-11-17, second request): the same, per sub-name (keyed "#<id>").
+    const subDescriptions = Object.fromEntries(
+      [
+        ...groupDescriptions(
+          named.flatMap((r) =>
+            r.subNameId
+              ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
+              : [],
+          ),
+          rulesById,
+        ).descriptionsOf,
+      ].map(([k, v]) => [Number(k.slice(1)), v]),
     );
     const shareOf = rowShares([...named, ...nameless]);
     const totalOf = new Map<string, number>();
@@ -747,7 +773,13 @@ export class TaxService {
         }),
       );
 
-    return { names, unrecognized, containsRules, groups: groupList };
+    return {
+      names,
+      unrecognized,
+      containsRules,
+      groups: groupList,
+      subDescriptions,
+    };
   }
 
   /**
@@ -854,6 +886,8 @@ export class TaxService {
     const name = rawName.trim();
     if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
       throw new BadRequestException('Pick a name');
+    // step9 (2026-11-17, second request): a name with sub-names has no settings of its own.
+    await refuseWrapper(this.prisma, scope, name);
     await this.checkGroup(scope, group);
     const existing = await this.prisma.ledgerName.findFirst({
       where: { ...scopeWhere(scope), name },
@@ -884,6 +918,7 @@ export class TaxService {
     const name = rawName.trim();
     if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
       throw new BadRequestException('Pick a name');
+    await refuseWrapper(this.prisma, scope, name);
     const data = cleanNameFields(input);
     const existing = await this.prisma.ledgerName.findFirst({
       where: { ...scopeWhere(scope), name },
@@ -1031,6 +1066,8 @@ export class TaxService {
   ): Promise<NamesView> {
     const clean = name.trim();
     if (!clean) throw new BadRequestException('Which name?');
+    // step9 (2026-11-17, second request): a wrapper's split rules live on its sub-names.
+    await refuseWrapper(this.prisma, scope, clean);
     await this.writePicks(scope, clean, agencyIds);
     return this.names(scope);
   }
@@ -1245,7 +1282,11 @@ export class TaxService {
     if (!old.length) return;
     // MySQL compares names case-insensitively.
     await this.prisma.bankTransaction.updateMany({
-      where: { ...scopeWhere(scope), splitOfId: { not: null }, name: { in: old } },
+      where: {
+        ...scopeWhere(scope),
+        splitOfId: { not: null },
+        name: { in: old },
+      },
       data: { name: newName },
     });
     const names = await this.prisma.ledgerName.findMany({

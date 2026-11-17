@@ -129,6 +129,7 @@ let BookkeepingController = class BookkeepingController {
             category,
             scope: dto.scope ?? 'ALWAYS',
             replace: dto.replace,
+            subNameId: dto.subNameId ?? null,
         });
         return this.tax.names(scope);
     }

@@ -2,7 +2,8 @@ export declare const subNameOf: (parent: string, category: string) => string;
 export interface ParentRow {
     name: string | null;
     category: string;
-    hasSubSplits: boolean;
+    hasSplits: boolean;
+    nameHasSubs?: boolean;
     current: {
         parent: string;
         category: string;
@@ -16,3 +17,17 @@ export declare function parentSubName(p: ParentRow): {
     } | null;
     change: boolean;
 };
+export interface FilingRow {
+    id: number;
+    name: string | null;
+    category: string;
+    subNameId: number | null;
+}
+export declare function subNameFiling(rows: readonly FilingRow[], wrappers: ReadonlyMap<string, number>, subs: ReadonlyMap<number, {
+    nameId: number;
+    category: string;
+}>): {
+    id: number;
+    name: string;
+    category: string;
+}[];

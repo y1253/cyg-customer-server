@@ -23,6 +23,8 @@ interface Row {
 function setup(opts: {
   picks: Array<{ name: string; agencyId: number; lineName?: string | null }>;
   ownSub?: boolean;
+  /** step9 (2026-11-17, second request): the transaction is "Staples - Office Expense" (10). */
+  rootSub?: boolean;
   named?: Array<{ transactionId: number; agencyId: number; name: string }>;
 }) {
   const rows: Row[] = [
@@ -32,7 +34,7 @@ function setup(opts: {
       amount: -105,
       offsetAccount: 'Office Expense',
       splitOfId: null,
-      subNameId: null,
+      subNameId: opts.rootSub ? 10 : null,
       splitRuleId: null,
       ruleSourceId: null,
     },
@@ -48,7 +50,18 @@ function setup(opts: {
     },
   ];
   let nextId = 100;
-  const subs = [{ id: 9, name: 'Staples - Supplies', category: 'Supplies' }];
+  const subs = [
+    { id: 9, name: 'Staples - Supplies', category: 'Supplies' },
+    ...(opts.rootSub
+      ? [
+          {
+            id: 10,
+            name: 'Staples - Office Expense',
+            category: 'Office Expense',
+          },
+        ]
+      : []),
+  ];
   const parentRows = () =>
     rows
       .filter((r) => r.splitOfId === null)
@@ -109,6 +122,8 @@ function setup(opts: {
     },
     ledgerName: {
       findFirst: jest.fn().mockResolvedValue({ id: 1 }),
+      // No wrapper names: `fileUnderSubNames` has nothing to file.
+      findMany: jest.fn().mockResolvedValue([]),
     },
     transactionTax: {
       findMany: jest.fn().mockResolvedValue(opts.named ?? []),
@@ -197,26 +212,22 @@ describe('SplitRulesService.apply', () => {
     ).toEqual([[1, -2, 'Bank Fees']]);
   });
 
-  it("step9 part 3: a sub-name with its own rules splits its splits by them, not the parent's", async () => {
-    const { service, made, prisma } = setup({
+  it("step9 (2026-11-17, second request): only the transaction is cut — by its own sub-name's rules — never a split", async () => {
+    const { service, made, rows } = setup({
       picks: [
         applied({ name: 'Staples', agencyId: 5 }),
-        applied({ name: 'staples - supplies', agencyId: 6 }),
+        applied({ name: 'staples - office expense', agencyId: 6 }),
+        // The split's own sub-name has a rule too: the system never splits a split.
+        applied({ name: 'staples - supplies', agencyId: 5 }),
       ],
       ownSub: true,
+      rootSub: true,
     });
     await service.apply(scope, { transactionIds: [1] });
     expect(made().map((r) => [r.ruleSourceId, r.splitRuleId])).toEqual([
-      [1, 5],
-      [2, 6],
+      [1, 6],
     ]);
-    // step9 (2026-11-17): carved from the split, the rule split sits under it.
-    expect(
-      (prisma.bankTransaction.create as jest.Mock).mock.calls.map(
-        ([a]: [{ data: { parentSplitId: number | null } }]) =>
-          a.data.parentSplitId,
-      ),
-    ).toEqual([null, 2]);
+    expect(rows.find((r) => r.id === 2)!.amount).toBe(-42);
   });
 });
 
@@ -226,10 +237,10 @@ describe('SplitRulesService.convertBook (the on-read tax lines become splits)', 
       picks: [{ name: 'STAPLES', agencyId: 5 }],
       named: [{ transactionId: 1, agencyId: 5, name: 'GST paid' }],
     });
-    expect(await service.convertBook(scope)).toBe(2);
+    // step9 (2026-11-17, second request): the transaction only, never its splits.
+    expect(await service.convertBook(scope)).toBe(1);
     expect(made().map((r) => [r.ruleSourceId, r.amount, r.name])).toEqual([
       [1, -3, 'GST paid'],
-      [2, -2, 'Staples'],
     ]);
     // Marked done: the picks are applied, the old line names gone.
     expect(prisma.ledgerNameAgency.updateMany).toHaveBeenCalled();

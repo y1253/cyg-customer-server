@@ -7,11 +7,14 @@ import { Prisma, StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
-import { cents } from './reconcile.util';
 import { scopeWhere, type BookScope } from './scope';
 import { ruleSplits, type SplitRule } from './split-rules.util';
 import { remainderOf, signedLike, splitTotals } from './splits.util';
-import { ensureSubName, syncParentSubNames } from './sub-name-parents';
+import {
+  ensureSubName,
+  fileUnderSubNames,
+  syncParentSubNames,
+} from './sub-name-parents';
 import {
   includedTaxes,
   nameTaxKey,
@@ -31,10 +34,10 @@ export interface ApplyTarget {
   transactionIds?: number[];
 }
 
-/** One line a rule can split: a parent (what is left of it) or one of its splits. */
+/** The one line a rule can split: a transaction, what is left of it. */
 interface Line {
   parentId: number;
-  /** The row the rule split is carved from — the parent itself or a split. */
+  /** The row the rule split is carved from — always the transaction itself (step9). */
   sourceId: number;
   /** The key its rules are picked under (its name, or its own-rules sub-name's name). */
   key: string;
@@ -50,13 +53,17 @@ type ParentRow = Prisma.BankTransactionGetPayload<{
  * for a name (`LedgerNameAgency`) splits every existing row of the name once when it is
  * picked, and each new row once when it arrives (statement read, bank feed) — after that
  * they are regular splits the customer edits like any other (user's decisions). Removing a
- * pick leaves the splits it made. A sub-name with its own rules (`SubName.ownAgencies`)
- * splits its splits by its own picks.
+ * pick leaves the splits it made. A transaction with a sub-name that has its own rules
+ * (`SubName.ownAgencies`) is split by that sub-name's picks.
  *
- * A rule split is a child `BankTransaction` (`splitRuleId`, `ruleSourceId` = the line it was
- * carved from). Carved from the parent, it simply lowers what the parent has left; carved
- * from a split, that split's amount goes down by it (the amount typed included it — the
- * step2 rule). (`ruleSourceId`, `splitRuleId`) makes it once only.
+ * step9 (2026-11-17, second request — "all split rules should only apply to root not to a
+ * split because if not it never ends"): the system never splits a split. A rule cuts only
+ * the transaction itself (what is left of it); a split — the customer's, at any depth, or a
+ * rule's — is never cut, whatever its category or sub-name.
+ *
+ * A rule split is a child `BankTransaction` (`splitRuleId`, `ruleSourceId` = the transaction
+ * it was carved from); it simply lowers what the transaction has left. (`ruleSourceId`,
+ * `splitRuleId`) makes it once only.
  */
 @Injectable()
 export class SplitRulesService implements OnApplicationBootstrap {
@@ -116,7 +123,7 @@ export class SplitRulesService implements OnApplicationBootstrap {
     let made = 0;
     const touched: number[] = [];
     for (const p of parents) {
-      const lines = this.linesOf(p, ownSubs);
+      const lines = [this.lineOf(p, ownSubs)];
       const done = new Set(
         p.splits
           .filter((s) => s.splitRuleId !== null)
@@ -148,6 +155,9 @@ export class SplitRulesService implements OnApplicationBootstrap {
   async applyToNew(scope: BookScope, transactionIds: number[]): Promise<void> {
     if (!transactionIds.length) return;
     try {
+      // step9 (2026-11-17, second request): a wrapper name's new rows take their sub-name
+      // first, so its own rules decide.
+      await fileUnderSubNames(this.prisma, scope);
       const made = await this.apply(scope, { transactionIds });
       if (made)
         this.logger.log(
@@ -185,10 +195,7 @@ export class SplitRulesService implements OnApplicationBootstrap {
       // MySQL compares names case-insensitively.
       or.push({ name: { in: target.names } });
       if (keys.has(nameTaxKey(null))) or.push({ name: null });
-      if (subIds.length) {
-        or.push({ subNameId: { in: subIds } });
-        or.push({ splits: { some: { subNameId: { in: subIds } } } });
-      }
+      if (subIds.length) or.push({ subNameId: { in: subIds } });
     }
     return this.prisma.bankTransaction.findMany({
       where: {
@@ -203,50 +210,28 @@ export class SplitRulesService implements OnApplicationBootstrap {
   }
 
   /**
-   * A parent's lines: what is left of it — the line holding the description — and each split
-   * the customer made whose OWN sub-name has its own rules (`ownAgencies`). step9
-   * (2026-11-17, user's request): a split that shares the transaction's name is never cut by
-   * that name's rules — they cut the main line ("Walmart - Office Supply", not the tax split).
-   * `everySplit`: the one-time conversion (`convertBook`) reproduces the old on-read tax
-   * lines, which taxed every split by its own name.
+   * A transaction's one line: what is left of it — the line holding the description — keyed
+   * by its sub-name when that has its own rules, else by its name. step9 (2026-11-17, second
+   * request): its splits are never lines; the system never splits a split.
    */
-  private linesOf(
-    p: ParentRow,
-    ownSubs: ReadonlyMap<number, string>,
-    everySplit = false,
-  ): Line[] {
-    const keyOf = (r: { name: string | null; subNameId: number | null }) =>
-      nameTaxKey((r.subNameId !== null && ownSubs.get(r.subNameId)) || r.name);
+  private lineOf(p: ParentRow, ownSubs: ReadonlyMap<number, string>): Line {
     const totals = splitTotals(
       p.splits.map((s) => ({
         splitOfId: s.splitOfId,
         amount: Number(s.amount),
       })),
     );
-    return [
-      {
-        parentId: p.id,
-        sourceId: p.id,
-        key: keyOf(p),
-        amount: remainderOf({ ...p, amount: Number(p.amount) }, totals),
-      },
-      ...p.splits
-        .filter(
-          (s) =>
-            s.splitRuleId === null &&
-            (everySplit || (s.subNameId !== null && ownSubs.has(s.subNameId))),
-        )
-        .map((s) => ({
-          parentId: p.id,
-          sourceId: s.id,
-          key: keyOf(s),
-          // A split is stored with its transaction's sign.
-          amount: Number(s.amount),
-        })),
-    ];
+    return {
+      parentId: p.id,
+      sourceId: p.id,
+      key: nameTaxKey(
+        (p.subNameId !== null && ownSubs.get(p.subNameId)) || p.name,
+      ),
+      amount: remainderOf({ ...p, amount: Number(p.amount) }, totals),
+    };
   }
 
-  /** Writes a line's rule splits (and lowers a split line by them). Returns how many. */
+  /** Writes a line's rule splits. Returns how many. */
   private async write(
     scope: BookScope,
     p: ParentRow,
@@ -263,13 +248,13 @@ export class SplitRulesService implements OnApplicationBootstrap {
       subOf.set(
         s.category,
         p.name && s.category !== p.offsetAccount
-          ? (await ensureSubName(this.prisma, scope, p.name, s.category)).id
+          ? (await ensureSubName(this.prisma, scope, p.name, s.category, false))
+              .id
           : null,
       );
     }
-    const taken = splits.reduce((n, s) => n + cents(s.amount), 0);
-    await this.prisma.$transaction([
-      ...splits.map((s, i) =>
+    await this.prisma.$transaction(
+      splits.map((s, i) =>
         this.prisma.bankTransaction.create({
           data: {
             ...scopeWhere(scope),
@@ -286,27 +271,12 @@ export class SplitRulesService implements OnApplicationBootstrap {
             ...doubleEntry(parentAmount, bank, s.category),
             manualEdit: true,
             splitOfId: p.id,
-            // step9 (2026-11-17): carved from a split, it sits under that split.
-            parentSplitId: line.sourceId !== p.id ? line.sourceId : null,
             splitRuleId: s.ruleId,
             ruleSourceId: line.sourceId,
           },
         }),
       ),
-      ...(line.sourceId !== p.id
-        ? [
-            this.prisma.bankTransaction.update({
-              where: { id: line.sourceId },
-              data: {
-                amount: signedLike(
-                  parentAmount,
-                  Math.max(0, Math.abs(cents(line.amount)) - taken) / 100,
-                ).toFixed(2),
-              },
-            }),
-          ]
-        : []),
-    ]);
+    );
     return splits.length;
   }
 
@@ -396,16 +366,14 @@ export class SplitRulesService implements OnApplicationBootstrap {
     });
     let made = 0;
     for (const p of parents) {
-      const lines = this.linesOf(p, ownSubs, true);
+      // step9 (2026-11-17, second request): the transaction only, never its splits.
+      const lines = [this.lineOf(p, ownSubs)];
       const taxed = nameTaxLines(
         lines.map((l) => ({
           id: l.sourceId,
           name: l.key,
           // The old rule: the line's own category decides sales / purchase.
-          offsetAccount:
-            l.sourceId === p.id
-              ? p.offsetAccount
-              : p.splits.find((s) => s.id === l.sourceId)!.offsetAccount,
+          offsetAccount: p.offsetAccount,
           amount: l.amount,
         })),
         agenciesOf,

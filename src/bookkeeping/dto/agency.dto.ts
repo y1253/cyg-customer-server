@@ -167,6 +167,15 @@ export class SaveNameRuleDto {
   @IsOptional()
   @IsBoolean()
   replace?: boolean;
+
+  /**
+   * step9 (2026-11-17, second request): DESCRIPTION — the sub-name of `name` the rows go
+   * under (a description dropped on a sub-name). A name with sub-names takes descriptions
+   * only this way.
+   */
+  @IsOptional()
+  @IsInt()
+  subNameId?: number | null;
 }
 
 /** `DELETE /api/bookkeeping/names/rule` — back to the default. */
