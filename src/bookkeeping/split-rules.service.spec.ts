@@ -169,21 +169,18 @@ const applied = (p: { name: string; agencyId: number }) => ({
 });
 
 describe('SplitRulesService.apply', () => {
-  it("splits what is left of the transaction and each split by the name's rules, once", async () => {
+  it("splits what is left of the transaction by the name's rules, once — never the customer's split", async () => {
     const { service, rows, made } = setup({
       picks: [applied({ name: 'STAPLES', agencyId: 5 })],
     });
-    expect(await service.apply(scope, { names: ['Staples'] })).toBe(2);
-    // 5% included in the $63 left (63 × 5 / 105 = 3), and in the $42 split (2).
+    expect(await service.apply(scope, { names: ['Staples'] })).toBe(1);
+    // 5% included in the $63 left (63 × 5 / 105 = 3). step9 (2026-11-17): the $42 split the
+    // customer made shares the name but is not cut — the line holding the description is.
     expect(
       made().map((r) => [r.ruleSourceId, r.amount, r.offsetAccount]),
-    ).toEqual([
-      [1, -3, 'GST'],
-      [2, -2, 'GST'],
-    ]);
-    // The split it was carved from keeps the rest: the line's total is unchanged.
-    expect(rows.find((r) => r.id === 2)!.amount).toBe(-40);
-    // A second run finds every line already split by that rule.
+    ).toEqual([[1, -3, 'GST']]);
+    expect(rows.find((r) => r.id === 2)!.amount).toBe(-42);
+    // A second run finds the line already split by that rule.
     expect(await service.apply(scope, { names: ['Staples'] })).toBe(0);
   });
 
@@ -197,14 +194,11 @@ describe('SplitRulesService.apply', () => {
     await service.apply(scope, { transactionIds: [1], ruleIds: [6] });
     expect(
       made().map((r) => [r.ruleSourceId, r.amount, r.offsetAccount]),
-    ).toEqual([
-      [1, -2, 'Bank Fees'],
-      [2, -2, 'Bank Fees'],
-    ]);
+    ).toEqual([[1, -2, 'Bank Fees']]);
   });
 
   it("step9 part 3: a sub-name with its own rules splits its splits by them, not the parent's", async () => {
-    const { service, made } = setup({
+    const { service, made, prisma } = setup({
       picks: [
         applied({ name: 'Staples', agencyId: 5 }),
         applied({ name: 'staples - supplies', agencyId: 6 }),
@@ -216,6 +210,13 @@ describe('SplitRulesService.apply', () => {
       [1, 5],
       [2, 6],
     ]);
+    // step9 (2026-11-17): carved from the split, the rule split sits under it.
+    expect(
+      (prisma.bankTransaction.create as jest.Mock).mock.calls.map(
+        ([a]: [{ data: { parentSplitId: number | null } }]) =>
+          a.data.parentSplitId,
+      ),
+    ).toEqual([null, 2]);
   });
 });
 

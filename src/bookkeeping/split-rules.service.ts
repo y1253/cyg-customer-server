@@ -202,8 +202,19 @@ export class SplitRulesService implements OnApplicationBootstrap {
     });
   }
 
-  /** A parent's lines: what is left of it, and each split not written by a rule. */
-  private linesOf(p: ParentRow, ownSubs: ReadonlyMap<number, string>): Line[] {
+  /**
+   * A parent's lines: what is left of it — the line holding the description — and each split
+   * the customer made whose OWN sub-name has its own rules (`ownAgencies`). step9
+   * (2026-11-17, user's request): a split that shares the transaction's name is never cut by
+   * that name's rules — they cut the main line ("Walmart - Office Supply", not the tax split).
+   * `everySplit`: the one-time conversion (`convertBook`) reproduces the old on-read tax
+   * lines, which taxed every split by its own name.
+   */
+  private linesOf(
+    p: ParentRow,
+    ownSubs: ReadonlyMap<number, string>,
+    everySplit = false,
+  ): Line[] {
     const keyOf = (r: { name: string | null; subNameId: number | null }) =>
       nameTaxKey((r.subNameId !== null && ownSubs.get(r.subNameId)) || r.name);
     const totals = splitTotals(
@@ -220,7 +231,11 @@ export class SplitRulesService implements OnApplicationBootstrap {
         amount: remainderOf({ ...p, amount: Number(p.amount) }, totals),
       },
       ...p.splits
-        .filter((s) => s.splitRuleId === null)
+        .filter(
+          (s) =>
+            s.splitRuleId === null &&
+            (everySplit || (s.subNameId !== null && ownSubs.has(s.subNameId))),
+        )
         .map((s) => ({
           parentId: p.id,
           sourceId: s.id,
@@ -271,6 +286,8 @@ export class SplitRulesService implements OnApplicationBootstrap {
             ...doubleEntry(parentAmount, bank, s.category),
             manualEdit: true,
             splitOfId: p.id,
+            // step9 (2026-11-17): carved from a split, it sits under that split.
+            parentSplitId: line.sourceId !== p.id ? line.sourceId : null,
             splitRuleId: s.ruleId,
             ruleSourceId: line.sourceId,
           },
@@ -379,7 +396,7 @@ export class SplitRulesService implements OnApplicationBootstrap {
     });
     let made = 0;
     for (const p of parents) {
-      const lines = this.linesOf(p, ownSubs);
+      const lines = this.linesOf(p, ownSubs, true);
       const taxed = nameTaxLines(
         lines.map((l) => ({
           id: l.sourceId,

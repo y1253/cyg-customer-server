@@ -60,3 +60,88 @@ export function splitProblem(
 export function signedLike(parentAmount: number, amount: number): number {
   return parentAmount < 0 ? -Math.abs(amount) : Math.abs(amount);
 }
+
+// ---- step9 (2026-11-17): splits of splits ----
+
+/** One split of a family as the nesting helpers see it. */
+export interface FamilySplit {
+  id: number;
+  /** The split it was cut from; null = cut from the transaction itself. */
+  parentSplitId: number | null;
+}
+
+/** The ids of `id` and every split cut from it, at any depth (`id` first). */
+export function subtreeIds(rows: readonly FamilySplit[], id: number): number[] {
+  const children = new Map<number, number[]>();
+  for (const r of rows) {
+    if (r.parentSplitId == null) continue;
+    children.set(r.parentSplitId, [
+      ...(children.get(r.parentSplitId) ?? []),
+      r.id,
+    ]);
+  }
+  const out: number[] = [];
+  const seen = new Set<number>();
+  const walk = (at: number) => {
+    if (seen.has(at)) return;
+    seen.add(at);
+    out.push(at);
+    for (const c of children.get(at) ?? []) walk(c);
+  };
+  walk(id);
+  return out;
+}
+
+/**
+ * A family's splits in reading order: each split straight after the one it was cut from
+ * (depth-first, siblings by id), with its depth (0 = cut from the transaction). A split
+ * whose parent is missing counts as cut from the transaction.
+ */
+export function splitTree<T extends FamilySplit>(
+  rows: readonly T[],
+): Array<{ row: T; depth: number }> {
+  const ids = new Set(rows.map((r) => r.id));
+  const sorted = [...rows].sort((a, b) => a.id - b.id);
+  const children = new Map<number | null, T[]>();
+  for (const r of sorted) {
+    const at =
+      r.parentSplitId != null && ids.has(r.parentSplitId)
+        ? r.parentSplitId
+        : null;
+    children.set(at, [...(children.get(at) ?? []), r]);
+  }
+  const out: Array<{ row: T; depth: number }> = [];
+  const seen = new Set<number>();
+  const walk = (at: number | null, depth: number) => {
+    for (const r of children.get(at) ?? []) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push({ row: r, depth });
+      walk(r.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+/**
+ * Why a split cut from another split cannot be `next` (positive, as typed) — or null.
+ * Its money comes out of that split: `available` = what that split holds now plus what
+ * this one holds now (both positive).
+ */
+export function childSplitProblem(
+  available: number,
+  next: number,
+  parentLabel: string,
+): string | null {
+  if (!Number.isFinite(next) || next < 0)
+    return 'A split amount cannot be negative';
+  if (Math.abs(cents(next) - next * 100) > 1e-6)
+    return 'Amounts can have at most 2 decimals';
+  if (cents(next) > cents(available))
+    return (
+      `$${next.toFixed(2)} is more than “${parentLabel}” has left ` +
+      `($${available.toFixed(2)})`
+    );
+  return null;
+}

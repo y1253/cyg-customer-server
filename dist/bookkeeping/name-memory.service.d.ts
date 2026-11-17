@@ -29,6 +29,8 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     setCategoryOfName(scope: BookScope, name: string, category: string): Promise<void>;
     mergeNames(scope: BookScope, from: string, into: string): Promise<void>;
     resetRule(scope: BookScope, input: Parameters<NameMemoryService['applyReset']>[1]): Promise<void>;
+    syncSubNameRules(scope: BookScope, parentIds: number[]): Promise<void>;
+    private syncSubNameRule;
     syncProvenance(scope: BookScope): Promise<void>;
     private saveException;
     private clearException;
@@ -57,4 +59,5 @@ export interface MatchedRow {
     offsetAccount: string;
     debitAccount: string;
     creditAccount: string;
+    subNameId?: number | null;
 }

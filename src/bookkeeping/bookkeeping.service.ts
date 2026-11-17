@@ -52,7 +52,7 @@ import {
 import { changeFeed } from '../assistant/change-feed';
 import { TaxService } from './tax.service';
 import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
-import { remainderOf, splitTotals } from './splits.util';
+import { remainderOf, splitTotals, splitTree } from './splits.util';
 import { FxService, type FxContext, type FxEntry } from './fx.service';
 
 export interface StatementView {
@@ -139,6 +139,10 @@ export interface TransactionView {
   id: number;
   /** On a split: the transaction it was split from. */
   splitOfId?: number;
+  /** step9 (2026-11-17): on a split of a split, the split it was cut from. */
+  parentSplitId?: number;
+  /** step9 (2026-11-17): on a split, how deep it sits (0 = cut from the transaction). */
+  depth?: number;
   statementId: number;
   pendingDate: string | null;
   postingDate: string | null;
@@ -670,14 +674,25 @@ export class BookkeepingService {
         ruleOf.has(r.splitRuleId) && { splitRule: ruleOf.get(r.splitRuleId) }),
       ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
     });
-    const splitsOf = new Map<number, TransactionView[]>();
+    const familyOf = new Map<number, Array<(typeof rows)[number]>>();
     for (const r of rows) {
       if (!r.splitOfId) continue;
-      const list = splitsOf.get(r.splitOfId) ?? [];
-      list.push(viewOf(r));
-      splitsOf.set(r.splitOfId, list);
+      familyOf.set(r.splitOfId, [...(familyOf.get(r.splitOfId) ?? []), r]);
     }
-    for (const list of splitsOf.values()) list.sort((a, b) => a.id - b.id);
+    // step9 (2026-11-17): each split straight after the split it was cut from.
+    const splitsOf = new Map<number, TransactionView[]>();
+    for (const [parentId, family] of familyOf) {
+      splitsOf.set(
+        parentId,
+        splitTree(family).map(({ row, depth }) => ({
+          ...viewOf(row),
+          ...(row.parentSplitId !== null && {
+            parentSplitId: row.parentSplitId,
+          }),
+          depth,
+        })),
+      );
+    }
     const wanted = statementIds?.length ? new Set(statementIds) : null;
     const openings = openingRows(statements).filter(
       (o) => !wanted || wanted.has(o.statementId),

@@ -36,11 +36,11 @@ describe('parentSubName (step9)', () => {
     expect(
       parentSubName({
         ...base,
-        category: 'Office Supplies',
+        category: 'Office Expense',
         current: { parent: 'Walmart', category: 'Groceries' },
       }),
     ).toEqual({
-      want: { parent: 'Walmart', category: 'Office Supplies' },
+      want: { parent: 'Walmart', category: 'Office Expense' },
       change: true,
     });
   });
@@ -55,5 +55,32 @@ describe('parentSubName (step9)', () => {
     expect(
       parentSubName({ ...base, hasSubSplits: false, current: null }).change,
     ).toBe(false);
+  });
+});
+
+describe('parentSubName — a sub-name its description rule gave (step9, 2026-11-17)', () => {
+  const current = { parent: 'Walmart', category: 'Office Expense' };
+
+  it('is kept on a row with no sub-named split', () => {
+    expect(
+      parentSubName({
+        name: 'Walmart',
+        category: 'Office Expense',
+        hasSubSplits: false,
+        current,
+        fromRule: true,
+      }),
+    ).toEqual({ want: current, change: false });
+  });
+
+  it('goes when no rule gave it', () => {
+    expect(
+      parentSubName({
+        name: 'Walmart',
+        category: 'Office Expense',
+        hasSubSplits: false,
+        current,
+      }).want,
+    ).toBeNull();
   });
 });

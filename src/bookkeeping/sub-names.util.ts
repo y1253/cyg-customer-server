@@ -12,6 +12,11 @@ export interface ParentRow {
   hasSubSplits: boolean;
   /** The sub-name it has now (parent name + category), if any. */
   current: { parent: string; category: string } | null;
+  /**
+   * step9 (2026-11-17): its current sub-name was given by its description rule (a rule saved
+   * from a split) — kept while no split of its own decides.
+   */
+  fromRule?: boolean;
 }
 
 /**
@@ -25,7 +30,11 @@ export function parentSubName(p: ParentRow): {
   change: boolean;
 } {
   const want =
-    p.hasSubSplits && p.name ? { parent: p.name, category: p.category } : null;
+    p.hasSubSplits && p.name
+      ? { parent: p.name, category: p.category }
+      : p.fromRule
+        ? p.current
+        : null;
   const same =
     want === null
       ? p.current === null

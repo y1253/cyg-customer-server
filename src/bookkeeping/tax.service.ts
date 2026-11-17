@@ -154,6 +154,8 @@ export interface NameDescriptionView {
     matchType: 'DESCRIPTION' | 'CONTAINS';
     matchKey: string;
     text: string;
+    /** step9 (2026-11-17): the sub-name its rows are filed under (a rule saved from a split). */
+    subName?: string;
   } | null;
   /**
    * Rows of this description the customer renamed ONE time — they are exceptions from this
@@ -476,6 +478,7 @@ export class TaxService {
           name: true,
           category: true,
           includeChars: true,
+          subNameId: true,
         },
         orderBy: { createdAt: 'asc' },
       }),
@@ -513,7 +516,24 @@ export class TaxService {
     const fieldsOf = new Map(
       placed.map((l) => [nameKey(l.name), parseNameFields(l.fields)]),
     );
-    const rulesById = new Map(rules.map((r) => [r.id, r]));
+    // step9 (2026-11-17): a description rule saved from a split names its sub-name.
+    const ruleSubIds = rules.flatMap((r) => (r.subNameId ? [r.subNameId] : []));
+    const ruleSubs = ruleSubIds.length
+      ? await this.prisma.subName.findMany({
+          where: { id: { in: ruleSubIds }, bookId: scope.bookId },
+          select: { id: true, name: true },
+        })
+      : [];
+    const ruleSubName = new Map(ruleSubs.map((s) => [s.id, s.name]));
+    const rulesById = new Map(
+      rules.map((r) => [
+        r.id,
+        {
+          ...r,
+          subName: r.subNameId ? (ruleSubName.get(r.subNameId) ?? null) : null,
+        },
+      ]),
+    );
     const { descriptionsOf, exceptionOf } = groupDescriptions(
       [...named, ...nameless],
       rulesById,
@@ -1365,7 +1385,12 @@ function groupDescriptions(
   }>,
   rulesById: ReadonlyMap<
     number,
-    { matchType: string; matchKey: string; includeChars: string | null }
+    {
+      matchType: string;
+      matchKey: string;
+      includeChars: string | null;
+      subName?: string | null;
+    }
   >,
 ): {
   descriptionsOf: Map<string, NameDescriptionView[]>;
@@ -1458,6 +1483,7 @@ function groupDescriptions(
                     matchType: rule.matchType,
                     matchKey: rule.matchKey,
                     text: rule.includeChars ?? rule.matchKey,
+                    ...(rule.subName && { subName: rule.subName }),
                   }
                 : null,
             exceptions: [...g.exceptions.values()].sort(

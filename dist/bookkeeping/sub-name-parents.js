@@ -74,6 +74,10 @@ async function deleteSubName(prisma, id) {
                 }),
             ]
             : []),
+        prisma.customerNameRule.updateMany({
+            where: { bookId: sub.bookId, subNameId: id },
+            data: { subNameId: null, category: null },
+        }),
         prisma.subName.deleteMany({ where: { id } }),
     ]);
 }
@@ -93,11 +97,22 @@ async function syncParentSubNames(prisma, scope, parentIds) {
             name: true,
             offsetAccount: true,
             subNameId: true,
+            personalRuleId: true,
             splits: { where: { subNameId: { not: null } }, select: { id: true } },
         },
     });
     if (!parents.length)
         return 0;
+    const ruleIds = [
+        ...new Set(parents.flatMap((p) => (p.personalRuleId ? [p.personalRuleId] : []))),
+    ];
+    const subRules = ruleIds.length
+        ? await prisma.customerNameRule.findMany({
+            where: { id: { in: ruleIds }, subNameId: { not: null } },
+            select: { id: true, subNameId: true },
+        })
+        : [];
+    const ruleSub = new Map(subRules.map((r) => [r.id, r.subNameId]));
     const currentIds = [
         ...new Set(parents.flatMap((p) => (p.subNameId ? [p.subNameId] : []))),
     ];
@@ -125,6 +140,9 @@ async function syncParentSubNames(prisma, scope, parentIds) {
             category: p.offsetAccount,
             hasSubSplits: p.splits.length > 0,
             current: sub && parent ? { parent, category: sub.category } : null,
+            fromRule: p.subNameId !== null &&
+                p.personalRuleId !== null &&
+                ruleSub.get(p.personalRuleId) === p.subNameId,
         });
         if (!plan.change)
             continue;

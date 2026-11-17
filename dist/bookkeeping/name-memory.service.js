@@ -145,6 +145,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 name: true,
                 category: true,
                 includeChars: true,
+                subNameId: true,
             },
         });
         return rows.map((r) => ({
@@ -198,6 +199,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     personalRuleId: resolved[i].personalRuleId,
                     exceptionRuleId: resolved[i].exceptionRuleId,
                     ruleName: resolved[i].ruleName,
+                    subNameId: resolved[i].subNameId,
                 },
             }));
             await this.learn(rows, ctx.memory);
@@ -243,6 +245,123 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async resetRule(scope, input) {
         await this.applyReset(scope, input);
         await this.syncProvenance(scope);
+    }
+    async syncSubNameRules(scope, parentIds) {
+        try {
+            const parents = await this.prisma.bankTransaction.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), id: { in: parentIds }, splitOfId: null },
+                select: { description: true },
+            });
+            const keys = [
+                ...new Set(parents.map((p) => (0, name_memory_util_1.descriptionKey)(p.description))),
+            ].filter(Boolean);
+            for (const key of keys)
+                await this.syncSubNameRule(scope, key, parentIds);
+        }
+        catch (err) {
+            this.logger.warn(`sub-name rules of ${(0, scope_1.bookLabel)(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    async syncSubNameRule(scope, key, preferIds) {
+        const rule = await this.prisma.customerNameRule.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), matchType: 'DESCRIPTION', matchKey: key },
+        });
+        const candidates = (await this.prisma.bankTransaction.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                splitOfId: null,
+                manualEdit: false,
+                subNameId: { not: null },
+                name: { not: null },
+                splits: { some: { splitRuleId: null, subNameId: { not: null } } },
+            },
+            select: { id: true, description: true, name: true, subNameId: true },
+            orderBy: { id: 'desc' },
+        }))
+            .filter((p) => (0, name_memory_util_1.descriptionKey)(p.description) === key)
+            .filter((p) => !(0, name_memory_util_1.cleanName)(rule?.name) ||
+            (0, name_memory_util_1.nameKey)(rule.name) === (0, name_memory_util_1.nameKey)(p.name ?? ''))
+            .sort((a, b) => Number(preferIds.includes(b.id)) - Number(preferIds.includes(a.id)));
+        const source = candidates[0];
+        const oldSubId = rule?.subNameId ?? null;
+        if (!source) {
+            if (!rule || oldSubId === null)
+                return;
+            await this.prisma.customerNameRule.update({
+                where: { id: rule.id },
+                data: { subNameId: null, category: null },
+            });
+            const rows = await this.prisma.bankTransaction.findMany({
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    splitOfId: null,
+                    subNameId: oldSubId,
+                    splits: { none: {} },
+                },
+                select: MATCH_SELECT,
+            });
+            const back = new Map();
+            for (const r of rows) {
+                const k = (0, name_memory_util_1.nameKey)(r.name ?? '');
+                if (!back.has(k))
+                    back.set(k, r.name ? await this.categoryOfName(scope, r.name) : null);
+            }
+            await this.writeRows(scope, rows.map(toMatched), (r) => ({
+                name: r.name,
+                category: back.get((0, name_memory_util_1.nameKey)(r.name ?? '')) ?? r.offsetAccount,
+                subNameId: null,
+            }));
+            await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, oldSubId);
+            return;
+        }
+        const sub = await this.prisma.subName.findUnique({
+            where: { id: source.subNameId },
+            select: { id: true, category: true },
+        });
+        if (!sub)
+            return;
+        const name = (0, name_memory_util_1.cleanName)(source.name);
+        let ruleId = rule?.id;
+        if (rule) {
+            if (rule.subNameId !== sub.id ||
+                rule.category !== sub.category ||
+                rule.name !== name)
+                await this.prisma.customerNameRule.update({
+                    where: { id: rule.id },
+                    data: { name, category: sub.category, subNameId: sub.id },
+                });
+        }
+        else {
+            const made = await this.prisma.customerNameRule.create({
+                data: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    matchType: 'DESCRIPTION',
+                    matchKey: key,
+                    name,
+                    category: sub.category,
+                    subNameId: sub.id,
+                },
+                select: { id: true },
+            });
+            ruleId = made.id;
+        }
+        const rows = (await this.prisma.bankTransaction.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                splitOfId: null,
+                manualEdit: false,
+                splits: { none: {} },
+            },
+            select: MATCH_SELECT,
+        })).filter((r) => (0, name_memory_util_1.descriptionKey)(r.description) === key);
+        await this.writeRows(scope, rows.map(toMatched), () => ({
+            name,
+            category: sub.category,
+            subNameId: sub.id,
+            personalRuleId: ruleId ?? null,
+        }));
+        if (oldSubId !== null && oldSubId !== sub.id)
+            await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, oldSubId);
     }
     async syncProvenance(scope) {
         try {
@@ -474,7 +593,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (name) {
             const target = await this.categoryOfName(scope, name);
             if (editScope === 'ALWAYS') {
-                await this.upsertRule(previous, { ...where, name }, { name, category: null });
+                await this.upsertRule(previous, { ...where, name }, { name, category: null, subNameId: null });
             }
             const rows = await this.matchingRows(scope, 'DESCRIPTION', matchKey, new Set(), editScope === 'ONCE');
             await this.writeRows(scope, rows, (row) => ({ name, category: row.offsetAccount }), editScope === 'ONCE');
@@ -485,7 +604,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         }
         if (!category)
             return;
-        await this.upsertRule(previous, { ...where, category }, { category });
+        await this.upsertRule(previous, { ...where, category }, { category, subNameId: null });
         const rows = await this.matchingRows(scope, 'DESCRIPTION', matchKey, new Set(), true);
         await this.writeRows(scope, rows.filter((r) => !(0, name_memory_util_1.cleanName)(r.name)), () => ({ name: null, category }));
     }
@@ -710,7 +829,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             });
         }
         const rows = await this.prisma.bankTransaction.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), name: key, splitOfId: null },
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                name: key,
+                splitOfId: null,
+                NOT: { subNameId: { not: null }, splits: { none: {} } },
+            },
             select: MATCH_SELECT,
         });
         await this.writeRows(scope, rows.map(toMatched), (r) => ({
@@ -898,7 +1022,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             const out = next(row);
             const category = out.category;
             const name = (0, name_memory_util_1.fallbackName)(out.name, category, row.description);
-            if (name === row.name && category === row.offsetAccount)
+            const subChanged = out.subNameId !== undefined && out.subNameId !== row.subNameId;
+            if (name === row.name && category === row.offsetAccount && !subChanged)
                 return [];
             const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
             return [
@@ -908,6 +1033,10 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                         name,
                         offsetAccount: category,
                         ...(0, ledger_util_1.doubleEntry)(row.amount, bank, category),
+                        ...(out.subNameId !== undefined && { subNameId: out.subNameId }),
+                        ...(out.personalRuleId !== undefined && {
+                            personalRuleId: out.personalRuleId,
+                        }),
                         ...(manual && { manualEdit: true }),
                     },
                 }),
@@ -932,6 +1061,7 @@ const MATCH_SELECT = {
     offsetAccount: true,
     debitAccount: true,
     creditAccount: true,
+    subNameId: true,
 };
 const ruleKeyOf = (matchType, raw) => matchType === 'NAME'
     ? (0, name_memory_util_1.nameKey)(raw)
@@ -952,6 +1082,7 @@ function toMatched(r) {
         offsetAccount: r.offsetAccount,
         debitAccount: r.debitAccount,
         creditAccount: r.creditAccount,
+        subNameId: r.subNameId ?? null,
     };
 }
 //# sourceMappingURL=name-memory.service.js.map

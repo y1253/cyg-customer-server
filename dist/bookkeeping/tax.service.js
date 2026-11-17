@@ -244,6 +244,7 @@ let TaxService = class TaxService {
                     name: true,
                     category: true,
                     includeChars: true,
+                    subNameId: true,
                 },
                 orderBy: { createdAt: 'asc' },
             }),
@@ -277,7 +278,21 @@ let TaxService = class TaxService {
             .filter((l) => l.group && validGroups.has(l.group))
             .map((l) => [(0, name_memory_util_1.nameKey)(l.name), l.group]));
         const fieldsOf = new Map(placed.map((l) => [(0, name_memory_util_1.nameKey)(l.name), parseNameFields(l.fields)]));
-        const rulesById = new Map(rules.map((r) => [r.id, r]));
+        const ruleSubIds = rules.flatMap((r) => (r.subNameId ? [r.subNameId] : []));
+        const ruleSubs = ruleSubIds.length
+            ? await this.prisma.subName.findMany({
+                where: { id: { in: ruleSubIds }, bookId: scope.bookId },
+                select: { id: true, name: true },
+            })
+            : [];
+        const ruleSubName = new Map(ruleSubs.map((s) => [s.id, s.name]));
+        const rulesById = new Map(rules.map((r) => [
+            r.id,
+            {
+                ...r,
+                subName: r.subNameId ? (ruleSubName.get(r.subNameId) ?? null) : null,
+            },
+        ]));
         const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
         const shareOf = rowShares([...named, ...nameless]);
         const totalOf = new Map();
@@ -976,6 +991,7 @@ function groupDescriptions(rows, rulesById) {
                         matchType: rule.matchType,
                         matchKey: rule.matchKey,
                         text: rule.includeChars ?? rule.matchKey,
+                        ...(rule.subName && { subName: rule.subName }),
                     }
                     : null,
                 exceptions: [...g.exceptions.values()].sort((a, b) => b.rows - a.rows),

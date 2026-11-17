@@ -21,6 +21,7 @@ export interface NameRule {
     name: string | null;
     category: string | null;
     includeChars?: string | null;
+    subNameId?: number | null;
 }
 export interface ResolveContext {
     memory: ReadonlyMap<string, MemoryEntry>;
@@ -58,6 +59,7 @@ export interface Resolved {
     personalRuleId: number | null;
     exceptionRuleId: number | null;
     ruleName: string | null;
+    subNameId: number | null;
 }
 export declare function resolveRow(row: {
     description: string;

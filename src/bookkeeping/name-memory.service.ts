@@ -15,7 +15,7 @@ import {
 } from './chart-of-accounts';
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
-import { syncParentSubNames } from './sub-name-parents';
+import { dropUnusedSubName, syncParentSubNames } from './sub-name-parents';
 import { TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
@@ -220,6 +220,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
         name: true,
         category: true,
         includeChars: true,
+        subNameId: true,
       },
     });
     return rows.map((r) => ({
@@ -304,6 +305,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
           personalRuleId: resolved[i].personalRuleId,
           exceptionRuleId: resolved[i].exceptionRuleId,
           ruleName: resolved[i].ruleName,
+          subNameId: resolved[i].subNameId,
         },
       }));
       await this.learn(rows, ctx.memory);
@@ -383,6 +385,153 @@ export class NameMemoryService implements OnApplicationBootstrap {
   ): Promise<void> {
     await this.applyReset(scope, input);
     await this.syncProvenance(scope);
+  }
+
+  /**
+   * step9 (2026-11-17, user's request): a split the customer makes by hand that gives its
+   * transaction a sub-name saves the transaction's DESCRIPTION as a rule pointing at the
+   * MAIN line's sub-name ("<name> - <its category>" — never a split rule's): every row with
+   * that description, now (user's decision: existing rows too) and later, gets the sub-name
+   * and its category, split or not. Run by `SplitsService` after `syncParentSubNames`, for
+   * the transactions it touched. When no transaction of the description has such a split
+   * any more, the rule keeps its name and loses the sub-name, and its rows go back to the
+   * name's category. Never throws: a rule must not fail the split edit.
+   */
+  async syncSubNameRules(scope: BookScope, parentIds: number[]): Promise<void> {
+    try {
+      const parents = await this.prisma.bankTransaction.findMany({
+        where: { ...scopeWhere(scope), id: { in: parentIds }, splitOfId: null },
+        select: { description: true },
+      });
+      const keys = [
+        ...new Set(parents.map((p) => descriptionKey(p.description))),
+      ].filter(Boolean);
+      for (const key of keys) await this.syncSubNameRule(scope, key, parentIds);
+    } catch (err) {
+      this.logger.warn(
+        `sub-name rules of ${bookLabel(scope)} not updated: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private async syncSubNameRule(
+    scope: BookScope,
+    key: string,
+    preferIds: readonly number[],
+  ): Promise<void> {
+    const rule = await this.prisma.customerNameRule.findFirst({
+      where: { ...scopeWhere(scope), matchType: 'DESCRIPTION', matchKey: key },
+    });
+    // The transactions of this description whose hand-made split has a sub-name, the one
+    // just edited first, then the newest.
+    const candidates = (
+      await this.prisma.bankTransaction.findMany({
+        where: {
+          ...scopeWhere(scope),
+          splitOfId: null,
+          manualEdit: false,
+          subNameId: { not: null },
+          name: { not: null },
+          splits: { some: { splitRuleId: null, subNameId: { not: null } } },
+        },
+        select: { id: true, description: true, name: true, subNameId: true },
+        orderBy: { id: 'desc' },
+      })
+    )
+      .filter((p) => descriptionKey(p.description) === key)
+      // A description another name's rule holds is not taken over.
+      .filter(
+        (p) =>
+          !cleanName(rule?.name) ||
+          nameKey(rule!.name!) === nameKey(p.name ?? ''),
+      )
+      .sort(
+        (a, b) =>
+          Number(preferIds.includes(b.id)) - Number(preferIds.includes(a.id)),
+      );
+    const source = candidates[0];
+    const oldSubId = rule?.subNameId ?? null;
+    if (!source) {
+      if (!rule || oldSubId === null) return;
+      await this.prisma.customerNameRule.update({
+        where: { id: rule.id },
+        data: { subNameId: null, category: null },
+      });
+      // Its rows go back to their name's category.
+      const rows = await this.prisma.bankTransaction.findMany({
+        where: {
+          ...scopeWhere(scope),
+          splitOfId: null,
+          subNameId: oldSubId,
+          splits: { none: {} },
+        },
+        select: MATCH_SELECT,
+      });
+      const back = new Map<string, string | null>();
+      for (const r of rows) {
+        const k = nameKey(r.name ?? '');
+        if (!back.has(k))
+          back.set(k, r.name ? await this.categoryOfName(scope, r.name) : null);
+      }
+      await this.writeRows(scope, rows.map(toMatched), (r) => ({
+        name: r.name,
+        category: back.get(nameKey(r.name ?? '')) ?? r.offsetAccount,
+        subNameId: null,
+      }));
+      await dropUnusedSubName(this.prisma, scope, oldSubId);
+      return;
+    }
+    const sub = await this.prisma.subName.findUnique({
+      where: { id: source.subNameId! },
+      select: { id: true, category: true },
+    });
+    if (!sub) return;
+    const name = cleanName(source.name)!;
+    let ruleId = rule?.id;
+    if (rule) {
+      if (
+        rule.subNameId !== sub.id ||
+        rule.category !== sub.category ||
+        rule.name !== name
+      )
+        await this.prisma.customerNameRule.update({
+          where: { id: rule.id },
+          data: { name, category: sub.category, subNameId: sub.id },
+        });
+    } else {
+      const made = await this.prisma.customerNameRule.create({
+        data: {
+          ...scopeWhere(scope),
+          matchType: 'DESCRIPTION',
+          matchKey: key,
+          name,
+          category: sub.category,
+          subNameId: sub.id,
+        },
+        select: { id: true },
+      });
+      ruleId = made.id;
+    }
+    // Every unsplit row of the description (not a one-time edit) takes the sub-name.
+    const rows = (
+      await this.prisma.bankTransaction.findMany({
+        where: {
+          ...scopeWhere(scope),
+          splitOfId: null,
+          manualEdit: false,
+          splits: { none: {} },
+        },
+        select: MATCH_SELECT,
+      })
+    ).filter((r) => descriptionKey(r.description) === key);
+    await this.writeRows(scope, rows.map(toMatched), () => ({
+      name,
+      category: sub.category,
+      subNameId: sub.id,
+      personalRuleId: ruleId ?? null,
+    }));
+    if (oldSubId !== null && oldSubId !== sub.id)
+      await dropUnusedSubName(this.prisma, scope, oldSubId);
   }
 
   /**
@@ -733,7 +882,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
         await this.upsertRule(
           previous,
           { ...where, name },
-          { name, category: null },
+          { name, category: null, subNameId: null },
         );
       }
       const rows = await this.matchingRows(
@@ -757,7 +906,11 @@ export class NameMemoryService implements OnApplicationBootstrap {
     }
     if (!category) return;
     // No name: the description's own category, for its nameless rows — always.
-    await this.upsertRule(previous, { ...where, category }, { category });
+    await this.upsertRule(
+      previous,
+      { ...where, category },
+      { category, subNameId: null },
+    );
     const rows = await this.matchingRows(
       scope,
       'DESCRIPTION',
@@ -1109,8 +1262,15 @@ export class NameMemoryService implements OnApplicationBootstrap {
       });
     }
     // MySQL compares names case-insensitively, which is what a name key means.
+    // step9 (2026-11-17): a row filed under a sub-name by its description rule (a sub-name
+    // and no splits) keeps that sub-name's category.
     const rows = await this.prisma.bankTransaction.findMany({
-      where: { ...scopeWhere(scope), name: key, splitOfId: null },
+      where: {
+        ...scopeWhere(scope),
+        name: key,
+        splitOfId: null,
+        NOT: { subNameId: { not: null }, splits: { none: {} } },
+      },
       select: MATCH_SELECT,
     });
     await this.writeRows(scope, rows.map(toMatched), (r) => ({
@@ -1412,7 +1572,13 @@ export class NameMemoryService implements OnApplicationBootstrap {
   private async writeRows(
     scope: BookScope,
     rows: MatchedRow[],
-    next: (row: MatchedRow) => { name: string | null; category: string },
+    next: (row: MatchedRow) => {
+      name: string | null;
+      category: string;
+      /** step9 (2026-11-17): the row's sub-name too (undefined = leave it). */
+      subNameId?: number | null;
+      personalRuleId?: number | null;
+    },
     manual = false,
   ): Promise<void> {
     const updates = rows.flatMap((row) => {
@@ -1420,7 +1586,10 @@ export class NameMemoryService implements OnApplicationBootstrap {
       const category = out.category;
       // step11: only an Uncategorized row may be nameless.
       const name = fallbackName(out.name, category, row.description);
-      if (name === row.name && category === row.offsetAccount) return [];
+      const subChanged =
+        out.subNameId !== undefined && out.subNameId !== row.subNameId;
+      if (name === row.name && category === row.offsetAccount && !subChanged)
+        return [];
       // The bank side never changes; only the offset does, so re-derive both columns.
       const bank = row.amount < 0 ? row.creditAccount : row.debitAccount;
       return [
@@ -1430,6 +1599,10 @@ export class NameMemoryService implements OnApplicationBootstrap {
             name,
             offsetAccount: category,
             ...doubleEntry(row.amount, bank, category),
+            ...(out.subNameId !== undefined && { subNameId: out.subNameId }),
+            ...(out.personalRuleId !== undefined && {
+              personalRuleId: out.personalRuleId,
+            }),
             ...(manual && { manualEdit: true }),
           },
         }),
@@ -1448,6 +1621,7 @@ const MATCH_SELECT = {
   offsetAccount: true,
   debitAccount: true,
   creditAccount: true,
+  subNameId: true,
 } as const;
 
 const ruleKeyOf = (matchType: RuleMatchType, raw: string): string =>
@@ -1474,6 +1648,7 @@ export interface MatchedRow {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  subNameId?: number | null;
 }
 
 function toMatched(r: {
@@ -1484,6 +1659,7 @@ function toMatched(r: {
   offsetAccount: string;
   debitAccount: string;
   creditAccount: string;
+  subNameId?: number | null;
 }): MatchedRow {
   return {
     id: r.id,
@@ -1493,5 +1669,6 @@ function toMatched(r: {
     offsetAccount: r.offsetAccount,
     debitAccount: r.debitAccount,
     creditAccount: r.creditAccount,
+    subNameId: r.subNameId ?? null,
   };
 }

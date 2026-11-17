@@ -144,7 +144,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             include: { splits: { orderBy: { id: 'asc' } } },
         });
     }
-    linesOf(p, ownSubs) {
+    linesOf(p, ownSubs, everySplit = false) {
         const keyOf = (r) => (0, tax_util_1.nameTaxKey)((r.subNameId !== null && ownSubs.get(r.subNameId)) || r.name);
         const totals = (0, splits_util_1.splitTotals)(p.splits.map((s) => ({
             splitOfId: s.splitOfId,
@@ -158,7 +158,8 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
                 amount: (0, splits_util_1.remainderOf)({ ...p, amount: Number(p.amount) }, totals),
             },
             ...p.splits
-                .filter((s) => s.splitRuleId === null)
+                .filter((s) => s.splitRuleId === null &&
+                (everySplit || (s.subNameId !== null && ownSubs.has(s.subNameId))))
                 .map((s) => ({
                 parentId: p.id,
                 sourceId: s.id,
@@ -195,6 +196,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
                     ...(0, ledger_util_1.doubleEntry)(parentAmount, bank, s.category),
                     manualEdit: true,
                     splitOfId: p.id,
+                    parentSplitId: line.sourceId !== p.id ? line.sourceId : null,
                     splitRuleId: s.ruleId,
                     ruleSourceId: line.sourceId,
                 },
@@ -273,7 +275,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         });
         let made = 0;
         for (const p of parents) {
-            const lines = this.linesOf(p, ownSubs);
+            const lines = this.linesOf(p, ownSubs, true);
             const taxed = (0, tax_util_1.nameTaxLines)(lines.map((l) => ({
                 id: l.sourceId,
                 name: l.key,

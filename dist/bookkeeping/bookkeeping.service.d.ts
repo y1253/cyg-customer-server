@@ -50,6 +50,8 @@ export interface TransactionView {
     key: string;
     id: number;
     splitOfId?: number;
+    parentSplitId?: number;
+    depth?: number;
     statementId: number;
     pendingDate: string | null;
     postingDate: string | null;

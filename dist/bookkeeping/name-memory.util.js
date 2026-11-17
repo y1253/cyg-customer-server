@@ -157,15 +157,25 @@ function resolveRow(row, ctx) {
         source = 'customer';
     };
     const exact = key ? ctx.descRules.get(key) : undefined;
-    if (exact)
-        apply(exact);
-    else
-        apply(containsRuleFor(row.description, ctx.containsRules));
+    const byDescription = exact ?? containsRuleFor(row.description, ctx.containsRules);
+    apply(byDescription);
     if (name)
         apply(ctx.nameRules.get((0, exports.nameKey)(name)));
     const own = name ? ctx.nameCategories?.get((0, exports.nameKey)(name)) : undefined;
     if (own) {
         category = (0, chart_of_accounts_1.normalizeAccount)(own, ctx.customAccounts);
+        customerCategory = true;
+        source = 'customer';
+    }
+    let subNameId = null;
+    const subRule = byDescription?.subNameId ? byDescription : undefined;
+    const subRuleName = cleanName(subRule?.name);
+    if (subRule?.category &&
+        name &&
+        subRuleName &&
+        (0, exports.nameKey)(name) === (0, exports.nameKey)(subRuleName)) {
+        category = (0, chart_of_accounts_1.normalizeAccount)(subRule.category, ctx.customAccounts);
+        subNameId = subRule.subNameId;
         customerCategory = true;
         source = 'customer';
     }
@@ -184,10 +194,13 @@ function resolveRow(row, ctx) {
         : undefined;
     if (exception) {
         const exName = cleanName(exception.name);
+        const before = { name, category };
         if (exName)
             name = exName;
         if (exception.category)
             category = (0, chart_of_accounts_1.normalizeAccount)(exception.category, ctx.customAccounts);
+        if (name !== before.name || category !== before.category)
+            subNameId = null;
         source = 'customer';
     }
     category = ctx.renamed?.get(category.toLowerCase()) ?? category;
@@ -203,6 +216,7 @@ function resolveRow(row, ctx) {
         personalRuleId,
         exceptionRuleId: exception?.id ?? null,
         ruleName: fallbackName(ruleName, category, row.description),
+        subNameId,
     };
 }
 function resolveRows(rows, ctx) {

@@ -66,6 +66,7 @@ export interface NameDescriptionView {
         matchType: 'DESCRIPTION' | 'CONTAINS';
         matchKey: string;
         text: string;
+        subName?: string;
     } | null;
     exceptions: Array<{
         name: string;

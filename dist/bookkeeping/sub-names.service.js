@@ -254,6 +254,12 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         return row?.name ?? null;
     }
     async moveRows(scope, from, to, category) {
+        await this.prisma.customerNameRule.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), subNameId: from },
+            data: to === null
+                ? { subNameId: null, category: null }
+                : { subNameId: to, category },
+        });
         const rows = await this.prisma.bankTransaction.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), subNameId: from },
             select: {

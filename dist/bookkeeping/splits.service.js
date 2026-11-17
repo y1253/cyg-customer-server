@@ -47,7 +47,9 @@ let SplitsService = class SplitsService {
                 ...(0, scope_1.scopeWhere)(scope),
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },
-            include: { splits: { select: { id: true } } },
+            include: {
+                splits: { select: { id: true, parentSplitId: true, amount: true } },
+            },
         });
         if (!parent)
             throw new common_1.NotFoundException('Transaction not found');
@@ -55,10 +57,16 @@ let SplitsService = class SplitsService {
             throw new common_1.BadRequestException('This is already a split. Split the transaction it came from instead.');
         }
         const amount = Number(parent.amount);
-        const problem = (0, splits_util_1.splitProblem)(amount, input.map((s) => s.amount));
+        const kept = new Set(input.flatMap((s) => s.id != null ? (0, splits_util_1.subtreeIds)(parent.splits, s.id).slice(1) : []));
+        const problem = (0, splits_util_1.splitProblem)(amount, [
+            ...input.map((s) => s.amount),
+            ...parent.splits
+                .filter((s) => kept.has(s.id))
+                .map((s) => Math.abs(Number(s.amount))),
+        ]);
         if (problem)
             throw new common_1.BadRequestException(problem);
-        const existing = new Set(parent.splits.map((s) => s.id));
+        const existing = new Set(parent.splits.filter((s) => s.parentSplitId === null).map((s) => s.id));
         for (const s of input) {
             if (s.id != null && !existing.has(s.id)) {
                 throw new common_1.BadRequestException('A split was removed meanwhile. Reload.');
@@ -79,7 +87,11 @@ let SplitsService = class SplitsService {
         const keep = new Set(rows.flatMap((r) => (r.id != null ? [r.id] : [])));
         await this.prisma.$transaction(async (tx) => {
             await tx.bankTransaction.deleteMany({
-                where: { splitOfId: parent.id, id: { notIn: [...keep] } },
+                where: {
+                    splitOfId: parent.id,
+                    parentSplitId: null,
+                    id: { notIn: [...keep] },
+                },
             });
             const out = [];
             for (const r of rows) {
@@ -119,7 +131,7 @@ let SplitsService = class SplitsService {
                 await this.products.saveRule(scope, r.itemName, r.category);
             }
         }
-        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [id]);
+        await this.afterChange(scope, id);
     }
     async duplicate(scope, id) {
         const row = await this.prisma.bankTransaction.findFirst({
@@ -162,10 +174,11 @@ let SplitsService = class SplitsService {
                 ...(0, ledger_util_1.doubleEntry)(amount, bank, category),
                 manualEdit: true,
                 splitOfId: parent.id,
+                parentSplitId: row.splitOfId ? row.id : null,
             },
             select: { id: true },
         });
-        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [parent.id]);
+        await this.afterChange(scope, parent.id);
         return made;
     }
     async edit(scope, id, input) {
@@ -173,7 +186,28 @@ let SplitsService = class SplitsService {
         const parent = split.splitOf;
         const parentAmount = Number(parent.amount);
         const bank = parentAmount < 0 ? parent.creditAccount : parent.debitAccount;
-        if (input.amount !== undefined) {
+        if (input.amount !== undefined && split.parentSplitId !== null) {
+            const from = await this.findSplit(scope, split.parentSplitId);
+            const available = Math.abs(Number(from.amount)) + Math.abs(Number(split.amount));
+            const problem = (0, splits_util_1.childSplitProblem)(available, input.amount, from.name ?? 'the split');
+            if (problem)
+                throw new common_1.BadRequestException(problem);
+            const left = Math.round((available - input.amount) * 100) / 100;
+            await this.prisma.$transaction([
+                this.prisma.bankTransaction.update({
+                    where: { id },
+                    data: {
+                        amount: (0, splits_util_1.signedLike)(parentAmount, input.amount).toFixed(2),
+                        ...(0, ledger_util_1.doubleEntry)(parentAmount, bank, split.offsetAccount),
+                    },
+                }),
+                this.prisma.bankTransaction.update({
+                    where: { id: from.id },
+                    data: { amount: (0, splits_util_1.signedLike)(parentAmount, left).toFixed(2) },
+                }),
+            ]);
+        }
+        else if (input.amount !== undefined) {
             const others = await this.prisma.bankTransaction.findMany({
                 where: { splitOfId: parent.id, id: { not: id } },
                 select: { amount: true },
@@ -238,13 +272,45 @@ let SplitsService = class SplitsService {
             const after = await this.findSplit(scope, id);
             await this.products.saveRule(scope, itemName, after.offsetAccount);
         }
-        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [parent.id]);
+        await this.afterChange(scope, parent.id);
     }
     async remove(scope, id) {
         const split = await this.findSplit(scope, id);
-        await this.prisma.bankTransaction.delete({ where: { id } });
-        await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, split.subNameId);
-        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [split.splitOfId]);
+        const family = await this.prisma.bankTransaction.findMany({
+            where: { splitOfId: split.splitOfId },
+            select: { id: true, parentSplitId: true, amount: true, subNameId: true },
+        });
+        const gone = new Set((0, splits_util_1.subtreeIds)(family, id));
+        const subtree = family.filter((r) => gone.has(r.id));
+        const from = split.parentSplitId !== null
+            ? family.find((r) => r.id === split.parentSplitId)
+            : undefined;
+        const parentAmount = Number(split.splitOf.amount);
+        const centsOf = (v) => Math.abs(Math.round(Number(v) * 100));
+        const back = from
+            ? centsOf(from.amount) +
+                subtree.reduce((n, r) => n + centsOf(r.amount), 0)
+            : 0;
+        await this.prisma.$transaction([
+            ...(from
+                ? [
+                    this.prisma.bankTransaction.update({
+                        where: { id: from.id },
+                        data: {
+                            amount: (0, splits_util_1.signedLike)(parentAmount, back / 100).toFixed(2),
+                        },
+                    }),
+                ]
+                : []),
+            this.prisma.bankTransaction.delete({ where: { id } }),
+        ]);
+        for (const sub of new Set(subtree.map((r) => r.subNameId)))
+            await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, sub);
+        await this.afterChange(scope, split.splitOfId);
+    }
+    async afterChange(scope, parentId) {
+        await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, [parentId]);
+        await this.names.syncSubNameRules(scope, [parentId]);
     }
     async setProduct(scope, id, itemName) {
         const row = await this.prisma.bankTransaction.findFirst({

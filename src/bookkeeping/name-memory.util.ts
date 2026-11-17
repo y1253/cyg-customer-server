@@ -105,6 +105,11 @@ export interface NameRule {
   category: string | null;
   /** CONTAINS only: the text as the customer typed it. */
   includeChars?: string | null;
+  /**
+   * step9 (2026-11-17): a DESCRIPTION / CONTAINS rule saved from a split — its rows get this
+   * `SubName` (the main line's "<name> - <category>") and the rule's category, split or not.
+   */
+  subNameId?: number | null;
 }
 
 export interface ResolveContext {
@@ -245,6 +250,8 @@ export interface Resolved {
   exceptionRuleId: number | null;
   /** step9: the name the general / personal rules give — before the exception. */
   ruleName: string | null;
+  /** step9 (2026-11-17): the sub-name the deciding description rule gives (null = none). */
+  subNameId: number | null;
 }
 
 /**
@@ -324,14 +331,33 @@ export function resolveRow(
     source = 'customer';
   };
   const exact = key ? ctx.descRules.get(key) : undefined;
-  if (exact) apply(exact);
-  else apply(containsRuleFor(row.description, ctx.containsRules));
+  const byDescription =
+    exact ?? containsRuleFor(row.description, ctx.containsRules);
+  apply(byDescription);
   if (name) apply(ctx.nameRules.get(nameKey(name)));
 
   // The customer's category for the name the row ends up with wins over everything.
   const own = name ? ctx.nameCategories?.get(nameKey(name)) : undefined;
   if (own) {
     category = normalizeAccount(own, ctx.customAccounts);
+    customerCategory = true;
+    source = 'customer';
+  }
+
+  // step9 (2026-11-17): a description rule saved from a split files its rows under the main
+  // line's sub-name, in the sub-name's category — over the name's one category — while the
+  // row still carries the rule's name.
+  let subNameId: number | null = null;
+  const subRule = byDescription?.subNameId ? byDescription : undefined;
+  const subRuleName = cleanName(subRule?.name);
+  if (
+    subRule?.category &&
+    name &&
+    subRuleName &&
+    nameKey(name) === nameKey(subRuleName)
+  ) {
+    category = normalizeAccount(subRule.category, ctx.customAccounts);
+    subNameId = subRule.subNameId!;
     customerCategory = true;
     source = 'customer';
   }
@@ -353,9 +379,11 @@ export function resolveRow(
     : undefined;
   if (exception) {
     const exName = cleanName(exception.name);
+    const before = { name, category };
     if (exName) name = exName;
     if (exception.category)
       category = normalizeAccount(exception.category, ctx.customAccounts);
+    if (name !== before.name || category !== before.category) subNameId = null;
     source = 'customer';
   }
 
@@ -378,6 +406,7 @@ export function resolveRow(
     personalRuleId,
     exceptionRuleId: exception?.id ?? null,
     ruleName: fallbackName(ruleName, category, row.description),
+    subNameId,
   };
 }
 

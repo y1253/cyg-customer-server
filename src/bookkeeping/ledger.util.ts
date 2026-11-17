@@ -24,6 +24,8 @@ export interface Provenance {
   personalRuleId: number | null;
   exceptionRuleId: number | null;
   ruleName: string | null;
+  /** step9 (2026-11-17): the sub-name a description rule saved from a split gives. */
+  subNameId?: number | null;
 }
 
 /** One ledger row, ready for `BankTransaction`. */
@@ -43,6 +45,7 @@ export interface LedgerRow {
   personalRuleId?: number | null;
   exceptionRuleId?: number | null;
   ruleName?: string | null;
+  subNameId?: number | null;
   /** A one-time edit came back (an EXCEPTION rule): "Always" rules keep off it. */
   manualEdit?: boolean;
 }

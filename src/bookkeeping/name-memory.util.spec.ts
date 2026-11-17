@@ -600,9 +600,9 @@ describe('step11: only an Uncategorized row is nameless', () => {
 describe('resolveRow — a chart account the customer renamed (step2)', () => {
   const renamed = new Map([['supplies', 'Shop supplies']]);
   it('files the chart category under its new name, from any source', () => {
-    expect(
-      resolveRow(row(), { ...ctx(), renamed }).category,
-    ).toBe('Shop supplies');
+    expect(resolveRow(row(), { ...ctx(), renamed }).category).toBe(
+      'Shop supplies',
+    );
     expect(
       resolveRow(row({ offsetAccount: 'Travel' }), {
         ...ctx({ [KEY]: { name: 'Walmart', category: 'Supplies' } }),
@@ -616,5 +616,67 @@ describe('resolveRow — a chart account the customer renamed (step2)', () => {
       resolveRow(row({ offsetAccount: 'Travel' }), { ...ctx(), renamed })
         .category,
     ).toBe('Travel');
+  });
+});
+
+describe('step9 (2026-11-17): a description rule saved from a split carries a sub-name', () => {
+  const subRule: NameRule = {
+    id: 40,
+    matchType: 'DESCRIPTION',
+    matchKey: KEY,
+    name: 'Walmart',
+    category: 'Office Expense',
+    subNameId: 12,
+  };
+
+  it('files the row under the sub-name, in its category, over the name category', () => {
+    const rules: NameRule[] = [
+      subRule,
+      {
+        matchType: 'NAME',
+        matchKey: 'walmart',
+        name: null,
+        category: 'Groceries',
+      },
+    ];
+    expect(resolveRow(row(), ctx({}, rules))).toMatchObject({
+      name: 'Walmart',
+      category: 'Office Expense',
+      subNameId: 12,
+      personalRuleId: 40,
+    });
+  });
+
+  it('a NAME rule renaming the row elsewhere drops the sub-name', () => {
+    const rules: NameRule[] = [
+      subRule,
+      {
+        matchType: 'NAME',
+        matchKey: 'walmart',
+        name: 'Wal-Mart Inc',
+        category: null,
+      },
+    ];
+    expect(resolveRow(row(), ctx({}, rules)).subNameId).toBeNull();
+  });
+
+  it("the row's one-time edit still wins, and leaves the sub-name when it changes the row", () => {
+    const exception: NameRule = {
+      id: 41,
+      matchType: 'EXCEPTION',
+      matchKey: 'x1',
+      name: null,
+      category: 'Supplies',
+    };
+    const out = resolveRow(
+      { ...row(), exceptionKey: 'x1' },
+      { ...ctx({}, [subRule]), exceptions: new Map([['x1', exception]]) },
+    );
+    expect(out).toMatchObject({ category: 'Supplies', subNameId: null });
+  });
+
+  it('a rule without a sub-name gives none', () => {
+    const out = resolveRow(row(), ctx({}, [{ ...subRule, subNameId: null }]));
+    expect(out.subNameId).toBeNull();
   });
 });

@@ -12,7 +12,12 @@ import { cleanName, fallbackName } from './name-memory.util';
 import { ProductMemoryService } from './product-memory.service';
 import { itemKey } from './receipt-items.util';
 import { scopeWhere, type BookScope } from './scope';
-import { signedLike, splitProblem } from './splits.util';
+import {
+  childSplitProblem,
+  signedLike,
+  splitProblem,
+  subtreeIds,
+} from './splits.util';
 import { SubNamesService } from './sub-names.service';
 import { dropUnusedSubName, syncParentSubNames } from './sub-name-parents';
 import { TaxService } from './tax.service';
@@ -75,7 +80,9 @@ export class SplitsService {
         ...scopeWhere(scope),
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },
-      include: { splits: { select: { id: true } } },
+      include: {
+        splits: { select: { id: true, parentSplitId: true, amount: true } },
+      },
     });
     if (!parent) throw new NotFoundException('Transaction not found');
     if (parent.splitOfId) {
@@ -84,13 +91,24 @@ export class SplitsService {
       );
     }
     const amount = Number(parent.amount);
-    const problem = splitProblem(
-      amount,
-      input.map((s) => s.amount),
+    // step9 (2026-11-17): the set is the TOP-level splits; the splits cut from a kept one
+    // stay with it and still hold their money.
+    const kept = new Set(
+      input.flatMap((s) =>
+        s.id != null ? subtreeIds(parent.splits, s.id).slice(1) : [],
+      ),
     );
+    const problem = splitProblem(amount, [
+      ...input.map((s) => s.amount),
+      ...parent.splits
+        .filter((s) => kept.has(s.id))
+        .map((s) => Math.abs(Number(s.amount))),
+    ]);
     if (problem) throw new BadRequestException(problem);
 
-    const existing = new Set(parent.splits.map((s) => s.id));
+    const existing = new Set(
+      parent.splits.filter((s) => s.parentSplitId === null).map((s) => s.id),
+    );
     for (const s of input) {
       if (s.id != null && !existing.has(s.id)) {
         throw new BadRequestException('A split was removed meanwhile. Reload.');
@@ -120,8 +138,13 @@ export class SplitsService {
     const bank = amount < 0 ? parent.creditAccount : parent.debitAccount;
     const keep = new Set(rows.flatMap((r) => (r.id != null ? [r.id] : [])));
     await this.prisma.$transaction(async (tx) => {
+      // A removed split takes the splits cut from it along (the FK cascades).
       await tx.bankTransaction.deleteMany({
-        where: { splitOfId: parent.id, id: { notIn: [...keep] } },
+        where: {
+          splitOfId: parent.id,
+          parentSplitId: null,
+          id: { notIn: [...keep] },
+        },
       });
       const out: number[] = [];
       for (const r of rows) {
@@ -163,13 +186,15 @@ export class SplitsService {
         await this.products.saveRule(scope, r.itemName, r.category);
       }
     }
-    await syncParentSubNames(this.prisma, scope, [id]);
+    await this.afterChange(scope, id);
   }
 
   /**
    * step2 (2026-11-15): Split in the ledger = one more split, a copy of the row clicked (its
    * name, category, sub-name and product) at $0.00, filled in place afterwards. Clicked on a
    * split, it copies that split; on a transaction, the transaction.
+   * step9 (2026-11-17): clicked on a split, the copy is cut FROM that split
+   * (`parentSplitId`) — its money comes out of that split, which keeps its total.
    */
   async duplicate(scope: BookScope, id: number): Promise<{ id: number }> {
     const row = await this.prisma.bankTransaction.findFirst({
@@ -186,6 +211,7 @@ export class SplitsService {
     if (amount === 0) {
       throw new BadRequestException('A $0.00 transaction cannot be split');
     }
+    // Every split of the family counts, at any depth.
     const count = await this.prisma.bankTransaction.count({
       where: { splitOfId: parent.id },
     });
@@ -211,11 +237,12 @@ export class SplitsService {
         ...doubleEntry(amount, bank, category),
         manualEdit: true,
         splitOfId: parent.id,
+        parentSplitId: row.splitOfId ? row.id : null,
       },
       select: { id: true },
     });
     // step9: a copied split keeps its sub-name — the transaction then has one too.
-    await syncParentSubNames(this.prisma, scope, [parent.id]);
+    await this.afterChange(scope, parent.id);
     return made;
   }
 
@@ -235,7 +262,32 @@ export class SplitsService {
     const parentAmount = Number(parent.amount);
     const bank = parentAmount < 0 ? parent.creditAccount : parent.debitAccount;
 
-    if (input.amount !== undefined) {
+    if (input.amount !== undefined && split.parentSplitId !== null) {
+      // step9 (2026-11-17): a split of a split moves money from (or back to) that split.
+      const from = await this.findSplit(scope, split.parentSplitId);
+      const available =
+        Math.abs(Number(from.amount)) + Math.abs(Number(split.amount));
+      const problem = childSplitProblem(
+        available,
+        input.amount,
+        from.name ?? 'the split',
+      );
+      if (problem) throw new BadRequestException(problem);
+      const left = Math.round((available - input.amount) * 100) / 100;
+      await this.prisma.$transaction([
+        this.prisma.bankTransaction.update({
+          where: { id },
+          data: {
+            amount: signedLike(parentAmount, input.amount).toFixed(2),
+            ...doubleEntry(parentAmount, bank, split.offsetAccount),
+          },
+        }),
+        this.prisma.bankTransaction.update({
+          where: { id: from.id },
+          data: { amount: signedLike(parentAmount, left).toFixed(2) },
+        }),
+      ]);
+    } else if (input.amount !== undefined) {
       const others = await this.prisma.bankTransaction.findMany({
         where: { splitOfId: parent.id, id: { not: id } },
         select: { amount: true },
@@ -304,15 +356,59 @@ export class SplitsService {
       await this.products.saveRule(scope, itemName, after.offsetAccount);
     }
     // step9: a split with a sub-name gives its transaction one too ("<name> - <category>").
-    await syncParentSubNames(this.prisma, scope, [parent.id]);
+    await this.afterChange(scope, parent.id);
   }
 
-  /** step2 (2026-11-15): one split removed; what it took goes back to its transaction. */
+  /**
+   * step2 (2026-11-15): one split removed; what it took goes back to its transaction.
+   * step9 (2026-11-17): the splits cut from it go with it, and a split cut from another
+   * split gives all of it back to that split.
+   */
   async remove(scope: BookScope, id: number): Promise<void> {
     const split = await this.findSplit(scope, id);
-    await this.prisma.bankTransaction.delete({ where: { id } });
-    await dropUnusedSubName(this.prisma, scope, split.subNameId);
-    await syncParentSubNames(this.prisma, scope, [split.splitOfId!]);
+    const family = await this.prisma.bankTransaction.findMany({
+      where: { splitOfId: split.splitOfId! },
+      select: { id: true, parentSplitId: true, amount: true, subNameId: true },
+    });
+    const gone = new Set(subtreeIds(family, id));
+    const subtree = family.filter((r) => gone.has(r.id));
+    const from =
+      split.parentSplitId !== null
+        ? family.find((r) => r.id === split.parentSplitId)
+        : undefined;
+    const parentAmount = Number(split.splitOf!.amount);
+    const centsOf = (v: { toString(): string }) =>
+      Math.abs(Math.round(Number(v) * 100));
+    const back = from
+      ? centsOf(from.amount) +
+        subtree.reduce((n, r) => n + centsOf(r.amount), 0)
+      : 0;
+    await this.prisma.$transaction([
+      ...(from
+        ? [
+            this.prisma.bankTransaction.update({
+              where: { id: from.id },
+              data: {
+                amount: signedLike(parentAmount, back / 100).toFixed(2),
+              },
+            }),
+          ]
+        : []),
+      // The FK cascades to the splits cut from it.
+      this.prisma.bankTransaction.delete({ where: { id } }),
+    ]);
+    for (const sub of new Set(subtree.map((r) => r.subNameId)))
+      await dropUnusedSubName(this.prisma, scope, sub);
+    await this.afterChange(scope, split.splitOfId!);
+  }
+
+  /**
+   * After any split change: the transaction's own sub-name (step9), then the sub-name rule
+   * of its description (step9, 2026-11-17).
+   */
+  private async afterChange(scope: BookScope, parentId: number): Promise<void> {
+    await syncParentSubNames(this.prisma, scope, [parentId]);
+    await this.names.syncSubNameRules(scope, [parentId]);
   }
 
   /**

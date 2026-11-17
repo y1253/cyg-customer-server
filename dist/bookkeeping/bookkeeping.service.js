@@ -389,16 +389,22 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 ruleOf.has(r.splitRuleId) && { splitRule: ruleOf.get(r.splitRuleId) }),
             ...(attachmentsOf.has(r.id) && { attachments: attachmentsOf.get(r.id) }),
         });
-        const splitsOf = new Map();
+        const familyOf = new Map();
         for (const r of rows) {
             if (!r.splitOfId)
                 continue;
-            const list = splitsOf.get(r.splitOfId) ?? [];
-            list.push(viewOf(r));
-            splitsOf.set(r.splitOfId, list);
+            familyOf.set(r.splitOfId, [...(familyOf.get(r.splitOfId) ?? []), r]);
         }
-        for (const list of splitsOf.values())
-            list.sort((a, b) => a.id - b.id);
+        const splitsOf = new Map();
+        for (const [parentId, family] of familyOf) {
+            splitsOf.set(parentId, (0, splits_util_1.splitTree)(family).map(({ row, depth }) => ({
+                ...viewOf(row),
+                ...(row.parentSplitId !== null && {
+                    parentSplitId: row.parentSplitId,
+                }),
+                depth,
+            })));
+        }
         const wanted = statementIds?.length ? new Set(statementIds) : null;
         const openings = (0, opening_balance_util_1.openingRows)(statements).filter((o) => !wanted || wanted.has(o.statementId));
         const keyed = [

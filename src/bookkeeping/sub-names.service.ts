@@ -378,6 +378,14 @@ export class SubNamesService implements OnApplicationBootstrap {
     to: number | null,
     category: string,
   ): Promise<void> {
+    // step9 (2026-11-17): a description rule that files rows under it follows them.
+    await this.prisma.customerNameRule.updateMany({
+      where: { ...scopeWhere(scope), subNameId: from },
+      data:
+        to === null
+          ? { subNameId: null, category: null }
+          : { subNameId: to, category },
+    });
     const rows = await this.prisma.bankTransaction.findMany({
       where: { ...scopeWhere(scope), subNameId: from },
       select: {

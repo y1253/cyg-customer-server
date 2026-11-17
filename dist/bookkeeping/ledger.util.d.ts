@@ -14,6 +14,7 @@ export interface Provenance {
     personalRuleId: number | null;
     exceptionRuleId: number | null;
     ruleName: string | null;
+    subNameId?: number | null;
 }
 export interface LedgerRow {
     position: number;
@@ -30,6 +31,7 @@ export interface LedgerRow {
     personalRuleId?: number | null;
     exceptionRuleId?: number | null;
     ruleName?: string | null;
+    subNameId?: number | null;
     manualEdit?: boolean;
 }
 export declare function doubleEntry(amount: number, bankAccount: string, offsetAccount: string): {

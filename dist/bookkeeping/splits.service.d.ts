@@ -37,6 +37,7 @@ export declare class SplitsService {
     }>;
     edit(scope: BookScope, id: number, input: SplitEdit): Promise<void>;
     remove(scope: BookScope, id: number): Promise<void>;
+    private afterChange;
     setProduct(scope: BookScope, id: number, itemName: string): Promise<void>;
     private findSplit;
     private setCategory;

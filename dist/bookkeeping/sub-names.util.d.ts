@@ -7,6 +7,7 @@ export interface ParentRow {
         parent: string;
         category: string;
     } | null;
+    fromRule?: boolean;
 }
 export declare function parentSubName(p: ParentRow): {
     want: {
