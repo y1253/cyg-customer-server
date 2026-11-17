@@ -170,7 +170,7 @@ let BookkeepingController = class BookkeepingController {
         return this.subNames.remove(scope, id);
     }
     async mergeNames(scope, dto) {
-        await this.nameMemory.mergeNames(scope, dto.from, dto.into);
+        await this.subNames.merge(scope, dto);
         return this.tax.names(scope);
     }
     async resetNameRule(scope, dto) {
@@ -557,7 +557,7 @@ __decorate([
     __param(0, (0, book_scope_guard_1.Book)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, agency_dto_1.MergeDto]),
+    __metadata("design:paramtypes", [Object, agency_dto_1.MergeNamesDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "mergeNames", null);
 __decorate([

@@ -307,6 +307,46 @@ let TaxService = class TaxService {
                 ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
                 : []), rulesById).descriptionsOf,
         ].map(([k, v]) => [Number(k.slice(1)), v]));
+        const printed = new Map();
+        for (const r of [...named, ...nameless]) {
+            const k = (0, name_memory_util_1.descriptionKey)(r.description);
+            if (k && !printed.has(k))
+                printed.set(k, r.description);
+        }
+        for (const r of rules) {
+            if (r.matchType !== 'DESCRIPTION' || !r.subNameId)
+                continue;
+            const list = (subDescriptions[r.subNameId] ??= []);
+            if (list.some((d) => d.key === r.matchKey))
+                continue;
+            if (list.length >= MAX_DESCRIPTIONS)
+                continue;
+            list.push({
+                key: r.matchKey,
+                description: printed.get(r.matchKey) ?? r.matchKey,
+                category: r.category ?? chart_of_accounts_1.UNCATEGORIZED,
+                rows: 0,
+                rule: {
+                    id: r.id,
+                    matchType: 'DESCRIPTION',
+                    matchKey: r.matchKey,
+                    text: r.matchKey,
+                    subName: ruleSubName.get(r.subNameId),
+                },
+                exceptions: [],
+            });
+        }
+        const subContains = {};
+        for (const r of rules) {
+            if (r.matchType !== 'CONTAINS' || !r.subNameId)
+                continue;
+            (subContains[r.subNameId] ??= []).push({
+                key: r.matchKey,
+                text: r.includeChars ?? r.matchKey,
+                category: r.category,
+                rows: [...named, ...nameless].filter((t) => !t.splitOfId && t.personalRuleId === r.id).length,
+            });
+        }
         const shareOf = rowShares([...named, ...nameless]);
         const totalOf = new Map();
         for (const r of named) {
@@ -480,6 +520,7 @@ let TaxService = class TaxService {
             containsRules,
             groups: groupList,
             subDescriptions,
+            subContains,
         };
     }
     async namesOfFiles(scope) {

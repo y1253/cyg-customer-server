@@ -113,6 +113,25 @@ export async function refuseWrapper(
 }
 
 /**
+ * step9 (2026-11-17, third request): a split rule's own sub-name ("Walmart - GST") holds the
+ * rule's splits — it is never merged into anything.
+ */
+export async function refuseRuleSubName(
+  prisma: PrismaService,
+  scope: BookScope,
+  id: number,
+  name: string,
+): Promise<void> {
+  const ruled = await prisma.bankTransaction.count({
+    where: { bookId: scope.bookId, subNameId: id, splitRuleId: { not: null } },
+  });
+  if (ruled)
+    throw new BadRequestException(
+      `“${name}” holds a split rule's splits — it cannot be merged`,
+    );
+}
+
+/**
  * step9 (2026-11-17, second request): every row of a wrapper name sits under the sub-name of
  * its own category (`subNameFiling`) — made if new. Rule splits keep theirs. Run after
  * `syncParentSubNames` (which calls it), statement reads and bank feeds. A sub-name left with

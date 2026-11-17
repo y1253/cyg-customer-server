@@ -19,6 +19,7 @@ import {
   copyParentPicks,
   deleteSubName,
   ensureSubName,
+  refuseRuleSubName,
   syncParentSubNames,
 } from './sub-name-parents';
 import {
@@ -409,6 +410,51 @@ export class SubNamesService implements OnApplicationBootstrap {
     await this.moveRows(scope, id, null, category);
     await deleteSubName(this.prisma, id);
     await syncParentSubNames(this.prisma, scope);
+  }
+
+  /**
+   * step9 (2026-11-17, third request): a sub-name works like a name on the Names tab — drag
+   * a name or sub-name onto a name or sub-name. Two sub-names of one name join (its category);
+   * the rest is `NameMemoryService` (`mergeNames`, `mergeIntoSubName`, `mergeSubName`).
+   */
+  async merge(
+    scope: BookScope,
+    input: {
+      from?: string;
+      fromSubNameId?: number;
+      into?: string;
+      intoSubNameId?: number;
+    },
+  ): Promise<void> {
+    const fromSub = input.fromSubNameId ?? null;
+    const intoSub = input.intoSubNameId ?? null;
+    if (
+      (input.from == null) === (fromSub == null) ||
+      (input.into == null) === (intoSub == null)
+    )
+      throw new BadRequestException(
+        'Pick one name or sub-name, and the one to merge it into',
+      );
+    if (fromSub == null && intoSub == null)
+      return this.names.mergeNames(scope, input.from!, input.into!);
+    if (fromSub == null)
+      return this.names.mergeIntoSubName(scope, input.from!, intoSub!);
+    if (intoSub != null) {
+      const [a, b] = await Promise.all([
+        this.get(scope, fromSub),
+        this.get(scope, intoSub),
+      ]);
+      if (a.id === b.id)
+        throw new BadRequestException('That is the same sub-name.');
+      if (a.nameId === b.nameId) {
+        await refuseRuleSubName(this.prisma, scope, a.id, a.name);
+        return this.setCategory(scope, a.id, b.category);
+      }
+    }
+    return this.names.mergeSubName(scope, fromSub, {
+      name: input.into,
+      subNameId: intoSub ?? undefined,
+    });
   }
 
   private async get(scope: BookScope, id: number) {

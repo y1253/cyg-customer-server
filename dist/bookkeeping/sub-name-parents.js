@@ -4,6 +4,7 @@ exports.ensureSubName = ensureSubName;
 exports.copyParentPicks = copyParentPicks;
 exports.wrapperNames = wrapperNames;
 exports.refuseWrapper = refuseWrapper;
+exports.refuseRuleSubName = refuseRuleSubName;
 exports.fileUnderSubNames = fileUnderSubNames;
 exports.ledgerNameId = ledgerNameId;
 exports.dropUnusedSubName = dropUnusedSubName;
@@ -83,6 +84,13 @@ async function refuseWrapper(prisma, scope, name) {
     });
     if (subs)
         throw new common_1.BadRequestException(`“${clean}” is a group of its sub-names — change one of its sub-names instead`);
+}
+async function refuseRuleSubName(prisma, scope, id, name) {
+    const ruled = await prisma.bankTransaction.count({
+        where: { bookId: scope.bookId, subNameId: id, splitRuleId: { not: null } },
+    });
+    if (ruled)
+        throw new common_1.BadRequestException(`“${name}” holds a split rule's splits — it cannot be merged`);
 }
 async function fileUnderSubNames(prisma, scope) {
     const wrappers = await wrapperNames(prisma, scope);

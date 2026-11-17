@@ -44,6 +44,12 @@ export declare class SubNamesService implements OnApplicationBootstrap {
     setSettings(scope: BookScope, id: number, input: SubNameSettings): Promise<void>;
     private refuseTaken;
     remove(scope: BookScope, id: number): Promise<void>;
+    merge(scope: BookScope, input: {
+        from?: string;
+        fromSubNameId?: number;
+        into?: string;
+        intoSubNameId?: number;
+    }): Promise<void>;
     private get;
     private parentName;
     private moveRows;

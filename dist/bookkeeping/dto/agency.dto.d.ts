@@ -102,6 +102,12 @@ export declare class MergeDto {
     from: string;
     into: string;
 }
+export declare class MergeNamesDto {
+    from?: string;
+    fromSubNameId?: number;
+    into?: string;
+    intoSubNameId?: number;
+}
 export declare class MergeAccountsDto extends MergeDto {
     name?: string;
 }

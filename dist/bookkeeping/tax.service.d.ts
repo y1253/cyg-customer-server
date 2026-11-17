@@ -98,6 +98,7 @@ export interface NamesView {
     containsRules: ContainsRuleView[];
     groups: NameGroupView[];
     subDescriptions: Record<number, NameDescriptionView[]>;
+    subContains: Record<number, NameView['followsContains']>;
 }
 export interface NameGroupView {
     key: string;

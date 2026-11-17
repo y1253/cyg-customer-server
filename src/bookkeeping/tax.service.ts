@@ -209,6 +209,11 @@ export interface NamesView {
    * name with sub-names is only a wrapper, its sub-names hold its descriptions.
    */
   subDescriptions: Record<number, NameDescriptionView[]>;
+  /**
+   * step9 (2026-11-17, third request): each sub-name's "description contains" rules (by
+   * sub-name id) — like a name's `followsContains`.
+   */
+  subContains: Record<number, NameView['followsContains']>;
 }
 
 /** step9: a Names-tab group. `key` is what `LedgerName.group` stores. */
@@ -552,18 +557,58 @@ export class TaxService {
       rulesById,
     );
     // step9 (2026-11-17, second request): the same, per sub-name (keyed "#<id>").
-    const subDescriptions = Object.fromEntries(
-      [
-        ...groupDescriptions(
-          named.flatMap((r) =>
-            r.subNameId
-              ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
-              : [],
-          ),
-          rulesById,
-        ).descriptionsOf,
-      ].map(([k, v]) => [Number(k.slice(1)), v]),
-    );
+    const subDescriptions: Record<number, NameDescriptionView[]> =
+      Object.fromEntries(
+        [
+          ...groupDescriptions(
+            named.flatMap((r) =>
+              r.subNameId
+                ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
+                : [],
+            ),
+            rulesById,
+          ).descriptionsOf,
+        ].map(([k, v]) => [Number(k.slice(1)), v]),
+      );
+    // step9 (2026-11-17, third request): a description a rule assigns to a sub-name is shown
+    // even before a row of it arrives (printed as one of the book's rows of it, else its key).
+    const printed = new Map<string, string>();
+    for (const r of [...named, ...nameless]) {
+      const k = descriptionKey(r.description);
+      if (k && !printed.has(k)) printed.set(k, r.description);
+    }
+    for (const r of rules) {
+      if (r.matchType !== 'DESCRIPTION' || !r.subNameId) continue;
+      const list = (subDescriptions[r.subNameId] ??= []);
+      if (list.some((d) => d.key === r.matchKey)) continue;
+      if (list.length >= MAX_DESCRIPTIONS) continue;
+      list.push({
+        key: r.matchKey,
+        description: printed.get(r.matchKey) ?? r.matchKey,
+        category: r.category ?? UNCATEGORIZED,
+        rows: 0,
+        rule: {
+          id: r.id,
+          matchType: 'DESCRIPTION',
+          matchKey: r.matchKey,
+          text: r.matchKey,
+          subName: ruleSubName.get(r.subNameId),
+        },
+        exceptions: [],
+      });
+    }
+    const subContains: Record<number, NameView['followsContains']> = {};
+    for (const r of rules) {
+      if (r.matchType !== 'CONTAINS' || !r.subNameId) continue;
+      (subContains[r.subNameId] ??= []).push({
+        key: r.matchKey,
+        text: r.includeChars ?? r.matchKey,
+        category: r.category,
+        rows: [...named, ...nameless].filter(
+          (t) => !t.splitOfId && t.personalRuleId === r.id,
+        ).length,
+      });
+    }
     const shareOf = rowShares([...named, ...nameless]);
     const totalOf = new Map<string, number>();
     for (const r of named) {
@@ -779,6 +824,7 @@ export class TaxService {
       containsRules,
       groups: groupList,
       subDescriptions,
+      subContains,
     };
   }
 

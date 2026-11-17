@@ -276,6 +276,33 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         await (0, sub_name_parents_1.deleteSubName)(this.prisma, id);
         await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope);
     }
+    async merge(scope, input) {
+        const fromSub = input.fromSubNameId ?? null;
+        const intoSub = input.intoSubNameId ?? null;
+        if ((input.from == null) === (fromSub == null) ||
+            (input.into == null) === (intoSub == null))
+            throw new common_1.BadRequestException('Pick one name or sub-name, and the one to merge it into');
+        if (fromSub == null && intoSub == null)
+            return this.names.mergeNames(scope, input.from, input.into);
+        if (fromSub == null)
+            return this.names.mergeIntoSubName(scope, input.from, intoSub);
+        if (intoSub != null) {
+            const [a, b] = await Promise.all([
+                this.get(scope, fromSub),
+                this.get(scope, intoSub),
+            ]);
+            if (a.id === b.id)
+                throw new common_1.BadRequestException('That is the same sub-name.');
+            if (a.nameId === b.nameId) {
+                await (0, sub_name_parents_1.refuseRuleSubName)(this.prisma, scope, a.id, a.name);
+                return this.setCategory(scope, a.id, b.category);
+            }
+        }
+        return this.names.mergeSubName(scope, fromSub, {
+            name: input.into,
+            subNameId: intoSub ?? undefined,
+        });
+    }
     async get(scope, id) {
         const sub = await this.prisma.subName.findFirst({
             where: { id, bookId: scope.bookId, customerId: scope.customerId },

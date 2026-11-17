@@ -106,6 +106,8 @@ const fakeTax = () => ({
   mergeNameFields: jest.fn().mockResolvedValue(undefined),
   moveNameFiles: jest.fn().mockResolvedValue(undefined),
   moveSubNames: jest.fn().mockResolvedValue(undefined),
+  moveSubNameKeys: jest.fn().mockResolvedValue(undefined),
+  dropSubNameKeys: jest.fn().mockResolvedValue(undefined),
 });
 
 /** The general book of customer 7. */
@@ -697,6 +699,179 @@ describe('NameMemoryService.mergeNames (step8)', () => {
       s.mergeNames(BOOK as never, 'amazon', 'Amazon'),
     ).rejects.toThrow(/same name/);
     expect(prisma.bankTransaction.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 third request)', () => {
+  const SUB = {
+    id: 24,
+    nameId: 5,
+    bookId: undefined,
+    name: 'Amazon - Office',
+    category: 'Office Expense',
+    fields: null,
+  };
+  const withSubs = (
+    base: ReturnType<typeof fakePrisma>['prisma'],
+    subs: Array<typeof SUB>,
+    parents: Record<number, string>,
+  ) => ({
+    ...base,
+    bankTransaction: {
+      ...base.bankTransaction,
+      count: jest.fn().mockResolvedValue(0),
+    },
+    taxAgency: { findMany: jest.fn().mockResolvedValue([]) },
+    ledgerNameAgency: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    ledgerName: {
+      ...base.ledgerName,
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findUnique: jest.fn(({ where }: { where: { id: number } }) =>
+        Promise.resolve(parents[where.id] ? { name: parents[where.id] } : null),
+      ),
+    },
+    subName: {
+      findFirst: jest.fn(({ where }: { where: { id: number } }) =>
+        Promise.resolve(subs.find((s) => s.id === where.id) ?? null),
+      ),
+      findUnique: jest.fn().mockResolvedValue(null),
+      count: jest.fn().mockResolvedValue(0),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      update: jest.fn().mockResolvedValue({}),
+    },
+  });
+
+  it('a name dropped on a sub-name: its rows go under the sub-name, in its category, and later rows follow', async () => {
+    const fake = fakePrisma([
+      {
+        id: 1,
+        description: 'AMZN MKTP',
+        name: 'Amzn',
+        amount: money(-20),
+        offsetAccount: 'Supplies',
+        debitAccount: 'Supplies',
+        creditAccount: 'BMO 1234',
+      },
+    ]);
+    const prisma = withSubs(fake.prisma, [SUB], { 5: 'Amazon' });
+    const tax = fakeTax();
+    await service(prisma, tax).mergeIntoSubName(BOOK as never, 'Amzn', 24);
+    expect(state(fake.rows[0])).toEqual([
+      'Amazon',
+      'Office Expense',
+      'Office Expense',
+      'BMO 1234',
+    ]);
+    expect(fake.rows[0]).toMatchObject({ subNameId: 24 });
+    // Its description / contains rules now file rows under the sub-name.
+    expect(prisma.customerNameRule.updateMany).toHaveBeenCalledWith({
+      where: {
+        customerId: 7,
+        companyId: null,
+        name: 'Amzn',
+        matchType: { in: ['DESCRIPTION', 'CONTAINS'] },
+      },
+      data: { name: 'Amazon', subNameId: 24, category: 'Office Expense' },
+    });
+    // A NAME rule with the sub-name's category: a later Amzn row is filed under it.
+    expect(createdRules(prisma)).toContainEqual(
+      expect.objectContaining({
+        matchType: 'NAME',
+        matchKey: 'amzn',
+        name: 'Amazon',
+        category: 'Office Expense',
+      }),
+    );
+    expect(tax.moveNameFiles).toHaveBeenCalledWith(
+      BOOK,
+      ['Amzn'],
+      'Amazon - Office',
+    );
+    expect(tax.mergeNameFields).not.toHaveBeenCalled();
+  });
+
+  it('a sub-name dropped on a regular name: its rows become that name, a rule keeps its description there, and it goes', async () => {
+    const fake = fakePrisma([]);
+    const rows = [
+      {
+        id: 9,
+        description: 'WALMART SUPPLY 1',
+        name: 'Walmart',
+        amount: money(-30),
+        offsetAccount: 'Supplies',
+        debitAccount: 'Supplies',
+        creditAccount: 'BMO 1234',
+        subNameId: 30,
+        personalRuleId: null,
+        splitOfId: null,
+        splitOf: null,
+      },
+    ];
+    const from = {
+      ...SUB,
+      id: 30,
+      name: 'Walmart - Supplies',
+      category: 'Supplies',
+    };
+    const prisma = withSubs(fake.prisma, [from], { 5: 'Walmart' });
+    prisma.bankTransaction.findMany = jest.fn(
+      ({ where }: { where: { subNameId?: number } }) =>
+        Promise.resolve(
+          where.subNameId === 30 || where.subNameId === undefined ? rows : [],
+        ),
+    ) as never;
+    // Staples' own category.
+    prisma.bankTransaction.groupBy.mockResolvedValue([
+      { offsetAccount: 'Office Expense', _count: { _all: 3 } },
+    ]);
+    const tax = fakeTax();
+    await service(prisma, tax).mergeSubName(BOOK as never, 30, {
+      name: 'Staples',
+    });
+    const [[moved]] = prisma.bankTransaction.update.mock.calls as unknown as [
+      [{ where: { id: number }; data: Record<string, unknown> }],
+    ];
+    expect(moved.where).toEqual({ id: 9 });
+    expect(moved.data).toMatchObject({
+      name: 'Staples',
+      subNameId: null,
+      offsetAccount: 'Office Expense',
+      debitAccount: 'Office Expense',
+      creditAccount: 'BMO 1234',
+    });
+    expect(createdRules(prisma)).toContainEqual(
+      expect.objectContaining({
+        matchType: 'DESCRIPTION',
+        matchKey: 'walmart supply',
+        name: 'Staples',
+        subNameId: null,
+      }),
+    );
+    expect(tax.dropSubNameKeys).toHaveBeenCalledWith(
+      BOOK,
+      'Walmart - Supplies',
+      'Staples',
+    );
+  });
+
+  it("refuses the same sub-name, a wrapper and a split rule's sub-name", async () => {
+    const fake = fakePrisma([]);
+    const gst = { ...SUB, id: 31, name: 'Amazon - GST', category: 'GST' };
+    const prisma = withSubs(fake.prisma, [SUB, gst], { 5: 'Amazon' });
+    const s = service(prisma);
+    await expect(
+      s.mergeSubName(BOOK as never, 24, { subNameId: 24 }),
+    ).rejects.toThrow(/same sub-name/);
+    // Its own parent has sub-names: it is a wrapper.
+    prisma.ledgerName.findFirst.mockResolvedValue({ id: 5 });
+    prisma.subName.count.mockResolvedValue(2);
+    await expect(
+      s.mergeSubName(BOOK as never, 24, { name: 'Amazon' }),
+    ).rejects.toThrow(/group of its sub-names/);
+    prisma.bankTransaction.count.mockResolvedValue(3);
+    await expect(
+      s.mergeSubName(BOOK as never, 31, { name: 'Staples' }),
+    ).rejects.toThrow(/split rule/);
   });
 });
 

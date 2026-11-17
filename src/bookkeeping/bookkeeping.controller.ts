@@ -62,7 +62,7 @@ import {
   ResetAccountTypeDto,
   MergeAccountsDto,
   RenameAccountDto,
-  MergeDto,
+  MergeNamesDto,
   NameGroupDto,
   SetNameFieldsDto,
   SetNameGroupDto,
@@ -386,14 +386,15 @@ export class BookkeepingController {
   /**
    * step8: merge one name into another (Names tab: drag one onto the other) — its rows take
    * the target's name, category and tax. Tax agencies cannot be merged.
+   * step9 (2026-11-17, third request): sub-names too (`fromSubNameId` / `intoSubNameId`).
    */
   @Post('names/merge')
   @HttpCode(200)
   async mergeNames(
     @Book() scope: BookScope,
-    @Body() dto: MergeDto,
+    @Body() dto: MergeNamesDto,
   ): Promise<NamesView> {
-    await this.nameMemory.mergeNames(scope, dto.from, dto.into);
+    await this.subNames.merge(scope, dto);
     return this.tax.names(scope);
   }
 

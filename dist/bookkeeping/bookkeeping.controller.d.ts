@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
@@ -70,7 +70,7 @@ export declare class BookkeepingController {
     setSubNameCategory(scope: BookScope, id: number, dto: SetSubNameCategoryDto): Promise<void>;
     setSubNameSettings(scope: BookScope, id: number, dto: SubNameSettingsDto): Promise<void>;
     deleteSubName(scope: BookScope, id: number): Promise<void>;
-    mergeNames(scope: BookScope, dto: MergeDto): Promise<NamesView>;
+    mergeNames(scope: BookScope, dto: MergeNamesDto): Promise<NamesView>;
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;
     products(scope: BookScope): Promise<ProductView[]>;
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;

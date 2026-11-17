@@ -28,6 +28,13 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     editTransaction(scope: BookScope, id: number, input: Parameters<NameMemoryService['applyEdit']>[2]): Promise<void>;
     setCategoryOfName(scope: BookScope, name: string, category: string): Promise<void>;
     mergeNames(scope: BookScope, from: string, into: string): Promise<void>;
+    mergeIntoSubName(scope: BookScope, from: string, subNameId: number): Promise<void>;
+    mergeSubName(scope: BookScope, fromId: number, into: {
+        name?: string;
+        subNameId?: number;
+    }): Promise<void>;
+    private subNameOfBook;
+    private addFields;
     resetRule(scope: BookScope, input: Parameters<NameMemoryService['applyReset']>[1]): Promise<void>;
     syncSubNameRules(scope: BookScope, parentIds: number[]): Promise<void>;
     private syncSubNameRule;

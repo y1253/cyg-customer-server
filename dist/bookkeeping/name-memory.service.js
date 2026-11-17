@@ -253,6 +253,184 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.applyMerge(scope, from, into);
         await this.syncProvenance(scope);
     }
+    async mergeIntoSubName(scope, from, subNameId) {
+        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, from);
+        const sub = await this.subNameOfBook(scope, subNameId);
+        await this.applyMerge(scope, from, sub.parent, sub);
+        await this.syncProvenance(scope);
+    }
+    async mergeSubName(scope, fromId, into) {
+        const from = await this.subNameOfBook(scope, fromId);
+        await (0, sub_name_parents_1.refuseRuleSubName)(this.prisma, scope, from.id, from.name);
+        let target;
+        if (into.subNameId != null) {
+            const sub = await this.subNameOfBook(scope, into.subNameId);
+            if (sub.id === from.id)
+                throw new common_1.BadRequestException('That is the same sub-name.');
+            target = { name: sub.parent, category: sub.category, sub };
+        }
+        else {
+            const name = (0, name_memory_util_1.cleanName)(into.name);
+            if (!name)
+                throw new common_1.BadRequestException('Pick a name to merge it into.');
+            await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, name);
+            if ((0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+                throw new common_1.BadRequestException('"Unclarified name" cannot be merged — give its rows a name instead.');
+            const agencies = await this.prisma.taxAgency.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+                select: { name: true },
+            });
+            if (agencies.some((a) => (0, name_memory_util_1.nameKey)(a.name) === (0, name_memory_util_1.nameKey)(name)))
+                throw new common_1.BadRequestException(`"${name}" is a tax agency — tax agencies cannot be merged.`);
+            target = {
+                name,
+                category: (await this.categoryOfName(scope, name)) ?? chart_of_accounts_1.UNCATEGORIZED,
+                sub: null,
+            };
+        }
+        const subId = target.sub?.id ?? null;
+        const moved = await this.prisma.customerNameRule.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), subNameId: from.id },
+            select: { id: true },
+        });
+        await this.prisma.customerNameRule.updateMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), subNameId: from.id },
+            data: {
+                name: target.name,
+                subNameId: subId,
+                category: subId ? target.category : null,
+            },
+        });
+        const movedIds = new Set(moved.map((r) => r.id));
+        const rows = await this.prisma.bankTransaction.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), subNameId: from.id },
+            select: {
+                ...MATCH_SELECT,
+                splitOfId: true,
+                splitOf: {
+                    select: { amount: true, debitAccount: true, creditAccount: true },
+                },
+            },
+        });
+        const tops = rows.filter((r) => !r.splitOfId);
+        const keys = [...new Set(tops.map((r) => (0, name_memory_util_1.descriptionKey)(r.description)))]
+            .filter(Boolean)
+            .filter((key) => tops.some((r) => (0, name_memory_util_1.descriptionKey)(r.description) === key &&
+            !(r.personalRuleId && movedIds.has(r.personalRuleId))));
+        const ruleOf = new Map();
+        if (keys.length) {
+            const book = await this.prisma.bankTransaction.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), splitOfId: null },
+                select: { description: true, subNameId: true },
+            });
+            for (const key of keys) {
+                const elsewhere = book.some((r) => r.subNameId !== from.id && (0, name_memory_util_1.descriptionKey)(r.description) === key);
+                if (elsewhere)
+                    continue;
+                const where = {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    matchType: 'DESCRIPTION',
+                    matchKey: key,
+                };
+                const data = {
+                    name: target.name,
+                    category: subId ? target.category : null,
+                    subNameId: subId,
+                };
+                const previous = await this.prisma.customerNameRule.findFirst({
+                    where,
+                    select: { id: true },
+                });
+                await this.upsertRule(previous, { ...where, ...data }, data);
+                const rule = await this.prisma.customerNameRule.findFirst({
+                    where,
+                    select: { id: true },
+                });
+                if (rule)
+                    ruleOf.set(key, rule.id);
+            }
+        }
+        if (rows.length)
+            await this.prisma.$transaction(rows.map((r) => {
+                const of = r.splitOf ?? r;
+                const amount = Number(of.amount);
+                const bank = amount < 0 ? of.creditAccount : of.debitAccount;
+                const ruleId = r.splitOfId
+                    ? undefined
+                    : ruleOf.get((0, name_memory_util_1.descriptionKey)(r.description));
+                return this.prisma.bankTransaction.update({
+                    where: { id: r.id },
+                    data: {
+                        name: target.name,
+                        subNameId: subId,
+                        offsetAccount: target.category,
+                        ...(0, ledger_util_1.doubleEntry)(amount, bank, target.category),
+                        ...(ruleId !== undefined && { personalRuleId: ruleId }),
+                    },
+                });
+            }));
+        if (target.sub) {
+            await this.tax.moveSubNameKeys(scope, from.name, target.sub.name);
+            await this.addFields(scope, from.fields, { subNameId: target.sub.id });
+        }
+        else {
+            await this.tax.dropSubNameKeys(scope, from.name, target.name);
+            await this.addFields(scope, from.fields, { name: target.name });
+        }
+        await (0, sub_name_parents_1.deleteSubName)(this.prisma, from.id);
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`);
+        await this.syncProvenance(scope);
+    }
+    async subNameOfBook(scope, id) {
+        const sub = await this.prisma.subName.findFirst({
+            where: { id, bookId: scope.bookId, customerId: scope.customerId },
+        });
+        const parent = sub
+            ? await this.prisma.ledgerName.findUnique({
+                where: { id: sub.nameId },
+                select: { name: true },
+            })
+            : null;
+        if (!sub || !parent)
+            throw new common_1.NotFoundException('Sub-name not found');
+        return { ...sub, parent: parent.name };
+    }
+    async addFields(scope, raw, into) {
+        const extra = (0, tax_service_1.parseNameFields)(raw);
+        if (!extra.length)
+            return;
+        const merged = (own) => {
+            const seen = new Set(own.map((f) => `${f.kind}|${f.value.toLowerCase()}`));
+            return [
+                ...own,
+                ...extra.filter((f) => !seen.has(`${f.kind}|${f.value.toLowerCase()}`)),
+            ];
+        };
+        if ('subNameId' in into) {
+            const sub = await this.prisma.subName.findUnique({
+                where: { id: into.subNameId },
+                select: { fields: true },
+            });
+            await this.prisma.subName.update({
+                where: { id: into.subNameId },
+                data: { fields: merged((0, tax_service_1.parseNameFields)(sub?.fields)) },
+            });
+            return;
+        }
+        const row = await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: into.name },
+            select: { id: true, fields: true },
+        });
+        if (row)
+            await this.prisma.ledgerName.update({
+                where: { id: row.id },
+                data: { fields: merged((0, tax_service_1.parseNameFields)(row.fields)) },
+            });
+        else
+            await this.prisma.ledgerName.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), name: into.name, fields: merged([]) },
+            });
+    }
     async resetRule(scope, input) {
         await this.applyReset(scope, input);
         await this.syncProvenance(scope);
@@ -894,7 +1072,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const hit = rules.find((r) => r.matchKey === key || (r.name && (0, name_memory_util_1.nameKey)(r.name) === key));
         return hit?.matchKey ?? key;
     }
-    async applyMerge(scope, from, into) {
+    async applyMerge(scope, from, into, sub) {
         const source = (0, name_memory_util_1.cleanName)(from);
         const target = (0, name_memory_util_1.cleanName)(into);
         if (!source || !target)
@@ -913,7 +1091,18 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const rows = await this.matchingRows(scope, 'NAME', (0, name_memory_util_1.nameKey)(source), new Set([(0, name_memory_util_1.nameKey)(source)]), true);
         if (!rows.length)
             throw new common_1.NotFoundException(`No rows are named "${source}".`);
-        const category = (await this.categoryOfName(scope, target)) ?? chart_of_accounts_1.UNCATEGORIZED;
+        const category = sub
+            ? sub.category
+            : ((await this.categoryOfName(scope, target)) ?? chart_of_accounts_1.UNCATEGORIZED);
+        if (sub)
+            await this.prisma.customerNameRule.updateMany({
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    name: source,
+                    matchType: { in: ['DESCRIPTION', 'CONTAINS'] },
+                },
+                data: { name: target, subNameId: sub.id, category: sub.category },
+            });
         await this.prisma.customerNameRule.updateMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
             data: { name: target },
@@ -924,12 +1113,25 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             matchKey: (0, name_memory_util_1.nameKey)(source),
         };
         const previous = await this.prisma.customerNameRule.findFirst({ where });
-        await this.upsertRule(previous, { ...where, name: target, category: null }, { name: target, category: null });
-        await this.writeRows(scope, rows, () => ({ name: target, category }));
-        if (category !== chart_of_accounts_1.UNCATEGORIZED)
+        const ruleCategory = sub?.category ?? null;
+        await this.upsertRule(previous, { ...where, name: target, category: ruleCategory }, { name: target, category: ruleCategory });
+        await this.writeRows(scope, rows, () => ({
+            name: target,
+            category,
+            ...(sub && { subNameId: sub.id }),
+        }));
+        if (!sub && category !== chart_of_accounts_1.UNCATEGORIZED)
             await this.setNameCategory(scope, target, category);
-        await this.tax.mergeNameFields(scope, source, target);
-        await this.tax.moveNameFiles(scope, [source], target);
+        if (sub) {
+            const own = await this.prisma.ledgerName.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+                select: { fields: true },
+            });
+            await this.addFields(scope, own?.fields, { subNameId: sub.id });
+        }
+        else
+            await this.tax.mergeNameFields(scope, source, target);
+        await this.tax.moveNameFiles(scope, [source], sub?.name ?? target);
         await this.tax.moveSubNames(scope, [source], target);
         await this.prisma.ledgerNameAgency.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
@@ -937,7 +1139,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.prisma.ledgerName.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });
-        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged name "${source}" into "${target}" (${rows.length} rows)`);
+        this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged name "${source}" into "${sub?.name ?? target}" (${rows.length} rows)`);
     }
     async applyReset(scope, input) {
         const matchKey = ruleKeyOf(input.matchType, input.matchKey);

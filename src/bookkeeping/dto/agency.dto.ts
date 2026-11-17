@@ -450,6 +450,34 @@ export class MergeDto {
 }
 
 /**
+ * step9 (2026-11-17, third request): merge names AND sub-names — a sub-name works like a
+ * name. Exactly one of `from` / `fromSubNameId`, and one of `into` / `intoSubNameId`.
+ */
+export class MergeNamesDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  from?: string;
+
+  @IsOptional()
+  @IsInt()
+  fromSubNameId?: number;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  into?: string;
+
+  @IsOptional()
+  @IsInt()
+  intoSubNameId?: number;
+}
+
+/**
  * step8: merge one account into another. step2 (2026-11-08): `name` = what the merged
  * account is called ("TD 4562 & 5845" for two bank folders); omitted = `into`'s name.
  */

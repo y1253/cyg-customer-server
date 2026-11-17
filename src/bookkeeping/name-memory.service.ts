@@ -16,12 +16,14 @@ import {
 import { doubleEntry, type ExtractedTransaction } from './ledger.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
 import {
+  deleteSubName,
   dropUnusedSubName,
   fileUnderSubNames,
+  refuseRuleSubName,
   refuseWrapper,
   syncParentSubNames,
 } from './sub-name-parents';
-import { TaxService } from './tax.service';
+import { parseNameFields, TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
   bankPayeeName,
@@ -396,6 +398,239 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await refuseWrapper(this.prisma, scope, into);
     await this.applyMerge(scope, from, into);
     await this.syncProvenance(scope);
+  }
+
+  /**
+   * step9 (2026-11-17, third request): a name dropped on a sub-name ("Staples" onto
+   * "Walmart - Office") — the name merge, with the sub-name as the target: every row of
+   * `from` becomes the sub-name's parent under that sub-name, in its category.
+   */
+  async mergeIntoSubName(
+    scope: BookScope,
+    from: string,
+    subNameId: number,
+  ): Promise<void> {
+    await refuseWrapper(this.prisma, scope, from);
+    const sub = await this.subNameOfBook(scope, subNameId);
+    await this.applyMerge(scope, from, sub.parent, sub);
+    await this.syncProvenance(scope);
+  }
+
+  /**
+   * step9 (2026-11-17, third request): a sub-name dropped on a sub-name of ANOTHER name, or on
+   * a regular name (`into.subNameId` / `into.name`). Its rows — splits too — take the target's
+   * name, sub-name and category; the rules that file rows under it follow; each of its
+   * descriptions whose rows are all its own gets an exact rule to the target (so a re-read or a
+   * new bank-feed row lands there too); its files, split rules and profile go to the target,
+   * and it is removed. Two sub-names of the SAME name join through `SubNamesService.setCategory`.
+   */
+  async mergeSubName(
+    scope: BookScope,
+    fromId: number,
+    into: { name?: string; subNameId?: number },
+  ): Promise<void> {
+    const from = await this.subNameOfBook(scope, fromId);
+    await refuseRuleSubName(this.prisma, scope, from.id, from.name);
+    let target: { name: string; category: string; sub: typeof from | null };
+    if (into.subNameId != null) {
+      const sub = await this.subNameOfBook(scope, into.subNameId);
+      if (sub.id === from.id)
+        throw new BadRequestException('That is the same sub-name.');
+      target = { name: sub.parent, category: sub.category, sub };
+    } else {
+      const name = cleanName(into.name);
+      if (!name) throw new BadRequestException('Pick a name to merge it into.');
+      // Its own parent (and any name with sub-names) is a wrapper: drop it on a sub-name.
+      await refuseWrapper(this.prisma, scope, name);
+      if (nameKey(name) === nameKey(UNCLARIFIED_NAME))
+        throw new BadRequestException(
+          '"Unclarified name" cannot be merged — give its rows a name instead.',
+        );
+      const agencies = await this.prisma.taxAgency.findMany({
+        where: { ...scopeWhere(scope), deletedAt: null },
+        select: { name: true },
+      });
+      if (agencies.some((a) => nameKey(a.name) === nameKey(name)))
+        throw new BadRequestException(
+          `"${name}" is a tax agency — tax agencies cannot be merged.`,
+        );
+      target = {
+        name,
+        category: (await this.categoryOfName(scope, name)) ?? UNCATEGORIZED,
+        sub: null,
+      };
+    }
+    const subId = target.sub?.id ?? null;
+
+    // The rules that filed rows under it now file them under the target.
+    const moved = await this.prisma.customerNameRule.findMany({
+      where: { ...scopeWhere(scope), subNameId: from.id },
+      select: { id: true },
+    });
+    await this.prisma.customerNameRule.updateMany({
+      where: { ...scopeWhere(scope), subNameId: from.id },
+      data: {
+        name: target.name,
+        subNameId: subId,
+        category: subId ? target.category : null,
+      },
+    });
+    const movedIds = new Set(moved.map((r) => r.id));
+
+    const rows = await this.prisma.bankTransaction.findMany({
+      where: { ...scopeWhere(scope), subNameId: from.id },
+      select: {
+        ...MATCH_SELECT,
+        splitOfId: true,
+        splitOf: {
+          select: { amount: true, debitAccount: true, creditAccount: true },
+        },
+      },
+    });
+    // A description gets its own rule only when every top-level row of it is this sub-name's.
+    const tops = rows.filter((r) => !r.splitOfId);
+    const keys = [...new Set(tops.map((r) => descriptionKey(r.description)))]
+      .filter(Boolean)
+      .filter((key) =>
+        tops.some(
+          (r) =>
+            descriptionKey(r.description) === key &&
+            !(r.personalRuleId && movedIds.has(r.personalRuleId)),
+        ),
+      );
+    const ruleOf = new Map<string, number>();
+    if (keys.length) {
+      const book = await this.prisma.bankTransaction.findMany({
+        where: { ...scopeWhere(scope), splitOfId: null },
+        select: { description: true, subNameId: true },
+      });
+      for (const key of keys) {
+        const elsewhere = book.some(
+          (r) =>
+            r.subNameId !== from.id && descriptionKey(r.description) === key,
+        );
+        if (elsewhere) continue;
+        const where = {
+          ...scopeWhere(scope),
+          matchType: 'DESCRIPTION' as const,
+          matchKey: key,
+        };
+        const data = {
+          name: target.name,
+          category: subId ? target.category : null,
+          subNameId: subId,
+        };
+        const previous = await this.prisma.customerNameRule.findFirst({
+          where,
+          select: { id: true },
+        });
+        await this.upsertRule(previous, { ...where, ...data }, data);
+        const rule = await this.prisma.customerNameRule.findFirst({
+          where,
+          select: { id: true },
+        });
+        if (rule) ruleOf.set(key, rule.id);
+      }
+    }
+
+    if (rows.length)
+      await this.prisma.$transaction(
+        rows.map((r) => {
+          // The bank side never changes; a split's sides follow its transaction's sign.
+          const of = r.splitOf ?? r;
+          const amount = Number(of.amount);
+          const bank = amount < 0 ? of.creditAccount : of.debitAccount;
+          const ruleId = r.splitOfId
+            ? undefined
+            : ruleOf.get(descriptionKey(r.description));
+          return this.prisma.bankTransaction.update({
+            where: { id: r.id },
+            data: {
+              name: target.name,
+              subNameId: subId,
+              offsetAccount: target.category,
+              ...doubleEntry(amount, bank, target.category),
+              ...(ruleId !== undefined && { personalRuleId: ruleId }),
+            },
+          });
+        }),
+      );
+
+    // Its split rules, files and profile go to the target; then it goes.
+    if (target.sub) {
+      await this.tax.moveSubNameKeys(scope, from.name, target.sub.name);
+      await this.addFields(scope, from.fields, { subNameId: target.sub.id });
+    } else {
+      await this.tax.dropSubNameKeys(scope, from.name, target.name);
+      await this.addFields(scope, from.fields, { name: target.name });
+    }
+    await deleteSubName(this.prisma, from.id);
+    this.logger.log(
+      `book ${bookLabel(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`,
+    );
+    await this.syncProvenance(scope);
+  }
+
+  /** step9 (2026-11-17, third request): a sub-name of the book with its parent's name. */
+  private async subNameOfBook(scope: BookScope, id: number) {
+    const sub = await this.prisma.subName.findFirst({
+      where: { id, bookId: scope.bookId, customerId: scope.customerId },
+    });
+    const parent = sub
+      ? await this.prisma.ledgerName.findUnique({
+          where: { id: sub.nameId },
+          select: { name: true },
+        })
+      : null;
+    if (!sub || !parent) throw new NotFoundException('Sub-name not found');
+    return { ...sub, parent: parent.name };
+  }
+
+  /**
+   * step9 (2026-11-17, third request): a merged name's / sub-name's profile fields join the
+   * target's — a sub-name's own, or a name's `LedgerName` (made when missing). A field the
+   * target already has (same kind and value) is not repeated.
+   */
+  private async addFields(
+    scope: BookScope,
+    raw: Prisma.JsonValue | null | undefined,
+    into: { subNameId: number } | { name: string },
+  ): Promise<void> {
+    const extra = parseNameFields(raw);
+    if (!extra.length) return;
+    const merged = (own: ReturnType<typeof parseNameFields>) => {
+      const seen = new Set(
+        own.map((f) => `${f.kind}|${f.value.toLowerCase()}`),
+      );
+      return [
+        ...own,
+        ...extra.filter((f) => !seen.has(`${f.kind}|${f.value.toLowerCase()}`)),
+      ] as unknown as Prisma.InputJsonValue;
+    };
+    if ('subNameId' in into) {
+      const sub = await this.prisma.subName.findUnique({
+        where: { id: into.subNameId },
+        select: { fields: true },
+      });
+      await this.prisma.subName.update({
+        where: { id: into.subNameId },
+        data: { fields: merged(parseNameFields(sub?.fields)) },
+      });
+      return;
+    }
+    const row = await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name: into.name },
+      select: { id: true, fields: true },
+    });
+    if (row)
+      await this.prisma.ledgerName.update({
+        where: { id: row.id },
+        data: { fields: merged(parseNameFields(row.fields)) },
+      });
+    else
+      await this.prisma.ledgerName.create({
+        data: { ...scopeWhere(scope), name: into.name, fields: merged([]) },
+      });
   }
 
   /** See `applyReset`. */
@@ -1380,11 +1615,19 @@ export class NameMemoryService implements OnApplicationBootstrap {
    * tax is `into`'s alone (`from`'s agencies are dropped, not carried); the rules that gave
    * rows the name `from` now give `into`; and a NAME rule `from → into` makes later rows
    * follow. Tax agencies and "Unclarified name" are not payees, so they never merge.
+   * step9 (2026-11-17, third request): `sub` = merged into that sub-name of `into` — its
+   * category, the rules point at it, and the profile and files go to it.
    */
   private async applyMerge(
     scope: BookScope,
     from: string,
     into: string,
+    sub?: {
+      id: number;
+      name: string;
+      category: string;
+      fields: Prisma.JsonValue;
+    },
   ): Promise<void> {
     const source = cleanName(from);
     const target = cleanName(into);
@@ -1416,10 +1659,20 @@ export class NameMemoryService implements OnApplicationBootstrap {
     if (!rows.length)
       throw new NotFoundException(`No rows are named "${source}".`);
     // The target's category, read BEFORE the rows move (they would vote for their own).
-    const category =
-      (await this.categoryOfName(scope, target)) ?? UNCATEGORIZED;
+    const category = sub
+      ? sub.category
+      : ((await this.categoryOfName(scope, target)) ?? UNCATEGORIZED);
 
     // Rules that named rows `source` (renames to it, description / contains rules) → target.
+    if (sub)
+      await this.prisma.customerNameRule.updateMany({
+        where: {
+          ...scopeWhere(scope),
+          name: source,
+          matchType: { in: ['DESCRIPTION', 'CONTAINS'] },
+        },
+        data: { name: target, subNameId: sub.id, category: sub.category },
+      });
     await this.prisma.customerNameRule.updateMany({
       where: { ...scopeWhere(scope), name: source },
       data: { name: target },
@@ -1430,18 +1683,30 @@ export class NameMemoryService implements OnApplicationBootstrap {
       matchKey: nameKey(source),
     };
     const previous = await this.prisma.customerNameRule.findFirst({ where });
+    // Into a sub-name: later rows of `source` get its category, and are filed under it.
+    const ruleCategory = sub?.category ?? null;
     await this.upsertRule(
       previous,
-      { ...where, name: target, category: null },
-      { name: target, category: null },
+      { ...where, name: target, category: ruleCategory },
+      { name: target, category: ruleCategory },
     );
-    await this.writeRows(scope, rows, () => ({ name: target, category }));
-    if (category !== UNCATEGORIZED)
+    await this.writeRows(scope, rows, () => ({
+      name: target,
+      category,
+      ...(sub && { subNameId: sub.id }),
+    }));
+    if (!sub && category !== UNCATEGORIZED)
       await this.setNameCategory(scope, target, category);
     // step2 (2026-11-09): its profile fields (phone, email, …) join the target's.
-    await this.tax.mergeNameFields(scope, source, target);
+    if (sub) {
+      const own = await this.prisma.ledgerName.findFirst({
+        where: { ...scopeWhere(scope), name: source },
+        select: { fields: true },
+      });
+      await this.addFields(scope, own?.fields, { subNameId: sub.id });
+    } else await this.tax.mergeNameFields(scope, source, target);
     // step2 (2026-11-11): its files and subfolders join the target's folder.
-    await this.tax.moveNameFiles(scope, [source], target);
+    await this.tax.moveNameFiles(scope, [source], sub?.name ?? target);
     // step2 (2026-11-15): its splits and sub-names too (before its LedgerName goes).
     await this.tax.moveSubNames(scope, [source], target);
     // The tax follows the target only: the merged name's own choices go.
@@ -1452,7 +1717,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
       where: { ...scopeWhere(scope), name: source },
     });
     this.logger.log(
-      `book ${bookLabel(scope)}: merged name "${source}" into "${target}" (${rows.length} rows)`,
+      `book ${bookLabel(scope)}: merged name "${source}" into "${sub?.name ?? target}" (${rows.length} rows)`,
     );
   }
 
