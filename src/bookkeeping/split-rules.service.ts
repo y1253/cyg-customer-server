@@ -8,7 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { doubleEntry } from './ledger.util';
 import { scopeWhere, type BookScope } from './scope';
-import { ruleSplits, type SplitRule } from './split-rules.util';
+import { ruleSplits, stepSplits, type SplitRule } from './split-rules.util';
 import { remainderOf, signedLike, splitTotals } from './splits.util';
 import {
   ensureSubName,
@@ -61,6 +61,10 @@ type ParentRow = Prisma.BankTransactionGetPayload<{
  * the transaction itself (what is left of it); a split — the customer's, at any depth, or a
  * rule's — is never cut, whatever its category or sub-name.
  *
+ * step9 (2026-11-17): rules run in STEPS (`stepSplits`) — an individual rule cuts what the
+ * rules before it left, a split group's rules (`TaxAgency.groupId`) cut the same amount
+ * together — so picking rules one at a time or all at once gives the same splits.
+ *
  * A rule split is a child `BankTransaction` (`splitRuleId`, `ruleSourceId` = the transaction
  * it was carved from); it simply lowers what the transaction has left. (`ruleSourceId`,
  * `splitRuleId`) makes it once only.
@@ -88,6 +92,7 @@ export class SplitRulesService implements OnApplicationBootstrap {
           id: a.id,
           name: a.name,
           category: a.category,
+          groupId: a.groupId,
           rates: a.rates.map((r) => ({
             kind: r.kind,
             mode: r.mode,
@@ -135,7 +140,8 @@ export class SplitRulesService implements OnApplicationBootstrap {
           (id) => !done.has(`${line.sourceId}:${id}`),
         );
         if (!ids.length) continue;
-        const splits = ruleSplits(
+        // step9 (2026-11-17): individual rules one after another, a group together.
+        const splits = stepSplits(
           line.amount,
           ids.map((id) => rules.get(id)!),
         );

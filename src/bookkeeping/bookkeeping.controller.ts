@@ -79,6 +79,7 @@ import {
   SetAttachmentTransactionDto,
   SetCurrencyDto,
   SetNameAgenciesDto,
+  SplitGroupDto,
   UpdateAgencyDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
@@ -92,6 +93,7 @@ import {
   TaxService,
   type AgencyView,
   type NamesView,
+  type SplitGroupView,
   type TaxSettingsView,
 } from './tax.service';
 import type { ReportsView } from './reports.util';
@@ -176,6 +178,34 @@ export class BookkeepingController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
     return this.tax.removeAgency(scope, id);
+  }
+
+  /** step9 (2026-11-17): split groups — rules that run together on the same amount. */
+  @Post('split-groups')
+  createSplitGroup(
+    @Book() scope: BookScope,
+    @Body() dto: SplitGroupDto,
+  ): Promise<SplitGroupView> {
+    return this.tax.createGroup(scope, dto);
+  }
+
+  @Patch('split-groups/:id')
+  renameSplitGroup(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SplitGroupDto,
+  ): Promise<SplitGroupView> {
+    return this.tax.renameGroup(scope, id, dto);
+  }
+
+  /** Its rules become individual rules; names keep them. */
+  @Delete('split-groups/:id')
+  @HttpCode(204)
+  removeSplitGroup(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<void> {
+    return this.tax.removeGroup(scope, id);
   }
 
   /** Every payee name the AI read (category, type, tax switch, rule) plus the unnamed rows. */

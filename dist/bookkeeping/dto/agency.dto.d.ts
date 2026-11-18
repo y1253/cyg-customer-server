@@ -10,12 +10,17 @@ export declare class CreateAgencyDto {
     rates: AgencyRateDto[];
     category?: string | null;
     active?: boolean;
+    groupId?: number | null;
 }
 export declare class UpdateAgencyDto {
     name?: string;
     rates?: AgencyRateDto[];
     category?: string | null;
     active?: boolean;
+    groupId?: number | null;
+}
+export declare class SplitGroupDto {
+    name: string;
 }
 export declare class SetNameAgenciesDto {
     name: string;

@@ -40,6 +40,7 @@ import {
   type CreateAgencyDto,
   type NameFieldDto,
   type NameFieldKind,
+  type SplitGroupDto,
   type UpdateAgencyDto,
 } from './dto/agency.dto';
 import { nameTaxKey, type TaxKind } from './tax.util';
@@ -58,6 +59,16 @@ export interface AgencyView {
   /** Where its splits post; null = its own name. */
   category: string | null;
   active: boolean;
+  /** step9 (2026-11-17): its split group; null = an individual rule. */
+  groupId: number | null;
+}
+
+/** step9 (2026-11-17): a split group — its rules run together on the same amount. */
+export interface SplitGroupView {
+  id: number;
+  name: string;
+  /** Its live rules, oldest first. */
+  agencyIds: number[];
 }
 
 /** What a payee is, from its category: income → customer, expense → supplier. */
@@ -233,6 +244,7 @@ export const BUILTIN_GROUPS: NameGroupView[] = [
 
 export interface TaxSettingsView {
   agencies: AgencyView[];
+  groups: SplitGroupView[];
 }
 
 const KIND_ORDER: TaxKind[] = ['SALES', 'PURCHASE'];
@@ -255,6 +267,7 @@ const toAgency = (a: TaxAgency & { rates: TaxAgencyRate[] }): AgencyView => ({
   }),
   category: a.category,
   active: a.active,
+  groupId: a.groupId,
 });
 
 /** The rates as stored; one direction given twice, or a rate without its number, is refused. */
@@ -306,7 +319,18 @@ export class TaxService {
       include: { rates: true },
       orderBy: { createdAt: 'asc' },
     });
-    return { agencies: agencies.map(toAgency) };
+    const groups = await this.prisma.splitGroup.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    return {
+      agencies: agencies.map(toAgency),
+      groups: groups.map((g) => ({
+        id: g.id,
+        name: g.name,
+        agencyIds: agencies.filter((a) => a.groupId === g.id).map((a) => a.id),
+      })),
+    };
   }
 
   async createAgency(
@@ -315,16 +339,20 @@ export class TaxService {
   ): Promise<AgencyView> {
     const name = await this.checkName(scope, dto.name);
     const category = await this.ruleCategory(scope, dto.category, name);
+    const groupId = await this.checkGroupId(scope, dto.groupId);
     const row = await this.prisma.taxAgency.create({
       data: {
         ...scopeWhere(scope),
         name,
         category: category ?? null,
         active: dto.active ?? true,
+        groupId: groupId ?? null,
         rates: { create: rateRows(dto.rates) },
       },
       include: { rates: true },
     });
+    if (row.groupId !== null)
+      await this.joinGroupPicks(scope, row.id, row.groupId);
     return toAgency(row);
   }
 
@@ -344,6 +372,7 @@ export class TaxService {
       name ?? current.name,
     );
     const rates = dto.rates && rateRows(dto.rates);
+    const groupId = await this.checkGroupId(scope, dto.groupId);
     // A change applies to rows split from now on; the splits already written stay.
     const row = await this.prisma.taxAgency.update({
       where: { id },
@@ -351,11 +380,14 @@ export class TaxService {
         name,
         category,
         active: dto.active,
+        groupId,
         // Replaces every rate: deleteMany then create, in the same update.
         ...(rates && { rates: { deleteMany: {}, create: rates } }),
       },
       include: { rates: true },
     });
+    if (row.groupId !== null && row.groupId !== current.groupId)
+      await this.joinGroupPicks(scope, row.id, row.groupId);
     return toAgency(row);
   }
 
@@ -386,6 +418,138 @@ export class TaxService {
         where: { ...scopeWhere(scope), agencyId: id },
       }),
     ]);
+  }
+
+  // ---- step9 (2026-11-17): split groups ----
+
+  async createGroup(
+    scope: BookScope,
+    dto: SplitGroupDto,
+  ): Promise<SplitGroupView> {
+    const name = await this.checkGroupName(scope, dto.name);
+    const row = await this.prisma.splitGroup.create({
+      data: { ...scopeWhere(scope), name },
+    });
+    return { id: row.id, name: row.name, agencyIds: [] };
+  }
+
+  async renameGroup(
+    scope: BookScope,
+    id: number,
+    dto: SplitGroupDto,
+  ): Promise<SplitGroupView> {
+    await this.ownedGroup(scope, id);
+    const name = await this.checkGroupName(scope, dto.name, id);
+    await this.prisma.splitGroup.update({ where: { id }, data: { name } });
+    const members = await this.prisma.taxAgency.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null, groupId: id },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return { id, name, agencyIds: members.map((m) => m.id) };
+  }
+
+  /**
+   * Soft delete (user's decision): its rules become individual rules, and the names that
+   * picked the group keep them. The splits already written stay.
+   */
+  async removeGroup(scope: BookScope, id: number): Promise<void> {
+    await this.ownedGroup(scope, id);
+    await this.prisma.$transaction([
+      this.prisma.taxAgency.updateMany({
+        where: { ...scopeWhere(scope), groupId: id },
+        data: { groupId: null },
+      }),
+      this.prisma.splitGroup.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      }),
+    ]);
+  }
+
+  private async ownedGroup(scope: BookScope, id: number) {
+    const g = await this.prisma.splitGroup.findFirst({
+      where: { id, ...scopeWhere(scope), deletedAt: null },
+    });
+    if (!g) throw new NotFoundException('Split group not found');
+    return g;
+  }
+
+  /** undefined = unchanged, null = individual, else a live group of the book. */
+  private async checkGroupId(
+    scope: BookScope,
+    groupId: number | null | undefined,
+  ): Promise<number | null | undefined> {
+    if (groupId === undefined || groupId === null) return groupId;
+    await this.ownedGroup(scope, groupId);
+    return groupId;
+  }
+
+  private async checkGroupName(
+    scope: BookScope,
+    raw: string,
+    exceptId?: number,
+  ): Promise<string> {
+    const name = raw.trim();
+    if (!name) throw new BadRequestException('Give the group a name');
+    const others = await this.prisma.splitGroup.findMany({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        NOT: { id: exceptId ?? 0 },
+      },
+      select: { name: true },
+    });
+    if (others.some((o) => o.name.toLowerCase() === name.toLowerCase()))
+      throw new BadRequestException(`You already have a split group "${name}"`);
+    return name;
+  }
+
+  /**
+   * A rule just joined `groupId`: every name / sub-name that picks the group (any other
+   * member) picks it too — applied from now on (rows already split are not cut again).
+   */
+  private async joinGroupPicks(
+    scope: BookScope,
+    agencyId: number,
+    groupId: number,
+  ): Promise<void> {
+    const members = await this.prisma.taxAgency.findMany({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        groupId,
+        NOT: { id: agencyId },
+      },
+      select: { id: true },
+    });
+    if (!members.length) return;
+    const picks = await this.prisma.ledgerNameAgency.findMany({
+      where: {
+        ...scopeWhere(scope),
+        agencyId: { in: members.map((m) => m.id) },
+      },
+      select: { name: true },
+    });
+    const own = await this.prisma.ledgerNameAgency.findMany({
+      where: { ...scopeWhere(scope), agencyId },
+      select: { name: true },
+    });
+    const have = new Set(own.map((o) => nameTaxKey(o.name)));
+    const names = new Map<string, string>();
+    for (const p of picks) {
+      const k = nameTaxKey(p.name);
+      if (!have.has(k) && !names.has(k)) names.set(k, p.name);
+    }
+    if (!names.size) return;
+    await this.prisma.ledgerNameAgency.createMany({
+      data: [...names.values()].map((name) => ({
+        ...scopeWhere(scope),
+        name,
+        agencyId,
+        appliedAt: new Date(),
+      })),
+    });
   }
 
   private async ownedAgency(scope: BookScope, id: number) {
@@ -1127,13 +1291,31 @@ export class TaxService {
     clean: string,
     agencyIds: number[],
   ): Promise<void> {
-    const ids = [...new Set(agencyIds)];
+    let ids = [...new Set(agencyIds)];
     if (ids.length) {
-      const owned = await this.prisma.taxAgency.count({
+      const owned = await this.prisma.taxAgency.findMany({
         where: { ...scopeWhere(scope), deletedAt: null, id: { in: ids } },
+        select: { groupId: true },
       });
-      if (owned !== ids.length)
+      if (owned.length !== ids.length)
         throw new NotFoundException('Split rule not found');
+      // step9 (2026-11-17): a split group is picked as one — any of its rules brings all.
+      const groupIds = [
+        ...new Set(
+          owned.flatMap((a) => (a.groupId === null ? [] : [a.groupId])),
+        ),
+      ];
+      if (groupIds.length) {
+        const members = await this.prisma.taxAgency.findMany({
+          where: {
+            ...scopeWhere(scope),
+            deletedAt: null,
+            groupId: { in: groupIds },
+          },
+          select: { id: true },
+        });
+        ids = [...new Set([...ids, ...members.map((m) => m.id)])];
+      }
     }
     const key = nameTaxKey(clean);
     const existing = await this.prisma.ledgerNameAgency.findMany({

@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
@@ -18,7 +18,7 @@ import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
 import { SplitsService } from './splits.service';
 import { SubNamesService, type SubNameView } from './sub-names.service';
-import { TaxService, type AgencyView, type NamesView, type TaxSettingsView } from './tax.service';
+import { TaxService, type AgencyView, type NamesView, type SplitGroupView, type TaxSettingsView } from './tax.service';
 import type { ReportsView } from './reports.util';
 export declare class BookkeepingController {
     private readonly bookkeeping;
@@ -45,6 +45,9 @@ export declare class BookkeepingController {
     createAgency(scope: BookScope, dto: CreateAgencyDto): Promise<AgencyView>;
     updateAgency(scope: BookScope, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     removeAgency(scope: BookScope, id: number): Promise<void>;
+    createSplitGroup(scope: BookScope, dto: SplitGroupDto): Promise<SplitGroupView>;
+    renameSplitGroup(scope: BookScope, id: number, dto: SplitGroupDto): Promise<SplitGroupView>;
+    removeSplitGroup(scope: BookScope, id: number): Promise<void>;
     names(scope: BookScope): Promise<NamesView>;
     searchNames(scope: BookScope, q?: string): Promise<{
         name: string;

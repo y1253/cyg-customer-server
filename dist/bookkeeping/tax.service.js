@@ -70,6 +70,7 @@ const toAgency = (a) => ({
     }),
     category: a.category,
     active: a.active,
+    groupId: a.groupId,
 });
 function rateRows(rates) {
     if (new Set(rates.map((r) => r.kind)).size !== rates.length) {
@@ -111,21 +112,36 @@ let TaxService = class TaxService {
             include: { rates: true },
             orderBy: { createdAt: 'asc' },
         });
-        return { agencies: agencies.map(toAgency) };
+        const groups = await this.prisma.splitGroup.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            orderBy: { createdAt: 'asc' },
+        });
+        return {
+            agencies: agencies.map(toAgency),
+            groups: groups.map((g) => ({
+                id: g.id,
+                name: g.name,
+                agencyIds: agencies.filter((a) => a.groupId === g.id).map((a) => a.id),
+            })),
+        };
     }
     async createAgency(scope, dto) {
         const name = await this.checkName(scope, dto.name);
         const category = await this.ruleCategory(scope, dto.category, name);
+        const groupId = await this.checkGroupId(scope, dto.groupId);
         const row = await this.prisma.taxAgency.create({
             data: {
                 ...(0, scope_1.scopeWhere)(scope),
                 name,
                 category: category ?? null,
                 active: dto.active ?? true,
+                groupId: groupId ?? null,
                 rates: { create: rateRows(dto.rates) },
             },
             include: { rates: true },
         });
+        if (row.groupId !== null)
+            await this.joinGroupPicks(scope, row.id, row.groupId);
         return toAgency(row);
     }
     async updateAgency(scope, id, dto) {
@@ -135,16 +151,20 @@ let TaxService = class TaxService {
             : await this.checkName(scope, dto.name, id);
         const category = await this.ruleCategory(scope, dto.category, name ?? current.name);
         const rates = dto.rates && rateRows(dto.rates);
+        const groupId = await this.checkGroupId(scope, dto.groupId);
         const row = await this.prisma.taxAgency.update({
             where: { id },
             data: {
                 name,
                 category,
                 active: dto.active,
+                groupId,
                 ...(rates && { rates: { deleteMany: {}, create: rates } }),
             },
             include: { rates: true },
         });
+        if (row.groupId !== null && row.groupId !== current.groupId)
+            await this.joinGroupPicks(scope, row.id, row.groupId);
         return toAgency(row);
     }
     async ruleCategory(scope, raw, name) {
@@ -166,6 +186,108 @@ let TaxService = class TaxService {
                 where: { ...(0, scope_1.scopeWhere)(scope), agencyId: id },
             }),
         ]);
+    }
+    async createGroup(scope, dto) {
+        const name = await this.checkGroupName(scope, dto.name);
+        const row = await this.prisma.splitGroup.create({
+            data: { ...(0, scope_1.scopeWhere)(scope), name },
+        });
+        return { id: row.id, name: row.name, agencyIds: [] };
+    }
+    async renameGroup(scope, id, dto) {
+        await this.ownedGroup(scope, id);
+        const name = await this.checkGroupName(scope, dto.name, id);
+        await this.prisma.splitGroup.update({ where: { id }, data: { name } });
+        const members = await this.prisma.taxAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, groupId: id },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+        });
+        return { id, name, agencyIds: members.map((m) => m.id) };
+    }
+    async removeGroup(scope, id) {
+        await this.ownedGroup(scope, id);
+        await this.prisma.$transaction([
+            this.prisma.taxAgency.updateMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), groupId: id },
+                data: { groupId: null },
+            }),
+            this.prisma.splitGroup.update({
+                where: { id },
+                data: { deletedAt: new Date() },
+            }),
+        ]);
+    }
+    async ownedGroup(scope, id) {
+        const g = await this.prisma.splitGroup.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+        });
+        if (!g)
+            throw new common_1.NotFoundException('Split group not found');
+        return g;
+    }
+    async checkGroupId(scope, groupId) {
+        if (groupId === undefined || groupId === null)
+            return groupId;
+        await this.ownedGroup(scope, groupId);
+        return groupId;
+    }
+    async checkGroupName(scope, raw, exceptId) {
+        const name = raw.trim();
+        if (!name)
+            throw new common_1.BadRequestException('Give the group a name');
+        const others = await this.prisma.splitGroup.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                NOT: { id: exceptId ?? 0 },
+            },
+            select: { name: true },
+        });
+        if (others.some((o) => o.name.toLowerCase() === name.toLowerCase()))
+            throw new common_1.BadRequestException(`You already have a split group "${name}"`);
+        return name;
+    }
+    async joinGroupPicks(scope, agencyId, groupId) {
+        const members = await this.prisma.taxAgency.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                groupId,
+                NOT: { id: agencyId },
+            },
+            select: { id: true },
+        });
+        if (!members.length)
+            return;
+        const picks = await this.prisma.ledgerNameAgency.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                agencyId: { in: members.map((m) => m.id) },
+            },
+            select: { name: true },
+        });
+        const own = await this.prisma.ledgerNameAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), agencyId },
+            select: { name: true },
+        });
+        const have = new Set(own.map((o) => (0, tax_util_1.nameTaxKey)(o.name)));
+        const names = new Map();
+        for (const p of picks) {
+            const k = (0, tax_util_1.nameTaxKey)(p.name);
+            if (!have.has(k) && !names.has(k))
+                names.set(k, p.name);
+        }
+        if (!names.size)
+            return;
+        await this.prisma.ledgerNameAgency.createMany({
+            data: [...names.values()].map((name) => ({
+                ...(0, scope_1.scopeWhere)(scope),
+                name,
+                agencyId,
+                appliedAt: new Date(),
+            })),
+        });
     }
     async ownedAgency(scope, id) {
         const a = await this.prisma.taxAgency.findFirst({
@@ -740,13 +862,28 @@ let TaxService = class TaxService {
         return this.names(scope);
     }
     async writePicks(scope, clean, agencyIds) {
-        const ids = [...new Set(agencyIds)];
+        let ids = [...new Set(agencyIds)];
         if (ids.length) {
-            const owned = await this.prisma.taxAgency.count({
+            const owned = await this.prisma.taxAgency.findMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, id: { in: ids } },
+                select: { groupId: true },
             });
-            if (owned !== ids.length)
+            if (owned.length !== ids.length)
                 throw new common_1.NotFoundException('Split rule not found');
+            const groupIds = [
+                ...new Set(owned.flatMap((a) => (a.groupId === null ? [] : [a.groupId]))),
+            ];
+            if (groupIds.length) {
+                const members = await this.prisma.taxAgency.findMany({
+                    where: {
+                        ...(0, scope_1.scopeWhere)(scope),
+                        deletedAt: null,
+                        groupId: { in: groupIds },
+                    },
+                    select: { id: true },
+                });
+                ids = [...new Set([...ids, ...members.map((m) => m.id)])];
+            }
         }
         const key = (0, tax_util_1.nameTaxKey)(clean);
         const existing = await this.prisma.ledgerNameAgency.findMany({

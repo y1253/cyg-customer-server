@@ -91,6 +91,15 @@ let BookkeepingController = class BookkeepingController {
     removeAgency(scope, id) {
         return this.tax.removeAgency(scope, id);
     }
+    createSplitGroup(scope, dto) {
+        return this.tax.createGroup(scope, dto);
+    }
+    renameSplitGroup(scope, id, dto) {
+        return this.tax.renameGroup(scope, id, dto);
+    }
+    removeSplitGroup(scope, id) {
+        return this.tax.removeGroup(scope, id);
+    }
     names(scope) {
         return this.tax.names(scope);
     }
@@ -386,6 +395,32 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "removeAgency", null);
+__decorate([
+    (0, common_1.Post)('split-groups'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.SplitGroupDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "createSplitGroup", null);
+__decorate([
+    (0, common_1.Patch)('split-groups/:id'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SplitGroupDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "renameSplitGroup", null);
+__decorate([
+    (0, common_1.Delete)('split-groups/:id'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "removeSplitGroup", null);
 __decorate([
     (0, common_1.Get)('names'),
     __param(0, (0, book_scope_guard_1.Book)()),

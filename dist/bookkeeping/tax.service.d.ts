@@ -5,7 +5,7 @@ import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import { type BookScope } from './scope';
 import { SplitRulesService } from './split-rules.service';
-import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type UpdateAgencyDto } from './dto/agency.dto';
+import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type SplitGroupDto, type UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
 export interface AgencyView {
     id: number;
@@ -18,6 +18,12 @@ export interface AgencyView {
     }>;
     category: string | null;
     active: boolean;
+    groupId: number | null;
+}
+export interface SplitGroupView {
+    id: number;
+    name: string;
+    agencyIds: number[];
 }
 export type NameType = 'CUSTOMER' | 'SUPPLIER' | 'OTHER';
 export interface NameView {
@@ -108,6 +114,7 @@ export interface NameGroupView {
 export declare const BUILTIN_GROUPS: NameGroupView[];
 export interface TaxSettingsView {
     agencies: AgencyView[];
+    groups: SplitGroupView[];
 }
 export declare class TaxService {
     private readonly prisma;
@@ -119,6 +126,13 @@ export declare class TaxService {
     updateAgency(scope: BookScope, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     private ruleCategory;
     removeAgency(scope: BookScope, id: number): Promise<void>;
+    createGroup(scope: BookScope, dto: SplitGroupDto): Promise<SplitGroupView>;
+    renameGroup(scope: BookScope, id: number, dto: SplitGroupDto): Promise<SplitGroupView>;
+    removeGroup(scope: BookScope, id: number): Promise<void>;
+    private ownedGroup;
+    private checkGroupId;
+    private checkGroupName;
+    private joinGroupPicks;
     private ownedAgency;
     private checkName;
     agencyNames(scope: BookScope): Promise<string[]>;

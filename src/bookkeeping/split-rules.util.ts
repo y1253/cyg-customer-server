@@ -24,6 +24,8 @@ export interface SplitRule {
   name: string;
   /** Where its splits post; null = the rule's own name (a liability account). */
   category: string | null;
+  /** step9 (2026-11-17): its split group (`SplitGroup`); null / absent = individual. */
+  groupId?: number | null;
   rates: RuleRate[];
 }
 
@@ -91,6 +93,53 @@ export function ruleSplits(
           amount: amounts[i],
         });
     });
+  }
+  return out;
+}
+
+/**
+ * step9 (2026-11-17): `rules` (in pick order) as STEPS — an individual rule is a step of its
+ * own, a split group's rules are one step, placed where its first rule is. A step's rules
+ * share one amount (one `ruleSplits`); each step works on what the steps before it left.
+ */
+export function ruleSteps(rules: readonly SplitRule[]): SplitRule[][] {
+  const steps: SplitRule[][] = [];
+  const groups = new Map<number, SplitRule[]>();
+  for (const rule of rules) {
+    const g = rule.groupId ?? null;
+    if (g === null) {
+      steps.push([rule]);
+      continue;
+    }
+    const step = groups.get(g);
+    if (step) step.push(rule);
+    else {
+      const fresh = [rule];
+      groups.set(g, fresh);
+      steps.push(fresh);
+    }
+  }
+  return steps;
+}
+
+/**
+ * step9 (2026-11-17): the splits `rules` take out of a line of `amount`, step by step
+ * (`ruleSteps`): an individual rule cuts what the rules before it left; a split group's
+ * rules cut the same amount together (user's decision: "both run at once on the main
+ * number"). $100, GST 5% then QST 9.975% individually = 4.76 + 8.64; as a group = 4.35 + 8.68.
+ */
+export function stepSplits(
+  amount: number,
+  rules: readonly SplitRule[],
+): RuleSplit[] {
+  const sign = cents(amount) < 0 ? -1 : 1;
+  let left = Math.abs(cents(amount));
+  const out: RuleSplit[] = [];
+  for (const step of ruleSteps(rules)) {
+    if (left <= 0) break;
+    const splits = ruleSplits((sign * left) / 100, step);
+    for (const s of splits) left -= cents(s.amount);
+    out.push(...splits);
   }
   return out;
 }

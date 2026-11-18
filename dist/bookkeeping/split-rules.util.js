@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ruleCategory = void 0;
 exports.directionOf = directionOf;
 exports.ruleSplits = ruleSplits;
+exports.ruleSteps = ruleSteps;
+exports.stepSplits = stepSplits;
 exports.ratesLabel = ratesLabel;
 const reconcile_util_1 = require("./reconcile.util");
 const tax_util_1 = require("./tax.util");
@@ -51,6 +53,40 @@ function ruleSplits(amount, rules) {
                     amount: amounts[i],
                 });
         });
+    }
+    return out;
+}
+function ruleSteps(rules) {
+    const steps = [];
+    const groups = new Map();
+    for (const rule of rules) {
+        const g = rule.groupId ?? null;
+        if (g === null) {
+            steps.push([rule]);
+            continue;
+        }
+        const step = groups.get(g);
+        if (step)
+            step.push(rule);
+        else {
+            const fresh = [rule];
+            groups.set(g, fresh);
+            steps.push(fresh);
+        }
+    }
+    return steps;
+}
+function stepSplits(amount, rules) {
+    const sign = (0, reconcile_util_1.cents)(amount) < 0 ? -1 : 1;
+    let left = Math.abs((0, reconcile_util_1.cents)(amount));
+    const out = [];
+    for (const step of ruleSteps(rules)) {
+        if (left <= 0)
+            break;
+        const splits = ruleSplits((sign * left) / 100, step);
+        for (const s of splits)
+            left -= (0, reconcile_util_1.cents)(s.amount);
+        out.push(...splits);
     }
     return out;
 }

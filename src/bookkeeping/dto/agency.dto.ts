@@ -73,6 +73,11 @@ export class CreateAgencyDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  /** step9 (2026-11-17): its split group; null = an individual rule (on PATCH: absent = unchanged). */
+  @IsOptional()
+  @IsInt()
+  groupId?: number | null;
 }
 
 /** `PATCH /api/bookkeeping/agencies/:id` — any subset; `rates` replaces them all. */
@@ -102,6 +107,23 @@ export class UpdateAgencyDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  /** step9 (2026-11-17): its split group; null = an individual rule (on PATCH: absent = unchanged). */
+  @IsOptional()
+  @IsInt()
+  groupId?: number | null;
+}
+
+/**
+ * step9 (2026-11-17): `POST /api/bookkeeping/split-groups` / `PATCH …/:id` — a split group
+ * (its rules run together on the same amount).
+ */
+export class SplitGroupDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty({ message: 'Give the group a name' })
+  @MaxLength(191)
+  name!: string;
 }
 
 /** `PATCH /api/bookkeeping/tax` — the sales-tax switch. */

@@ -42,6 +42,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
                 id: a.id,
                 name: a.name,
                 category: a.category,
+                groupId: a.groupId,
                 rates: a.rates.map((r) => ({
                     kind: r.kind,
                     mode: r.mode,
@@ -84,7 +85,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
                 const ids = (rulesOf.get(line.key) ?? []).filter((id) => !done.has(`${line.sourceId}:${id}`));
                 if (!ids.length)
                     continue;
-                const splits = (0, split_rules_util_1.ruleSplits)(line.amount, ids.map((id) => rules.get(id)));
+                const splits = (0, split_rules_util_1.stepSplits)(line.amount, ids.map((id) => rules.get(id)));
                 if (!splits.length)
                     continue;
                 n += await this.write(scope, p, line, splits);

@@ -10,6 +10,7 @@ export interface SplitRule {
     id: number;
     name: string;
     category: string | null;
+    groupId?: number | null;
     rates: RuleRate[];
 }
 export declare function directionOf(amount: number): TaxKind | null;
@@ -20,4 +21,6 @@ export interface RuleSplit {
     amount: number;
 }
 export declare function ruleSplits(amount: number, rules: readonly SplitRule[]): RuleSplit[];
+export declare function ruleSteps(rules: readonly SplitRule[]): SplitRule[][];
+export declare function stepSplits(amount: number, rules: readonly SplitRule[]): RuleSplit[];
 export declare function ratesLabel(rates: readonly RuleRate[]): string;
