@@ -94,8 +94,8 @@ let BookkeepingController = class BookkeepingController {
     createSplitGroup(scope, dto) {
         return this.tax.createGroup(scope, dto);
     }
-    renameSplitGroup(scope, id, dto) {
-        return this.tax.renameGroup(scope, id, dto);
+    updateSplitGroup(scope, id, dto) {
+        return this.tax.updateGroup(scope, id, dto);
     }
     removeSplitGroup(scope, id) {
         return this.tax.removeGroup(scope, id);
@@ -409,9 +409,9 @@ __decorate([
     __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
     __param(2, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SplitGroupDto]),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.UpdateSplitGroupDto]),
     __metadata("design:returntype", Promise)
-], BookkeepingController.prototype, "renameSplitGroup", null);
+], BookkeepingController.prototype, "updateSplitGroup", null);
 __decorate([
     (0, common_1.Delete)('split-groups/:id'),
     (0, common_1.HttpCode)(204),

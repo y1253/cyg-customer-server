@@ -69,9 +69,13 @@ const toAgency = (a) => ({
             : [];
     }),
     category: a.category,
-    active: a.active,
+    active: a.groupId !== null && a.group ? a.group.active : a.active,
     groupId: a.groupId,
 });
+const AGENCY_INCLUDE = {
+    rates: true,
+    group: { select: { active: true } },
+};
 function rateRows(rates) {
     if (new Set(rates.map((r) => r.kind)).size !== rates.length) {
         throw new common_1.BadRequestException('Give In and Out only one rate each');
@@ -109,7 +113,7 @@ let TaxService = class TaxService {
     async settings(scope) {
         const agencies = await this.prisma.taxAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
-            include: { rates: true },
+            include: AGENCY_INCLUDE,
             orderBy: { createdAt: 'asc' },
         });
         const groups = await this.prisma.splitGroup.findMany({
@@ -121,6 +125,7 @@ let TaxService = class TaxService {
             groups: groups.map((g) => ({
                 id: g.id,
                 name: g.name,
+                active: g.active,
                 agencyIds: agencies.filter((a) => a.groupId === g.id).map((a) => a.id),
             })),
         };
@@ -138,7 +143,7 @@ let TaxService = class TaxService {
                 groupId: groupId ?? null,
                 rates: { create: rateRows(dto.rates) },
             },
-            include: { rates: true },
+            include: AGENCY_INCLUDE,
         });
         if (row.groupId !== null)
             await this.joinGroupPicks(scope, row.id, row.groupId);
@@ -152,16 +157,26 @@ let TaxService = class TaxService {
         const category = await this.ruleCategory(scope, dto.category, name ?? current.name);
         const rates = dto.rates && rateRows(dto.rates);
         const groupId = await this.checkGroupId(scope, dto.groupId);
+        const nextGroup = groupId === undefined ? current.groupId : groupId;
+        let active = nextGroup === null ? dto.active : undefined;
+        if (current.groupId !== null && nextGroup !== current.groupId)
+            active =
+                nextGroup === null && dto.active !== undefined
+                    ? dto.active
+                    : (await this.prisma.splitGroup.findUnique({
+                        where: { id: current.groupId },
+                        select: { active: true },
+                    }))?.active;
         const row = await this.prisma.taxAgency.update({
             where: { id },
             data: {
                 name,
                 category,
-                active: dto.active,
+                active,
                 groupId,
                 ...(rates && { rates: { deleteMany: {}, create: rates } }),
             },
-            include: { rates: true },
+            include: AGENCY_INCLUDE,
         });
         if (row.groupId !== null && row.groupId !== current.groupId)
             await this.joinGroupPicks(scope, row.id, row.groupId);
@@ -190,27 +205,37 @@ let TaxService = class TaxService {
     async createGroup(scope, dto) {
         const name = await this.checkGroupName(scope, dto.name);
         const row = await this.prisma.splitGroup.create({
-            data: { ...(0, scope_1.scopeWhere)(scope), name },
+            data: { ...(0, scope_1.scopeWhere)(scope), name, active: dto.active ?? true },
         });
-        return { id: row.id, name: row.name, agencyIds: [] };
+        return { id: row.id, name: row.name, active: row.active, agencyIds: [] };
     }
-    async renameGroup(scope, id, dto) {
+    async updateGroup(scope, id, dto) {
         await this.ownedGroup(scope, id);
-        const name = await this.checkGroupName(scope, dto.name, id);
-        await this.prisma.splitGroup.update({ where: { id }, data: { name } });
+        const name = dto.name === undefined
+            ? undefined
+            : await this.checkGroupName(scope, dto.name, id);
+        const row = await this.prisma.splitGroup.update({
+            where: { id },
+            data: { name, active: dto.active },
+        });
         const members = await this.prisma.taxAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, groupId: id },
             select: { id: true },
             orderBy: { createdAt: 'asc' },
         });
-        return { id, name, agencyIds: members.map((m) => m.id) };
+        return {
+            id,
+            name: row.name,
+            active: row.active,
+            agencyIds: members.map((m) => m.id),
+        };
     }
     async removeGroup(scope, id) {
-        await this.ownedGroup(scope, id);
+        const group = await this.ownedGroup(scope, id);
         await this.prisma.$transaction([
             this.prisma.taxAgency.updateMany({
                 where: { ...(0, scope_1.scopeWhere)(scope), groupId: id },
-                data: { groupId: null },
+                data: { groupId: null, active: group.active },
             }),
             this.prisma.splitGroup.update({
                 where: { id },

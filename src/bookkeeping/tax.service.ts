@@ -41,6 +41,7 @@ import {
   type NameFieldDto,
   type NameFieldKind,
   type SplitGroupDto,
+  type UpdateSplitGroupDto,
   type UpdateAgencyDto,
 } from './dto/agency.dto';
 import { nameTaxKey, type TaxKind } from './tax.util';
@@ -58,6 +59,7 @@ export interface AgencyView {
   }>;
   /** Where its splits post; null = its own name. */
   category: string | null;
+  /** step9 (2026-11-18): whether it splits — for a rule in a group, its GROUP's switch. */
   active: boolean;
   /** step9 (2026-11-17): its split group; null = an individual rule. */
   groupId: number | null;
@@ -67,6 +69,8 @@ export interface AgencyView {
 export interface SplitGroupView {
   id: number;
   name: string;
+  /** step9 (2026-11-18): its rules' on / off switch. */
+  active: boolean;
   /** Its live rules, oldest first. */
   agencyIds: number[];
 }
@@ -249,7 +253,12 @@ export interface TaxSettingsView {
 
 const KIND_ORDER: TaxKind[] = ['SALES', 'PURCHASE'];
 
-const toAgency = (a: TaxAgency & { rates: TaxAgencyRate[] }): AgencyView => ({
+const toAgency = (
+  a: TaxAgency & {
+    rates: TaxAgencyRate[];
+    group?: { active: boolean } | null;
+  },
+): AgencyView => ({
   id: a.id,
   name: a.name,
   rates: KIND_ORDER.flatMap((kind) => {
@@ -266,9 +275,15 @@ const toAgency = (a: TaxAgency & { rates: TaxAgencyRate[] }): AgencyView => ({
       : [];
   }),
   category: a.category,
-  active: a.active,
+  active: a.groupId !== null && a.group ? a.group.active : a.active,
   groupId: a.groupId,
 });
+
+/** With its group's switch (`toAgency`). */
+const AGENCY_INCLUDE = {
+  rates: true,
+  group: { select: { active: true } },
+} as const;
 
 /** The rates as stored; one direction given twice, or a rate without its number, is refused. */
 function rateRows(rates: AgencyRateDto[]) {
@@ -316,7 +331,7 @@ export class TaxService {
   async settings(scope: BookScope): Promise<TaxSettingsView> {
     const agencies = await this.prisma.taxAgency.findMany({
       where: { ...scopeWhere(scope), deletedAt: null },
-      include: { rates: true },
+      include: AGENCY_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
     const groups = await this.prisma.splitGroup.findMany({
@@ -328,6 +343,7 @@ export class TaxService {
       groups: groups.map((g) => ({
         id: g.id,
         name: g.name,
+        active: g.active,
         agencyIds: agencies.filter((a) => a.groupId === g.id).map((a) => a.id),
       })),
     };
@@ -349,7 +365,7 @@ export class TaxService {
         groupId: groupId ?? null,
         rates: { create: rateRows(dto.rates) },
       },
-      include: { rates: true },
+      include: AGENCY_INCLUDE,
     });
     if (row.groupId !== null)
       await this.joinGroupPicks(scope, row.id, row.groupId);
@@ -373,18 +389,32 @@ export class TaxService {
     );
     const rates = dto.rates && rateRows(dto.rates);
     const groupId = await this.checkGroupId(scope, dto.groupId);
+    // step9 (2026-11-18): a rule in a group has no switch of its own (its group's rules);
+    // one that leaves its group keeps the group's state, so nothing turns on or off by itself.
+    const nextGroup = groupId === undefined ? current.groupId : groupId;
+    let active = nextGroup === null ? dto.active : undefined;
+    if (current.groupId !== null && nextGroup !== current.groupId)
+      active =
+        nextGroup === null && dto.active !== undefined
+          ? dto.active
+          : (
+              await this.prisma.splitGroup.findUnique({
+                where: { id: current.groupId },
+                select: { active: true },
+              })
+            )?.active;
     // A change applies to rows split from now on; the splits already written stay.
     const row = await this.prisma.taxAgency.update({
       where: { id },
       data: {
         name,
         category,
-        active: dto.active,
+        active,
         groupId,
         // Replaces every rate: deleteMany then create, in the same update.
         ...(rates && { rates: { deleteMany: {}, create: rates } }),
       },
-      include: { rates: true },
+      include: AGENCY_INCLUDE,
     });
     if (row.groupId !== null && row.groupId !== current.groupId)
       await this.joinGroupPicks(scope, row.id, row.groupId);
@@ -428,37 +458,50 @@ export class TaxService {
   ): Promise<SplitGroupView> {
     const name = await this.checkGroupName(scope, dto.name);
     const row = await this.prisma.splitGroup.create({
-      data: { ...scopeWhere(scope), name },
+      data: { ...scopeWhere(scope), name, active: dto.active ?? true },
     });
-    return { id: row.id, name: row.name, agencyIds: [] };
+    return { id: row.id, name: row.name, active: row.active, agencyIds: [] };
   }
 
-  async renameGroup(
+  /** Rename it and / or (step9 2026-11-18) switch all its rules on or off. */
+  async updateGroup(
     scope: BookScope,
     id: number,
-    dto: SplitGroupDto,
+    dto: UpdateSplitGroupDto,
   ): Promise<SplitGroupView> {
     await this.ownedGroup(scope, id);
-    const name = await this.checkGroupName(scope, dto.name, id);
-    await this.prisma.splitGroup.update({ where: { id }, data: { name } });
+    const name =
+      dto.name === undefined
+        ? undefined
+        : await this.checkGroupName(scope, dto.name, id);
+    const row = await this.prisma.splitGroup.update({
+      where: { id },
+      data: { name, active: dto.active },
+    });
     const members = await this.prisma.taxAgency.findMany({
       where: { ...scopeWhere(scope), deletedAt: null, groupId: id },
       select: { id: true },
       orderBy: { createdAt: 'asc' },
     });
-    return { id, name, agencyIds: members.map((m) => m.id) };
+    return {
+      id,
+      name: row.name,
+      active: row.active,
+      agencyIds: members.map((m) => m.id),
+    };
   }
 
   /**
    * Soft delete (user's decision): its rules become individual rules, and the names that
-   * picked the group keep them. The splits already written stay.
+   * picked the group keep them. The splits already written stay. step9 (2026-11-18): they
+   * keep the group's on / off state.
    */
   async removeGroup(scope: BookScope, id: number): Promise<void> {
-    await this.ownedGroup(scope, id);
+    const group = await this.ownedGroup(scope, id);
     await this.prisma.$transaction([
       this.prisma.taxAgency.updateMany({
         where: { ...scopeWhere(scope), groupId: id },
-        data: { groupId: null },
+        data: { groupId: null, active: group.active },
       }),
       this.prisma.splitGroup.update({
         where: { id },

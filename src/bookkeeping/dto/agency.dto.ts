@@ -124,6 +124,25 @@ export class SplitGroupDto {
   @IsNotEmpty({ message: 'Give the group a name' })
   @MaxLength(191)
   name!: string;
+
+  /** step9 (2026-11-18): its rules' on / off switch (default on). */
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+}
+
+/** step9 (2026-11-18): `PATCH …/split-groups/:id` — rename it and / or switch it on or off. */
+export class UpdateSplitGroupDto {
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty({ message: 'Give the group a name' })
+  @MaxLength(191)
+  name?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 }
 
 /** `PATCH /api/bookkeeping/tax` — the sales-tax switch. */

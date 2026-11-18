@@ -81,7 +81,12 @@ export class SplitRulesService implements OnApplicationBootstrap {
   /** The book's live rules, by id. */
   async rules(scope: BookScope): Promise<Map<number, SplitRule>> {
     const rows = await this.prisma.taxAgency.findMany({
-      where: { ...scopeWhere(scope), deletedAt: null, active: true },
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        // step9 (2026-11-18): a rule in a group is on / off with its group.
+        OR: [{ groupId: null, active: true }, { group: { active: true } }],
+      },
       include: { rates: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -330,7 +335,12 @@ export class SplitRulesService implements OnApplicationBootstrap {
     if (!picks.length) return 0;
     const [agencyRows, named, ctx, ownSubs] = await Promise.all([
       this.prisma.taxAgency.findMany({
-        where: { ...scopeWhere(scope), deletedAt: null, active: true },
+        where: {
+          ...scopeWhere(scope),
+          deletedAt: null,
+          // step9 (2026-11-18): a rule in a group is on / off with its group.
+          OR: [{ groupId: null, active: true }, { group: { active: true } }],
+        },
         include: { rates: true },
         orderBy: { createdAt: 'asc' },
       }),

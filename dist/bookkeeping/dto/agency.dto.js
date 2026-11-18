@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SubNameSettingsDto = exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeNamesDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.SetSubNameCategoryDto = exports.SetProductDto = exports.EditSplitDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.SplitGroupDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
+exports.SubNameSettingsDto = exports.SetNameFieldsDto = exports.NameFieldDto = exports.NAME_FIELD_KINDS = exports.NameGroupDto = exports.SetNameGroupDto = exports.RenameAccountDto = exports.MergeAccountsDto = exports.MergeNamesDto = exports.MergeDto = exports.MoveStatementDto = exports.SetAttachmentTransactionDto = exports.SetSubNameCategoryDto = exports.SetProductDto = exports.EditSplitDto = exports.SaveSplitsDto = exports.SplitDto = exports.ResetAccountTypeDto = exports.SetAccountCurrencyDto = exports.SetAccountTypeDto = exports.SetCurrencyDto = exports.CreateAccountDto = exports.EditTransactionDto = exports.ResetProductRuleDto = exports.SaveProductRuleDto = exports.ResetNameRuleDto = exports.SaveNameRuleDto = exports.SetNameAgenciesDto = exports.UpdateSplitGroupDto = exports.SplitGroupDto = exports.UpdateAgencyDto = exports.CreateAgencyDto = exports.AgencyRateDto = void 0;
 const client_1 = require("@prisma/client");
 const class_transformer_1 = require("class-transformer");
 const class_validator_1 = require("class-validator");
@@ -128,6 +128,7 @@ __decorate([
 ], UpdateAgencyDto.prototype, "groupId", void 0);
 class SplitGroupDto {
     name;
+    active;
 }
 exports.SplitGroupDto = SplitGroupDto;
 __decorate([
@@ -137,6 +138,29 @@ __decorate([
     (0, class_validator_1.MaxLength)(191),
     __metadata("design:type", String)
 ], SplitGroupDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], SplitGroupDto.prototype, "active", void 0);
+class UpdateSplitGroupDto {
+    name;
+    active;
+}
+exports.UpdateSplitGroupDto = UpdateSplitGroupDto;
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_transformer_1.Transform)(trim),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsNotEmpty)({ message: 'Give the group a name' }),
+    (0, class_validator_1.MaxLength)(191),
+    __metadata("design:type", String)
+], UpdateSplitGroupDto.prototype, "name", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], UpdateSplitGroupDto.prototype, "active", void 0);
 class SetNameAgenciesDto {
     name;
     agencyIds;

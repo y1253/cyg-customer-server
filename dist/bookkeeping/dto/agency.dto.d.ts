@@ -21,6 +21,11 @@ export declare class UpdateAgencyDto {
 }
 export declare class SplitGroupDto {
     name: string;
+    active?: boolean;
+}
+export declare class UpdateSplitGroupDto {
+    name?: string;
+    active?: boolean;
 }
 export declare class SetNameAgenciesDto {
     name: string;

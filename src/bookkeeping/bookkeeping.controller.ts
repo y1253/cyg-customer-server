@@ -80,6 +80,7 @@ import {
   SetCurrencyDto,
   SetNameAgenciesDto,
   SplitGroupDto,
+  UpdateSplitGroupDto,
   UpdateAgencyDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
@@ -190,12 +191,12 @@ export class BookkeepingController {
   }
 
   @Patch('split-groups/:id')
-  renameSplitGroup(
+  updateSplitGroup(
     @Book() scope: BookScope,
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: SplitGroupDto,
+    @Body() dto: UpdateSplitGroupDto,
   ): Promise<SplitGroupView> {
-    return this.tax.renameGroup(scope, id, dto);
+    return this.tax.updateGroup(scope, id, dto);
   }
 
   /** Its rules become individual rules; names keep them. */

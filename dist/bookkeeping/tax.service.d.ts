@@ -5,7 +5,7 @@ import { CustomerAccountsService } from './customer-accounts.service';
 import { type RuleMatchType } from './name-memory.util';
 import { type BookScope } from './scope';
 import { SplitRulesService } from './split-rules.service';
-import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type SplitGroupDto, type UpdateAgencyDto } from './dto/agency.dto';
+import { type CreateAgencyDto, type NameFieldDto, type NameFieldKind, type SplitGroupDto, type UpdateSplitGroupDto, type UpdateAgencyDto } from './dto/agency.dto';
 import { type TaxKind } from './tax.util';
 export interface AgencyView {
     id: number;
@@ -23,6 +23,7 @@ export interface AgencyView {
 export interface SplitGroupView {
     id: number;
     name: string;
+    active: boolean;
     agencyIds: number[];
 }
 export type NameType = 'CUSTOMER' | 'SUPPLIER' | 'OTHER';
@@ -127,7 +128,7 @@ export declare class TaxService {
     private ruleCategory;
     removeAgency(scope: BookScope, id: number): Promise<void>;
     createGroup(scope: BookScope, dto: SplitGroupDto): Promise<SplitGroupView>;
-    renameGroup(scope: BookScope, id: number, dto: SplitGroupDto): Promise<SplitGroupView>;
+    updateGroup(scope: BookScope, id: number, dto: UpdateSplitGroupDto): Promise<SplitGroupView>;
     removeGroup(scope: BookScope, id: number): Promise<void>;
     private ownedGroup;
     private checkGroupId;

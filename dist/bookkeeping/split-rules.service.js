@@ -32,7 +32,11 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
     }
     async rules(scope) {
         const rows = await this.prisma.taxAgency.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, active: true },
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                OR: [{ groupId: null, active: true }, { group: { active: true } }],
+            },
             include: { rates: true },
             orderBy: { createdAt: 'asc' },
         });
@@ -216,7 +220,11 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             return 0;
         const [agencyRows, named, ctx, ownSubs] = await Promise.all([
             this.prisma.taxAgency.findMany({
-                where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null, active: true },
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    deletedAt: null,
+                    OR: [{ groupId: null, active: true }, { group: { active: true } }],
+                },
                 include: { rates: true },
                 orderBy: { createdAt: 'asc' },
             }),

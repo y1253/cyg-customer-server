@@ -10,7 +10,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
+import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
@@ -46,7 +46,7 @@ export declare class BookkeepingController {
     updateAgency(scope: BookScope, id: number, dto: UpdateAgencyDto): Promise<AgencyView>;
     removeAgency(scope: BookScope, id: number): Promise<void>;
     createSplitGroup(scope: BookScope, dto: SplitGroupDto): Promise<SplitGroupView>;
-    renameSplitGroup(scope: BookScope, id: number, dto: SplitGroupDto): Promise<SplitGroupView>;
+    updateSplitGroup(scope: BookScope, id: number, dto: UpdateSplitGroupDto): Promise<SplitGroupView>;
     removeSplitGroup(scope: BookScope, id: number): Promise<void>;
     names(scope: BookScope): Promise<NamesView>;
     searchNames(scope: BookScope, q?: string): Promise<{
