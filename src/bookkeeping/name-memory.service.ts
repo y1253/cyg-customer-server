@@ -425,12 +425,12 @@ export class NameMemoryService implements OnApplicationBootstrap {
   }
 
   /**
-   * step9 (2026-11-17, third request): a sub-name dropped on a sub-name of ANOTHER name, or on
+   * step9 (2026-11-17, third request): a sub-name dropped on another sub-name, or on
    * a regular name (`into.subNameId` / `into.name`). Its rows — splits too — take the target's
    * name, sub-name and category; the rules that file rows under it follow; each of its
    * descriptions whose rows are all its own gets an exact rule to the target (so a re-read or a
    * new bank-feed row lands there too); its files, split rules and profile go to the target,
-   * and it is removed. Two sub-names of the SAME name join through `SubNamesService.setCategory`.
+   * and it is removed. step9 (2026-11-18, part 2): a sub-name of the SAME name merges here too.
    */
   async mergeSubName(
     scope: BookScope,

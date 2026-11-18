@@ -296,16 +296,6 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
             return this.names.mergeNames(scope, input.from, input.into);
         if (fromSub == null)
             return this.names.mergeIntoSubName(scope, input.from, intoSub);
-        if (intoSub != null) {
-            const [a, b] = await Promise.all([
-                this.get(scope, fromSub),
-                this.get(scope, intoSub),
-            ]);
-            if (a.id === b.id)
-                throw new common_1.BadRequestException('That is the same sub-name.');
-            if (a.nameId === b.nameId)
-                return this.setCategory(scope, a.id, b.category);
-        }
         return this.names.mergeSubName(scope, fromSub, {
             name: input.into,
             subNameId: intoSub ?? undefined,

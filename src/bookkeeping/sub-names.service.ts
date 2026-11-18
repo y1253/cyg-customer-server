@@ -428,8 +428,8 @@ export class SubNamesService implements OnApplicationBootstrap {
 
   /**
    * step9 (2026-11-17, third request): a sub-name works like a name on the Names tab — drag
-   * a name or sub-name onto a name or sub-name. Two sub-names of one name join (its category);
-   * the rest is `NameMemoryService` (`mergeNames`, `mergeIntoSubName`, `mergeSubName`).
+   * a name or sub-name onto a name or sub-name — `NameMemoryService` (`mergeNames`,
+   * `mergeIntoSubName`, `mergeSubName`).
    */
   async merge(
     scope: BookScope,
@@ -453,16 +453,8 @@ export class SubNamesService implements OnApplicationBootstrap {
       return this.names.mergeNames(scope, input.from!, input.into!);
     if (fromSub == null)
       return this.names.mergeIntoSubName(scope, input.from!, intoSub!);
-    if (intoSub != null) {
-      const [a, b] = await Promise.all([
-        this.get(scope, fromSub),
-        this.get(scope, intoSub),
-      ]);
-      if (a.id === b.id)
-        throw new BadRequestException('That is the same sub-name.');
-      if (a.nameId === b.nameId)
-        return this.setCategory(scope, a.id, b.category);
-    }
+    // step9 (2026-11-18, part 2): onto a sub-name of the SAME name too — the dropped-on
+    // sub-name by id (a lookup by category could miss and leave the dragged one standing).
     return this.names.mergeSubName(scope, fromSub, {
       name: input.into,
       subNameId: intoSub ?? undefined,
