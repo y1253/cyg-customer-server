@@ -17,6 +17,7 @@ export interface SubNameView {
     renamed: boolean;
     ownAgencies: boolean;
     agencyIds: number[];
+    fromRule: boolean;
 }
 export interface SubNameSettings {
     name?: string;

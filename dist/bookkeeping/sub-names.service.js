@@ -92,7 +92,7 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         });
         if (!subs.length)
             return [];
-        const [parents, counts] = await Promise.all([
+        const [parents, counts, ruled] = await Promise.all([
             this.prisma.ledgerName.findMany({
                 where: { id: { in: [...new Set(subs.map((s) => s.nameId))] } },
                 select: { id: true, name: true },
@@ -106,7 +106,16 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                 },
                 _count: { _all: true },
             }),
+            this.prisma.bankTransaction.groupBy({
+                by: ['subNameId'],
+                where: {
+                    bookId: scope.bookId,
+                    subNameId: { in: subs.map((s) => s.id) },
+                    splitRuleId: { not: null },
+                },
+            }),
         ]);
+        const fromRule = new Set(ruled.map((r) => r.subNameId));
         const parentOf = new Map(parents.map((p) => [p.id, p.name]));
         const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
         const picks = await this.prisma.ledgerNameAgency.findMany({
@@ -134,6 +143,7 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                         renamed: s.renamed,
                         ownAgencies: s.ownAgencies,
                         agencyIds: s.ownAgencies ? picksOf(s.name) : [],
+                        fromRule: fromRule.has(s.id),
                     },
                 ]
                 : [];

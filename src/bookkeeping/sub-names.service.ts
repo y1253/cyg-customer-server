@@ -54,6 +54,11 @@ export interface SubNameView {
   renamed: boolean;
   ownAgencies: boolean;
   agencyIds: number[];
+  /**
+   * step9 (2026-11-17): it holds a split rule's splits ("Walmart - GST") — never merged
+   * (`refuseRuleSubName`), so the Names tab does not let it be dragged.
+   */
+  fromRule: boolean;
 }
 
 /** step9 part 3: what `PATCH sub-names/:id/settings` may change (absent = unchanged). */
@@ -166,7 +171,7 @@ export class SubNamesService implements OnApplicationBootstrap {
       orderBy: { name: 'asc' },
     });
     if (!subs.length) return [];
-    const [parents, counts] = await Promise.all([
+    const [parents, counts, ruled] = await Promise.all([
       this.prisma.ledgerName.findMany({
         where: { id: { in: [...new Set(subs.map((s) => s.nameId))] } },
         select: { id: true, name: true },
@@ -180,7 +185,16 @@ export class SubNamesService implements OnApplicationBootstrap {
         },
         _count: { _all: true },
       }),
+      this.prisma.bankTransaction.groupBy({
+        by: ['subNameId'],
+        where: {
+          bookId: scope.bookId,
+          subNameId: { in: subs.map((s) => s.id) },
+          splitRuleId: { not: null },
+        },
+      }),
     ]);
+    const fromRule = new Set(ruled.map((r) => r.subNameId));
     const parentOf = new Map(parents.map((p) => [p.id, p.name]));
     const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
     const picks = await this.prisma.ledgerNameAgency.findMany({
@@ -212,6 +226,7 @@ export class SubNamesService implements OnApplicationBootstrap {
               renamed: s.renamed,
               ownAgencies: s.ownAgencies,
               agencyIds: s.ownAgencies ? picksOf(s.name) : [],
+              fromRule: fromRule.has(s.id),
             },
           ]
         : [];
