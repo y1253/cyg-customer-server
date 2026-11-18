@@ -17,6 +17,7 @@ const chart_of_accounts_1 = require("./chart-of-accounts");
 const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
 const sub_name_parents_1 = require("./sub-name-parents");
+const attachment_name_util_1 = require("./attachment-name.util");
 const tax_service_1 = require("./tax.service");
 const reports_util_1 = require("./reports.util");
 const name_memory_util_1 = require("./name-memory.util");
@@ -249,7 +250,11 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     }
     async mergeNames(scope, from, into) {
         await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, from);
-        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, into);
+        if (await this.isWrapper(scope, into)) {
+            const category = (await this.categoryOfName(scope, from)) ?? chart_of_accounts_1.UNCATEGORIZED;
+            const sub = await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, into, category);
+            return this.mergeIntoSubName(scope, from, sub.id);
+        }
         await this.applyMerge(scope, from, into);
         await this.syncProvenance(scope);
     }
@@ -261,10 +266,14 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     }
     async mergeSubName(scope, fromId, into) {
         const from = await this.subNameOfBook(scope, fromId);
-        await (0, sub_name_parents_1.refuseRuleSubName)(this.prisma, scope, from.id, from.name);
         let target;
-        if (into.subNameId != null) {
-            const sub = await this.subNameOfBook(scope, into.subNameId);
+        let intoSubId = into.subNameId ?? null;
+        if (intoSubId == null &&
+            into.name &&
+            (await this.isWrapper(scope, into.name)))
+            intoSubId = (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, (0, name_memory_util_1.cleanName)(into.name) ?? into.name, from.category)).id;
+        if (intoSubId != null) {
+            const sub = await this.subNameOfBook(scope, intoSubId);
             if (sub.id === from.id)
                 throw new common_1.BadRequestException('That is the same sub-name.');
             target = { name: sub.parent, category: sub.category, sub };
@@ -380,6 +389,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await (0, sub_name_parents_1.deleteSubName)(this.prisma, from.id);
         this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`);
         await this.syncProvenance(scope);
+    }
+    async isWrapper(scope, name) {
+        const clean = (0, name_memory_util_1.cleanName)(name);
+        if (!clean)
+            return false;
+        return (await (0, sub_name_parents_1.wrapperNames)(this.prisma, scope)).has((0, attachment_name_util_1.nameKeyOf)(clean));
     }
     async subNameOfBook(scope, id) {
         const sub = await this.prisma.subName.findFirst({

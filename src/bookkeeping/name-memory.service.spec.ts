@@ -651,6 +651,8 @@ describe('NameMemoryService.mergeNames (step8)', () => {
         ...fake.prisma.ledgerName,
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      // step9 (2026-11-18): no wrapper names in the book.
+      subName: { findMany: jest.fn().mockResolvedValue([]) },
     };
     // The target's usual category, as its rows vote for it.
     prisma.bankTransaction.groupBy.mockResolvedValue([
@@ -731,9 +733,22 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
       ),
     },
     subName: {
-      findFirst: jest.fn(({ where }: { where: { id: number } }) =>
-        Promise.resolve(subs.find((s) => s.id === where.id) ?? null),
+      findFirst: jest.fn(
+        ({
+          where,
+        }: {
+          where: { id?: number; nameId?: number; category?: string };
+        }) =>
+          Promise.resolve(
+            subs.find((s) =>
+              where.id !== undefined
+                ? s.id === where.id
+                : s.nameId === where.nameId && s.category === where.category,
+            ) ?? null,
+          ),
       ),
+      // step9 (2026-11-18): the book's wrappers — none unless a test says so.
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(null),
       count: jest.fn().mockResolvedValue(0),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -854,24 +869,23 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     );
   });
 
-  it("refuses the same sub-name, a wrapper and a split rule's sub-name", async () => {
+  it('refuses the same sub-name, and its own wrapper parent (= itself)', async () => {
     const fake = fakePrisma([]);
-    const gst = { ...SUB, id: 31, name: 'Amazon - GST', category: 'GST' };
-    const prisma = withSubs(fake.prisma, [SUB, gst], { 5: 'Amazon' });
+    const prisma = withSubs(fake.prisma, [SUB], { 5: 'Amazon' });
     const s = service(prisma);
     await expect(
       s.mergeSubName(BOOK as never, 24, { subNameId: 24 }),
     ).rejects.toThrow(/same sub-name/);
-    // Its own parent has sub-names: it is a wrapper.
+    // step9 (2026-11-18): its own parent is a wrapper — a drop on it lands on its sub-name of
+    // the same category, which is the sub-name itself.
+    prisma.subName.findMany.mockResolvedValue([{ nameId: 5 }]);
+    prisma.ledgerName.findMany = jest
+      .fn()
+      .mockResolvedValue([{ id: 5, name: 'Amazon' }]);
     prisma.ledgerName.findFirst.mockResolvedValue({ id: 5 });
-    prisma.subName.count.mockResolvedValue(2);
     await expect(
       s.mergeSubName(BOOK as never, 24, { name: 'Amazon' }),
-    ).rejects.toThrow(/group of its sub-names/);
-    prisma.bankTransaction.count.mockResolvedValue(3);
-    await expect(
-      s.mergeSubName(BOOK as never, 31, { name: 'Staples' }),
-    ).rejects.toThrow(/split rule/);
+    ).rejects.toThrow(/same sub-name/);
   });
 });
 

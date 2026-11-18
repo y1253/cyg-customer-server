@@ -303,10 +303,8 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
             ]);
             if (a.id === b.id)
                 throw new common_1.BadRequestException('That is the same sub-name.');
-            if (a.nameId === b.nameId) {
-                await (0, sub_name_parents_1.refuseRuleSubName)(this.prisma, scope, a.id, a.name);
+            if (a.nameId === b.nameId)
                 return this.setCategory(scope, a.id, b.category);
-            }
         }
         return this.names.mergeSubName(scope, fromSub, {
             name: input.into,

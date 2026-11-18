@@ -7,7 +7,6 @@ export declare function ensureSubName(prisma: PrismaService, scope: BookScope, p
 export declare function copyParentPicks(prisma: PrismaService, scope: BookScope, parent: string, sub: string): Promise<void>;
 export declare function wrapperNames(prisma: PrismaService, scope: BookScope): Promise<Map<string, number>>;
 export declare function refuseWrapper(prisma: PrismaService, scope: BookScope, name: string | null | undefined): Promise<void>;
-export declare function refuseRuleSubName(prisma: PrismaService, scope: BookScope, id: number, name: string): Promise<void>;
 export declare function fileUnderSubNames(prisma: PrismaService, scope: BookScope): Promise<number>;
 export declare function ledgerNameId(prisma: PrismaService, scope: BookScope, name: string): Promise<number>;
 export declare function dropUnusedSubName(prisma: PrismaService, scope: BookScope, id: number | null): Promise<void>;

@@ -19,7 +19,6 @@ import {
   copyParentPicks,
   deleteSubName,
   ensureSubName,
-  refuseRuleSubName,
   syncParentSubNames,
 } from './sub-name-parents';
 import {
@@ -55,8 +54,8 @@ export interface SubNameView {
   ownAgencies: boolean;
   agencyIds: number[];
   /**
-   * step9 (2026-11-17): it holds a split rule's splits ("Walmart - GST") — never merged
-   * (`refuseRuleSubName`), so the Names tab does not let it be dragged.
+   * step9 (2026-11-17): it holds a split rule's splits ("Walmart - GST"). step9 (2026-11-18):
+   * informational only — it merges like any sub-name.
    */
   fromRule: boolean;
 }
@@ -461,10 +460,8 @@ export class SubNamesService implements OnApplicationBootstrap {
       ]);
       if (a.id === b.id)
         throw new BadRequestException('That is the same sub-name.');
-      if (a.nameId === b.nameId) {
-        await refuseRuleSubName(this.prisma, scope, a.id, a.name);
+      if (a.nameId === b.nameId)
         return this.setCategory(scope, a.id, b.category);
-      }
     }
     return this.names.mergeSubName(scope, fromSub, {
       name: input.into,

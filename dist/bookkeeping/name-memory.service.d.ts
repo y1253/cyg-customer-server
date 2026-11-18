@@ -33,6 +33,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
         name?: string;
         subNameId?: number;
     }): Promise<void>;
+    private isWrapper;
     private subNameOfBook;
     private addFields;
     resetRule(scope: BookScope, input: Parameters<NameMemoryService['applyReset']>[1]): Promise<void>;

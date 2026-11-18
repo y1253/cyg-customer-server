@@ -18,11 +18,13 @@ import { bookLabel, scopeWhere, type BookScope } from './scope';
 import {
   deleteSubName,
   dropUnusedSubName,
+  ensureSubName,
   fileUnderSubNames,
-  refuseRuleSubName,
   refuseWrapper,
   syncParentSubNames,
+  wrapperNames,
 } from './sub-name-parents';
+import { nameKeyOf } from './attachment-name.util';
 import { parseNameFields, TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
@@ -393,9 +395,15 @@ export class NameMemoryService implements OnApplicationBootstrap {
     from: string,
     into: string,
   ): Promise<void> {
-    // step9 (2026-11-17, second request): nothing is merged into or out of a wrapper name.
+    // step9 (2026-11-17, second request): nothing is merged out of a wrapper name. step9
+    // (2026-11-18): one dropped on a wrapper goes under its sub-name of the same category.
     await refuseWrapper(this.prisma, scope, from);
-    await refuseWrapper(this.prisma, scope, into);
+    if (await this.isWrapper(scope, into)) {
+      const category =
+        (await this.categoryOfName(scope, from)) ?? UNCATEGORIZED;
+      const sub = await ensureSubName(this.prisma, scope, into, category);
+      return this.mergeIntoSubName(scope, from, sub.id);
+    }
     await this.applyMerge(scope, from, into);
     await this.syncProvenance(scope);
   }
@@ -430,10 +438,27 @@ export class NameMemoryService implements OnApplicationBootstrap {
     into: { name?: string; subNameId?: number },
   ): Promise<void> {
     const from = await this.subNameOfBook(scope, fromId);
-    await refuseRuleSubName(this.prisma, scope, from.id, from.name);
+    // step9 (2026-11-18): a split rule's sub-name ("Walmart - GST") merges like any other —
+    // its rows keep `splitRuleId`, so the rule never cuts them again.
     let target: { name: string; category: string; sub: typeof from | null };
-    if (into.subNameId != null) {
-      const sub = await this.subNameOfBook(scope, into.subNameId);
+    // step9 (2026-11-18): dropped on a wrapper name = onto its sub-name of the same category
+    // (made if new).
+    let intoSubId = into.subNameId ?? null;
+    if (
+      intoSubId == null &&
+      into.name &&
+      (await this.isWrapper(scope, into.name))
+    )
+      intoSubId = (
+        await ensureSubName(
+          this.prisma,
+          scope,
+          cleanName(into.name) ?? into.name,
+          from.category,
+        )
+      ).id;
+    if (intoSubId != null) {
+      const sub = await this.subNameOfBook(scope, intoSubId);
       if (sub.id === from.id)
         throw new BadRequestException('That is the same sub-name.');
       target = { name: sub.parent, category: sub.category, sub };
@@ -569,6 +594,13 @@ export class NameMemoryService implements OnApplicationBootstrap {
       `book ${bookLabel(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`,
     );
     await this.syncProvenance(scope);
+  }
+
+  /** step9 (2026-11-18): whether `name` has sub-names (a wrapper). */
+  private async isWrapper(scope: BookScope, name: string): Promise<boolean> {
+    const clean = cleanName(name);
+    if (!clean) return false;
+    return (await wrapperNames(this.prisma, scope)).has(nameKeyOf(clean));
   }
 
   /** step9 (2026-11-17, third request): a sub-name of the book with its parent's name. */
