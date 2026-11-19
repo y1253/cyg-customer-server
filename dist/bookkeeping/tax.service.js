@@ -465,7 +465,7 @@ let TaxService = class TaxService {
         ]));
         const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
         const subDescriptions = Object.fromEntries([
-            ...groupDescriptions(named.flatMap((r) => r.subNameId
+            ...groupDescriptions(named.flatMap((r) => r.subNameId && !r.splitOfId
                 ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
                 : []), rulesById).descriptionsOf,
         ].map(([k, v]) => [Number(k.slice(1)), v]));

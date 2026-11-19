@@ -785,12 +785,14 @@ export class TaxService {
       rulesById,
     );
     // step9 (2026-11-17, second request): the same, per sub-name (keyed "#<id>").
+    // 2026-11-18: top-level rows only — a split copies its transaction's description, so the
+    // description belongs to the main line's sub-name, never to a split's.
     const subDescriptions: Record<number, NameDescriptionView[]> =
       Object.fromEntries(
         [
           ...groupDescriptions(
             named.flatMap((r) =>
-              r.subNameId
+              r.subNameId && !r.splitOfId
                 ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
                 : [],
             ),
