@@ -1,5 +1,5 @@
 import { CustomColumnsService, type CustomColumnsView } from './custom-columns.service';
-import { CopyCustomColumnsDto, CustomAnswerDto, CustomColumnDto, CustomColumnOrderDto } from './dto/custom-column.dto';
+import { CopyCustomColumnsDto, CustomAnswerDto, CustomColumnDto, CustomColumnOrderDto, CustomNameAnswerDto } from './dto/custom-column.dto';
 import type { BookScope } from './scope';
 export declare class CustomColumnsController {
     private readonly columns;
@@ -11,4 +11,5 @@ export declare class CustomColumnsController {
     update(scope: BookScope, id: number, dto: CustomColumnDto): Promise<CustomColumnsView>;
     remove(scope: BookScope, id: number): Promise<CustomColumnsView>;
     answer(scope: BookScope, id: number, columnId: number, dto: CustomAnswerDto): Promise<CustomColumnsView>;
+    nameAnswer(scope: BookScope, id: number, dto: CustomNameAnswerDto): Promise<CustomColumnsView>;
 }

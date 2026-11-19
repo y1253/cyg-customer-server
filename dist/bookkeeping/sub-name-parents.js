@@ -11,6 +11,7 @@ exports.deleteSubName = deleteSubName;
 exports.syncParentSubNames = syncParentSubNames;
 const common_1 = require("@nestjs/common");
 const attachment_name_util_1 = require("./attachment-name.util");
+const custom_column_defaults_1 = require("./custom-column-defaults");
 const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
 const sub_names_util_1 = require("./sub-names.util");
@@ -40,7 +41,7 @@ async function copyParentPicks(prisma, scope, parent, sub) {
     const [picks, theirs] = await Promise.all([
         prisma.ledgerNameAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: (0, name_memory_util_1.cleanName)(parent) ?? parent },
-            select: { agencyId: true, lineName: true, appliedAt: true },
+            select: { agencyId: true, lineName: true, appliedAt: true, alone: true },
         }),
         prisma.ledgerNameAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: sub },
@@ -186,6 +187,7 @@ async function deleteSubName(prisma, id) {
             where: { bookId: sub.bookId, subNameId: id },
             data: { subNameId: null, category: null },
         }),
+        prisma.customColumnNameAnswer.deleteMany({ where: { subNameId: id } }),
         prisma.subName.deleteMany({ where: { id } }),
     ]);
 }
@@ -282,6 +284,8 @@ async function syncParentSubNames(prisma, scope, parentIds) {
         if (!used)
             await deleteSubName(prisma, id);
     }
-    return changed + (await fileUnderSubNames(prisma, scope));
+    const filed = await fileUnderSubNames(prisma, scope);
+    await (0, custom_column_defaults_1.fillNameAnswers)(prisma, scope);
+    return changed + filed;
 }
 //# sourceMappingURL=sub-name-parents.js.map

@@ -50,6 +50,11 @@ let CustomColumnsController = class CustomColumnsController {
         await this.columns.answer(scope, [id], columnId, dto);
         return this.columns.view(scope);
     }
+    async nameAnswer(scope, id, dto) {
+        const { name, subNameId, ...answer } = dto;
+        await this.columns.setNameAnswer(scope, id, { name, subNameId }, answer);
+        return this.columns.view(scope);
+    }
 };
 exports.CustomColumnsController = CustomColumnsController;
 __decorate([
@@ -110,6 +115,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, Number, Number, custom_column_dto_1.CustomAnswerDto]),
     __metadata("design:returntype", Promise)
 ], CustomColumnsController.prototype, "answer", null);
+__decorate([
+    (0, common_1.Put)('custom-columns/:id/names'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, custom_column_dto_1.CustomNameAnswerDto]),
+    __metadata("design:returntype", Promise)
+], CustomColumnsController.prototype, "nameAnswer", null);
 exports.CustomColumnsController = CustomColumnsController = __decorate([
     (0, common_1.Controller)('bookkeeping'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard, book_scope_guard_1.BookScopeGuard),

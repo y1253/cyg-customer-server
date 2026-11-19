@@ -21,6 +21,7 @@ import {
   CustomAnswerDto,
   CustomColumnDto,
   CustomColumnOrderDto,
+  CustomNameAnswerDto,
 } from './dto/custom-column.dto';
 import type { BookScope } from './scope';
 
@@ -93,6 +94,18 @@ export class CustomColumnsController {
     @Body() dto: CustomAnswerDto,
   ): Promise<CustomColumnsView> {
     await this.columns.answer(scope, [id], columnId, dto);
+    return this.columns.view(scope);
+  }
+
+  /** step9 (2026-11-19): a name's / sub-name's default answer — fills its empty cells. */
+  @Put('custom-columns/:id/names')
+  async nameAnswer(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CustomNameAnswerDto,
+  ): Promise<CustomColumnsView> {
+    const { name, subNameId, ...answer } = dto;
+    await this.columns.setNameAnswer(scope, id, { name, subNameId }, answer);
     return this.columns.view(scope);
   }
 }

@@ -17,6 +17,10 @@ export declare class CustomAnswerDto {
     value?: string | null;
     dropDownId?: number | null;
 }
+export declare class CustomNameAnswerDto extends CustomAnswerDto {
+    name?: string;
+    subNameId?: number;
+}
 export declare class CustomColumnOrderDto {
     ids: number[];
 }

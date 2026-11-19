@@ -15,6 +15,7 @@ const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const custom_column_defaults_1 = require("./custom-column-defaults");
 const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
 const split_rules_util_1 = require("./split-rules.util");
@@ -62,7 +63,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             return 0;
         const picks = await this.prisma.ledgerNameAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), appliedAt: { not: null } },
-            select: { name: true, agencyId: true },
+            select: { name: true, agencyId: true, alone: true },
             orderBy: { agencyId: 'asc' },
         });
         const wantRule = (id) => rules.has(id) && (!target.ruleIds || target.ruleIds.includes(id));
@@ -71,7 +72,11 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             if (!wantRule(p.agencyId))
                 continue;
             const k = (0, tax_util_1.nameTaxKey)(p.name);
-            rulesOf.set(k, [...(rulesOf.get(k) ?? []), p.agencyId]);
+            const rule = rules.get(p.agencyId);
+            rulesOf.set(k, [
+                ...(rulesOf.get(k) ?? []),
+                p.alone ? { ...rule, groupId: null } : rule,
+            ]);
         }
         if (!rulesOf.size)
             return 0;
@@ -86,10 +91,10 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
                 .map((s) => `${s.ruleSourceId}:${s.splitRuleId}`));
             let n = 0;
             for (const line of lines) {
-                const ids = (rulesOf.get(line.key) ?? []).filter((id) => !done.has(`${line.sourceId}:${id}`));
-                if (!ids.length)
+                const todo = (rulesOf.get(line.key) ?? []).filter((r) => !done.has(`${line.sourceId}:${r.id}`));
+                if (!todo.length)
                     continue;
-                const splits = (0, split_rules_util_1.stepSplits)(line.amount, ids.map((id) => rules.get(id)));
+                const splits = (0, split_rules_util_1.stepSplits)(line.amount, todo);
                 if (!splits.length)
                     continue;
                 n += await this.write(scope, p, line, splits);
@@ -109,6 +114,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         try {
             await (0, sub_name_parents_1.fileUnderSubNames)(this.prisma, scope);
             const made = await this.apply(scope, { transactionIds });
+            await (0, custom_column_defaults_1.fillNameAnswers)(this.prisma, scope, { transactionIds });
             if (made)
                 this.logger.log(`book ${scope.bookId}: ${made} rule split(s) on ${transactionIds.length} new row(s)`);
         }

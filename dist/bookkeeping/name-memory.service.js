@@ -18,6 +18,7 @@ const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
 const sub_name_parents_1 = require("./sub-name-parents");
 const attachment_name_util_1 = require("./attachment-name.util");
+const custom_column_defaults_1 = require("./custom-column-defaults");
 const tax_service_1 = require("./tax.service");
 const reports_util_1 = require("./reports.util");
 const name_memory_util_1 = require("./name-memory.util");
@@ -267,11 +268,11 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async mergeSubName(scope, fromId, into) {
         const from = await this.subNameOfBook(scope, fromId);
         let target;
-        let intoSubId = into.subNameId ?? null;
+        const intoSubId = into.subNameId ?? null;
         if (intoSubId == null &&
             into.name &&
             (await this.isWrapper(scope, into.name)))
-            intoSubId = (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, (0, name_memory_util_1.cleanName)(into.name) ?? into.name, from.category)).id;
+            throw new common_1.BadRequestException(`"${(0, name_memory_util_1.cleanName)(into.name) ?? into.name}" has sub-names — drop it on one of its sub-names.`);
         if (intoSubId != null) {
             const sub = await this.subNameOfBook(scope, intoSubId);
             if (sub.id === from.id)
@@ -386,6 +387,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
             await this.tax.dropSubNameKeys(scope, from.name, target.name);
             await this.addFields(scope, from.fields, { name: target.name });
         }
+        if (await this.prisma.customColumnNameAnswer.count({
+            where: { subNameId: from.id },
+        }))
+            await (0, custom_column_defaults_1.moveNameAnswers)(this.prisma, { subNameId: from.id }, target.sub
+                ? { subNameId: target.sub.id }
+                : { nameId: await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, target.name) });
         await (0, sub_name_parents_1.deleteSubName)(this.prisma, from.id);
         this.logger.log(`book ${(0, scope_1.bookLabel)(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`);
         await this.syncProvenance(scope);
@@ -1151,6 +1158,17 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.prisma.ledgerNameAgency.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });
+        const own = await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+            select: { id: true },
+        });
+        if (own &&
+            (await this.prisma.customColumnNameAnswer.count({
+                where: { nameId: own.id },
+            })))
+            await (0, custom_column_defaults_1.moveNameAnswers)(this.prisma, { nameId: own.id }, sub
+                ? { subNameId: sub.id }
+                : { nameId: await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, target) }, true);
         await this.prisma.ledgerName.deleteMany({
             where: { ...(0, scope_1.scopeWhere)(scope), name: source },
         });

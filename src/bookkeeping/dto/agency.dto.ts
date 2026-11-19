@@ -161,6 +161,11 @@ export class SetNameAgenciesDto {
   @ArrayMaxSize(50)
   @IsInt({ each: true })
   agencyIds!: number[];
+
+  /** step9 (2026-11-19): one rule of a split group picked ON ITS OWN (not its group). */
+  @IsOptional()
+  @IsBoolean()
+  alone?: boolean;
 }
 
 /** `PUT /api/bookkeeping/names/rule` — a customer's own name and/or category. */
@@ -638,4 +643,9 @@ export class SubNameSettingsDto {
   @ArrayMaxSize(50)
   @IsInt({ each: true })
   agencyIds?: number[] | null;
+
+  /** step9 (2026-11-19): one rule of a split group picked on its own. */
+  @IsOptional()
+  @IsBoolean()
+  alone?: boolean;
 }

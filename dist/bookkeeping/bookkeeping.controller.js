@@ -127,7 +127,7 @@ let BookkeepingController = class BookkeepingController {
         return this.tax.names(scope);
     }
     setNameAgencies(scope, dto) {
-        return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
+        return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds, dto.alone === true);
     }
     async saveNameRule(scope, dto) {
         const { name, category } = await this.accounts.editValues(scope, dto);

@@ -30,6 +30,7 @@ import {
   type NameInput,
 } from './attachment-name.util';
 import { UNCLARIFIED_NAME } from './reports.util';
+import { moveNameAnswers } from './custom-column-defaults';
 import { scopeWhere, type BookScope } from './scope';
 import { SplitRulesService } from './split-rules.service';
 import { refuseWrapper } from './sub-name-parents';
@@ -91,6 +92,11 @@ export interface NameView {
   total: number;
   /** The split rules picked for this name (none = the default). */
   agencyIds: number[];
+  /**
+   * step9 (2026-11-19): its pick is ONE rule of a split group taken on its own (it cuts like
+   * an individual rule); false = an individual rule or a whole group.
+   */
+  agencyAlone: boolean;
   /**
    * The descriptions the AI put under this name (one per description key, most rows first,
    * at most `MAX_DESCRIPTIONS`), with the category their rows mostly have — and (step9) the
@@ -416,6 +422,12 @@ export class TaxService {
       },
       include: AGENCY_INCLUDE,
     });
+    // step9 (2026-11-19): a rule that leaves its group is individual — "alone" means nothing.
+    if (current.groupId !== null && row.groupId !== current.groupId)
+      await this.prisma.ledgerNameAgency.updateMany({
+        where: { ...scopeWhere(scope), agencyId: row.id, alone: true },
+        data: { alone: false },
+      });
     if (row.groupId !== null && row.groupId !== current.groupId)
       await this.joinGroupPicks(scope, row.id, row.groupId);
     return toAgency(row);
@@ -499,6 +511,10 @@ export class TaxService {
   async removeGroup(scope: BookScope, id: number): Promise<void> {
     const group = await this.ownedGroup(scope, id);
     await this.prisma.$transaction([
+      this.prisma.ledgerNameAgency.updateMany({
+        where: { ...scopeWhere(scope), alone: true, agency: { groupId: id } },
+        data: { alone: false },
+      }),
       this.prisma.taxAgency.updateMany({
         where: { ...scopeWhere(scope), groupId: id },
         data: { groupId: null, active: group.active },
@@ -569,10 +585,12 @@ export class TaxService {
       select: { id: true },
     });
     if (!members.length) return;
+    // step9 (2026-11-19): a member picked ON ITS OWN does not bring the newcomer.
     const picks = await this.prisma.ledgerNameAgency.findMany({
       where: {
         ...scopeWhere(scope),
         agencyId: { in: members.map((m) => m.id) },
+        alone: false,
       },
       select: { name: true },
     });
@@ -712,7 +730,7 @@ export class TaxService {
       }),
       this.prisma.ledgerNameAgency.findMany({
         where: { ...scopeWhere(scope), agency: { deletedAt: null } },
-        select: { name: true, agencyId: true },
+        select: { name: true, agencyId: true, alone: true },
         orderBy: { agencyId: 'asc' },
       }),
       this.prisma.customerNameRule.findMany({
@@ -846,9 +864,11 @@ export class TaxService {
       totalOf.set(key, (totalOf.get(key) ?? 0) + shareOf(r));
     }
     const agenciesOf = new Map<string, number[]>();
+    const aloneKeys = new Set<string>();
     for (const p of picks) {
       const key = nameTaxKey(p.name);
       agenciesOf.set(key, [...(agenciesOf.get(key) ?? []), p.agencyId]);
+      if (p.alone) aloneKeys.add(key);
     }
 
     const ref = (r: { matchType: string; matchKey: string }) => ({
@@ -899,6 +919,7 @@ export class TaxService {
           rows: categories.reduce((n, [, c]) => n + c, 0),
           total: (totalOf.get(key) ?? 0) / 100,
           agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
+          agencyAlone: aloneKeys.has(nameTaxKey(name)),
           fields: fieldsOf.get(key) ?? [],
           descriptions: descriptionsOf.get(key) ?? [],
           followsContains: rules
@@ -973,6 +994,7 @@ export class TaxService {
         rows: nameless.length,
         total: nameless.reduce((n, r) => n + shareOf(r), 0) / 100,
         agencyIds: agenciesOf.get(nameTaxKey(null)) ?? [],
+        agencyAlone: aloneKeys.has(nameTaxKey(null)),
         fields: [],
         descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
           key: u.key,
@@ -1020,6 +1042,7 @@ export class TaxService {
         rows: 0,
         total: 0,
         agencyIds: agenciesOf.get(nameTaxKey(name)) ?? [],
+        agencyAlone: aloneKeys.has(nameTaxKey(name)),
         fields: fieldsOf.get(key) ?? [],
         descriptions: [],
         followsContains: [],
@@ -1339,26 +1362,38 @@ export class TaxService {
     scope: BookScope,
     name: string,
     agencyIds: number[],
+    alone = false,
   ): Promise<NamesView> {
     const clean = name.trim();
     if (!clean) throw new BadRequestException('Which name?');
     // step9 (2026-11-17, second request): a wrapper's split rules live on its sub-names.
     await refuseWrapper(this.prisma, scope, clean);
-    await this.writePicks(scope, clean, agencyIds);
+    await this.writePicks(scope, clean, agencyIds, alone);
     return this.names(scope);
   }
 
   /**
    * The rules picked for `clean` (a name, or step9 part 3 a sub-name's name): a pick that
    * stays is kept, the others go, new ones come — and split the rows of `clean` at once.
+   * step9 (2026-11-19): `alone` = ONE rule of a split group picked on its own — no group
+   * expansion; it cuts like an individual rule (`LedgerNameAgency.alone`).
    */
   async writePicks(
     scope: BookScope,
     clean: string,
     agencyIds: number[],
+    alone = false,
   ): Promise<void> {
     let ids = [...new Set(agencyIds)];
-    if (ids.length) {
+    if (alone && ids.length !== 1)
+      throw new BadRequestException('Pick one split rule to apply on its own.');
+    if (alone) {
+      const owned = await this.prisma.taxAgency.count({
+        where: { ...scopeWhere(scope), deletedAt: null, id: ids[0] },
+      });
+      if (!owned) throw new NotFoundException('Split rule not found');
+    }
+    if (ids.length && !alone) {
       const owned = await this.prisma.taxAgency.findMany({
         where: { ...scopeWhere(scope), deletedAt: null, id: { in: ids } },
         select: { groupId: true },
@@ -1394,19 +1429,22 @@ export class TaxService {
     const key = nameTaxKey(clean);
     const existing = await this.prisma.ledgerNameAgency.findMany({
       where: scopeWhere(scope),
-      select: { id: true, name: true, agencyId: true },
+      select: { id: true, name: true, agencyId: true, alone: true },
     });
-    // MySQL compares case-insensitively; matched the same way here.
+    // MySQL compares case-insensitively; matched the same way here. A pick that changes
+    // between "alone" and "with its group" is a new pick (it cuts differently).
     const mine = existing.filter((e) => nameTaxKey(e.name) === key);
     const kept = new Set(
-      mine.filter((e) => ids.includes(e.agencyId)).map((e) => e.agencyId),
+      mine
+        .filter((e) => ids.includes(e.agencyId) && e.alone === alone)
+        .map((e) => e.agencyId),
     );
     const added = ids.filter((agencyId) => !kept.has(agencyId));
     await this.prisma.$transaction([
       this.prisma.ledgerNameAgency.deleteMany({
         where: {
           id: {
-            in: mine.filter((e) => !ids.includes(e.agencyId)).map((e) => e.id),
+            in: mine.filter((e) => !kept.has(e.agencyId)).map((e) => e.id),
           },
         },
       }),
@@ -1415,6 +1453,7 @@ export class TaxService {
           ...scopeWhere(scope),
           name: clean,
           agencyId,
+          alone,
           appliedAt: new Date(),
         })),
       }),
@@ -1491,7 +1530,7 @@ export class TaxService {
     if (!keys.size) return;
     const rows = await this.prisma.ledgerNameAgency.findMany({
       where: scopeWhere(scope),
-      select: { name: true, agencyId: true },
+      select: { name: true, agencyId: true, alone: true },
     });
     const target = nameTaxKey(newName);
     if (rows.some((r) => nameTaxKey(r.name) === target)) return;
@@ -1499,16 +1538,13 @@ export class TaxService {
       .map(nameTaxKey)
       .find((k) => rows.some((r) => nameTaxKey(r.name) === k));
     if (from === undefined) return;
-    const add = [
-      ...new Set(
-        rows.filter((r) => nameTaxKey(r.name) === from).map((r) => r.agencyId),
-      ),
-    ];
+    const add = rows.filter((r) => nameTaxKey(r.name) === from);
     await this.prisma.ledgerNameAgency.createMany({
-      data: add.map((agencyId) => ({
+      data: add.map(({ agencyId, alone }) => ({
         ...scopeWhere(scope),
         name: newName,
         agencyId,
+        alone,
         appliedAt: new Date(),
       })),
       skipDuplicates: true,
@@ -1544,6 +1580,7 @@ export class TaxService {
     const rows = await this.prisma.ledgerName.findMany({
       where: scopeWhere(scope),
       select: {
+        id: true,
         name: true,
         group: true,
         taxExempt: true,
@@ -1551,10 +1588,15 @@ export class TaxService {
         manual: true,
       },
     });
-    if (rows.some((r) => nameTaxKey(r.name) === target)) return;
     const from = rows.find((r) => keys.has(nameTaxKey(r.name)));
     if (!from) return;
-    await this.prisma.ledgerName.create({
+    const there = rows.find((r) => nameTaxKey(r.name) === target);
+    // step9 (2026-11-19): its default custom-column answers follow (the target's own stay).
+    if (there) {
+      await moveNameAnswers(this.prisma, { nameId: from.id }, { nameId: there.id });
+      return;
+    }
+    const made = await this.prisma.ledgerName.create({
       data: {
         ...scopeWhere(scope),
         name: newName,
@@ -1563,7 +1605,9 @@ export class TaxService {
         fields: (from.fields as Prisma.InputJsonValue | null) ?? Prisma.DbNull,
         manual: from.manual,
       },
+      select: { id: true },
     });
+    await moveNameAnswers(this.prisma, { nameId: from.id }, { nameId: made.id });
   }
 
   /**

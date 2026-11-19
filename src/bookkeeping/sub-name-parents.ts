@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { PrismaService } from '../prisma/prisma.service';
 import { nameKeyOf } from './attachment-name.util';
+import { fillNameAnswers } from './custom-column-defaults';
 import { cleanName } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
 import { parentSubName, subNameFiling, subNameOf } from './sub-names.util';
@@ -52,7 +53,7 @@ export async function copyParentPicks(
   const [picks, theirs] = await Promise.all([
     prisma.ledgerNameAgency.findMany({
       where: { ...scopeWhere(scope), name: cleanName(parent) ?? parent },
-      select: { agencyId: true, lineName: true, appliedAt: true },
+      select: { agencyId: true, lineName: true, appliedAt: true, alone: true },
     }),
     prisma.ledgerNameAgency.findMany({
       where: { ...scopeWhere(scope), name: sub },
@@ -252,6 +253,8 @@ export async function deleteSubName(
       where: { bookId: sub.bookId, subNameId: id },
       data: { subNameId: null, category: null },
     }),
+    // step9 (2026-11-19): its default custom-column answers go with it.
+    prisma.customColumnNameAnswer.deleteMany({ where: { subNameId: id } }),
     prisma.subName.deleteMany({ where: { id } }),
   ]);
 }
@@ -370,5 +373,9 @@ export async function syncParentSubNames(
     if (!used) await deleteSubName(prisma, id);
   }
   // step9 (2026-11-17, second request): then every row of a wrapper name finds its sub-name.
-  return changed + (await fileUnderSubNames(prisma, scope));
+  const filed = await fileUnderSubNames(prisma, scope);
+  // step9 (2026-11-19): rows that changed name / sub-name take its default answers (empty
+  // cells only).
+  await fillNameAnswers(prisma, scope);
+  return changed + filed;
 }

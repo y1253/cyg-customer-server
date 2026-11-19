@@ -275,7 +275,12 @@ export class BookkeepingController {
     @Book() scope: BookScope,
     @Body() dto: SetNameAgenciesDto,
   ): Promise<NamesView> {
-    return this.tax.setNameAgencies(scope, dto.name, dto.agencyIds);
+    return this.tax.setNameAgencies(
+      scope,
+      dto.name,
+      dto.agencyIds,
+      dto.alone === true,
+    );
   }
 
   /**

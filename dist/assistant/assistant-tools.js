@@ -63,7 +63,7 @@ const obj = (properties, required = []) => ({
 exports.READ_TOOLS = [
     {
         name: 'list_custom_columns',
-        description: 'The customer\'s OWN ledger columns in this book (step8: e.g. "Business" with options 1 / 2 / 3): each column\'s id, name, type (TEXT any text, LETTERS text only, NUMBER number only, DROPDOWN one of its options), min / max characters and options, plus how many transactions have an answer. Read it before set_custom_column.',
+        description: 'The customer\'s OWN ledger columns in this book (step8: e.g. "Business" with options 1 / 2 / 3): each column\'s id, name, type (TEXT any text, LETTERS text only, NUMBER number only, DROPDOWN one of its options), min / max characters and options, plus how many transactions have an answer and (step9) the names / sub-names with a DEFAULT answer in it. Read it before set_custom_column.',
         parameters: obj({}),
     },
     {
@@ -221,13 +221,15 @@ const SWITCH_BOOK_TOOL = {
 const WRITE_TOOLS = [
     {
         name: 'set_custom_column',
-        description: "Fill one of the customer's own ledger columns (list_custom_columns) on one or more transactions (search_transactions for their ids; at most 200 at a time) — e.g. \"mark all Uber rows as business 2\". DROPDOWN: option = the option's label exactly. Others: value, which must follow the column's rules (the tool says why it refused). Empty value = clear the cell. Tell the customer how many rows were filled.",
+        description: "Fill one of the customer's own ledger columns (list_custom_columns) on one or more transactions (search_transactions for their ids; at most 200 at a time) — e.g. \"mark all Uber rows as business 2\". Or (step9) give `name` (a payee name, list_names) or `subNameId` instead of transactionIds to set that name's DEFAULT answer: every EMPTY cell of its rows gets it now, and every row of it that arrives later — answers already there stay; a name with sub-names takes defaults only on its sub-names. DROPDOWN: option = the option's label exactly. Others: value, which must follow the column's rules (the tool says why it refused). Empty value = clear the cell (or remove the default). Tell the customer how many rows were filled.",
         parameters: obj({
             columnId: int,
             transactionIds: { type: 'array', items: int },
+            name: str,
+            subNameId: int,
             value: str,
             option: str,
-        }, ['columnId', 'transactionIds']),
+        }, ['columnId']),
     },
     {
         name: 'attach_receipt',
@@ -855,12 +857,36 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                         maxChars: c.maxChars,
                         options: c.options.map((o) => o.label),
                         answered: filled(c.id),
+                        nameDefaults: v.nameAnswers
+                            .filter((d) => d.columnId === c.id)
+                            .map((d) => ({
+                            name: d.name,
+                            subNameId: d.subNameId,
+                            answer: d.value,
+                        })),
                     }))),
                 };
             }
             case 'set_custom_column': {
                 if (!this.customColumns)
                     throw new Error('custom columns are not available');
+                const what = (typeof a.option === 'string' && a.option) ||
+                    (typeof a.value === 'string' && a.value) ||
+                    '';
+                const forName = typeof a.name === 'string' && a.name.trim();
+                const forSub = typeof a.subNameId === 'number' && a.subNameId > 0
+                    ? a.subNameId
+                    : undefined;
+                if (forName || forSub) {
+                    const n = await this.customColumns.setNameAnswer(scope, id(a.columnId), { name: forName || undefined, subNameId: forSub }, {
+                        value: typeof a.value === 'string' ? a.value : null,
+                        option: typeof a.option === 'string' ? a.option : undefined,
+                    });
+                    const who = forName || `sub-name ${forSub}`;
+                    return done(what
+                        ? `Default “${what}” for ${who} — filled ${n} empty cell${n === 1 ? '' : 's'}`
+                        : `Removed the default for ${who}`);
+                }
                 const ids = Array.isArray(a.transactionIds)
                     ? a.transactionIds.filter((x) => typeof x === 'number' && Number.isInteger(x) && x > 0)
                     : [];
@@ -872,9 +898,6 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                     value: typeof a.value === 'string' ? a.value : null,
                     option: typeof a.option === 'string' ? a.option : undefined,
                 });
-                const what = (typeof a.option === 'string' && a.option) ||
-                    (typeof a.value === 'string' && a.value) ||
-                    '';
                 return done(what
                     ? `Set “${what}” on ${n} transaction${n === 1 ? '' : 's'}`
                     : `Cleared ${n} transaction${n === 1 ? '' : 's'}`);

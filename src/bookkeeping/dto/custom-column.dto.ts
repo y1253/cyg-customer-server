@@ -76,6 +76,22 @@ export class CustomAnswerDto {
   dropDownId?: number | null;
 }
 
+/**
+ * step9 (2026-11-19): a name's (`name`) or sub-name's (`subNameId`) default answer in a
+ * column — like a cell; both empty = removed.
+ */
+export class CustomNameAnswerDto extends CustomAnswerDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  name?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  subNameId?: number;
+}
+
 /** step8: column order (ids, left to right). */
 export class CustomColumnOrderDto {
   @IsArray()

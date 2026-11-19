@@ -30,6 +30,7 @@ export declare class UpdateSplitGroupDto {
 export declare class SetNameAgenciesDto {
     name: string;
     agencyIds: number[];
+    alone?: boolean;
 }
 export declare class SaveNameRuleDto {
     matchType: 'NAME' | 'DESCRIPTION' | 'CONTAINS';
@@ -148,4 +149,5 @@ export declare class SubNameSettingsDto {
     group?: string | null;
     fields?: NameFieldDto[];
     agencyIds?: number[] | null;
+    alone?: boolean;
 }

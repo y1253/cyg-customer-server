@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { fillNameAnswers } from './custom-column-defaults';
 import {
   answerProblem,
   cleanColumn,
@@ -12,7 +13,10 @@ import {
   type ColumnInput,
   type CustomColumnType,
 } from './custom-column.util';
+import { nameKey } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
+import { refuseWrapper, ledgerNameId } from './sub-name-parents';
+import { UNCLARIFIED_NAME } from './reports.util';
 
 export interface CustomColumnView {
   id: number;
@@ -30,10 +34,22 @@ export interface CustomAnswerView {
   dropDownId: number | null;
 }
 
+/**
+ * step9 (2026-11-19): a name's (`name`) or a sub-name's (`subNameId`) default answer in a
+ * column — it fills every empty cell of its rows.
+ */
+export interface CustomNameAnswerView extends CustomAnswerView {
+  columnId: number;
+  name: string | null;
+  subNameId: number | null;
+}
+
 export interface CustomColumnsView {
   columns: CustomColumnView[];
   /** transactionId → columnId → answer. */
   answers: Record<number, Record<number, CustomAnswerView>>;
+  /** step9 (2026-11-19): the names' / sub-names' default answers. */
+  nameAnswers: CustomNameAnswerView[];
   /** The customer's OTHER books that have columns — offered as "same as …" (user's request). */
   templates: Array<{
     bookId: number;
@@ -78,7 +94,50 @@ export class CustomColumnsService {
         dropDownId: r.dropDownId,
       };
     }
-    return { columns, answers, templates: await this.templates(scope) };
+    return {
+      columns,
+      answers,
+      nameAnswers: await this.nameAnswers(scope, columns),
+      templates: await this.templates(scope),
+    };
+  }
+
+  private async nameAnswers(
+    scope: BookScope,
+    columns: CustomColumnView[],
+  ): Promise<CustomNameAnswerView[]> {
+    if (!columns.length) return [];
+    const rows = await this.prisma.customColumnNameAnswer.findMany({
+      where: { customColumnId: { in: columns.map((c) => c.id) } },
+      select: {
+        customColumnId: true,
+        nameId: true,
+        subNameId: true,
+        value: true,
+        dropDownId: true,
+      },
+    });
+    const nameIds = rows.flatMap((r) => (r.nameId === null ? [] : [r.nameId]));
+    const names = nameIds.length
+      ? await this.prisma.ledgerName.findMany({
+          where: { ...scopeWhere(scope), id: { in: nameIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nameOf = new Map(names.map((n) => [n.id, n.name]));
+    return rows.flatMap((r) => {
+      const name = r.nameId === null ? null : nameOf.get(r.nameId);
+      if (name === undefined) return [];
+      return [
+        {
+          columnId: r.customColumnId,
+          name,
+          subNameId: r.subNameId,
+          value: r.value,
+          dropDownId: r.dropDownId,
+        },
+      ];
+    });
   }
 
   async columns(scope: BookScope): Promise<CustomColumnView[]> {
@@ -276,6 +335,55 @@ export class CustomColumnsService {
           });
       }
     }
+    await this.fitNameAnswers(row.id, c);
+  }
+
+  /**
+   * step9 (2026-11-19): the names' default answers after a column's rules change — a text
+   * default naming a new option is re-pointed to it; one the new rules refuse (or whose
+   * option went) is dropped (a default is not a ledger row, so it never blocks a save).
+   */
+  private async fitNameAnswers(
+    columnId: number,
+    col: Parameters<typeof storedAnswerFit>[0],
+  ): Promise<void> {
+    const rows = await this.prisma.customColumnNameAnswer.findMany({
+      where: { customColumnId: columnId },
+      select: { id: true, value: true, dropDownId: true },
+    });
+    if (!rows.length) return;
+    const options =
+      col.type === 'DROPDOWN'
+        ? await this.prisma.customColumnDropDown.findMany({
+            where: { customColumnId: columnId, deletedAt: null },
+            select: { id: true, label: true },
+          })
+        : [];
+    const drop: number[] = [];
+    for (const r of rows) {
+      const text = (r.value ?? '').trim();
+      if (col.type === 'DROPDOWN') {
+        if (options.some((o) => o.id === r.dropDownId)) continue;
+        const o = options.find(
+          (x) => x.label.trim().toLowerCase() === text.toLowerCase(),
+        );
+        if (o && text)
+          await this.prisma.customColumnNameAnswer.update({
+            where: { id: r.id },
+            data: { dropDownId: o.id, value: o.label },
+          });
+        else drop.push(r.id);
+      } else if (!text || answerProblem(col, text)) drop.push(r.id);
+      else if (r.dropDownId !== null)
+        await this.prisma.customColumnNameAnswer.update({
+          where: { id: r.id },
+          data: { dropDownId: null },
+        });
+    }
+    if (drop.length)
+      await this.prisma.customColumnNameAnswer.deleteMany({
+        where: { id: { in: drop } },
+      });
   }
 
   /**
@@ -429,6 +537,108 @@ export class CustomColumnsService {
     },
   ): Promise<number> {
     const col = await this.owned(scope, columnId);
+    const { value, dropDownId } = await this.checkedValue(col, input);
+    const rows = await this.prisma.bankTransaction.findMany({
+      where: { ...scopeWhere(scope), id: { in: transactionIds } },
+      select: { id: true, splitOfId: true },
+    });
+    if (!rows.length) throw new NotFoundException('Transaction not found');
+    const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
+    if (value === null) {
+      await this.prisma.customColumnAnswer.deleteMany({
+        where: { customColumnId: col.id, transactionId: { in: ids } },
+      });
+      return ids.length;
+    }
+    await this.prisma.$transaction(
+      ids.map((transactionId) =>
+        this.prisma.customColumnAnswer.upsert({
+          where: {
+            customColumnId_transactionId: {
+              customColumnId: col.id,
+              transactionId,
+            },
+          },
+          create: { customColumnId: col.id, transactionId, value, dropDownId },
+          update: { value, dropDownId },
+        }),
+      ),
+    );
+    return ids.length;
+  }
+
+  /**
+   * step9 (2026-11-19): the default answer of a name (`name`) or a sub-name (`subNameId`) in
+   * a column — checked like a cell; empty = removed. It fills every EMPTY cell of its rows at
+   * once (and of every row that gets it later); answers already there stay. A name with
+   * sub-names is only a wrapper: its defaults go on its sub-names. Returns how many cells
+   * it filled.
+   */
+  async setNameAnswer(
+    scope: BookScope,
+    columnId: number,
+    target: { name?: string; subNameId?: number },
+    input: { value?: string | null; dropDownId?: number | null; option?: string },
+  ): Promise<number> {
+    const col = await this.owned(scope, columnId);
+    const { value, dropDownId } = await this.checkedValue(col, input);
+    let key: { nameId: number | null; subNameId: number | null };
+    let fill: { names?: string[]; subNameIds?: number[] };
+    if (target.subNameId) {
+      const sub = await this.prisma.subName.findFirst({
+        where: { id: target.subNameId, bookId: scope.bookId },
+        select: { id: true },
+      });
+      if (!sub) throw new NotFoundException('Sub-name not found');
+      key = { nameId: null, subNameId: sub.id };
+      fill = { subNameIds: [sub.id] };
+    } else {
+      const name = target.name?.replace(/\s+/g, ' ').trim();
+      if (!name || nameKey(name) === nameKey(UNCLARIFIED_NAME))
+        throw new BadRequestException('Pick a name');
+      await refuseWrapper(this.prisma, scope, name);
+      const nameId =
+        value === null
+          ? (
+              await this.prisma.ledgerName.findFirst({
+                where: { ...scopeWhere(scope), name },
+                select: { id: true },
+              })
+            )?.id
+          : await ledgerNameId(this.prisma, scope, name);
+      if (nameId === undefined) return 0;
+      key = { nameId, subNameId: null };
+      fill = { names: [name] };
+    }
+    // NULL never equals NULL in the unique key: find, then update / create.
+    const found = await this.prisma.customColumnNameAnswer.findFirst({
+      where: { customColumnId: col.id, ...key },
+      select: { id: true },
+    });
+    if (value === null) {
+      if (found)
+        await this.prisma.customColumnNameAnswer.delete({
+          where: { id: found.id },
+        });
+      return 0;
+    }
+    if (found)
+      await this.prisma.customColumnNameAnswer.update({
+        where: { id: found.id },
+        data: { value, dropDownId },
+      });
+    else
+      await this.prisma.customColumnNameAnswer.create({
+        data: { customColumnId: col.id, ...key, value, dropDownId },
+      });
+    return fillNameAnswers(this.prisma, scope, fill);
+  }
+
+  /** One answer checked against its column's rules: the value (and option) to store. */
+  private async checkedValue(
+    col: { id: number; name: string; type: string; minChars: number | null; maxChars: number | null },
+    input: { value?: string | null; dropDownId?: number | null; option?: string },
+  ): Promise<{ value: string | null; dropDownId: number | null }> {
     const rules = {
       type: col.type as CustomColumnType,
       minChars: col.minChars,
@@ -462,33 +672,7 @@ export class CustomColumnsService {
       if (problem) throw new BadRequestException(`${col.name}: ${problem}`);
       value = raw || null;
     }
-    const rows = await this.prisma.bankTransaction.findMany({
-      where: { ...scopeWhere(scope), id: { in: transactionIds } },
-      select: { id: true, splitOfId: true },
-    });
-    if (!rows.length) throw new NotFoundException('Transaction not found');
-    const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
-    if (value === null) {
-      await this.prisma.customColumnAnswer.deleteMany({
-        where: { customColumnId: col.id, transactionId: { in: ids } },
-      });
-      return ids.length;
-    }
-    await this.prisma.$transaction(
-      ids.map((transactionId) =>
-        this.prisma.customColumnAnswer.upsert({
-          where: {
-            customColumnId_transactionId: {
-              customColumnId: col.id,
-              transactionId,
-            },
-          },
-          create: { customColumnId: col.id, transactionId, value, dropDownId },
-          update: { value, dropDownId },
-        }),
-      ),
-    );
-    return ids.length;
+    return { value, dropDownId };
   }
 
   /** For the exports: transactionId → the cell texts, in column order. */

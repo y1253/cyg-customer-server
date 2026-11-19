@@ -17,6 +17,7 @@ export interface SubNameView {
     renamed: boolean;
     ownAgencies: boolean;
     agencyIds: number[];
+    agencyAlone: boolean;
     fromRule: boolean;
 }
 export interface SubNameSettings {
@@ -24,6 +25,7 @@ export interface SubNameSettings {
     group?: string | null;
     fields?: NameFieldDto[];
     agencyIds?: number[] | null;
+    alone?: boolean;
 }
 export declare class SubNamesService implements OnApplicationBootstrap {
     private readonly prisma;

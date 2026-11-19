@@ -53,6 +53,8 @@ export interface SubNameView {
   renamed: boolean;
   ownAgencies: boolean;
   agencyIds: number[];
+  /** step9 (2026-11-19): its pick is one rule of a split group taken on its own. */
+  agencyAlone: boolean;
   /**
    * step9 (2026-11-17): it holds a split rule's splits ("Walmart - GST"). step9 (2026-11-18):
    * informational only — it merges like any sub-name.
@@ -68,6 +70,8 @@ export interface SubNameSettings {
   fields?: NameFieldDto[];
   /** null = follow the parent's split rules again; [] = none. */
   agencyIds?: number[] | null;
+  /** step9 (2026-11-19): `agencyIds` is one rule of a group picked on its own. */
+  alone?: boolean;
 }
 
 /**
@@ -198,13 +202,15 @@ export class SubNamesService implements OnApplicationBootstrap {
     const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
     const picks = await this.prisma.ledgerNameAgency.findMany({
       where: { ...scopeWhere(scope), agency: { deletedAt: null } },
-      select: { name: true, agencyId: true },
+      select: { name: true, agencyId: true, alone: true },
       orderBy: { agencyId: 'asc' },
     });
     const picksOf = (name: string) =>
       picks
         .filter((p) => nameTaxKey(p.name) === nameTaxKey(name))
         .map((p) => p.agencyId);
+    const aloneOf = (name: string) =>
+      picks.some((p) => p.alone && nameTaxKey(p.name) === nameTaxKey(name));
     const rowTotals = await this.rowTotals(
       scope,
       subs.map((s) => s.id),
@@ -225,6 +231,7 @@ export class SubNamesService implements OnApplicationBootstrap {
               renamed: s.renamed,
               ownAgencies: s.ownAgencies,
               agencyIds: s.ownAgencies ? picksOf(s.name) : [],
+              agencyAlone: s.ownAgencies && aloneOf(s.name),
               fromRule: fromRule.has(s.id),
             },
           ]
@@ -355,7 +362,12 @@ export class SubNamesService implements OnApplicationBootstrap {
     if (name !== sub.name)
       await this.tax.moveSubNameKeys(scope, sub.name, name);
     if (input.agencyIds !== undefined)
-      await this.tax.writePicks(scope, name, input.agencyIds ?? []);
+      await this.tax.writePicks(
+        scope,
+        name,
+        input.agencyIds ?? [],
+        input.alone === true,
+      );
   }
 
   /** A sub-name's own name may not be another name's or sub-name's of the book. */

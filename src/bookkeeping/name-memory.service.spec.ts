@@ -725,6 +725,7 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     },
     taxAgency: { findMany: jest.fn().mockResolvedValue([]) },
     ledgerNameAgency: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    customColumnNameAnswer: { count: jest.fn().mockResolvedValue(0) },
     ledgerName: {
       ...base.ledgerName,
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -876,8 +877,7 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     await expect(
       s.mergeSubName(BOOK as never, 24, { subNameId: 24 }),
     ).rejects.toThrow(/same sub-name/);
-    // step9 (2026-11-18): its own parent is a wrapper — a drop on it lands on its sub-name of
-    // the same category, which is the sub-name itself.
+    // step9 (2026-11-19): its own parent is a wrapper — a sub-name never lands on a wrapper.
     prisma.subName.findMany.mockResolvedValue([{ nameId: 5 }]);
     prisma.ledgerName.findMany = jest
       .fn()
@@ -885,7 +885,7 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     prisma.ledgerName.findFirst.mockResolvedValue({ id: 5 });
     await expect(
       s.mergeSubName(BOOK as never, 24, { name: 'Amazon' }),
-    ).rejects.toThrow(/same sub-name/);
+    ).rejects.toThrow(/has sub-names/);
   });
 });
 

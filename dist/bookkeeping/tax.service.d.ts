@@ -35,6 +35,7 @@ export interface NameView {
     rows: number;
     total: number;
     agencyIds: number[];
+    agencyAlone: boolean;
     descriptions: NameDescriptionView[];
     followsContains: Array<{
         key: string;
@@ -153,8 +154,8 @@ export declare class TaxService {
         key: string;
         description: string;
     }>>;
-    setNameAgencies(scope: BookScope, name: string, agencyIds: number[]): Promise<NamesView>;
-    writePicks(scope: BookScope, clean: string, agencyIds: number[]): Promise<void>;
+    setNameAgencies(scope: BookScope, name: string, agencyIds: number[], alone?: boolean): Promise<NamesView>;
+    writePicks(scope: BookScope, clean: string, agencyIds: number[], alone?: boolean): Promise<void>;
     moveSubNameKeys(scope: BookScope, oldName: string, newName: string): Promise<void>;
     dropSubNameKeys(scope: BookScope, name: string, parent: string | null): Promise<void>;
     carryAgencies(scope: BookScope, oldNames: readonly string[], newName: string): Promise<void>;

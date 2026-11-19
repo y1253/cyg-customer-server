@@ -6,6 +6,7 @@ import {
 import { Prisma, StatementStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomerAccountsService } from './customer-accounts.service';
+import { fillNameAnswers } from './custom-column-defaults';
 import { doubleEntry } from './ledger.util';
 import { scopeWhere, type BookScope } from './scope';
 import { ruleSplits, stepSplits, type SplitRule } from './split-rules.util';
@@ -116,16 +117,21 @@ export class SplitRulesService implements OnApplicationBootstrap {
     // A pick from before split rules waits for its conversion (`convertBook`).
     const picks = await this.prisma.ledgerNameAgency.findMany({
       where: { ...scopeWhere(scope), appliedAt: { not: null } },
-      select: { name: true, agencyId: true },
+      select: { name: true, agencyId: true, alone: true },
       orderBy: { agencyId: 'asc' },
     });
     const wantRule = (id: number) =>
       rules.has(id) && (!target.ruleIds || target.ruleIds.includes(id));
-    const rulesOf = new Map<string, number[]>();
+    // step9 (2026-11-19): a group's rule picked ON ITS OWN cuts like an individual rule.
+    const rulesOf = new Map<string, SplitRule[]>();
     for (const p of picks) {
       if (!wantRule(p.agencyId)) continue;
       const k = nameTaxKey(p.name);
-      rulesOf.set(k, [...(rulesOf.get(k) ?? []), p.agencyId]);
+      const rule = rules.get(p.agencyId)!;
+      rulesOf.set(k, [
+        ...(rulesOf.get(k) ?? []),
+        p.alone ? { ...rule, groupId: null } : rule,
+      ]);
     }
     if (!rulesOf.size) return 0;
     const ownSubs = await this.ownRuleSubNames(scope);
@@ -141,15 +147,12 @@ export class SplitRulesService implements OnApplicationBootstrap {
       );
       let n = 0;
       for (const line of lines) {
-        const ids = (rulesOf.get(line.key) ?? []).filter(
-          (id) => !done.has(`${line.sourceId}:${id}`),
+        const todo = (rulesOf.get(line.key) ?? []).filter(
+          (r) => !done.has(`${line.sourceId}:${r.id}`),
         );
-        if (!ids.length) continue;
+        if (!todo.length) continue;
         // step9 (2026-11-17): individual rules one after another, a group together.
-        const splits = stepSplits(
-          line.amount,
-          ids.map((id) => rules.get(id)!),
-        );
+        const splits = stepSplits(line.amount, todo);
         if (!splits.length) continue;
         n += await this.write(scope, p, line, splits);
       }
@@ -170,6 +173,8 @@ export class SplitRulesService implements OnApplicationBootstrap {
       // first, so its own rules decide.
       await fileUnderSubNames(this.prisma, scope);
       const made = await this.apply(scope, { transactionIds });
+      // step9 (2026-11-19): the new rows' names' default answers in the custom columns.
+      await fillNameAnswers(this.prisma, scope, { transactionIds });
       if (made)
         this.logger.log(
           `book ${scope.bookId}: ${made} rule split(s) on ${transactionIds.length} new row(s)`,

@@ -120,12 +120,13 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         const rowsOf = new Map(counts.map((c) => [c.subNameId, c._count._all]));
         const picks = await this.prisma.ledgerNameAgency.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), agency: { deletedAt: null } },
-            select: { name: true, agencyId: true },
+            select: { name: true, agencyId: true, alone: true },
             orderBy: { agencyId: 'asc' },
         });
         const picksOf = (name) => picks
             .filter((p) => (0, tax_util_1.nameTaxKey)(p.name) === (0, tax_util_1.nameTaxKey)(name))
             .map((p) => p.agencyId);
+        const aloneOf = (name) => picks.some((p) => p.alone && (0, tax_util_1.nameTaxKey)(p.name) === (0, tax_util_1.nameTaxKey)(name));
         const rowTotals = await this.rowTotals(scope, subs.map((s) => s.id));
         return subs.flatMap((s) => {
             const parent = parentOf.get(s.nameId);
@@ -143,6 +144,7 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                         renamed: s.renamed,
                         ownAgencies: s.ownAgencies,
                         agencyIds: s.ownAgencies ? picksOf(s.name) : [],
+                        agencyAlone: s.ownAgencies && aloneOf(s.name),
                         fromRule: fromRule.has(s.id),
                     },
                 ]
@@ -238,7 +240,7 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         if (name !== sub.name)
             await this.tax.moveSubNameKeys(scope, sub.name, name);
         if (input.agencyIds !== undefined)
-            await this.tax.writePicks(scope, name, input.agencyIds ?? []);
+            await this.tax.writePicks(scope, name, input.agencyIds ?? [], input.alone === true);
     }
     async refuseTaken(scope, name, id) {
         const [asName, asSub] = await Promise.all([

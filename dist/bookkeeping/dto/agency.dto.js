@@ -164,6 +164,7 @@ __decorate([
 class SetNameAgenciesDto {
     name;
     agencyIds;
+    alone;
 }
 exports.SetNameAgenciesDto = SetNameAgenciesDto;
 __decorate([
@@ -179,6 +180,11 @@ __decorate([
     (0, class_validator_1.IsInt)({ each: true }),
     __metadata("design:type", Array)
 ], SetNameAgenciesDto.prototype, "agencyIds", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], SetNameAgenciesDto.prototype, "alone", void 0);
 class SaveNameRuleDto {
     matchType;
     matchKey;
@@ -695,6 +701,7 @@ class SubNameSettingsDto {
     group;
     fields;
     agencyIds;
+    alone;
 }
 exports.SubNameSettingsDto = SubNameSettingsDto;
 __decorate([
@@ -725,4 +732,9 @@ __decorate([
     (0, class_validator_1.IsInt)({ each: true }),
     __metadata("design:type", Object)
 ], SubNameSettingsDto.prototype, "agencyIds", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsBoolean)(),
+    __metadata("design:type", Boolean)
+], SubNameSettingsDto.prototype, "alone", void 0);
 //# sourceMappingURL=agency.dto.js.map

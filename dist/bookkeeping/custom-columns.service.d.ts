@@ -17,9 +17,15 @@ export interface CustomAnswerView {
     value: string | null;
     dropDownId: number | null;
 }
+export interface CustomNameAnswerView extends CustomAnswerView {
+    columnId: number;
+    name: string | null;
+    subNameId: number | null;
+}
 export interface CustomColumnsView {
     columns: CustomColumnView[];
     answers: Record<number, Record<number, CustomAnswerView>>;
+    nameAnswers: CustomNameAnswerView[];
     templates: Array<{
         bookId: number;
         bookName: string;
@@ -34,6 +40,7 @@ export declare class CustomColumnsService {
     private readonly prisma;
     constructor(prisma: PrismaService);
     view(scope: BookScope): Promise<CustomColumnsView>;
+    private nameAnswers;
     columns(scope: BookScope): Promise<CustomColumnView[]>;
     private templates;
     private clean;
@@ -41,6 +48,7 @@ export declare class CustomColumnsService {
     create(scope: BookScope, input: ColumnInput): Promise<void>;
     private owned;
     update(scope: BookScope, id: number, input: ColumnInput): Promise<void>;
+    private fitNameAnswers;
     private checkAnswers;
     remove(scope: BookScope, id: number): Promise<void>;
     reorder(scope: BookScope, ids: number[]): Promise<void>;
@@ -50,6 +58,15 @@ export declare class CustomColumnsService {
         dropDownId?: number | null;
         option?: string;
     }): Promise<number>;
+    setNameAnswer(scope: BookScope, columnId: number, target: {
+        name?: string;
+        subNameId?: number;
+    }, input: {
+        value?: string | null;
+        dropDownId?: number | null;
+        option?: string;
+    }): Promise<number>;
+    private checkedValue;
     exportCells(scope: BookScope): Promise<{
         columns: CustomColumnView[];
         cells: Map<number, string[]>;

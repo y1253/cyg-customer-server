@@ -12,8 +12,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomColumnsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const custom_column_defaults_1 = require("./custom-column-defaults");
 const custom_column_util_1 = require("./custom-column.util");
+const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
+const sub_name_parents_1 = require("./sub-name-parents");
+const reports_util_1 = require("./reports.util");
 let CustomColumnsService = class CustomColumnsService {
     prisma;
     constructor(prisma) {
@@ -45,7 +49,48 @@ let CustomColumnsService = class CustomColumnsService {
                 dropDownId: r.dropDownId,
             };
         }
-        return { columns, answers, templates: await this.templates(scope) };
+        return {
+            columns,
+            answers,
+            nameAnswers: await this.nameAnswers(scope, columns),
+            templates: await this.templates(scope),
+        };
+    }
+    async nameAnswers(scope, columns) {
+        if (!columns.length)
+            return [];
+        const rows = await this.prisma.customColumnNameAnswer.findMany({
+            where: { customColumnId: { in: columns.map((c) => c.id) } },
+            select: {
+                customColumnId: true,
+                nameId: true,
+                subNameId: true,
+                value: true,
+                dropDownId: true,
+            },
+        });
+        const nameIds = rows.flatMap((r) => (r.nameId === null ? [] : [r.nameId]));
+        const names = nameIds.length
+            ? await this.prisma.ledgerName.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), id: { in: nameIds } },
+                select: { id: true, name: true },
+            })
+            : [];
+        const nameOf = new Map(names.map((n) => [n.id, n.name]));
+        return rows.flatMap((r) => {
+            const name = r.nameId === null ? null : nameOf.get(r.nameId);
+            if (name === undefined)
+                return [];
+            return [
+                {
+                    columnId: r.customColumnId,
+                    name,
+                    subNameId: r.subNameId,
+                    value: r.value,
+                    dropDownId: r.dropDownId,
+                },
+            ];
+        });
     }
     async columns(scope) {
         const rows = await this.prisma.customColumn.findMany({
@@ -213,6 +258,48 @@ let CustomColumnsService = class CustomColumnsService {
                     });
             }
         }
+        await this.fitNameAnswers(row.id, c);
+    }
+    async fitNameAnswers(columnId, col) {
+        const rows = await this.prisma.customColumnNameAnswer.findMany({
+            where: { customColumnId: columnId },
+            select: { id: true, value: true, dropDownId: true },
+        });
+        if (!rows.length)
+            return;
+        const options = col.type === 'DROPDOWN'
+            ? await this.prisma.customColumnDropDown.findMany({
+                where: { customColumnId: columnId, deletedAt: null },
+                select: { id: true, label: true },
+            })
+            : [];
+        const drop = [];
+        for (const r of rows) {
+            const text = (r.value ?? '').trim();
+            if (col.type === 'DROPDOWN') {
+                if (options.some((o) => o.id === r.dropDownId))
+                    continue;
+                const o = options.find((x) => x.label.trim().toLowerCase() === text.toLowerCase());
+                if (o && text)
+                    await this.prisma.customColumnNameAnswer.update({
+                        where: { id: r.id },
+                        data: { dropDownId: o.id, value: o.label },
+                    });
+                else
+                    drop.push(r.id);
+            }
+            else if (!text || (0, custom_column_util_1.answerProblem)(col, text))
+                drop.push(r.id);
+            else if (r.dropDownId !== null)
+                await this.prisma.customColumnNameAnswer.update({
+                    where: { id: r.id },
+                    data: { dropDownId: null },
+                });
+        }
+        if (drop.length)
+            await this.prisma.customColumnNameAnswer.deleteMany({
+                where: { id: { in: drop } },
+            });
     }
     async checkAnswers(columnId, col, liveBefore) {
         const answers = await this.prisma.customColumnAnswer.findMany({
@@ -334,6 +421,86 @@ let CustomColumnsService = class CustomColumnsService {
     }
     async answer(scope, transactionIds, columnId, input) {
         const col = await this.owned(scope, columnId);
+        const { value, dropDownId } = await this.checkedValue(col, input);
+        const rows = await this.prisma.bankTransaction.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), id: { in: transactionIds } },
+            select: { id: true, splitOfId: true },
+        });
+        if (!rows.length)
+            throw new common_1.NotFoundException('Transaction not found');
+        const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
+        if (value === null) {
+            await this.prisma.customColumnAnswer.deleteMany({
+                where: { customColumnId: col.id, transactionId: { in: ids } },
+            });
+            return ids.length;
+        }
+        await this.prisma.$transaction(ids.map((transactionId) => this.prisma.customColumnAnswer.upsert({
+            where: {
+                customColumnId_transactionId: {
+                    customColumnId: col.id,
+                    transactionId,
+                },
+            },
+            create: { customColumnId: col.id, transactionId, value, dropDownId },
+            update: { value, dropDownId },
+        })));
+        return ids.length;
+    }
+    async setNameAnswer(scope, columnId, target, input) {
+        const col = await this.owned(scope, columnId);
+        const { value, dropDownId } = await this.checkedValue(col, input);
+        let key;
+        let fill;
+        if (target.subNameId) {
+            const sub = await this.prisma.subName.findFirst({
+                where: { id: target.subNameId, bookId: scope.bookId },
+                select: { id: true },
+            });
+            if (!sub)
+                throw new common_1.NotFoundException('Sub-name not found');
+            key = { nameId: null, subNameId: sub.id };
+            fill = { subNameIds: [sub.id] };
+        }
+        else {
+            const name = target.name?.replace(/\s+/g, ' ').trim();
+            if (!name || (0, name_memory_util_1.nameKey)(name) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+                throw new common_1.BadRequestException('Pick a name');
+            await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, name);
+            const nameId = value === null
+                ? (await this.prisma.ledgerName.findFirst({
+                    where: { ...(0, scope_1.scopeWhere)(scope), name },
+                    select: { id: true },
+                }))?.id
+                : await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, name);
+            if (nameId === undefined)
+                return 0;
+            key = { nameId, subNameId: null };
+            fill = { names: [name] };
+        }
+        const found = await this.prisma.customColumnNameAnswer.findFirst({
+            where: { customColumnId: col.id, ...key },
+            select: { id: true },
+        });
+        if (value === null) {
+            if (found)
+                await this.prisma.customColumnNameAnswer.delete({
+                    where: { id: found.id },
+                });
+            return 0;
+        }
+        if (found)
+            await this.prisma.customColumnNameAnswer.update({
+                where: { id: found.id },
+                data: { value, dropDownId },
+            });
+        else
+            await this.prisma.customColumnNameAnswer.create({
+                data: { customColumnId: col.id, ...key, value, dropDownId },
+            });
+        return (0, custom_column_defaults_1.fillNameAnswers)(this.prisma, scope, fill);
+    }
+    async checkedValue(col, input) {
         const rules = {
             type: col.type,
             minChars: col.minChars,
@@ -367,30 +534,7 @@ let CustomColumnsService = class CustomColumnsService {
                 throw new common_1.BadRequestException(`${col.name}: ${problem}`);
             value = raw || null;
         }
-        const rows = await this.prisma.bankTransaction.findMany({
-            where: { ...(0, scope_1.scopeWhere)(scope), id: { in: transactionIds } },
-            select: { id: true, splitOfId: true },
-        });
-        if (!rows.length)
-            throw new common_1.NotFoundException('Transaction not found');
-        const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
-        if (value === null) {
-            await this.prisma.customColumnAnswer.deleteMany({
-                where: { customColumnId: col.id, transactionId: { in: ids } },
-            });
-            return ids.length;
-        }
-        await this.prisma.$transaction(ids.map((transactionId) => this.prisma.customColumnAnswer.upsert({
-            where: {
-                customColumnId_transactionId: {
-                    customColumnId: col.id,
-                    transactionId,
-                },
-            },
-            create: { customColumnId: col.id, transactionId, value, dropDownId },
-            update: { value, dropDownId },
-        })));
-        return ids.length;
+        return { value, dropDownId };
     }
     async exportCells(scope) {
         const v = await this.view(scope);

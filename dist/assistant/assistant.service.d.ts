@@ -50,7 +50,7 @@ export declare function fileContext(a: AttachmentView): {
     voiceNote?: boolean | undefined;
     id: number;
     filename: string;
-    type: "PAYMENT_NOTE" | "BANK_STATEMENT" | import("@prisma/client").$Enums.AttachmentKind;
+    type: import("@prisma/client").$Enums.AttachmentKind | "PAYMENT_NOTE" | "BANK_STATEMENT";
     status: import("@prisma/client").$Enums.AttachmentStatus;
     whatItIs: string | null;
     total: number | null;

@@ -20,11 +20,13 @@ import {
   dropUnusedSubName,
   ensureSubName,
   fileUnderSubNames,
+  ledgerNameId,
   refuseWrapper,
   syncParentSubNames,
   wrapperNames,
 } from './sub-name-parents';
 import { nameKeyOf } from './attachment-name.util';
+import { moveNameAnswers } from './custom-column-defaults';
 import { parseNameFields, TaxService } from './tax.service';
 import { UNCLARIFIED_NAME } from './reports.util';
 import {
@@ -441,22 +443,17 @@ export class NameMemoryService implements OnApplicationBootstrap {
     // step9 (2026-11-18): a split rule's sub-name ("Walmart - GST") merges like any other —
     // its rows keep `splitRuleId`, so the rule never cuts them again.
     let target: { name: string; category: string; sub: typeof from | null };
-    // step9 (2026-11-18): dropped on a wrapper name = onto its sub-name of the same category
-    // (made if new).
-    let intoSubId = into.subNameId ?? null;
+    // step9 (2026-11-19): a name with sub-names is only a wrapper — a sub-name goes onto one
+    // of its sub-names, or onto a name with none (it then takes that plain name, no sub).
+    const intoSubId = into.subNameId ?? null;
     if (
       intoSubId == null &&
       into.name &&
       (await this.isWrapper(scope, into.name))
     )
-      intoSubId = (
-        await ensureSubName(
-          this.prisma,
-          scope,
-          cleanName(into.name) ?? into.name,
-          from.category,
-        )
-      ).id;
+      throw new BadRequestException(
+        `"${cleanName(into.name) ?? into.name}" has sub-names — drop it on one of its sub-names.`,
+      );
     if (intoSubId != null) {
       const sub = await this.subNameOfBook(scope, intoSubId);
       if (sub.id === from.id)
@@ -589,6 +586,19 @@ export class NameMemoryService implements OnApplicationBootstrap {
       await this.tax.dropSubNameKeys(scope, from.name, target.name);
       await this.addFields(scope, from.fields, { name: target.name });
     }
+    // step9 (2026-11-19): its default custom-column answers too (the target's own stay).
+    if (
+      await this.prisma.customColumnNameAnswer.count({
+        where: { subNameId: from.id },
+      })
+    )
+      await moveNameAnswers(
+        this.prisma,
+        { subNameId: from.id },
+        target.sub
+          ? { subNameId: target.sub.id }
+          : { nameId: await ledgerNameId(this.prisma, scope, target.name) },
+      );
     await deleteSubName(this.prisma, from.id);
     this.logger.log(
       `book ${bookLabel(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`,
@@ -1745,6 +1755,25 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await this.prisma.ledgerNameAgency.deleteMany({
       where: { ...scopeWhere(scope), name: source },
     });
+    // step9 (2026-11-19): its default custom-column answers join the target's (theirs stay).
+    const own = await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name: source },
+      select: { id: true },
+    });
+    if (
+      own &&
+      (await this.prisma.customColumnNameAnswer.count({
+        where: { nameId: own.id },
+      }))
+    )
+      await moveNameAnswers(
+        this.prisma,
+        { nameId: own.id },
+        sub
+          ? { subNameId: sub.id }
+          : { nameId: await ledgerNameId(this.prisma, scope, target) },
+        true,
+      );
     await this.prisma.ledgerName.deleteMany({
       where: { ...scopeWhere(scope), name: source },
     });
