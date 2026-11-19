@@ -551,6 +551,8 @@ export class TaxService {
   /**
    * A rule just joined `groupId`: every name / sub-name that picks the group (any other
    * member) picks it too — applied from now on (rows already split are not cut again).
+   * step9 (2026-11-18, part 3): one pick per name — a name that picked the rule on its own
+   * now picks the whole group (its other members are added the same way).
    */
   private async joinGroupPicks(
     scope: BookScope,
@@ -584,14 +586,33 @@ export class TaxService {
       const k = nameTaxKey(p.name);
       if (!have.has(k) && !names.has(k)) names.set(k, p.name);
     }
-    if (!names.size) return;
-    await this.prisma.ledgerNameAgency.createMany({
-      data: [...names.values()].map((name) => ({
+    const fill = await this.prisma.ledgerNameAgency.findMany({
+      where: {
         ...scopeWhere(scope),
-        name,
-        agencyId,
+        agencyId: { in: members.map((m) => m.id) },
+        name: { in: own.map((o) => o.name) },
+      },
+      select: { name: true, agencyId: true },
+    });
+    const hasMember = new Set(
+      fill.map((f) => `${nameTaxKey(f.name)}|${f.agencyId}`),
+    );
+    const data = [
+      ...[...names.values()].map((name) => ({ name, agencyId })),
+      ...own.flatMap((o) =>
+        members
+          .filter((m) => !hasMember.has(`${nameTaxKey(o.name)}|${m.id}`))
+          .map((m) => ({ name: o.name, agencyId: m.id })),
+      ),
+    ];
+    if (!data.length) return;
+    await this.prisma.ledgerNameAgency.createMany({
+      data: data.map((d) => ({
+        ...scopeWhere(scope),
+        ...d,
         appliedAt: new Date(),
       })),
+      skipDuplicates: true,
     });
   }
 
@@ -1342,6 +1363,14 @@ export class TaxService {
       });
       if (owned.length !== ids.length)
         throw new NotFoundException('Split rule not found');
+      // step9 (2026-11-18, part 3): ONE pick per name — a single rule or a single group.
+      const units = new Set(
+        owned.map((a, i) => (a.groupId === null ? `r${i}` : `g${a.groupId}`)),
+      );
+      if (units.size > 1)
+        throw new BadRequestException(
+          'A name takes one split rule or one split group — put the rules in a group to apply several together.',
+        );
       // step9 (2026-11-17): a split group is picked as one — any of its rules brings all.
       const groupIds = [
         ...new Set(
@@ -1447,8 +1476,9 @@ export class TaxService {
   }
 
   /**
-   * A rename carries the names' split rules over to the new name (`saveRule`): its new rows
-   * get every rule any of the old names had. The rows already split keep their splits.
+   * A rename carries the names' split rules over to the new name (`saveRule`). The rows
+   * already split keep their splits. step9 (2026-11-18, part 3): one pick per name — a new
+   * name with its own picks keeps them, else it takes the first old name's (a rule or a group).
    */
   async carryAgencies(
     scope: BookScope,
@@ -1462,17 +1492,16 @@ export class TaxService {
       select: { name: true, agencyId: true },
     });
     const target = nameTaxKey(newName);
-    const have = new Set(
-      rows.filter((r) => nameTaxKey(r.name) === target).map((r) => r.agencyId),
-    );
+    if (rows.some((r) => nameTaxKey(r.name) === target)) return;
+    const from = oldNames
+      .map(nameTaxKey)
+      .find((k) => rows.some((r) => nameTaxKey(r.name) === k));
+    if (from === undefined) return;
     const add = [
       ...new Set(
-        rows
-          .filter((r) => keys.has(nameTaxKey(r.name)) && !have.has(r.agencyId))
-          .map((r) => r.agencyId),
+        rows.filter((r) => nameTaxKey(r.name) === from).map((r) => r.agencyId),
       ),
     ];
-    if (!add.length) return;
     await this.prisma.ledgerNameAgency.createMany({
       data: add.map((agencyId) => ({
         ...scopeWhere(scope),

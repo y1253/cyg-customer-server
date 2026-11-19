@@ -303,15 +303,30 @@ let TaxService = class TaxService {
             if (!have.has(k) && !names.has(k))
                 names.set(k, p.name);
         }
-        if (!names.size)
+        const fill = await this.prisma.ledgerNameAgency.findMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                agencyId: { in: members.map((m) => m.id) },
+                name: { in: own.map((o) => o.name) },
+            },
+            select: { name: true, agencyId: true },
+        });
+        const hasMember = new Set(fill.map((f) => `${(0, tax_util_1.nameTaxKey)(f.name)}|${f.agencyId}`));
+        const data = [
+            ...[...names.values()].map((name) => ({ name, agencyId })),
+            ...own.flatMap((o) => members
+                .filter((m) => !hasMember.has(`${(0, tax_util_1.nameTaxKey)(o.name)}|${m.id}`))
+                .map((m) => ({ name: o.name, agencyId: m.id }))),
+        ];
+        if (!data.length)
             return;
         await this.prisma.ledgerNameAgency.createMany({
-            data: [...names.values()].map((name) => ({
+            data: data.map((d) => ({
                 ...(0, scope_1.scopeWhere)(scope),
-                name,
-                agencyId,
+                ...d,
                 appliedAt: new Date(),
             })),
+            skipDuplicates: true,
         });
     }
     async ownedAgency(scope, id) {
@@ -895,6 +910,9 @@ let TaxService = class TaxService {
             });
             if (owned.length !== ids.length)
                 throw new common_1.NotFoundException('Split rule not found');
+            const units = new Set(owned.map((a, i) => (a.groupId === null ? `r${i}` : `g${a.groupId}`)));
+            if (units.size > 1)
+                throw new common_1.BadRequestException('A name takes one split rule or one split group — put the rules in a group to apply several together.');
             const groupIds = [
                 ...new Set(owned.flatMap((a) => (a.groupId === null ? [] : [a.groupId]))),
             ];
@@ -988,14 +1006,16 @@ let TaxService = class TaxService {
             select: { name: true, agencyId: true },
         });
         const target = (0, tax_util_1.nameTaxKey)(newName);
-        const have = new Set(rows.filter((r) => (0, tax_util_1.nameTaxKey)(r.name) === target).map((r) => r.agencyId));
-        const add = [
-            ...new Set(rows
-                .filter((r) => keys.has((0, tax_util_1.nameTaxKey)(r.name)) && !have.has(r.agencyId))
-                .map((r) => r.agencyId)),
-        ];
-        if (!add.length)
+        if (rows.some((r) => (0, tax_util_1.nameTaxKey)(r.name) === target))
             return;
+        const from = oldNames
+            .map(tax_util_1.nameTaxKey)
+            .find((k) => rows.some((r) => (0, tax_util_1.nameTaxKey)(r.name) === k));
+        if (from === undefined)
+            return;
+        const add = [
+            ...new Set(rows.filter((r) => (0, tax_util_1.nameTaxKey)(r.name) === from).map((r) => r.agencyId)),
+        ];
         await this.prisma.ledgerNameAgency.createMany({
             data: add.map((agencyId) => ({
                 ...(0, scope_1.scopeWhere)(scope),
