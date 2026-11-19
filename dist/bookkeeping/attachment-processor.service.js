@@ -850,6 +850,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
         const reading = a?.extracted;
         if (!a || !parent || !reading)
             return 'Nothing to split yet.';
+        if (parent.splitOfId)
+            return replace
+                ? 'Receipt items split a whole transaction — attach the receipt to the transaction to use them.'
+                : null;
         const purchase = a.kind === client_1.AttachmentKind.RECEIPT || reading.kind === 'RECEIPT';
         if (!purchase || !reading.items?.length) {
             return purchase ? 'No items could be read off the receipt.' : null;

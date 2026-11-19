@@ -345,7 +345,7 @@ export class AttachmentsService {
           'Attachments are not available right now. Please try again later.',
         );
       }
-      if (transactionId != null) await this.parent(scope, transactionId);
+      if (transactionId != null) await this.ownRow(scope, transactionId);
       const folderId =
         place.folderId != null
           ? (await this.folder(scope, place.folderId)).id
@@ -627,7 +627,7 @@ export class AttachmentsService {
       });
       return this.get(scope, id);
     }
-    await this.parent(scope, transactionId);
+    await this.ownRow(scope, transactionId);
     await this.prisma.transactionAttachment.update({
       where: { id: a.id },
       data: {
@@ -872,21 +872,19 @@ export class AttachmentsService {
     return a;
   }
 
-  /** A transaction an attachment may hang on: theirs, read, and not itself a split. */
-  private async parent(scope: BookScope, id: number): Promise<void> {
+  /**
+   * A row an attachment may hang on: theirs and read. step12 (2026-11-19): a split too —
+   * its paperclip is its own (receipt items never split a split, see `applyItems`).
+   */
+  private async ownRow(scope: BookScope, id: number): Promise<void> {
     const t = await this.prisma.bankTransaction.findFirst({
       where: {
         id,
         ...scopeWhere(scope),
         statement: { deletedAt: null, status: StatementStatus.DONE },
       },
-      select: { splitOfId: true },
+      select: { id: true },
     });
     if (!t) throw new NotFoundException('Transaction not found');
-    if (t.splitOfId) {
-      throw new BadRequestException(
-        'Add the file to the transaction this split came from.',
-      );
-    }
   }
 }

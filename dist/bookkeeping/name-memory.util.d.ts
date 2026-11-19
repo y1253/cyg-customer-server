@@ -139,3 +139,13 @@ export declare function rowNameConflicts(input: {
     rules?: readonly NameRule[];
 }): LinkConflict[];
 export declare function linkConflictMessage(conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[], name: string): string;
+export declare function exceptionFrom(row: {
+    name: string | null;
+    subNameId: number | null;
+    splitOfId: number | null;
+    exceptionRuleId: number | null;
+    ruleName: string | null;
+}, owner: {
+    name: string | null;
+    subNameId: number | null;
+} | undefined, subNameName: (id: number) => string | undefined): string | null;

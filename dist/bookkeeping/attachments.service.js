@@ -186,7 +186,7 @@ let AttachmentsService = class AttachmentsService {
                 throw new common_1.ServiceUnavailableException('Attachments are not available right now. Please try again later.');
             }
             if (transactionId != null)
-                await this.parent(scope, transactionId);
+                await this.ownRow(scope, transactionId);
             const folderId = place.folderId != null
                 ? (await this.folder(scope, place.folderId)).id
                 : null;
@@ -388,7 +388,7 @@ let AttachmentsService = class AttachmentsService {
             });
             return this.get(scope, id);
         }
-        await this.parent(scope, transactionId);
+        await this.ownRow(scope, transactionId);
         await this.prisma.transactionAttachment.update({
             where: { id: a.id },
             data: {
@@ -567,20 +567,17 @@ let AttachmentsService = class AttachmentsService {
             throw new common_1.NotFoundException('Attachment not found');
         return a;
     }
-    async parent(scope, id) {
+    async ownRow(scope, id) {
         const t = await this.prisma.bankTransaction.findFirst({
             where: {
                 id,
                 ...(0, scope_1.scopeWhere)(scope),
                 statement: { deletedAt: null, status: client_1.StatementStatus.DONE },
             },
-            select: { splitOfId: true },
+            select: { id: true },
         });
         if (!t)
             throw new common_1.NotFoundException('Transaction not found');
-        if (t.splitOfId) {
-            throw new common_1.BadRequestException('Add the file to the transaction this split came from.');
-        }
     }
 };
 exports.AttachmentsService = AttachmentsService;

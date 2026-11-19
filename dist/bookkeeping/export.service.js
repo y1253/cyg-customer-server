@@ -31,7 +31,7 @@ const scope_1 = require("./scope");
 function customCellsOf(r, custom) {
     if (!custom)
         return [];
-    const cells = r.id !== null && !r.tax && !r.split ? custom.cells.get(r.id) : undefined;
+    const cells = r.id !== null && !r.tax ? custom.cells.get(r.rowId ?? r.id) : undefined;
     return custom.headers.map((_, i) => cells?.[i] ?? '');
 }
 const BRAND = '#169F96';
@@ -91,6 +91,7 @@ let LedgerExportService = class LedgerExportService {
         const totals = (0, splits_util_1.splitTotals)(rows.map((r) => ({ splitOfId: r.splitOfId, amount: Number(r.amount) })));
         const exportRow = (r) => ({
             id: r.splitOfId ?? r.id,
+            rowId: r.id,
             statementId: r.statementId,
             pendingDate: r.pendingDate,
             postingDate: r.postingDate,
@@ -263,7 +264,7 @@ let LedgerExportService = class LedgerExportService {
             fgColor: { argb: 'FF169F96' },
         };
         for (const r of rows) {
-            const { tax, split, ...cells } = r;
+            const { tax, split, rowId: _rowId, ...cells } = r;
             const own = Object.fromEntries(customCellsOf(r, custom).map((v, i) => [customKeys[i], v]));
             const row = ws.addRow(foreign
                 ? { ...cells, ...own, homeAmount: cells.homeAmount ?? cells.amount }

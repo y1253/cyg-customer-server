@@ -97,16 +97,9 @@ export async function fillNameAnswers(
     });
     if (!defaults.length) return 0;
 
-    let ids = target.transactionIds;
-    if (ids) {
-      // A split answers for its transaction.
-      const own = await prisma.bankTransaction.findMany({
-        where: { ...scopeWhere(scope), id: { in: ids } },
-        select: { id: true, splitOfId: true },
-      });
-      ids = [...new Set(own.map((r) => r.splitOfId ?? r.id))];
-      if (!ids.length) return 0;
-    }
+    // step9 (2026-11-19): a split is its own row — it takes its own (sub-)name's default.
+    const ids = target.transactionIds;
+    if (ids && !ids.length) return 0;
     const or = [
       ...(target.names?.length ? [{ name: { in: target.names } }] : []),
       ...(target.subNameIds?.length
@@ -117,7 +110,6 @@ export async function fillNameAnswers(
     const txs = await prisma.bankTransaction.findMany({
       where: {
         ...scopeWhere(scope),
-        splitOfId: null,
         statement: { deletedAt: null },
         ...(ids && { id: { in: ids } }),
         ...(or.length && { OR: or }),

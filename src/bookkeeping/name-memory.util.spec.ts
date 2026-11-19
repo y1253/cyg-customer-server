@@ -4,6 +4,7 @@ import {
   containsKey,
   descriptionContains,
   descriptionKey,
+  exceptionFrom,
   fallbackName,
   indexRules,
   isOwnersLoanMove,
@@ -678,5 +679,68 @@ describe('step9 (2026-11-17): a description rule saved from a split carries a su
   it('a rule without a sub-name gives none', () => {
     const out = resolveRow(row(), ctx({}, [{ ...subRule, subNameId: null }]));
     expect(out.subNameId).toBeNull();
+  });
+});
+
+describe('exceptionFrom (step9 2026-11-19)', () => {
+  const subs = new Map([
+    [1, 'Walmart - Office'],
+    [2, 'Walmart - Food'],
+  ]);
+  const sub = (id: number) => subs.get(id);
+  const row = {
+    name: 'Walmart',
+    subNameId: 2 as number | null,
+    splitOfId: null as number | null,
+    exceptionRuleId: null as number | null,
+    ruleName: 'Walmart' as string | null,
+  };
+
+  it('flags a sub-name row whose description another sub-name owns', () => {
+    expect(exceptionFrom(row, { name: 'Walmart', subNameId: 1 }, sub)).toBe(
+      'Walmart - Office',
+    );
+  });
+
+  it('flags a sub-name row whose description another plain name owns', () => {
+    expect(exceptionFrom(row, { name: 'Costco', subNameId: null }, sub)).toBe(
+      'Costco',
+    );
+  });
+
+  it('is no exception when its own sub-name owns the description, or nobody does', () => {
+    expect(
+      exceptionFrom(row, { name: 'Walmart', subNameId: 2 }, sub),
+    ).toBeNull();
+    expect(
+      exceptionFrom(row, { name: 'Walmart', subNameId: null }, sub),
+    ).toBeNull();
+    expect(exceptionFrom(row, undefined, sub)).toBeNull();
+  });
+
+  it('a one-time edit names the owner sub-name, else what the rules give', () => {
+    const merged = {
+      ...row,
+      name: 'Costco',
+      subNameId: null,
+      exceptionRuleId: 9,
+    };
+    expect(exceptionFrom(merged, { name: 'Walmart', subNameId: 1 }, sub)).toBe(
+      'Walmart - Office',
+    );
+    expect(exceptionFrom(merged, undefined, sub)).toBe('Walmart');
+    expect(
+      exceptionFrom({ ...merged, ruleName: 'Costco' }, undefined, sub),
+    ).toBeNull();
+  });
+
+  it('never flags a split', () => {
+    expect(
+      exceptionFrom(
+        { ...row, splitOfId: 5 },
+        { name: 'Walmart', subNameId: 1 },
+        sub,
+      ),
+    ).toBeNull();
   });
 });

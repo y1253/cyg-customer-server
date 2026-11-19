@@ -108,6 +108,7 @@ export interface NameRule {
   /**
    * step9 (2026-11-17): a DESCRIPTION / CONTAINS rule saved from a split — its rows get this
    * `SubName` (the main line's "<name> - <category>") and the rule's category, split or not.
+   * step9 (2026-11-19): an EXCEPTION rule's row sits under this sub-name.
    */
   subNameId?: number | null;
 }
@@ -383,7 +384,11 @@ export function resolveRow(
     if (exName) name = exName;
     if (exception.category)
       category = normalizeAccount(exception.category, ctx.customAccounts);
-    if (name !== before.name || category !== before.category) subNameId = null;
+    // step9 (2026-11-19): an exception filed under a sub-name (a sub-name merged away from
+    // its description's owner) keeps that sub-name.
+    if (exception.subNameId) subNameId = exception.subNameId;
+    else if (name !== before.name || category !== before.category)
+      subNameId = null;
     source = 'customer';
   }
 
@@ -789,4 +794,38 @@ export function linkConflictMessage(
     `Confirm to take it away from ${names.join(', ')} and link it to ${name}, ` +
     `or change only this transaction instead.`
   );
+}
+
+/**
+ * step9 (2026-11-19): the name a ledger row is an EXCEPTION from, or null. A one-time edit
+ * (`exceptionRuleId`) departs from what the rules give (`ruleName`); a row under a sub-name
+ * its description's exact rule (`owner`) does not give — the description belongs to another
+ * sub-name or name — is an exception from that owner (shown by its sub-name when it has one).
+ * A split (`splitOfId`) carries its transaction's description, so it is never one. Pure.
+ */
+export function exceptionFrom(
+  row: {
+    name: string | null;
+    subNameId: number | null;
+    splitOfId: number | null;
+    exceptionRuleId: number | null;
+    ruleName: string | null;
+  },
+  owner: { name: string | null; subNameId: number | null } | undefined,
+  subNameName: (id: number) => string | undefined,
+): string | null {
+  if (row.splitOfId) return null;
+  const ownerSub =
+    owner?.subNameId != null && owner.subNameId !== row.subNameId
+      ? (subNameName(owner.subNameId) ?? null)
+      : null;
+  const otherName = (n: string | null | undefined): n is string =>
+    !!n && nameKey(n) !== nameKey(row.name ?? '');
+  if (row.exceptionRuleId !== null) {
+    if (ownerSub) return ownerSub;
+    return otherName(row.ruleName) ? row.ruleName : null;
+  }
+  if (row.subNameId === null || !owner) return null;
+  if (ownerSub) return ownerSub;
+  return owner.subNameId == null && otherName(owner.name) ? owner.name : null;
 }

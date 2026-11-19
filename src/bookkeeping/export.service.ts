@@ -21,6 +21,8 @@ export interface LedgerExportRow {
    * starting-balance row.
    */
   id: number | null;
+  /** Not a cell: the row's OWN id (a split's, not its transaction's) — its custom answers. */
+  rowId?: number;
   pendingDate: Date | null;
   postingDate: Date | null;
   name: string;
@@ -45,7 +47,7 @@ export interface LedgerExportRow {
 
 /**
  * step8 (2026-11-11): the customer's own ledger columns — headers in order, and per
- * transaction id its cells. Shown on the transaction's own line only (not its tax / split lines).
+ * row id its cells. step9 (2026-11-19): a split line shows its own answers.
  */
 export interface ExportCustomColumns {
   headers: string[];
@@ -59,7 +61,7 @@ function customCellsOf(
 ): string[] {
   if (!custom) return [];
   const cells =
-    r.id !== null && !r.tax && !r.split ? custom.cells.get(r.id) : undefined;
+    r.id !== null && !r.tax ? custom.cells.get(r.rowId ?? r.id) : undefined;
   return custom.headers.map((_, i) => cells?.[i] ?? '');
 }
 
@@ -134,6 +136,7 @@ export class LedgerExportService {
     );
     const exportRow = (r: (typeof rows)[number]) => ({
       id: r.splitOfId ?? r.id,
+      rowId: r.id,
       statementId: r.statementId,
       pendingDate: r.pendingDate,
       postingDate: r.postingDate,
@@ -330,7 +333,7 @@ export class LedgerExportService {
     };
     for (const r of rows) {
       // Cells are matched to the columns by key; `statementId` has no column.
-      const { tax, split, ...cells } = r;
+      const { tax, split, rowId: _rowId, ...cells } = r;
       const own = Object.fromEntries(
         customCellsOf(r, custom).map((v, i) => [customKeys[i], v]),
       );

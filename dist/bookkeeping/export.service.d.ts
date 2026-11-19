@@ -4,6 +4,7 @@ import { CustomColumnsService } from './custom-columns.service';
 import { type BookScope } from './scope';
 export interface LedgerExportRow {
     id: number | null;
+    rowId?: number;
     pendingDate: Date | null;
     postingDate: Date | null;
     name: string;

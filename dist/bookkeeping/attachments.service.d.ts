@@ -110,5 +110,5 @@ export declare class AttachmentsService {
         filename: string;
     }>>>;
     private owned;
-    private parent;
+    private ownRow;
 }

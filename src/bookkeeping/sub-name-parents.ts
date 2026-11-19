@@ -250,8 +250,17 @@ export async function deleteSubName(
       : []),
     // step9 (2026-11-17): a description rule that gave it keeps its name only.
     prisma.customerNameRule.updateMany({
-      where: { bookId: sub.bookId, subNameId: id },
+      where: {
+        bookId: sub.bookId,
+        subNameId: id,
+        matchType: { not: 'EXCEPTION' },
+      },
       data: { subNameId: null, category: null },
+    }),
+    // step9 (2026-11-19): a one-time exception keeps its own name and category.
+    prisma.customerNameRule.updateMany({
+      where: { bookId: sub.bookId, subNameId: id, matchType: 'EXCEPTION' },
+      data: { subNameId: null },
     }),
     // step9 (2026-11-19): its default custom-column answers go with it.
     prisma.customColumnNameAnswer.deleteMany({ where: { subNameId: id } }),

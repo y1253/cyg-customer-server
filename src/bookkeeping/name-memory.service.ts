@@ -565,6 +565,13 @@ export class NameMemoryService implements OnApplicationBootstrap {
           const ruleId = r.splitOfId
             ? undefined
             : ruleOf.get(descriptionKey(r.description));
+          // step9 (2026-11-19): a row whose description is not this sub-name's own (no
+          // rule of it moved, none made for it) belongs to another name / sub-name — it
+          // becomes a one-time EXCEPTION from that owner (`syncProvenance` below).
+          const foreign =
+            !r.splitOfId &&
+            ruleId === undefined &&
+            !(r.personalRuleId && movedIds.has(r.personalRuleId));
           return this.prisma.bankTransaction.update({
             where: { id: r.id },
             data: {
@@ -573,6 +580,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
               offsetAccount: target.category,
               ...doubleEntry(amount, bank, target.category),
               ...(ruleId !== undefined && { personalRuleId: ruleId }),
+              ...(foreign && { manualEdit: true }),
             },
           });
         }),
@@ -860,6 +868,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
           description: true,
           name: true,
           offsetAccount: true,
+          subNameId: true,
           manualEdit: true,
           generalRuleId: true,
           personalRuleId: true,
@@ -888,9 +897,12 @@ export class NameMemoryService implements OnApplicationBootstrap {
           },
           { ...ctx, exceptions: undefined },
         );
+        // step9 (2026-11-19): a row under another sub-name than the one its description's
+        // rule files it under is an exception too.
         const differs =
           nameKey(ruled.name ?? '') !== nameKey(r.name ?? '') ||
-          ruled.category !== r.offsetAccount;
+          ruled.category !== r.offsetAccount ||
+          (ruled.subNameId !== null && ruled.subNameId !== r.subNameId);
         let exceptionRuleId: number | null = null;
         const existing = exceptions.get(key);
         if (r.manualEdit && differs) {
@@ -954,16 +966,25 @@ export class NameMemoryService implements OnApplicationBootstrap {
     scope: BookScope,
     key: string,
     existing: NameRule | undefined,
-    row: { name: string | null; offsetAccount: string },
+    row: {
+      name: string | null;
+      offsetAccount: string;
+      subNameId: number | null;
+    },
   ): Promise<number> {
     if (existing?.id !== undefined) {
       if (
         existing.name !== row.name ||
-        existing.category !== row.offsetAccount
+        existing.category !== row.offsetAccount ||
+        (existing.subNameId ?? null) !== row.subNameId
       ) {
         await this.prisma.customerNameRule.update({
           where: { id: existing.id },
-          data: { name: row.name, category: row.offsetAccount },
+          data: {
+            name: row.name,
+            category: row.offsetAccount,
+            subNameId: row.subNameId,
+          },
         });
       }
       return existing.id;
@@ -975,6 +996,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
         matchKey: key,
         name: row.name,
         category: row.offsetAccount,
+        subNameId: row.subNameId,
       },
       select: { id: true },
     });
@@ -1537,6 +1559,19 @@ export class NameMemoryService implements OnApplicationBootstrap {
     }
 
     if (!category) return;
+    // step12 (2026-11-19): "Only this transaction" for a category — this row alone, a
+    // one-time edit (`syncProvenance` keeps it as an EXCEPTION rule; a wrapper name's row is
+    // filed under its sub-name of that category).
+    if (input.scope === 'ONCE') {
+      await this.writeRows(
+        scope,
+        [matched],
+        // Its old sub-name was of the old category; a wrapper's row gets the new one's.
+        (r) => ({ name: r.name, category, subNameId: null }),
+        true,
+      );
+      return;
+    }
     const current = cleanName(row.name);
     if (current) {
       await this.setNameCategory(scope, current, category);

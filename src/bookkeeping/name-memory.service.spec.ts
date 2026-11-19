@@ -510,13 +510,13 @@ describe('one category per name; "Always / Only this row" is for the name', () =
     });
   });
 
-  it("a ledger category edit is the NAME's category, whatever the scope", async () => {
+  it("a ledger ALWAYS category edit is the NAME's category", async () => {
     const { prisma, rows } = fakePrisma([walmart(5), walmart(6, true)]);
     prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
     await service(prisma).editTransaction(BOOK, 5, {
       name: null,
       category: 'Office Expense',
-      scope: 'ONCE',
+      scope: 'ALWAYS',
     });
     expect(rows.map((r) => r.offsetAccount)).toEqual([
       'Office Expense',
@@ -531,6 +531,26 @@ describe('one category per name; "Always / Only this row" is for the name', () =
         category: 'Office Expense',
       },
     });
+  });
+
+  it('step12: a ledger ONCE category edit moves only that row, as a one-time edit', async () => {
+    const { prisma, rows } = fakePrisma([walmart(5), walmart(6)]);
+    prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
+    await service(prisma).editTransaction(BOOK, 5, {
+      name: null,
+      category: 'Office Expense',
+      scope: 'ONCE',
+    });
+    expect(rows.map((r) => r.offsetAccount)).toEqual([
+      'Office Expense',
+      'Supplies',
+    ]);
+    expect(rows[0].manualEdit).toBe(true);
+    expect(prisma.customerNameRule.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ matchType: 'NAME' }),
+      }),
+    );
   });
 
   it('a renamed row takes the category its new name already has', async () => {

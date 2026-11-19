@@ -61,7 +61,8 @@ export interface CustomColumnsView {
 /**
  * step8 (2026-11-11): the customer's own ledger columns, per book (user's decision: per
  * company, with the columns of their other companies offered when they make one). Answers
- * sit on the transaction (a split / tax line shows its parent's). Rules: `custom-column.util.ts`.
+ * sit on the row — step9 (2026-11-19): a split is its own row with its own answers. Rules:
+ * `custom-column.util.ts`.
  */
 @Injectable()
 export class CustomColumnsService {
@@ -523,8 +524,8 @@ export class CustomColumnsService {
   }
 
   /**
-   * One cell, or the same answer on many rows (the AI). A split / tax line answers for its
-   * parent. Empty value and no option = cleared.
+   * One cell, or the same answer on many rows (the AI). A split answers for itself (step9,
+   * 2026-11-19 — no longer for its parent). Empty value and no option = cleared.
    */
   async answer(
     scope: BookScope,
@@ -540,10 +541,10 @@ export class CustomColumnsService {
     const { value, dropDownId } = await this.checkedValue(col, input);
     const rows = await this.prisma.bankTransaction.findMany({
       where: { ...scopeWhere(scope), id: { in: transactionIds } },
-      select: { id: true, splitOfId: true },
+      select: { id: true },
     });
     if (!rows.length) throw new NotFoundException('Transaction not found');
-    const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
+    const ids = rows.map((r) => r.id);
     if (value === null) {
       await this.prisma.customColumnAnswer.deleteMany({
         where: { customColumnId: col.id, transactionId: { in: ids } },

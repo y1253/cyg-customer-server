@@ -1191,6 +1191,11 @@ export class AttachmentProcessorService {
     const parent = a?.transaction;
     const reading = a?.extracted as unknown as AttachmentReading | null;
     if (!a || !parent || !reading) return 'Nothing to split yet.';
+    // step12 (2026-11-19): a file on a split stays a file — its items never re-split the family.
+    if (parent.splitOfId)
+      return replace
+        ? 'Receipt items split a whole transaction — attach the receipt to the transaction to use them.'
+        : null;
     // A purchase is split by its items whether it arrived as a photo, a voice note or a
     // text message ("tissues $10, pampers $40 at Walmart").
     const purchase =

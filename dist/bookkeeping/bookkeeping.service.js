@@ -42,6 +42,7 @@ const tax_service_1 = require("./tax.service");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const fx_service_1 = require("./fx.service");
+const name_memory_util_1 = require("./name-memory.util");
 const day = (d) => d ? d.toISOString().slice(0, 10) : null;
 function withFx(views, ctx, statements) {
     const entries = [];
@@ -315,7 +316,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
     }
     async transactions(scope, statementIds) {
-        const [rows, statements, rules, attached, subNames] = await Promise.all([
+        const [rows, statements, rules, attached, subNames, descRules] = await Promise.all([
             this.prisma.bankTransaction.findMany({
                 where: {
                     ...(0, scope_1.scopeWhere)(scope),
@@ -352,8 +353,13 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
                 where: { bookId: scope.bookId },
                 select: { id: true, name: true, nameId: true, category: true },
             }),
+            this.prisma.customerNameRule.findMany({
+                where: { ...(0, scope_1.scopeWhere)(scope), matchType: 'DESCRIPTION' },
+                select: { matchKey: true, name: true, subNameId: true },
+            }),
         ]);
         const subNameOf = new Map(subNames.map((s) => [s.id, { id: s.id, name: s.name }]));
+        const ownerOf = new Map(descRules.map((r) => [r.matchKey, r]));
         const ruleOf = new Map(rules.map((r) => [r.id, r]));
         const attachmentsOf = new Map();
         for (const a of attached) {
@@ -374,11 +380,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             ...(r.itemName && { itemName: r.itemName }),
             ...(r.subNameId !== null &&
                 subNameOf.has(r.subNameId) && { subName: subNameOf.get(r.subNameId) }),
-            ...(r.exceptionRuleId !== null &&
-                r.ruleName &&
-                r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {
-                exception: { main: r.ruleName },
-            }),
+            ...((main) => main && { exception: { main } })((0, name_memory_util_1.exceptionFrom)(r, ownerOf.get((0, name_memory_util_1.descriptionKey)(r.description)), (id) => subNameOf.get(id)?.name)),
             amount: (0, splits_util_1.remainderOf)({ ...r, amount: Number(r.amount) }, totals),
             offsetAccount: r.offsetAccount,
             debitAccount: r.debitAccount,

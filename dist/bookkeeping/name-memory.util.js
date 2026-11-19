@@ -17,6 +17,7 @@ exports.indexRules = indexRules;
 exports.findLinkConflicts = findLinkConflicts;
 exports.rowNameConflicts = rowNameConflicts;
 exports.linkConflictMessage = linkConflictMessage;
+exports.exceptionFrom = exceptionFrom;
 const chart_of_accounts_1 = require("./chart-of-accounts");
 exports.EXCEPTION = 'EXCEPTION';
 exports.RULE_MATCH_TYPES = [
@@ -199,7 +200,9 @@ function resolveRow(row, ctx) {
             name = exName;
         if (exception.category)
             category = (0, chart_of_accounts_1.normalizeAccount)(exception.category, ctx.customAccounts);
-        if (name !== before.name || category !== before.category)
+        if (exception.subNameId)
+            subNameId = exception.subNameId;
+        else if (name !== before.name || category !== before.category)
             subNameId = null;
         source = 'customer';
     }
@@ -458,5 +461,23 @@ function linkConflictMessage(conflicts, name) {
     return (`Already linked to ${names.length > 1 ? 'other names' : names[0]}: ${shown}${more}. ` +
         `Confirm to take it away from ${names.join(', ')} and link it to ${name}, ` +
         `or change only this transaction instead.`);
+}
+function exceptionFrom(row, owner, subNameName) {
+    if (row.splitOfId)
+        return null;
+    const ownerSub = owner?.subNameId != null && owner.subNameId !== row.subNameId
+        ? (subNameName(owner.subNameId) ?? null)
+        : null;
+    const otherName = (n) => !!n && (0, exports.nameKey)(n) !== (0, exports.nameKey)(row.name ?? '');
+    if (row.exceptionRuleId !== null) {
+        if (ownerSub)
+            return ownerSub;
+        return otherName(row.ruleName) ? row.ruleName : null;
+    }
+    if (row.subNameId === null || !owner)
+        return null;
+    if (ownerSub)
+        return ownerSub;
+    return owner.subNameId == null && otherName(owner.name) ? owner.name : null;
 }
 //# sourceMappingURL=name-memory.util.js.map

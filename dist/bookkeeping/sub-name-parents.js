@@ -184,8 +184,16 @@ async function deleteSubName(prisma, id) {
             ]
             : []),
         prisma.customerNameRule.updateMany({
-            where: { bookId: sub.bookId, subNameId: id },
+            where: {
+                bookId: sub.bookId,
+                subNameId: id,
+                matchType: { not: 'EXCEPTION' },
+            },
             data: { subNameId: null, category: null },
+        }),
+        prisma.customerNameRule.updateMany({
+            where: { bookId: sub.bookId, subNameId: id, matchType: 'EXCEPTION' },
+            data: { subNameId: null },
         }),
         prisma.customColumnNameAnswer.deleteMany({ where: { subNameId: id } }),
         prisma.subName.deleteMany({ where: { id } }),

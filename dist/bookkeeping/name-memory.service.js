@@ -368,6 +368,9 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 const ruleId = r.splitOfId
                     ? undefined
                     : ruleOf.get((0, name_memory_util_1.descriptionKey)(r.description));
+                const foreign = !r.splitOfId &&
+                    ruleId === undefined &&
+                    !(r.personalRuleId && movedIds.has(r.personalRuleId));
                 return this.prisma.bankTransaction.update({
                     where: { id: r.id },
                     data: {
@@ -376,6 +379,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                         offsetAccount: target.category,
                         ...(0, ledger_util_1.doubleEntry)(amount, bank, target.category),
                         ...(ruleId !== undefined && { personalRuleId: ruleId }),
+                        ...(foreign && { manualEdit: true }),
                     },
                 });
             }));
@@ -589,6 +593,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     description: true,
                     name: true,
                     offsetAccount: true,
+                    subNameId: true,
                     manualEdit: true,
                     generalRuleId: true,
                     personalRuleId: true,
@@ -610,7 +615,8 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     offsetAccount: r.offsetAccount,
                 }, { ...ctx, exceptions: undefined });
                 const differs = (0, name_memory_util_1.nameKey)(ruled.name ?? '') !== (0, name_memory_util_1.nameKey)(r.name ?? '') ||
-                    ruled.category !== r.offsetAccount;
+                    ruled.category !== r.offsetAccount ||
+                    (ruled.subNameId !== null && ruled.subNameId !== r.subNameId);
                 let exceptionRuleId = null;
                 const existing = exceptions.get(key);
                 if (r.manualEdit && differs) {
@@ -662,10 +668,15 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async saveException(scope, key, existing, row) {
         if (existing?.id !== undefined) {
             if (existing.name !== row.name ||
-                existing.category !== row.offsetAccount) {
+                existing.category !== row.offsetAccount ||
+                (existing.subNameId ?? null) !== row.subNameId) {
                 await this.prisma.customerNameRule.update({
                     where: { id: existing.id },
-                    data: { name: row.name, category: row.offsetAccount },
+                    data: {
+                        name: row.name,
+                        category: row.offsetAccount,
+                        subNameId: row.subNameId,
+                    },
                 });
             }
             return existing.id;
@@ -677,6 +688,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                 matchKey: key,
                 name: row.name,
                 category: row.offsetAccount,
+                subNameId: row.subNameId,
             },
             select: { id: true },
         });
@@ -1010,6 +1022,10 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         }
         if (!category)
             return;
+        if (input.scope === 'ONCE') {
+            await this.writeRows(scope, [matched], (r) => ({ name: r.name, category, subNameId: null }), true);
+            return;
+        }
         const current = (0, name_memory_util_1.cleanName)(row.name);
         if (current) {
             await this.setNameCategory(scope, current, category);

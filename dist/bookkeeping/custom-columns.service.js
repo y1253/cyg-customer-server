@@ -424,11 +424,11 @@ let CustomColumnsService = class CustomColumnsService {
         const { value, dropDownId } = await this.checkedValue(col, input);
         const rows = await this.prisma.bankTransaction.findMany({
             where: { ...(0, scope_1.scopeWhere)(scope), id: { in: transactionIds } },
-            select: { id: true, splitOfId: true },
+            select: { id: true },
         });
         if (!rows.length)
             throw new common_1.NotFoundException('Transaction not found');
-        const ids = [...new Set(rows.map((r) => r.splitOfId ?? r.id))];
+        const ids = rows.map((r) => r.id);
         if (value === null) {
             await this.prisma.customColumnAnswer.deleteMany({
                 where: { customColumnId: col.id, transactionId: { in: ids } },

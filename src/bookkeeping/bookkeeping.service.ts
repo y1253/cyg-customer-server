@@ -54,6 +54,7 @@ import { TaxService } from './tax.service';
 import { bookLabel, scopeWhere, storagePrefix, type BookScope } from './scope';
 import { remainderOf, splitTotals, splitTree } from './splits.util';
 import { FxService, type FxContext, type FxEntry } from './fx.service';
+import { descriptionKey, exceptionFrom } from './name-memory.util';
 
 export interface StatementView {
   id: number;
@@ -158,7 +159,8 @@ export interface TransactionView {
   subName?: { id: number; name: string };
   /**
    * step9: a one-time edit — the name the rules give this row (`ruleName`) that it is an
-   * exception from. Absent = it follows the rules.
+   * exception from. Absent = it follows the rules. step9 (2026-11-19): also a sub-name row
+   * whose description another sub-name / name owns — named by that owner (`exceptionFrom`).
    */
   exception?: { main: string };
   amount: number;
@@ -590,49 +592,56 @@ export class BookkeepingService {
     scope: BookScope,
     statementIds?: number[],
   ): Promise<TransactionView[]> {
-    const [rows, statements, rules, attached, subNames] = await Promise.all([
-      this.prisma.bankTransaction.findMany({
-        where: {
-          ...scopeWhere(scope),
-          ...(statementIds?.length && { statementId: { in: statementIds } }),
-          statement: { deletedAt: null, status: StatementStatus.DONE },
-        },
-        include: {
-          statement: {
-            select: {
-              accountName: true,
-              bankName: true,
-              filename: true,
-              periodStart: true,
-              periodEnd: true,
+    const [rows, statements, rules, attached, subNames, descRules] =
+      await Promise.all([
+        this.prisma.bankTransaction.findMany({
+          where: {
+            ...scopeWhere(scope),
+            ...(statementIds?.length && { statementId: { in: statementIds } }),
+            statement: { deletedAt: null, status: StatementStatus.DONE },
+          },
+          include: {
+            statement: {
+              select: {
+                accountName: true,
+                bankName: true,
+                filename: true,
+                periodStart: true,
+                periodEnd: true,
+              },
             },
           },
-        },
-      }),
-      // ALL done statements: the chain decides which ones start fresh, even when the
-      // ledger is filtered to a few of them.
-      loadOpeningStatements(this.prisma, scope),
-      this.prisma.taxAgency.findMany({
-        where: scopeWhere(scope),
-        select: { id: true, name: true },
-      }),
-      this.prisma.transactionAttachment.findMany({
-        where: {
-          ...scopeWhere(scope),
-          deletedAt: null,
-          transactionId: { not: null },
-        },
-        select: { id: true, kind: true, filename: true, transactionId: true },
-        orderBy: { id: 'asc' },
-      }),
-      this.prisma.subName.findMany({
-        where: { bookId: scope.bookId },
-        select: { id: true, name: true, nameId: true, category: true },
-      }),
-    ]);
+        }),
+        // ALL done statements: the chain decides which ones start fresh, even when the
+        // ledger is filtered to a few of them.
+        loadOpeningStatements(this.prisma, scope),
+        this.prisma.taxAgency.findMany({
+          where: scopeWhere(scope),
+          select: { id: true, name: true },
+        }),
+        this.prisma.transactionAttachment.findMany({
+          where: {
+            ...scopeWhere(scope),
+            deletedAt: null,
+            transactionId: { not: null },
+          },
+          select: { id: true, kind: true, filename: true, transactionId: true },
+          orderBy: { id: 'asc' },
+        }),
+        this.prisma.subName.findMany({
+          where: { bookId: scope.bookId },
+          select: { id: true, name: true, nameId: true, category: true },
+        }),
+        // step9 (2026-11-19): who owns each description — for the "exception from" label.
+        this.prisma.customerNameRule.findMany({
+          where: { ...scopeWhere(scope), matchType: 'DESCRIPTION' },
+          select: { matchKey: true, name: true, subNameId: true },
+        }),
+      ]);
     const subNameOf = new Map(
       subNames.map((s) => [s.id, { id: s.id, name: s.name }]),
     );
+    const ownerOf = new Map(descRules.map((r) => [r.matchKey, r]));
     const ruleOf = new Map(rules.map((r) => [r.id, r]));
     const attachmentsOf = new Map<
       number,
@@ -659,11 +668,13 @@ export class BookkeepingService {
       ...(r.itemName && { itemName: r.itemName }),
       ...(r.subNameId !== null &&
         subNameOf.has(r.subNameId) && { subName: subNameOf.get(r.subNameId) }),
-      ...(r.exceptionRuleId !== null &&
-        r.ruleName &&
-        r.ruleName.toLowerCase() !== (r.name ?? '').toLowerCase() && {
-          exception: { main: r.ruleName },
-        }),
+      ...((main) => main && { exception: { main } })(
+        exceptionFrom(
+          r,
+          ownerOf.get(descriptionKey(r.description)),
+          (id) => subNameOf.get(id)?.name,
+        ),
+      ),
       amount: remainderOf({ ...r, amount: Number(r.amount) }, totals),
       offsetAccount: r.offsetAccount,
       debitAccount: r.debitAccount,
