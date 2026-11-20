@@ -627,7 +627,7 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
                     generalRuleId: ruled.generalRuleId,
                     personalRuleId: ruled.personalRuleId,
                     exceptionRuleId,
-                    ruleName: ruled.name,
+                    ruleName: ruled.name ?? (r.manualEdit ? '' : null),
                 };
                 if (next.generalRuleId === r.generalRuleId &&
                     next.personalRuleId === r.personalRuleId &&
@@ -946,7 +946,12 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     async applyEdit(scope, id, input) {
         const row = await this.prisma.bankTransaction.findFirst({
             where: { id, ...(0, scope_1.scopeWhere)(scope) },
-            select: { ...MATCH_SELECT, manualEdit: true, splitOfId: true },
+            select: {
+                ...MATCH_SELECT,
+                manualEdit: true,
+                splitOfId: true,
+                ruleName: true,
+            },
         });
         if (!row)
             throw new common_1.NotFoundException('Transaction not found');
@@ -993,7 +998,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (name && name !== row.name) {
             if (input.scope === 'ONCE') {
                 const target = await this.categoryOfName(scope, name);
-                await this.writeRows(scope, [matched], (r) => ({ name, category: r.offsetAccount }), true);
+                if (row.ruleName === null && !row.manualEdit) {
+                    await this.prisma.bankTransaction.update({
+                        where: { id: row.id },
+                        data: { ruleName: row.name ?? '' },
+                    });
+                }
+                await this.writeRows(scope, [matched], (r) => ({ name, category: r.offsetAccount, subNameId: null }), true);
                 const adopt = category ?? target;
                 if (adopt)
                     await this.setNameCategory(scope, name, adopt);

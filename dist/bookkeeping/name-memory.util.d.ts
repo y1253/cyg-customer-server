@@ -139,13 +139,22 @@ export declare function rowNameConflicts(input: {
     rules?: readonly NameRule[];
 }): LinkConflict[];
 export declare function linkConflictMessage(conflicts: readonly Pick<LinkConflict, 'text' | 'name'>[], name: string): string;
-export declare function exceptionFrom(row: {
+export declare function exceptionFrom(row: ExceptionRow, owner: ExceptionRuleOwner | undefined, subNameName: (id: number) => string | undefined): string | null;
+export interface ExceptionRow {
     name: string | null;
+    description?: string;
     subNameId: number | null;
     splitOfId: number | null;
     exceptionRuleId: number | null;
     ruleName: string | null;
-}, owner: {
+}
+export type ExceptionRuleOwner = {
     name: string | null;
     subNameId: number | null;
-} | undefined, subNameName: (id: number) => string | undefined): string | null;
+};
+export declare function exceptionOwner(row: ExceptionRow, owner: ExceptionRuleOwner | undefined, subNameName: (id: number) => string | undefined): {
+    label: string;
+    name: string | null;
+    subNameId: number | null;
+    categoryOnly?: true;
+} | null;

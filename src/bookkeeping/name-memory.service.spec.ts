@@ -980,4 +980,58 @@ describe('NameMemoryService.syncProvenance (step9)', () => {
       },
     });
   });
+
+  it('step12: an Unclarified row renamed once is an exception too ("" = no name before)', async () => {
+    const fake = fakePrisma([]);
+    const rows = [
+      {
+        id: 4,
+        statementId: 3,
+        externalId: null,
+        postingDate: new Date('2026-10-02T00:00:00Z'),
+        pendingDate: null,
+        amount: money(-20),
+        description: 'POS 4412 XQZ',
+        name: 'Costco',
+        offsetAccount: 'Uncategorized',
+        subNameId: null,
+        manualEdit: true,
+        generalRuleId: null,
+        personalRuleId: null,
+        exceptionRuleId: null,
+        ruleName: '',
+      },
+    ];
+    const prisma = {
+      ...fake.prisma,
+      bankTransaction: {
+        ...fake.prisma.bankTransaction,
+        findMany: jest.fn().mockResolvedValue(rows),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customerNameRule: {
+        ...fake.prisma.customerNameRule,
+        create: jest.fn().mockResolvedValue({ id: 56 }),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    await service(prisma).syncProvenance(BOOK as never);
+    expect(prisma.customerNameRule.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        matchType: 'EXCEPTION',
+        name: 'Costco',
+      }) as unknown,
+      select: { id: true },
+    });
+    // The rules still give it no name — kept as '', so the next sync replays it the same way.
+    expect(prisma.bankTransaction.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [4] } },
+      data: {
+        generalRuleId: null,
+        personalRuleId: null,
+        exceptionRuleId: 56,
+        ruleName: '',
+      },
+    });
+  });
 });

@@ -48,6 +48,7 @@ export interface NameView {
         key: string;
         description: string;
         rows: number;
+        split?: true;
     }>;
     group: string;
     ruleKey: string;
@@ -79,6 +80,8 @@ export interface NameDescriptionView {
     exceptions: Array<{
         name: string;
         rows: number;
+        category?: string;
+        split?: true;
     }>;
 }
 export interface UnrecognizedView {
@@ -107,6 +110,7 @@ export interface NamesView {
     groups: NameGroupView[];
     subDescriptions: Record<number, NameDescriptionView[]>;
     subContains: Record<number, NameView['followsContains']>;
+    subExceptionOf: Record<number, NameView['exceptionOf']>;
 }
 export interface NameGroupView {
     key: string;
@@ -140,6 +144,7 @@ export declare class TaxService {
     agencyNames(scope: BookScope): Promise<string[]>;
     typeContext(scope: BookScope): Promise<TypeContext>;
     names(scope: BookScope): Promise<NamesView>;
+    private exceptionsOf;
     private namesOfFiles;
     addName(scope: BookScope, rawName: string, group: string | null): Promise<string>;
     checkGroup(scope: BookScope, group: string | null): Promise<void>;

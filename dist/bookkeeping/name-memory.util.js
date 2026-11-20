@@ -18,7 +18,9 @@ exports.findLinkConflicts = findLinkConflicts;
 exports.rowNameConflicts = rowNameConflicts;
 exports.linkConflictMessage = linkConflictMessage;
 exports.exceptionFrom = exceptionFrom;
+exports.exceptionOwner = exceptionOwner;
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const reports_util_1 = require("./reports.util");
 exports.EXCEPTION = 'EXCEPTION';
 exports.RULE_MATCH_TYPES = [
     'NAME',
@@ -463,21 +465,39 @@ function linkConflictMessage(conflicts, name) {
         `or change only this transaction instead.`);
 }
 function exceptionFrom(row, owner, subNameName) {
+    const o = exceptionOwner(row, owner, subNameName);
+    return o && !o.categoryOnly ? o.label : null;
+}
+function exceptionOwner(row, owner, subNameName) {
     if (row.splitOfId)
         return null;
-    const ownerSub = owner?.subNameId != null && owner.subNameId !== row.subNameId
-        ? (subNameName(owner.subNameId) ?? null)
+    const ownerSubName = owner?.subNameId != null && owner.subNameId !== row.subNameId
+        ? subNameName(owner.subNameId)
+        : undefined;
+    const ownerSub = owner && ownerSubName
+        ? { label: ownerSubName, name: owner.name, subNameId: owner.subNameId }
         : null;
     const otherName = (n) => !!n && (0, exports.nameKey)(n) !== (0, exports.nameKey)(row.name ?? '');
     if (row.exceptionRuleId !== null) {
         if (ownerSub)
             return ownerSub;
-        return otherName(row.ruleName) ? row.ruleName : null;
+        const noName = row.ruleName === '' ||
+            (row.description !== undefined &&
+                !!row.ruleName &&
+                row.ruleName === descriptionName(row.description));
+        if (noName && row.name && (0, exports.nameKey)(row.ruleName) !== (0, exports.nameKey)(row.name))
+            return { label: reports_util_1.UNCLARIFIED_NAME, name: null, subNameId: null };
+        if (otherName(row.ruleName))
+            return { label: row.ruleName, name: row.ruleName, subNameId: null };
+        const own = row.name ?? reports_util_1.UNCLARIFIED_NAME;
+        return { label: own, name: row.name, subNameId: null, categoryOnly: true };
     }
     if (row.subNameId === null || !owner)
         return null;
     if (ownerSub)
         return ownerSub;
-    return owner.subNameId == null && otherName(owner.name) ? owner.name : null;
+    return owner.subNameId == null && otherName(owner.name)
+        ? { label: owner.name, name: owner.name, subNameId: null }
+        : null;
 }
 //# sourceMappingURL=name-memory.util.js.map

@@ -400,6 +400,7 @@ let TaxService = class TaxService {
                     description: true,
                     offsetAccount: true,
                     subNameId: true,
+                    splitRuleId: true,
                 },
             }),
             this.prisma.bankTransaction.findMany({
@@ -409,6 +410,7 @@ let TaxService = class TaxService {
                     ...PROVENANCE_SELECT,
                     description: true,
                     offsetAccount: true,
+                    subNameId: true,
                 },
             }),
             this.prisma.ledgerNameAgency.findMany({
@@ -474,10 +476,10 @@ let TaxService = class TaxService {
                 subName: r.subNameId ? (ruleSubName.get(r.subNameId) ?? null) : null,
             },
         ]));
-        const { descriptionsOf, exceptionOf } = groupDescriptions([...named, ...nameless], rulesById);
+        const { descriptionsOf } = groupDescriptions([...named, ...nameless], rulesById);
         const subDescriptions = Object.fromEntries([
             ...groupDescriptions(named.flatMap((r) => r.subNameId && !r.splitOfId
-                ? [{ ...r, name: `#${r.subNameId}`, exceptionRuleId: null }]
+                ? [{ ...r, name: `#${r.subNameId}` }]
                 : []), rulesById).descriptionsOf,
         ].map(([k, v]) => [Number(k.slice(1)), v]));
         const printed = new Map();
@@ -509,6 +511,11 @@ let TaxService = class TaxService {
                 exceptions: [],
             });
         }
+        const usualCategory = new Map();
+        for (const g of [...groups].sort((a, b) => b._count._all - a._count._all))
+            if (g.name && !usualCategory.has(g.name.toLowerCase()))
+                usualCategory.set(g.name.toLowerCase(), g.offsetAccount);
+        const { exceptionOf, subExceptionOf } = await this.exceptionsOf(scope, [...named, ...nameless], rules, descriptionsOf, subDescriptions, usualCategory);
         const subContains = {};
         for (const r of rules) {
             if (r.matchType !== 'CONTAINS' || !r.subNameId)
@@ -619,7 +626,10 @@ let TaxService = class TaxService {
             };
         })
             .sort((a, b) => b.rows - a.rows || a.key.localeCompare(b.key));
-        if (nameless.length) {
+        const unclarifiedExceptions = !!descriptionsOf
+            .get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            ?.some((d) => d.exceptions.length);
+        if (nameless.length || unclarifiedExceptions) {
             names.push({
                 name: reports_util_1.UNCLARIFIED_NAME,
                 category: chart_of_accounts_1.UNCATEGORIZED,
@@ -630,16 +640,24 @@ let TaxService = class TaxService {
                 agencyIds: agenciesOf.get((0, tax_util_1.nameTaxKey)(null)) ?? [],
                 agencyAlone: aloneKeys.has((0, tax_util_1.nameTaxKey)(null)),
                 fields: [],
-                descriptions: unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
-                    key: u.key,
-                    description: u.sampleDescription,
-                    category: u.category,
-                    rows: u.rows,
-                    rule: null,
-                    exceptions: descriptionsOf
+                descriptions: [
+                    ...unrecognized.slice(0, MAX_DESCRIPTIONS).map((u) => ({
+                        key: u.key,
+                        description: u.sampleDescription,
+                        category: u.category,
+                        rows: u.rows,
+                        rule: null,
+                        exceptions: descriptionsOf
+                            .get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+                            ?.find((d) => d.key === u.key)?.exceptions ?? [],
+                    })),
+                    ...(descriptionsOf
                         .get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
-                        ?.find((d) => d.key === u.key)?.exceptions ?? [],
-                })),
+                        ?.filter((d) => d.exceptions.length &&
+                        !unrecognized
+                            .slice(0, MAX_DESCRIPTIONS)
+                            .some((u) => u.key === d.key)) ?? []),
+                ],
                 followsContains: [],
                 exceptionOf: exceptionOf.get((0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME)) ?? [],
                 group: 'OTHER',
@@ -700,6 +718,119 @@ let TaxService = class TaxService {
             groups: groupList,
             subDescriptions,
             subContains,
+            subExceptionOf,
+        };
+    }
+    async exceptionsOf(scope, rows, rules, descriptionsOf, subDescriptions, usualCategory) {
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId },
+            select: { id: true, name: true },
+        });
+        const subName = new Map(subs.map((s) => [s.id, s.name]));
+        const ownerOf = new Map(rules
+            .filter((r) => r.matchType === 'DESCRIPTION')
+            .map((r) => [r.matchKey, r]));
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const listed = new Set(descriptionsOf.keys());
+        const exceptionOf = new Map();
+        const subExceptionOf = new Map();
+        for (const r of rows) {
+            const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
+            const parent = r.splitOfId ? byId.get(r.splitOfId) : undefined;
+            let main = parent
+                ? !r.splitRuleId &&
+                    (0, name_memory_util_1.nameKey)(r.name ?? '') !== (0, name_memory_util_1.nameKey)(parent.name ?? '') &&
+                    r.name
+                    ? {
+                        label: parent.name ?? reports_util_1.UNCLARIFIED_NAME,
+                        name: parent.name ?? null,
+                        subNameId: null,
+                    }
+                    : null
+                : (0, name_memory_util_1.exceptionOwner)({ ...r, name: r.name ?? null }, ownerOf.get(key), (id) => subName.get(id));
+            if (!main &&
+                !parent &&
+                r.manualEdit &&
+                r.exceptionRuleId === null &&
+                r.name &&
+                (0, name_memory_util_1.nameKey)(r.ruleName ?? r.name) === (0, name_memory_util_1.nameKey)(r.name)) {
+                const usual = usualCategory.get(r.name.toLowerCase());
+                if (usual && usual !== r.offsetAccount)
+                    main = {
+                        label: r.name,
+                        name: r.name,
+                        subNameId: null,
+                        categoryOnly: true,
+                    };
+            }
+            if (!main)
+                continue;
+            if (main.subNameId === null &&
+                main.name &&
+                !listed.has(main.name.toLowerCase()))
+                main = { label: reports_util_1.UNCLARIFIED_NAME, name: null, subNameId: null };
+            const own = (r.subNameId !== null && subName.get(r.subNameId)) ||
+                r.name ||
+                reports_util_1.UNCLARIFIED_NAME;
+            const list = main.subNameId !== null
+                ? (subDescriptions[main.subNameId] ??= [])
+                : (() => {
+                    const k = (main.name ?? reports_util_1.UNCLARIFIED_NAME).toLowerCase();
+                    const l = descriptionsOf.get(k) ?? [];
+                    descriptionsOf.set(k, l);
+                    return l;
+                })();
+            let d = list.find((x) => x.key === key);
+            if (!d) {
+                const rule = ownerOf.get(key);
+                d = {
+                    key,
+                    description: (parent ?? r).description,
+                    category: rule?.category ?? r.offsetAccount,
+                    rows: 0,
+                    rule: null,
+                    exceptions: [],
+                };
+                list.push(d);
+            }
+            const label = own;
+            let e = d.exceptions.find((x) => x.name.toLowerCase() === label.toLowerCase() &&
+                (x.category ?? null) === (main.categoryOnly ? r.offsetAccount : null));
+            if (!e) {
+                e = {
+                    name: label,
+                    rows: 0,
+                    ...(main.categoryOnly && { category: r.offsetAccount }),
+                    ...(parent && { split: true }),
+                };
+                d.exceptions.push(e);
+            }
+            e.rows++;
+            d.exceptions.sort((a, b) => b.rows - a.rows);
+            if (main.categoryOnly)
+                continue;
+            const mine = (r.subNameId !== null
+                ? subExceptionOf.get(r.subNameId)
+                : exceptionOf.get(own.toLowerCase())) ??
+                new Map();
+            if (r.subNameId !== null)
+                subExceptionOf.set(r.subNameId, mine);
+            else
+                exceptionOf.set(own.toLowerCase(), mine);
+            const xKey = `${main.label.toLowerCase()}|${key}`;
+            const x = mine.get(xKey) ?? {
+                main: main.label,
+                key,
+                description: (parent ?? r).description,
+                rows: 0,
+                ...(parent && { split: true }),
+            };
+            x.rows++;
+            mine.set(xKey, x);
+        }
+        return {
+            exceptionOf: new Map([...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]])),
+            subExceptionOf: Object.fromEntries([...subExceptionOf.entries()].map(([k, v]) => [k, [...v.values()]])),
         };
     }
     async namesOfFiles(scope) {
@@ -1196,6 +1327,7 @@ const PROVENANCE_SELECT = {
     personalRuleId: true,
     exceptionRuleId: true,
     ruleName: true,
+    manualEdit: true,
 };
 function rowShares(rows) {
     const cents = (a) => Math.round(Number(a) * 100);
@@ -1211,47 +1343,22 @@ function rowShares(rows) {
 }
 function groupDescriptions(rows, rulesById) {
     const byName = new Map();
-    const groupFor = (name, key, description) => {
+    for (const r of rows) {
+        const name = (r.name ?? reports_util_1.UNCLARIFIED_NAME).toLowerCase();
+        const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
         const groups = byName.get(name) ?? new Map();
         byName.set(name, groups);
         const g = groups.get(key) ?? {
-            description,
+            description: r.description,
             categories: new Map(),
             rules: new Map(),
-            exceptions: new Map(),
             rows: 0,
         };
         groups.set(key, g);
-        return g;
-    };
-    const exceptionOf = new Map();
-    for (const r of rows) {
-        const own = r.name ?? reports_util_1.UNCLARIFIED_NAME;
-        const name = own.toLowerCase();
-        const key = (0, name_memory_util_1.descriptionKey)(r.description) || r.description.trim().toLowerCase();
-        const g = groupFor(name, key, r.description);
         g.rows++;
         g.categories.set(r.offsetAccount, (g.categories.get(r.offsetAccount) ?? 0) + 1);
         if (r.personalRuleId !== null)
             g.rules.set(r.personalRuleId, (g.rules.get(r.personalRuleId) ?? 0) + 1);
-        const main = r.exceptionRuleId !== null ? r.ruleName : null;
-        if (main && main.toLowerCase() !== name) {
-            const m = groupFor(main.toLowerCase(), key, r.description);
-            const e = m.exceptions.get(name) ?? { name: own, rows: 0 };
-            e.rows++;
-            m.exceptions.set(name, e);
-            const mine = exceptionOf.get(name) ??
-                new Map();
-            const x = mine.get(`${main.toLowerCase()}|${key}`) ?? {
-                main,
-                key,
-                description: r.description,
-                rows: 0,
-            };
-            x.rows++;
-            mine.set(`${main.toLowerCase()}|${key}`, x);
-            exceptionOf.set(name, mine);
-        }
     }
     const descriptionsOf = new Map();
     for (const [name, groups] of byName) {
@@ -1277,18 +1384,13 @@ function groupDescriptions(rows, rulesById) {
                         ...(rule.subName && { subName: rule.subName }),
                     }
                     : null,
-                exceptions: [...g.exceptions.values()].sort((a, b) => b.rows - a.rows),
+                exceptions: [],
             };
         })
-            .sort((a, b) => b.rows - a.rows ||
-            b.exceptions.length - a.exceptions.length ||
-            a.description.localeCompare(b.description))
+            .sort((a, b) => b.rows - a.rows || a.description.localeCompare(b.description))
             .slice(0, MAX_DESCRIPTIONS));
     }
-    return {
-        descriptionsOf,
-        exceptionOf: new Map([...exceptionOf.entries()].map(([k, v]) => [k, [...v.values()]])),
-    };
+    return { descriptionsOf };
 }
 function cleanNameFields(input) {
     const fields = input.flatMap((f) => {

@@ -4,6 +4,7 @@ import {
   UNCATEGORIZED,
   normalizeAccount,
 } from './chart-of-accounts';
+import { UNCLARIFIED_NAME } from './reports.util';
 
 /** How a customer rule is matched. */
 export type RuleMatchType = 'NAME' | 'DESCRIPTION' | 'CONTAINS';
@@ -804,28 +805,75 @@ export function linkConflictMessage(
  * A split (`splitOfId`) carries its transaction's description, so it is never one. Pure.
  */
 export function exceptionFrom(
-  row: {
-    name: string | null;
-    subNameId: number | null;
-    splitOfId: number | null;
-    exceptionRuleId: number | null;
-    ruleName: string | null;
-  },
-  owner: { name: string | null; subNameId: number | null } | undefined,
+  row: ExceptionRow,
+  owner: ExceptionRuleOwner | undefined,
   subNameName: (id: number) => string | undefined,
 ): string | null {
+  const o = exceptionOwner(row, owner, subNameName);
+  return o && !o.categoryOnly ? o.label : null;
+}
+
+export interface ExceptionRow {
+  name: string | null;
+  /** Its description: a rule name that is only the description means "no name". */
+  description?: string;
+  subNameId: number | null;
+  splitOfId: number | null;
+  exceptionRuleId: number | null;
+  ruleName: string | null;
+}
+export type ExceptionRuleOwner = {
+  name: string | null;
+  subNameId: number | null;
+};
+
+/**
+ * step12 (2026-11-20): who a row is an exception FROM — the Names tab and the ledger share
+ * this. `label` = how it is shown (a sub-name's own name, else the name); `name` /
+ * `subNameId` = where the Names tab lists it (null name = "Unclarified name"). A one-time
+ * edit that kept the name and changed only the category is `categoryOnly` (from itself,
+ * listed under the name). `ruleName` '' — or only its description (`descriptionName`, how
+ * a categorized row with no name is named) — = the rules give it no name: "Unclarified
+ * name". Pure.
+ */
+export function exceptionOwner(
+  row: ExceptionRow,
+  owner: ExceptionRuleOwner | undefined,
+  subNameName: (id: number) => string | undefined,
+): {
+  label: string;
+  name: string | null;
+  subNameId: number | null;
+  categoryOnly?: true;
+} | null {
   if (row.splitOfId) return null;
-  const ownerSub =
+  const ownerSubName =
     owner?.subNameId != null && owner.subNameId !== row.subNameId
-      ? (subNameName(owner.subNameId) ?? null)
+      ? subNameName(owner.subNameId)
+      : undefined;
+  const ownerSub =
+    owner && ownerSubName
+      ? { label: ownerSubName, name: owner.name, subNameId: owner.subNameId }
       : null;
   const otherName = (n: string | null | undefined): n is string =>
     !!n && nameKey(n) !== nameKey(row.name ?? '');
   if (row.exceptionRuleId !== null) {
     if (ownerSub) return ownerSub;
-    return otherName(row.ruleName) ? row.ruleName : null;
+    const noName =
+      row.ruleName === '' ||
+      (row.description !== undefined &&
+        !!row.ruleName &&
+        row.ruleName === descriptionName(row.description));
+    if (noName && row.name && nameKey(row.ruleName!) !== nameKey(row.name))
+      return { label: UNCLARIFIED_NAME, name: null, subNameId: null };
+    if (otherName(row.ruleName))
+      return { label: row.ruleName, name: row.ruleName, subNameId: null };
+    const own = row.name ?? UNCLARIFIED_NAME;
+    return { label: own, name: row.name, subNameId: null, categoryOnly: true };
   }
   if (row.subNameId === null || !owner) return null;
   if (ownerSub) return ownerSub;
-  return owner.subNameId == null && otherName(owner.name) ? owner.name : null;
+  return owner.subNameId == null && otherName(owner.name)
+    ? { label: owner.name, name: owner.name, subNameId: null }
+    : null;
 }

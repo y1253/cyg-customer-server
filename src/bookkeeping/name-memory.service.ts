@@ -913,7 +913,9 @@ export class NameMemoryService implements OnApplicationBootstrap {
           generalRuleId: ruled.generalRuleId,
           personalRuleId: ruled.personalRuleId,
           exceptionRuleId,
-          ruleName: ruled.name,
+          // step12 (2026-11-20): '' = the rules give a one-time edit NO name (an Unclarified
+          // row renamed once) — null would replay it from its new name and lose the exception.
+          ruleName: ruled.name ?? (r.manualEdit ? '' : null),
         };
         if (
           next.generalRuleId === r.generalRuleId &&
@@ -1463,7 +1465,12 @@ export class NameMemoryService implements OnApplicationBootstrap {
   ): Promise<void> {
     const row = await this.prisma.bankTransaction.findFirst({
       where: { id, ...scopeWhere(scope) },
-      select: { ...MATCH_SELECT, manualEdit: true, splitOfId: true },
+      select: {
+        ...MATCH_SELECT,
+        manualEdit: true,
+        splitOfId: true,
+        ruleName: true,
+      },
     });
     if (!row) throw new NotFoundException('Transaction not found');
     const custom = await this.customAccountsOf(scope);
@@ -1521,10 +1528,21 @@ export class NameMemoryService implements OnApplicationBootstrap {
     if (name && name !== row.name) {
       if (input.scope === 'ONCE') {
         const target = await this.categoryOfName(scope, name);
+        // step12 (2026-11-20): remember the name the row had before this one-time edit when
+        // nothing recorded it yet ('' = no name), so `syncProvenance` sees the edit as an
+        // exception — an Unclarified row renamed once used to replay from its NEW name.
+        if (row.ruleName === null && !row.manualEdit) {
+          await this.prisma.bankTransaction.update({
+            where: { id: row.id },
+            data: { ruleName: row.name ?? '' },
+          });
+        }
+        // step12 (2026-11-20): its old name's sub-name goes with the old name ("Walmart -
+        // Rent" under Costco); a new name with sub-names files it under one of its own.
         await this.writeRows(
           scope,
           [matched],
-          (r) => ({ name, category: r.offsetAccount }),
+          (r) => ({ name, category: r.offsetAccount, subNameId: null }),
           true,
         );
         const adopt = category ?? target;

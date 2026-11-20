@@ -5,6 +5,7 @@ import {
   descriptionContains,
   descriptionKey,
   exceptionFrom,
+  exceptionOwner,
   fallbackName,
   indexRules,
   isOwnersLoanMove,
@@ -742,5 +743,67 @@ describe('exceptionFrom (step9 2026-11-19)', () => {
         sub,
       ),
     ).toBeNull();
+  });
+});
+
+describe('exceptionOwner (step12 2026-11-20)', () => {
+  const subs = new Map([[1, 'Walmart - Rent']]);
+  const sub = (id: number) => subs.get(id);
+  const once = {
+    name: 'Costco',
+    subNameId: null as number | null,
+    splitOfId: null as number | null,
+    exceptionRuleId: 7 as number | null,
+    ruleName: 'Walmart' as string | null,
+  };
+
+  it('a renamed row is filed under the name the rules give', () => {
+    expect(exceptionOwner(once, undefined, sub)).toEqual({
+      label: 'Walmart',
+      name: 'Walmart',
+      subNameId: null,
+    });
+  });
+
+  it('under the sub-name that owns its description, by id', () => {
+    expect(
+      exceptionOwner(once, { name: 'Walmart', subNameId: 1 }, sub),
+    ).toEqual({ label: 'Walmart - Rent', name: 'Walmart', subNameId: 1 });
+  });
+
+  it('an Unclarified row renamed once ("" = the rules give no name)', () => {
+    const o = exceptionOwner({ ...once, ruleName: '' }, undefined, sub);
+    expect(o).toEqual({
+      label: 'Unclarified name',
+      name: null,
+      subNameId: null,
+    });
+    expect(exceptionFrom({ ...once, ruleName: '' }, undefined, sub)).toBe(
+      'Unclarified name',
+    );
+  });
+
+  it('a rule name that is only the description is no name either', () => {
+    const row = {
+      ...once,
+      description: 'XQZ  STEP12 991',
+      ruleName: 'XQZ STEP12 991',
+    };
+    expect(exceptionFrom(row, undefined, sub)).toBe('Unclarified name');
+    // A real name the rules give stays.
+    expect(exceptionFrom({ ...row, ruleName: 'Walmart' }, undefined, sub)).toBe(
+      'Walmart',
+    );
+  });
+
+  it('a category-only one-time edit is from itself — never shown in the ledger', () => {
+    const same = { ...once, ruleName: 'Costco', subNameId: 1 };
+    expect(exceptionOwner(same, undefined, sub)).toEqual({
+      label: 'Costco',
+      name: 'Costco',
+      subNameId: null,
+      categoryOnly: true,
+    });
+    expect(exceptionFrom(same, undefined, sub)).toBeNull();
   });
 });
