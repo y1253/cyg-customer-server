@@ -108,6 +108,63 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, touched);
         return made;
     }
+    async applyOnce(scope, unit, rows) {
+        const { todo, key, label } = await this.oneTimeRules(scope, unit);
+        const parents = await this.parentsFor(scope, 'transactionId' in rows
+            ? { transactionIds: [rows.transactionId] }
+            : { names: [rows.name] }, new Map());
+        if ('transactionId' in rows && !parents.length)
+            throw new common_1.BadRequestException('Split rules cut a whole transaction of a read statement — not a split');
+        let split = 0;
+        const touched = [];
+        for (const p of parents) {
+            const line = this.lineOf(p, new Map());
+            const done = new Set(p.splits
+                .filter((s) => s.splitRuleId !== null)
+                .map((s) => `${s.ruleSourceId}:${s.splitRuleId}`));
+            const rules = todo.filter((r) => !done.has(`${line.sourceId}:${r.id}`));
+            const splits = rules.length ? (0, split_rules_util_1.stepSplits)(line.amount, rules) : [];
+            if (!splits.length)
+                continue;
+            await this.write(scope, p, line, splits, [], { key, label });
+            split++;
+            touched.push(p.id);
+        }
+        if (touched.length)
+            await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, touched);
+        return { split, skipped: parents.length - split };
+    }
+    async oneTimeRules(scope, unit) {
+        const rules = await this.rules(scope);
+        if ('groupId' in unit) {
+            const group = await this.prisma.splitGroup.findFirst({
+                where: { id: unit.groupId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+                select: { id: true, name: true, active: true },
+            });
+            if (!group)
+                throw new common_1.NotFoundException('Split group not found');
+            if (!group.active)
+                throw new common_1.BadRequestException(`“${group.name}” is switched off`);
+            const todo = [...rules.values()].filter((r) => r.groupId === group.id);
+            if (!todo.length)
+                throw new common_1.BadRequestException(`“${group.name}” has no split rules`);
+            return { todo, key: `g${group.id}`, label: group.name };
+        }
+        const agency = await this.prisma.taxAgency.findFirst({
+            where: { id: unit.agencyId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { id: true, name: true },
+        });
+        if (!agency)
+            throw new common_1.NotFoundException('Split rule not found');
+        const rule = rules.get(agency.id);
+        if (!rule)
+            throw new common_1.BadRequestException(`“${agency.name}” is switched off`);
+        return {
+            todo: [{ ...rule, groupId: null }],
+            key: `r${agency.id}`,
+            label: agency.name,
+        };
+    }
     async applyToNew(scope, transactionIds) {
         if (!transactionIds.length)
             return;
@@ -165,13 +222,17 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             amount: (0, splits_util_1.remainderOf)({ ...p, amount: Number(p.amount) }, totals),
         };
     }
-    async write(scope, p, line, splits, names = []) {
+    async write(scope, p, line, splits, names = [], oneTime) {
         const parentAmount = Number(p.amount);
         const bank = parentAmount < 0 ? p.creditAccount : p.debitAccount;
         const subOf = new Map();
         for (const s of splits) {
             if (subOf.has(s.category))
                 continue;
+            if (oneTime && p.name) {
+                subOf.set(s.category, (await (0, sub_name_parents_1.ensureSplitSubName)(this.prisma, scope, p.name, s.category, oneTime.key, oneTime.label)).id);
+                continue;
+            }
             subOf.set(s.category, p.name && s.category !== p.offsetAccount
                 ? (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, p.name, s.category, false))
                     .id

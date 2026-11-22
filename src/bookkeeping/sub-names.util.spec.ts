@@ -1,4 +1,10 @@
-import { parentSubName, subNameFiling, subNameOf } from './sub-names.util';
+import {
+  parentSubName,
+  splitLabelOf,
+  splitSubNameOf,
+  subNameFiling,
+  subNameOf,
+} from './sub-names.util';
 
 describe('subNameOf', () => {
   it('"<parent> - <category>"', () => {
@@ -148,5 +154,22 @@ describe('subNameFiling (step9, 2026-11-17, second request)', () => {
       { id: 3, name: 'Walmart', category: 'Supplies' },
       { id: 4, name: 'Walmart', category: 'Office Expense' },
     ]);
+  });
+});
+
+describe('splitSubNameOf / splitLabelOf (step12: one-time split sub-names)', () => {
+  it('names the piece by its name, category and group or rule', () => {
+    expect(splitSubNameOf('Amazon', 'GST', 'Quebec taxes')).toBe(
+      'Amazon - GST - Quebec taxes',
+    );
+    // A rule with no category posts to its own name: the label is not repeated.
+    expect(splitSubNameOf('Amazon', 'GST', 'gst')).toBe('Amazon - GST');
+  });
+
+  it('reads the label back, for a rename of the parent or the category', () => {
+    expect(
+      splitLabelOf('Amazon - GST - Quebec taxes', 'Amazon', 'GST'),
+    ).toBe('Quebec taxes');
+    expect(splitLabelOf('My own name', 'Amazon', 'GST')).toBe('GST');
   });
 });

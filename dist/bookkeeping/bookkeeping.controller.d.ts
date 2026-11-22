@@ -2,7 +2,7 @@ import { StreamableFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { CustomerAuthService } from '../customer-auth/customer-auth.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { BookScope } from './scope';
+import { type BookScope } from './scope';
 import { AttachmentsService, type AttachmentView, type IntakeView } from './attachments.service';
 import { BookkeepingService, type StatementView, type TransactionView } from './bookkeeping.service';
 import { CustomerAccountsService, type AccountView } from './customer-accounts.service';
@@ -10,12 +10,13 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
+import { ApplySplitRuleDto, CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
+import { SplitRulesService, type OneTimeResult } from './split-rules.service';
 import { SplitsService } from './splits.service';
 import { SubNamesService, type SubNameView } from './sub-names.service';
 import { TaxService, type AgencyView, type NamesView, type SplitGroupView, type TaxSettingsView } from './tax.service';
@@ -35,7 +36,8 @@ export declare class BookkeepingController {
     private readonly fx;
     private readonly prisma;
     private readonly communications;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService);
+    private readonly splitRules;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;
@@ -68,6 +70,7 @@ export declare class BookkeepingController {
     }>;
     editSplit(scope: BookScope, id: number, dto: EditSplitDto): Promise<void>;
     deleteSplit(scope: BookScope, id: number): Promise<void>;
+    applySplitRule(scope: BookScope, id: number, dto: ApplySplitRuleDto): Promise<OneTimeResult>;
     setProduct(scope: BookScope, id: number, dto: SetProductDto): Promise<void>;
     subNameList(scope: BookScope): Promise<SubNameView[]>;
     setSubNameCategory(scope: BookScope, id: number, dto: SetSubNameCategoryDto): Promise<void>;

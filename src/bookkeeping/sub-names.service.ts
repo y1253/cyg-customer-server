@@ -14,7 +14,7 @@ import { NameMemoryService } from './name-memory.service';
 import { nameKey } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
-import { subNameOf } from './sub-names.util';
+import { splitLabelOf, splitSubNameOf, subNameOf } from './sub-names.util';
 import {
   copyParentPicks,
   deleteSubName,
@@ -292,6 +292,8 @@ export class SubNamesService implements OnApplicationBootstrap {
         bookId: scope.bookId,
         nameId: sub.nameId,
         category,
+        // step12: a one-time split's sub-name joins only one of the same split group / rule.
+        splitKey: sub.splitKey,
         id: { not: id },
       },
       select: { id: true },
@@ -300,7 +302,15 @@ export class SubNamesService implements OnApplicationBootstrap {
     if (!other) {
       // step9 part 3: a name the customer gave it stays; its settings follow a new one.
       const name =
-        parent && !sub.renamed ? subNameOf(parent, category) : sub.name;
+        parent && !sub.renamed
+          ? sub.splitKey
+            ? splitSubNameOf(
+                parent,
+                category,
+                splitLabelOf(sub.name, parent, sub.category),
+              )
+            : subNameOf(parent, category)
+          : sub.name;
       await this.prisma.subName.update({
         where: { id },
         data: { category, name },

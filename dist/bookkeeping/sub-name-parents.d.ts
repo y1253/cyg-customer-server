@@ -4,6 +4,10 @@ export declare function ensureSubName(prisma: PrismaService, scope: BookScope, p
     id: number;
     name: string;
 }>;
+export declare function ensureSplitSubName(prisma: PrismaService, scope: BookScope, parent: string, category: string, splitKey: string, label: string): Promise<{
+    id: number;
+    name: string;
+}>;
 export declare function copyParentPicks(prisma: PrismaService, scope: BookScope, parent: string, sub: string): Promise<void>;
 export declare function wrapperNames(prisma: PrismaService, scope: BookScope): Promise<Map<string, number>>;
 export declare function refuseWrapper(prisma: PrismaService, scope: BookScope, name: string | null | undefined): Promise<void>;

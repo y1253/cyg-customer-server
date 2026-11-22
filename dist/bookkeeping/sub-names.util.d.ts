@@ -1,4 +1,6 @@
 export declare const subNameOf: (parent: string, category: string) => string;
+export declare const splitSubNameOf: (parent: string, category: string, label: string) => string;
+export declare const splitLabelOf: (name: string, parent: string, category: string) => string;
 export interface ParentRow {
     name: string | null;
     category: string;

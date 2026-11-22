@@ -8,6 +8,20 @@ export interface ApplyTarget {
     names?: string[];
     transactionIds?: number[];
 }
+export type OneTimeUnit = {
+    groupId: number;
+} | {
+    agencyId: number;
+};
+export type OneTimeRows = {
+    transactionId: number;
+} | {
+    name: string;
+};
+export interface OneTimeResult {
+    split: number;
+    skipped: number;
+}
 export declare class SplitRulesService implements OnApplicationBootstrap {
     private readonly prisma;
     private readonly accounts;
@@ -15,6 +29,8 @@ export declare class SplitRulesService implements OnApplicationBootstrap {
     constructor(prisma: PrismaService, accounts: CustomerAccountsService);
     rules(scope: BookScope): Promise<Map<number, SplitRule>>;
     apply(scope: BookScope, target?: ApplyTarget): Promise<number>;
+    applyOnce(scope: BookScope, unit: OneTimeUnit, rows: OneTimeRows): Promise<OneTimeResult>;
+    private oneTimeRules;
     applyToNew(scope: BookScope, transactionIds: number[]): Promise<void>;
     private ownRuleSubNames;
     private parentsFor;

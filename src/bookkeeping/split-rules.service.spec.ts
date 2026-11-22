@@ -26,6 +26,10 @@ function setup(opts: {
   /** step9 (2026-11-17, second request): the transaction is "Staples - Office Expense" (10). */
   rootSub?: boolean;
   named?: Array<{ transactionId: number; agencyId: number; name: string }>;
+  /** step12: a second Staples purchase (#3, $210, no splits). */
+  second?: boolean;
+  /** step12: GST (5) and QST (7, Out 9.975%) form the split group 4 "Quebec taxes". */
+  group?: boolean;
 }) {
   const rows: Row[] = [
     {
@@ -48,16 +52,31 @@ function setup(opts: {
       splitRuleId: null,
       ruleSourceId: null,
     },
+    ...(opts.second
+      ? [
+          {
+            id: 3,
+            name: 'Staples',
+            amount: -210,
+            offsetAccount: 'Office Expense',
+            splitOfId: null,
+            subNameId: null,
+            splitRuleId: null,
+            ruleSourceId: null,
+          },
+        ]
+      : []),
   ];
   let nextId = 100;
   const subs = [
-    { id: 9, name: 'Staples - Supplies', category: 'Supplies' },
+    { id: 9, name: 'Staples - Supplies', category: 'Supplies', splitKey: '' },
     ...(opts.rootSub
       ? [
           {
             id: 10,
             name: 'Staples - Office Expense',
             category: 'Office Expense',
+            splitKey: '',
           },
         ]
       : []),
@@ -83,15 +102,53 @@ function setup(opts: {
           id: 5,
           name: 'GST',
           category: null,
+          groupId: opts.group ? 4 : null,
           rates: [{ kind: 'PURCHASE', mode: 'PERCENT', rate: 5, amount: null }],
         },
         {
           id: 6,
           name: 'Fee',
           category: 'Bank Fees',
+          groupId: null,
           rates: [{ kind: 'PURCHASE', mode: 'FIXED', rate: 0, amount: 2 }],
         },
+        ...(opts.group
+          ? [
+              {
+                id: 7,
+                name: 'QST',
+                category: null,
+                groupId: 4,
+                rates: [
+                  {
+                    kind: 'PURCHASE',
+                    mode: 'PERCENT',
+                    rate: 9.975,
+                    amount: null,
+                  },
+                ],
+              },
+            ]
+          : []),
       ]),
+      findFirst: jest.fn(({ where }: { where: { id: number } }) =>
+        Promise.resolve(
+          where.id === 5
+            ? { id: 5, name: 'GST' }
+            : where.id === 6
+              ? { id: 6, name: 'Fee' }
+              : null,
+        ),
+      ),
+    },
+    splitGroup: {
+      findFirst: jest.fn(({ where }: { where: { id: number } }) =>
+        Promise.resolve(
+          opts.group && where.id === 4
+            ? { id: 4, name: 'Quebec taxes', active: true }
+            : null,
+        ),
+      ),
     },
     ledgerNameAgency: {
       findMany: jest
@@ -106,14 +163,28 @@ function setup(opts: {
           where.ownAgencies && !opts.ownSub ? [] : subs.map((s) => ({ ...s })),
         ),
       ),
-      findFirst: jest.fn(({ where }: { where: { category: string } }) =>
-        Promise.resolve(
-          subs.find((s) => s.category === where.category) ?? null,
-        ),
+      findFirst: jest.fn(
+        ({ where }: { where: { category: string; splitKey?: string } }) =>
+          Promise.resolve(
+            subs.find(
+              (s) =>
+                s.category === where.category &&
+                s.splitKey === (where.splitKey ?? ''),
+            ) ?? null,
+          ),
       ),
       create: jest.fn(
-        ({ data }: { data: { name: string; category: string } }) => {
-          const s = { id: nextId++, name: data.name, category: data.category };
+        ({
+          data,
+        }: {
+          data: { name: string; category: string; splitKey?: string };
+        }) => {
+          const s = {
+            id: nextId++,
+            name: data.name,
+            category: data.category,
+            splitKey: data.splitKey ?? '',
+          };
           subs.push(s);
           return Promise.resolve(s);
         },
@@ -132,8 +203,15 @@ function setup(opts: {
     bankTransaction: {
       // `parentsFor` / `convertBook` ask for parents with their splits; the sub-name sync
       // (`syncParentSubNames`) asks with a `select` and gets nothing to do.
-      findMany: jest.fn((args: { include?: unknown }) =>
-        Promise.resolve(args.include ? parentRows() : []),
+      findMany: jest.fn(
+        (args: { include?: unknown; where?: { id?: { in: number[] } } }) =>
+          Promise.resolve(
+            args.include
+              ? parentRows().filter(
+                  (p) => !args.where?.id || args.where.id.in.includes(p.id),
+                )
+              : [],
+          ),
       ),
       groupBy: jest.fn().mockResolvedValue([]),
       create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
@@ -175,7 +253,8 @@ function setup(opts: {
     accounts as unknown as CustomerAccountsService,
   );
   const made = () => rows.filter((r) => r.splitRuleId !== null);
-  return { service, rows, made, prisma };
+  const subName = (id: number | null) => subs.find((x) => x.id === id)?.name;
+  return { service, rows, made, prisma, subName };
 }
 
 const applied = (p: { name: string; agencyId: number }) => ({
@@ -228,6 +307,77 @@ describe('SplitRulesService.apply', () => {
       [1, 6],
     ]);
     expect(rows.find((r) => r.id === 2)!.amount).toBe(-42);
+  });
+});
+
+describe('SplitRulesService.applyOnce (step12: a one-time split from the ledger)', () => {
+  it('cuts only this row, with no pick, under its own sub-name', async () => {
+    const { service, made, subName, prisma } = setup({
+      picks: [],
+      second: true,
+    });
+    expect(
+      await service.applyOnce(scope, { agencyId: 5 }, { transactionId: 1 }),
+    ).toEqual({ split: 1, skipped: 0 });
+    // GST has no category: it posts to "GST", so the label (= the category) is left out.
+    expect(
+      made().map((r) => [r.ruleSourceId, r.amount, subName(r.subNameId)]),
+    ).toEqual([[1, -3, 'Staples - GST']]);
+    // No pick is read or written: later rows are not cut.
+    expect(prisma.ledgerNameAgency.findMany).not.toHaveBeenCalled();
+    // A second click finds it already cut.
+    expect(
+      await service.applyOnce(scope, { agencyId: 5 }, { transactionId: 1 }),
+    ).toEqual({ split: 0, skipped: 1 });
+  });
+
+  it("a group's pieces share one denominator, and the next row reuses the same sub-names", async () => {
+    const { service, made, subName, prisma } = setup({
+      picks: [],
+      second: true,
+      group: true,
+    });
+    await service.applyOnce(scope, { groupId: 4 }, { transactionId: 1 });
+    await service.applyOnce(scope, { groupId: 4 }, { transactionId: 3 });
+    expect(
+      made().map((r) => [r.ruleSourceId, subName(r.subNameId)]),
+    ).toEqual([
+      [1, 'Staples - GST - Quebec taxes'],
+      [1, 'Staples - QST - Quebec taxes'],
+      [3, 'Staples - GST - Quebec taxes'],
+      [3, 'Staples - QST - Quebec taxes'],
+    ]);
+    // One included denominator: 63 × 5 / 114.975 = 2.74 (QST absorbs the rounding).
+    expect(made()[0].amount).toBe(-2.74);
+    // Two sub-names made, once each — the second row reused them.
+    expect(prisma.subName.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('all rows of the name: every existing row once', async () => {
+    const { service, made } = setup({ picks: [], second: true });
+    expect(
+      await service.applyOnce(scope, { agencyId: 6 }, { name: 'Staples' }),
+    ).toEqual({ split: 2, skipped: 0 });
+    expect(made().map((r) => [r.ruleSourceId, r.amount])).toEqual([
+      [1, -2],
+      [3, -2],
+    ]);
+    expect(
+      await service.applyOnce(scope, { agencyId: 6 }, { name: 'Staples' }),
+    ).toEqual({ split: 0, skipped: 2 });
+  });
+
+  it('refuses a split, an unknown rule and an unknown group', async () => {
+    const { service } = setup({ picks: [] });
+    await expect(
+      service.applyOnce(scope, { agencyId: 5 }, { transactionId: 2 }),
+    ).rejects.toThrow('not a split');
+    await expect(
+      service.applyOnce(scope, { agencyId: 99 }, { transactionId: 1 }),
+    ).rejects.toThrow('Split rule not found');
+    await expect(
+      service.applyOnce(scope, { groupId: 4 }, { transactionId: 1 }),
+    ).rejects.toThrow('Split group not found');
   });
 });
 

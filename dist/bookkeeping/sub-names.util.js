@@ -1,10 +1,21 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.subNameOf = void 0;
+exports.splitLabelOf = exports.splitSubNameOf = exports.subNameOf = void 0;
 exports.parentSubName = parentSubName;
 exports.subNameFiling = subNameFiling;
 const subNameOf = (parent, category) => `${parent} - ${category}`.slice(0, 191);
 exports.subNameOf = subNameOf;
+const splitSubNameOf = (parent, category, label) => label.trim().toLowerCase() === category.trim().toLowerCase()
+    ? (0, exports.subNameOf)(parent, category)
+    : `${parent} - ${category} - ${label.trim()}`.slice(0, 191);
+exports.splitSubNameOf = splitSubNameOf;
+const splitLabelOf = (name, parent, category) => {
+    const head = `${parent} - ${category} - `;
+    return name.toLowerCase().startsWith(head.toLowerCase())
+        ? name.slice(head.length)
+        : category;
+};
+exports.splitLabelOf = splitLabelOf;
 function parentSubName(p) {
     const want = (p.hasSplits || p.nameHasSubs) && p.name
         ? { parent: p.name, category: p.category }

@@ -35,7 +35,7 @@ import { moveNameAnswers } from './custom-column-defaults';
 import { scopeWhere, type BookScope } from './scope';
 import { SplitRulesService } from './split-rules.service';
 import { refuseWrapper } from './sub-name-parents';
-import { subNameOf } from './sub-names.util';
+import { splitLabelOf, splitSubNameOf, subNameOf } from './sub-names.util';
 import {
   NAME_FIELD_KINDS,
   type AgencyRateDto,
@@ -781,10 +781,16 @@ export class TaxService {
       }),
       this.namesOfFiles(scope),
     ]);
+    // step12 (2026-11-22): every group list A–Z, the built-in ones among the customer's own.
     const groupList: NameGroupView[] = [
       ...BUILTIN_GROUPS,
       ...ownGroups.map((g) => ({ key: `g${g.id}`, label: g.name, id: g.id })),
-    ];
+    ].sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, {
+        sensitivity: 'base',
+        numeric: true,
+      }),
+    );
     const validGroups = new Set(groupList.map((g) => g.key));
     const groupOf = new Map(
       placed
@@ -1896,7 +1902,12 @@ export class TaxService {
       ).id;
     for (const sub of subs) {
       const same = await this.prisma.subName.findFirst({
-        where: { bookId: scope.bookId, nameId: into, category: sub.category },
+        where: {
+          bookId: scope.bookId,
+          nameId: into,
+          category: sub.category,
+          splitKey: sub.splitKey,
+        },
         select: { id: true },
       });
       if (same) {
@@ -1912,7 +1923,19 @@ export class TaxService {
         if (kept) await this.moveSubNameKeys(scope, sub.name, kept.name);
       } else {
         // step9 part 3: a name the customer gave it stays; its settings follow a new one.
-        const name = sub.renamed ? sub.name : subNameOf(newName, sub.category);
+        const name = sub.renamed
+          ? sub.name
+          : sub.splitKey
+            ? splitSubNameOf(
+                newName,
+                sub.category,
+                splitLabelOf(
+                  sub.name,
+                  names.find((n) => n.id === sub.nameId)?.name ?? '',
+                  sub.category,
+                ),
+              )
+            : subNameOf(newName, sub.category);
         await this.prisma.subName.update({
           where: { id: sub.id },
           data: { nameId: into, name },

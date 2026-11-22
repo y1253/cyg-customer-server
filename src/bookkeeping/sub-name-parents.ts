@@ -4,7 +4,12 @@ import { nameKeyOf } from './attachment-name.util';
 import { fillNameAnswers } from './custom-column-defaults';
 import { cleanName } from './name-memory.util';
 import { scopeWhere, type BookScope } from './scope';
-import { parentSubName, subNameFiling, subNameOf } from './sub-names.util';
+import {
+  parentSubName,
+  splitSubNameOf,
+  subNameFiling,
+  subNameOf,
+} from './sub-names.util';
 
 /**
  * The sub-name of `parent` in `category`, made (with the parent's `LedgerName`) if new.
@@ -24,7 +29,7 @@ export async function ensureSubName(
 ): Promise<{ id: number; name: string }> {
   const nameId = await ledgerNameId(prisma, scope, parent);
   const found = await prisma.subName.findFirst({
-    where: { bookId: scope.bookId, nameId, category },
+    where: { bookId: scope.bookId, nameId, category, splitKey: '' },
     select: { id: true, name: true },
   });
   if (found) return found;
@@ -40,6 +45,38 @@ export async function ensureSubName(
   });
   if (copyPicks) await copyParentPicks(prisma, scope, parent, made.name);
   return made;
+}
+
+/**
+ * step12 (2026-11-22): the sub-name the pieces of a ONE-TIME split by a split group / rule
+ * land in — "<parent> - <category> - <group or rule>" (`splitSubNameOf`), keyed by `splitKey`
+ * (`g<groupId>` / `r<agencyId>`) so every later one-time split by it reuses it. Takes no picks.
+ */
+export async function ensureSplitSubName(
+  prisma: PrismaService,
+  scope: BookScope,
+  parent: string,
+  category: string,
+  splitKey: string,
+  label: string,
+): Promise<{ id: number; name: string }> {
+  const nameId = await ledgerNameId(prisma, scope, parent);
+  const found = await prisma.subName.findFirst({
+    where: { bookId: scope.bookId, nameId, category, splitKey },
+    select: { id: true, name: true },
+  });
+  if (found) return found;
+  return prisma.subName.create({
+    data: {
+      ...scopeWhere(scope),
+      nameId,
+      name: splitSubNameOf(parent, category, label),
+      category,
+      splitKey,
+      ownAgencies: true,
+    },
+    select: { id: true, name: true },
+  });
 }
 
 /** The parent name's split rule picks, copied to its sub-name `sub` (keyed by its name). */

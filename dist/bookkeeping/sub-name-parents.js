@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureSubName = ensureSubName;
+exports.ensureSplitSubName = ensureSplitSubName;
 exports.copyParentPicks = copyParentPicks;
 exports.wrapperNames = wrapperNames;
 exports.refuseWrapper = refuseWrapper;
@@ -18,7 +19,7 @@ const sub_names_util_1 = require("./sub-names.util");
 async function ensureSubName(prisma, scope, parent, category, copyPicks = true) {
     const nameId = await ledgerNameId(prisma, scope, parent);
     const found = await prisma.subName.findFirst({
-        where: { bookId: scope.bookId, nameId, category },
+        where: { bookId: scope.bookId, nameId, category, splitKey: '' },
         select: { id: true, name: true },
     });
     if (found)
@@ -36,6 +37,26 @@ async function ensureSubName(prisma, scope, parent, category, copyPicks = true) 
     if (copyPicks)
         await copyParentPicks(prisma, scope, parent, made.name);
     return made;
+}
+async function ensureSplitSubName(prisma, scope, parent, category, splitKey, label) {
+    const nameId = await ledgerNameId(prisma, scope, parent);
+    const found = await prisma.subName.findFirst({
+        where: { bookId: scope.bookId, nameId, category, splitKey },
+        select: { id: true, name: true },
+    });
+    if (found)
+        return found;
+    return prisma.subName.create({
+        data: {
+            ...(0, scope_1.scopeWhere)(scope),
+            nameId,
+            name: (0, sub_names_util_1.splitSubNameOf)(parent, category, label),
+            category,
+            splitKey,
+            ownAgencies: true,
+        },
+        select: { id: true, name: true },
+    });
 }
 async function copyParentPicks(prisma, scope, parent, sub) {
     const [picks, theirs] = await Promise.all([

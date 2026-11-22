@@ -97,6 +97,11 @@ export declare class EditSplitDto {
     itemName?: string;
     always?: boolean;
 }
+export declare class ApplySplitRuleDto {
+    agencyId?: number;
+    groupId?: number;
+    scope: 'ONE' | 'NAME';
+}
 export declare class SetProductDto {
     itemName: string;
 }

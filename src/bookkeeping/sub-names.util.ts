@@ -2,6 +2,32 @@
 export const subNameOf = (parent: string, category: string): string =>
   `${parent} - ${category}`.slice(0, 191);
 
+/**
+ * step12 (2026-11-22): "Amazon - GST - Quebec taxes" — the sub-name of the pieces a ONE-TIME
+ * split by a split group / rule (`label`) cut. A label that only repeats the category (a rule
+ * with no category posts to its own name) is left out.
+ */
+export const splitSubNameOf = (
+  parent: string,
+  category: string,
+  label: string,
+): string =>
+  label.trim().toLowerCase() === category.trim().toLowerCase()
+    ? subNameOf(parent, category)
+    : `${parent} - ${category} - ${label.trim()}`.slice(0, 191);
+
+/** step12: the group / rule part of a one-time split's sub-name (`splitSubNameOf`). */
+export const splitLabelOf = (
+  name: string,
+  parent: string,
+  category: string,
+): string => {
+  const head = `${parent} - ${category} - `;
+  return name.toLowerCase().startsWith(head.toLowerCase())
+    ? name.slice(head.length)
+    : category;
+};
+
 /** step9: a split transaction (a parent) as `parentSubName` sees it. */
 export interface ParentRow {
   /** The transaction's own name (null = none). */

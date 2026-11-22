@@ -183,13 +183,18 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
                 bookId: scope.bookId,
                 nameId: sub.nameId,
                 category,
+                splitKey: sub.splitKey,
                 id: { not: id },
             },
             select: { id: true },
         });
         const target = other?.id ?? id;
         if (!other) {
-            const name = parent && !sub.renamed ? (0, sub_names_util_1.subNameOf)(parent, category) : sub.name;
+            const name = parent && !sub.renamed
+                ? sub.splitKey
+                    ? (0, sub_names_util_1.splitSubNameOf)(parent, category, (0, sub_names_util_1.splitLabelOf)(sub.name, parent, sub.category))
+                    : (0, sub_names_util_1.subNameOf)(parent, category)
+                : sub.name;
             await this.prisma.subName.update({
                 where: { id },
                 data: { category, name },

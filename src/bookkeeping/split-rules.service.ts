@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { Prisma, StatementStatus } from '@prisma/client';
@@ -12,6 +14,7 @@ import { scopeWhere, type BookScope } from './scope';
 import { ruleSplits, stepSplits, type SplitRule } from './split-rules.util';
 import { remainderOf, signedLike, splitTotals } from './splits.util';
 import {
+  ensureSplitSubName,
   ensureSubName,
   fileUnderSubNames,
   syncParentSubNames,
@@ -33,6 +36,20 @@ export interface ApplyTarget {
   names?: string[];
   /** Only these transactions (parents) — the rows a statement read just created. */
   transactionIds?: number[];
+}
+
+/** step12 (2026-11-22): the split group or the one rule a one-time split uses. */
+export type OneTimeUnit = { groupId: number } | { agencyId: number };
+
+/** step12: the rows a one-time split cuts — one transaction, or every row of a name. */
+export type OneTimeRows = { transactionId: number } | { name: string };
+
+/** step12: how a one-time split went. */
+export interface OneTimeResult {
+  /** Transactions cut now. */
+  split: number;
+  /** Transactions this group / rule had already cut, or with nothing left to cut. */
+  skipped: number;
 }
 
 /** The one line a rule can split: a transaction, what is left of it. */
@@ -165,6 +182,84 @@ export class SplitRulesService implements OnApplicationBootstrap {
     return made;
   }
 
+  /**
+   * step12 (2026-11-22, user's request): a ONE-TIME split from the ledger — a split group or
+   * one rule cuts one transaction, or every EXISTING row of a name, with no pick saved (later
+   * rows are not cut). The pieces go under "<name> - <category> - <group or rule>"
+   * (`ensureSplitSubName`), reused by every later one-time split by it. The usual once-only
+   * guard (`ruleSourceId`, `splitRuleId`) skips a transaction it already cut.
+   */
+  async applyOnce(
+    scope: BookScope,
+    unit: OneTimeUnit,
+    rows: OneTimeRows,
+  ): Promise<OneTimeResult> {
+    const { todo, key, label } = await this.oneTimeRules(scope, unit);
+    const parents = await this.parentsFor(
+      scope,
+      'transactionId' in rows
+        ? { transactionIds: [rows.transactionId] }
+        : { names: [rows.name] },
+      new Map(),
+    );
+    if ('transactionId' in rows && !parents.length)
+      throw new BadRequestException(
+        'Split rules cut a whole transaction of a read statement — not a split',
+      );
+    let split = 0;
+    const touched: number[] = [];
+    for (const p of parents) {
+      const line = this.lineOf(p, new Map());
+      const done = new Set(
+        p.splits
+          .filter((s) => s.splitRuleId !== null)
+          .map((s) => `${s.ruleSourceId}:${s.splitRuleId}`),
+      );
+      const rules = todo.filter((r) => !done.has(`${line.sourceId}:${r.id}`));
+      const splits = rules.length ? stepSplits(line.amount, rules) : [];
+      if (!splits.length) continue;
+      await this.write(scope, p, line, splits, [], { key, label });
+      split++;
+      touched.push(p.id);
+    }
+    if (touched.length) await syncParentSubNames(this.prisma, scope, touched);
+    return { split, skipped: parents.length - split };
+  }
+
+  /** step12: a one-time split's live rules, its sub-name key and its label. */
+  private async oneTimeRules(
+    scope: BookScope,
+    unit: OneTimeUnit,
+  ): Promise<{ todo: SplitRule[]; key: string; label: string }> {
+    const rules = await this.rules(scope);
+    if ('groupId' in unit) {
+      const group = await this.prisma.splitGroup.findFirst({
+        where: { id: unit.groupId, ...scopeWhere(scope), deletedAt: null },
+        select: { id: true, name: true, active: true },
+      });
+      if (!group) throw new NotFoundException('Split group not found');
+      if (!group.active)
+        throw new BadRequestException(`“${group.name}” is switched off`);
+      const todo = [...rules.values()].filter((r) => r.groupId === group.id);
+      if (!todo.length)
+        throw new BadRequestException(`“${group.name}” has no split rules`);
+      return { todo, key: `g${group.id}`, label: group.name };
+    }
+    const agency = await this.prisma.taxAgency.findFirst({
+      where: { id: unit.agencyId, ...scopeWhere(scope), deletedAt: null },
+      select: { id: true, name: true },
+    });
+    if (!agency) throw new NotFoundException('Split rule not found');
+    const rule = rules.get(agency.id);
+    if (!rule) throw new BadRequestException(`“${agency.name}” is switched off`);
+    // One rule of a group used on its own cuts like an individual rule.
+    return {
+      todo: [{ ...rule, groupId: null }],
+      key: `r${agency.id}`,
+      label: agency.name,
+    };
+  }
+
   /** The rows a statement read / bank feed just created get their names' rules (never throws). */
   async applyToNew(scope: BookScope, transactionIds: number[]): Promise<void> {
     if (!transactionIds.length) return;
@@ -254,12 +349,31 @@ export class SplitRulesService implements OnApplicationBootstrap {
     line: Line,
     splits: ReturnType<typeof ruleSplits>,
     names: ReadonlyArray<string | null> = [],
+    oneTime?: { key: string; label: string },
   ): Promise<number> {
     const parentAmount = Number(p.amount);
     const bank = parentAmount < 0 ? p.creditAccount : p.debitAccount;
     const subOf = new Map<string, number | null>();
     for (const s of splits) {
       if (subOf.has(s.category)) continue;
+      // step12: a one-time split's pieces always go under their own sub-name
+      // ("Amazon - GST - Quebec taxes").
+      if (oneTime && p.name) {
+        subOf.set(
+          s.category,
+          (
+            await ensureSplitSubName(
+              this.prisma,
+              scope,
+              p.name,
+              s.category,
+              oneTime.key,
+              oneTime.label,
+            )
+          ).id,
+        );
+        continue;
+      }
       // The name's own category needs no sub-name ("Walmart - GST" otherwise).
       subOf.set(
         s.category,

@@ -25,7 +25,7 @@ import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { Book, BookScopeGuard } from './book-scope.guard';
 import { bookOwnerName } from './books';
-import type { BookScope } from './scope';
+import { scopeWhere, type BookScope } from './scope';
 import {
   AttachmentsService,
   type AttachmentView,
@@ -54,6 +54,7 @@ import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
 import {
+  ApplySplitRuleDto,
   CreateAccountDto,
   CreateAgencyDto,
   EditTransactionDto,
@@ -88,6 +89,10 @@ import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
 import { ReportsService } from './reports.service';
+import {
+  SplitRulesService,
+  type OneTimeResult,
+} from './split-rules.service';
 import { SplitsService } from './splits.service';
 import { SubNamesService, type SubNameView } from './sub-names.service';
 import {
@@ -132,6 +137,7 @@ export class BookkeepingController {
     private readonly fx: FxService,
     private readonly prisma: PrismaService,
     private readonly communications: CommunicationsService,
+    private readonly splitRules: SplitRulesService,
   ) {}
 
   /** Whose name heads an export: the book's (the company's) name. */
@@ -368,6 +374,33 @@ export class BookkeepingController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
     return this.splits.remove(scope, id);
+  }
+
+  /**
+   * step12 (2026-11-22): a ONE-TIME split by a split group / rule from the ledger — this
+   * transaction, or every existing row of its name; no pick saved.
+   */
+  @Post('transactions/:id/split-rule')
+  async applySplitRule(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ApplySplitRuleDto,
+  ): Promise<OneTimeResult> {
+    if (!dto.agencyId === !dto.groupId)
+      throw new BadRequestException('Pick one split rule or one split group');
+    const unit = dto.groupId
+      ? { groupId: dto.groupId }
+      : { agencyId: dto.agencyId! };
+    if (dto.scope === 'ONE')
+      return this.splitRules.applyOnce(scope, unit, { transactionId: id });
+    const row = await this.prisma.bankTransaction.findFirst({
+      where: { id, ...scopeWhere(scope) },
+      select: { name: true },
+    });
+    if (!row) throw new NotFoundException('Transaction not found');
+    if (!row.name?.trim())
+      throw new BadRequestException('This transaction has no name');
+    return this.splitRules.applyOnce(scope, unit, { name: row.name });
   }
 
   /** step2 (2026-11-15): a transaction's Product column. */

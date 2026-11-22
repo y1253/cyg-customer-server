@@ -446,6 +446,26 @@ export class EditSplitDto {
   always?: boolean;
 }
 
+/**
+ * step12 (2026-11-22): `POST /api/bookkeeping/transactions/:id/split-rule` — a ONE-TIME split
+ * by a split group or one rule (exactly one of the two): ONE = this transaction, NAME = every
+ * existing row of its name. No pick is saved.
+ */
+export class ApplySplitRuleDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  agencyId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  groupId?: number;
+
+  @IsIn(['ONE', 'NAME'])
+  scope!: 'ONE' | 'NAME';
+}
+
 /** step2 (2026-11-15): `PATCH /api/bookkeeping/transactions/:id/product` — a row's Product. */
 export class SetProductDto {
   @Transform(trim)

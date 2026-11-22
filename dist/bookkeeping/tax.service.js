@@ -455,7 +455,10 @@ let TaxService = class TaxService {
         const groupList = [
             ...exports.BUILTIN_GROUPS,
             ...ownGroups.map((g) => ({ key: `g${g.id}`, label: g.name, id: g.id })),
-        ];
+        ].sort((a, b) => a.label.localeCompare(b.label, undefined, {
+            sensitivity: 'base',
+            numeric: true,
+        }));
         const validGroups = new Set(groupList.map((g) => g.key));
         const groupOf = new Map(placed
             .filter((l) => l.group && validGroups.has(l.group))
@@ -1264,7 +1267,12 @@ let TaxService = class TaxService {
             })).id;
         for (const sub of subs) {
             const same = await this.prisma.subName.findFirst({
-                where: { bookId: scope.bookId, nameId: into, category: sub.category },
+                where: {
+                    bookId: scope.bookId,
+                    nameId: into,
+                    category: sub.category,
+                    splitKey: sub.splitKey,
+                },
                 select: { id: true },
             });
             if (same) {
@@ -1281,7 +1289,11 @@ let TaxService = class TaxService {
                     await this.moveSubNameKeys(scope, sub.name, kept.name);
             }
             else {
-                const name = sub.renamed ? sub.name : (0, sub_names_util_1.subNameOf)(newName, sub.category);
+                const name = sub.renamed
+                    ? sub.name
+                    : sub.splitKey
+                        ? (0, sub_names_util_1.splitSubNameOf)(newName, sub.category, (0, sub_names_util_1.splitLabelOf)(sub.name, names.find((n) => n.id === sub.nameId)?.name ?? '', sub.category))
+                        : (0, sub_names_util_1.subNameOf)(newName, sub.category);
                 await this.prisma.subName.update({
                     where: { id: sub.id },
                     data: { nameId: into, name },

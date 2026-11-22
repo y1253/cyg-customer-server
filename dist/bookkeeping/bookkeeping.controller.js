@@ -20,6 +20,7 @@ const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const prisma_service_1 = require("../prisma/prisma.service");
 const book_scope_guard_1 = require("./book-scope.guard");
 const books_1 = require("./books");
+const scope_1 = require("./scope");
 const attachments_service_1 = require("./attachments.service");
 const attachment_uploads_1 = require("./attachment-uploads");
 const bookkeeping_service_1 = require("./bookkeeping.service");
@@ -34,6 +35,7 @@ const retry_attachments_dto_1 = require("./dto/retry-attachments.dto");
 const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
 const reports_service_1 = require("./reports.service");
+const split_rules_service_1 = require("./split-rules.service");
 const splits_service_1 = require("./splits.service");
 const sub_names_service_1 = require("./sub-names.service");
 const tax_service_1 = require("./tax.service");
@@ -57,7 +59,8 @@ let BookkeepingController = class BookkeepingController {
     fx;
     prisma;
     communications;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, prisma, communications) {
+    splitRules;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, prisma, communications, splitRules) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -72,6 +75,7 @@ let BookkeepingController = class BookkeepingController {
         this.fx = fx;
         this.prisma = prisma;
         this.communications = communications;
+        this.splitRules = splitRules;
     }
     ownerName(scope) {
         return (0, books_1.bookOwnerName)(this.prisma, scope);
@@ -162,6 +166,24 @@ let BookkeepingController = class BookkeepingController {
     }
     deleteSplit(scope, id) {
         return this.splits.remove(scope, id);
+    }
+    async applySplitRule(scope, id, dto) {
+        if (!dto.agencyId === !dto.groupId)
+            throw new common_1.BadRequestException('Pick one split rule or one split group');
+        const unit = dto.groupId
+            ? { groupId: dto.groupId }
+            : { agencyId: dto.agencyId };
+        if (dto.scope === 'ONE')
+            return this.splitRules.applyOnce(scope, unit, { transactionId: id });
+        const row = await this.prisma.bankTransaction.findFirst({
+            where: { id, ...(0, scope_1.scopeWhere)(scope) },
+            select: { name: true },
+        });
+        if (!row)
+            throw new common_1.NotFoundException('Transaction not found');
+        if (!row.name?.trim())
+            throw new common_1.BadRequestException('This transaction has no name');
+        return this.splitRules.applyOnce(scope, unit, { name: row.name });
     }
     setProduct(scope, id, dto) {
         return this.splits.setProduct(scope, id, dto.itemName);
@@ -541,6 +563,15 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "deleteSplit", null);
 __decorate([
+    (0, common_1.Post)('transactions/:id/split-rule'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.ApplySplitRuleDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "applySplitRule", null);
+__decorate([
     (0, common_1.Patch)('transactions/:id/product'),
     (0, common_1.HttpCode)(204),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -904,6 +935,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         product_memory_service_1.ProductMemoryService,
         fx_service_1.FxService,
         prisma_service_1.PrismaService,
-        communications_service_1.CommunicationsService])
+        communications_service_1.CommunicationsService,
+        split_rules_service_1.SplitRulesService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map
