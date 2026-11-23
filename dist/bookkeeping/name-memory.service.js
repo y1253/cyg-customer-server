@@ -1034,7 +1034,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (!category)
             return;
         if (input.scope === 'ONCE') {
-            await this.writeRows(scope, [matched], (r) => ({ name: r.name, category, subNameId: null }), true);
+            const owner = (0, name_memory_util_1.cleanName)(row.name);
+            const sub = owner
+                ? await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, owner, category)
+                : null;
+            await this.writeRows(scope, [matched], (r) => ({ name: r.name, category, subNameId: sub?.id ?? null }), true);
+            if (row.subNameId !== (sub?.id ?? null))
+                await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, row.subNameId);
             return;
         }
         const current = (0, name_memory_util_1.cleanName)(row.name);

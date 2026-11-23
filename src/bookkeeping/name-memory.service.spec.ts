@@ -533,10 +533,30 @@ describe('one category per name; "Always / Only this row" is for the name', () =
     });
   });
 
-  it('step12: a ledger ONCE category edit moves only that row, as a one-time edit', async () => {
+  it('step12: a ledger ONCE category edit moves only that row, as a one-time edit, under its sub-name', async () => {
     const { prisma, rows } = fakePrisma([walmart(5), walmart(6)]);
     prisma.bankTransaction.findFirst.mockResolvedValue(walmart(5));
-    await service(prisma).editTransaction(BOOK, 5, {
+    const subName = {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({
+        id: 40,
+        name: 'Walmart - Office Expense',
+      }),
+    };
+    const fake = {
+      ...prisma,
+      subName,
+      ledgerName: {
+        ...prisma.ledgerName,
+        create: jest.fn().mockResolvedValue({ id: 3 }),
+      },
+      ledgerNameAgency: {
+        findMany: jest.fn().mockResolvedValue([]),
+        createMany: jest.fn(),
+      },
+    };
+    await service(fake).editTransaction(BOOK, 5, {
       name: null,
       category: 'Office Expense',
       scope: 'ONCE',
@@ -546,6 +566,15 @@ describe('one category per name; "Always / Only this row" is for the name', () =
       'Supplies',
     ]);
     expect(rows[0].manualEdit).toBe(true);
+    // step12 (2026-11-23): "Walmart - Office Expense" is made and the row goes under it.
+    expect(
+      (subName.create.mock.calls as Array<[{ data: object }]>)[0][0].data,
+    ).toMatchObject({
+      nameId: 3,
+      name: 'Walmart - Office Expense',
+      category: 'Office Expense',
+    });
+    expect(rows[0]).toMatchObject({ subNameId: 40 });
     expect(prisma.customerNameRule.create).not.toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ matchType: 'NAME' }),

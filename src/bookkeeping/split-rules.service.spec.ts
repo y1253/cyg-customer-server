@@ -156,6 +156,7 @@ function setup(opts: {
         .mockResolvedValue(opts.picks.map((p) => ({ lineName: null, ...p }))),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       groupBy: jest.fn().mockResolvedValue([]),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     subName: {
       findMany: jest.fn(({ where }: { where: { ownAgencies?: boolean } }) =>
@@ -234,10 +235,11 @@ function setup(opts: {
           data,
         }: {
           where: { id: number };
-          data: { amount: string };
+          data: { amount?: string; subNameId?: number | null };
         }) => {
           const r = rows.find((x) => x.id === where.id)!;
-          r.amount = Number(data.amount);
+          if (data.amount !== undefined) r.amount = Number(data.amount);
+          if (data.subNameId !== undefined) r.subNameId = data.subNameId;
           return Promise.resolve(r);
         },
       ),
@@ -311,56 +313,95 @@ describe('SplitRulesService.apply', () => {
 });
 
 describe('SplitRulesService.applyOnce (step12: a one-time split from the ledger)', () => {
-  it('cuts only this row, with no pick, under its own sub-name', async () => {
-    const { service, made, subName, prisma } = setup({
+  it('cuts only this row; the transaction gets the sub-name with the rule picked, the piece its usual name', async () => {
+    const { service, made, rows, subName, prisma } = setup({
       picks: [],
       second: true,
     });
     expect(
       await service.applyOnce(scope, { agencyId: 5 }, { transactionId: 1 }),
     ).toEqual({ split: 1, skipped: 0 });
-    // GST has no category: it posts to "GST", so the label (= the category) is left out.
+    // step12 (2026-11-23): the piece is named like any rule split.
     expect(
       made().map((r) => [r.ruleSourceId, r.amount, subName(r.subNameId)]),
     ).toEqual([[1, -3, 'Staples - GST']]);
-    // No pick is read or written: later rows are not cut.
-    expect(prisma.ledgerNameAgency.findMany).not.toHaveBeenCalled();
+    expect(subName(rows.find((r) => r.id === 1)!.subNameId)).toBe(
+      'Staples - Office Expense - GST',
+    );
+    expect(rows.find((r) => r.id === 3)!.subNameId).toBeNull();
+    // Its sub-name has the rule as its own pick, already applied.
+    expect(prisma.ledgerNameAgency.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          name: 'Staples - Office Expense - GST',
+          agencyId: 5,
+          alone: false,
+          appliedAt: expect.any(Date) as Date,
+        }),
+      ],
+    });
     // A second click finds it already cut.
     expect(
       await service.applyOnce(scope, { agencyId: 5 }, { transactionId: 1 }),
     ).toEqual({ split: 0, skipped: 1 });
   });
 
-  it("a group's pieces share one denominator, and the next row reuses the same sub-names", async () => {
-    const { service, made, subName, prisma } = setup({
+  it("a group's pieces share one denominator, and the next row reuses the same sub-name", async () => {
+    const { service, made, rows, subName, prisma } = setup({
       picks: [],
       second: true,
       group: true,
     });
     await service.applyOnce(scope, { groupId: 4 }, { transactionId: 1 });
     await service.applyOnce(scope, { groupId: 4 }, { transactionId: 3 });
+    expect(made().map((r) => [r.ruleSourceId, subName(r.subNameId)])).toEqual([
+      [1, 'Staples - GST'],
+      [1, 'Staples - QST'],
+      [3, 'Staples - GST'],
+      [3, 'Staples - QST'],
+    ]);
     expect(
-      made().map((r) => [r.ruleSourceId, subName(r.subNameId)]),
+      rows.filter((r) => r.splitOfId === null).map((r) => subName(r.subNameId)),
     ).toEqual([
-      [1, 'Staples - GST - Quebec taxes'],
-      [1, 'Staples - QST - Quebec taxes'],
-      [3, 'Staples - GST - Quebec taxes'],
-      [3, 'Staples - QST - Quebec taxes'],
+      'Staples - Office Expense - Quebec taxes',
+      'Staples - Office Expense - Quebec taxes',
     ]);
     // One included denominator: 63 × 5 / 114.975 = 2.74 (QST absorbs the rounding).
     expect(made()[0].amount).toBe(-2.74);
-    // Two sub-names made, once each — the second row reused them.
-    expect(prisma.subName.create).toHaveBeenCalledTimes(2);
+    // The group's rules picked on it together (not "alone").
+    expect(prisma.ledgerNameAgency.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ agencyId: 5, alone: false }),
+        expect.objectContaining({ agencyId: 7, alone: false }),
+      ],
+    });
+  });
+
+  it('one rule of a group used on its own is picked alone', async () => {
+    const { service, prisma } = setup({ picks: [], group: true });
+    await service.applyOnce(scope, { agencyId: 5 }, { transactionId: 1 });
+    expect(prisma.ledgerNameAgency.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ agencyId: 5, alone: true })],
+    });
   });
 
   it('all rows of the name: every existing row once', async () => {
-    const { service, made } = setup({ picks: [], second: true });
+    const { service, made, rows, subName } = setup({
+      picks: [],
+      second: true,
+    });
     expect(
       await service.applyOnce(scope, { agencyId: 6 }, { name: 'Staples' }),
     ).toEqual({ split: 2, skipped: 0 });
     expect(made().map((r) => [r.ruleSourceId, r.amount])).toEqual([
       [1, -2],
       [3, -2],
+    ]);
+    expect(
+      rows.filter((r) => r.splitOfId === null).map((r) => subName(r.subNameId)),
+    ).toEqual([
+      'Staples - Office Expense - Fee',
+      'Staples - Office Expense - Fee',
     ]);
     expect(
       await service.applyOnce(scope, { agencyId: 6 }, { name: 'Staples' }),

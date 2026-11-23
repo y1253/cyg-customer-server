@@ -158,12 +158,13 @@ describe('subNameFiling (step9, 2026-11-17, second request)', () => {
 });
 
 describe('splitSubNameOf / splitLabelOf (step12: one-time split sub-names)', () => {
-  it('names the piece by its name, category and group or rule', () => {
-    expect(splitSubNameOf('Amazon', 'GST', 'Quebec taxes')).toBe(
-      'Amazon - GST - Quebec taxes',
+  it('names the transaction by its name, category and group or rule', () => {
+    expect(splitSubNameOf('Amazon', 'Supplies', 'Quebec taxes')).toBe(
+      'Amazon - Supplies - Quebec taxes',
     );
-    // A rule with no category posts to its own name: the label is not repeated.
-    expect(splitSubNameOf('Amazon', 'GST', 'gst')).toBe('Amazon - GST');
+    // step12 (2026-11-23): kept even when it repeats the category — the plain name is the
+    // ordinary sub-name's, whose picks are keyed by it.
+    expect(splitSubNameOf('Amazon', 'GST', 'GST')).toBe('Amazon - GST - GST');
   });
 
   it('reads the label back, for a rename of the parent or the category', () => {

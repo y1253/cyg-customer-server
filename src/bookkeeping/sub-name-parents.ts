@@ -48,9 +48,11 @@ export async function ensureSubName(
 }
 
 /**
- * step12 (2026-11-22): the sub-name the pieces of a ONE-TIME split by a split group / rule
- * land in — "<parent> - <category> - <group or rule>" (`splitSubNameOf`), keyed by `splitKey`
- * (`g<groupId>` / `r<agencyId>`) so every later one-time split by it reuses it. Takes no picks.
+ * step12 (2026-11-22): the sub-name of a ONE-TIME split by a split group / rule —
+ * "<parent> - <category> - <group or rule>" (`splitSubNameOf`), keyed by `splitKey`
+ * (`g<groupId>` / `r<agencyId>`) so every later one-time split by it reuses it. step12
+ * (2026-11-23): it is the TRANSACTION's (`category` = the transaction's); the pieces keep their
+ * usual sub-names. Copies no picks — `SplitRulesService.applyOnce` gives it the split's own.
  */
 export async function ensureSplitSubName(
   prisma: PrismaService,

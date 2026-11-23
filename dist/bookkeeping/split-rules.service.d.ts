@@ -30,6 +30,7 @@ export declare class SplitRulesService implements OnApplicationBootstrap {
     rules(scope: BookScope): Promise<Map<number, SplitRule>>;
     apply(scope: BookScope, target?: ApplyTarget): Promise<number>;
     applyOnce(scope: BookScope, unit: OneTimeUnit, rows: OneTimeRows): Promise<OneTimeResult>;
+    private pickOnce;
     private oneTimeRules;
     applyToNew(scope: BookScope, transactionIds: number[]): Promise<void>;
     private ownRuleSubNames;

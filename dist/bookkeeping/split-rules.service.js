@@ -20,6 +20,7 @@ const ledger_util_1 = require("./ledger.util");
 const scope_1 = require("./scope");
 const split_rules_util_1 = require("./split-rules.util");
 const splits_util_1 = require("./splits.util");
+const name_memory_util_1 = require("./name-memory.util");
 const sub_name_parents_1 = require("./sub-name-parents");
 const tax_util_1 = require("./tax.util");
 const DONE = { deletedAt: null, status: client_1.StatementStatus.DONE };
@@ -109,7 +110,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
         return made;
     }
     async applyOnce(scope, unit, rows) {
-        const { todo, key, label } = await this.oneTimeRules(scope, unit);
+        const { todo, key, label, alone } = await this.oneTimeRules(scope, unit);
         const parents = await this.parentsFor(scope, 'transactionId' in rows
             ? { transactionIds: [rows.transactionId] }
             : { names: [rows.name] }, new Map());
@@ -117,6 +118,8 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             throw new common_1.BadRequestException('Split rules cut a whole transaction of a read statement — not a split');
         let split = 0;
         const touched = [];
+        const left = new Set();
+        const picked = new Set();
         for (const p of parents) {
             const line = this.lineOf(p, new Map());
             const done = new Set(p.splits
@@ -126,13 +129,49 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             const splits = rules.length ? (0, split_rules_util_1.stepSplits)(line.amount, rules) : [];
             if (!splits.length)
                 continue;
-            await this.write(scope, p, line, splits, [], { key, label });
+            const name = (0, name_memory_util_1.cleanName)(p.name);
+            if (name) {
+                const sub = await (0, sub_name_parents_1.ensureSplitSubName)(this.prisma, scope, name, p.offsetAccount, key, label);
+                if (!picked.has(sub.id)) {
+                    await this.pickOnce(scope, sub.name, todo, alone);
+                    picked.add(sub.id);
+                }
+                if (p.subNameId !== sub.id) {
+                    await this.prisma.bankTransaction.update({
+                        where: { id: p.id },
+                        data: { subNameId: sub.id },
+                    });
+                    if (p.subNameId !== null)
+                        left.add(p.subNameId);
+                }
+            }
+            await this.write(scope, p, line, splits);
             split++;
             touched.push(p.id);
         }
+        for (const id of left)
+            await (0, sub_name_parents_1.dropUnusedSubName)(this.prisma, scope, id);
         if (touched.length)
             await (0, sub_name_parents_1.syncParentSubNames)(this.prisma, scope, touched);
         return { split, skipped: parents.length - split };
+    }
+    async pickOnce(scope, subName, todo, alone) {
+        const has = await this.prisma.ledgerNameAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: subName },
+            select: { agencyId: true },
+        });
+        const ids = new Set(has.map((h) => h.agencyId));
+        const data = todo
+            .filter((r) => !ids.has(r.id))
+            .map((r) => ({
+            ...(0, scope_1.scopeWhere)(scope),
+            name: subName,
+            agencyId: r.id,
+            alone,
+            appliedAt: new Date(),
+        }));
+        if (data.length)
+            await this.prisma.ledgerNameAgency.createMany({ data });
     }
     async oneTimeRules(scope, unit) {
         const rules = await this.rules(scope);
@@ -148,7 +187,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             const todo = [...rules.values()].filter((r) => r.groupId === group.id);
             if (!todo.length)
                 throw new common_1.BadRequestException(`“${group.name}” has no split rules`);
-            return { todo, key: `g${group.id}`, label: group.name };
+            return { todo, key: `g${group.id}`, label: group.name, alone: false };
         }
         const agency = await this.prisma.taxAgency.findFirst({
             where: { id: unit.agencyId, ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
@@ -163,6 +202,7 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             todo: [{ ...rule, groupId: null }],
             key: `r${agency.id}`,
             label: agency.name,
+            alone: rule.groupId !== null,
         };
     }
     async applyToNew(scope, transactionIds) {
@@ -222,17 +262,13 @@ let SplitRulesService = SplitRulesService_1 = class SplitRulesService {
             amount: (0, splits_util_1.remainderOf)({ ...p, amount: Number(p.amount) }, totals),
         };
     }
-    async write(scope, p, line, splits, names = [], oneTime) {
+    async write(scope, p, line, splits, names = []) {
         const parentAmount = Number(p.amount);
         const bank = parentAmount < 0 ? p.creditAccount : p.debitAccount;
         const subOf = new Map();
         for (const s of splits) {
             if (subOf.has(s.category))
                 continue;
-            if (oneTime && p.name) {
-                subOf.set(s.category, (await (0, sub_name_parents_1.ensureSplitSubName)(this.prisma, scope, p.name, s.category, oneTime.key, oneTime.label)).id);
-                continue;
-            }
             subOf.set(s.category, p.name && s.category !== p.offsetAccount
                 ? (await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, p.name, s.category, false))
                     .id

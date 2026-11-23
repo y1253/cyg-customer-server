@@ -13,7 +13,9 @@ import { doubleEntry } from './ledger.util';
 import { scopeWhere, type BookScope } from './scope';
 import { ruleSplits, stepSplits, type SplitRule } from './split-rules.util';
 import { remainderOf, signedLike, splitTotals } from './splits.util';
+import { cleanName } from './name-memory.util';
 import {
+  dropUnusedSubName,
   ensureSplitSubName,
   ensureSubName,
   fileUnderSubNames,
@@ -185,16 +187,20 @@ export class SplitRulesService implements OnApplicationBootstrap {
   /**
    * step12 (2026-11-22, user's request): a ONE-TIME split from the ledger — a split group or
    * one rule cuts one transaction, or every EXISTING row of a name, with no pick saved (later
-   * rows are not cut). The pieces go under "<name> - <category> - <group or rule>"
-   * (`ensureSplitSubName`), reused by every later one-time split by it. The usual once-only
-   * guard (`ruleSourceId`, `splitRuleId`) skips a transaction it already cut.
+   * rows are not cut). The usual once-only guard (`ruleSourceId`, `splitRuleId`) skips a
+   * transaction it already cut.
+   *
+   * step12 (2026-11-23, user's request): the TRANSACTION goes under "<name> - <its category> -
+   * <group or rule>" (`ensureSplitSubName`, reused by every later one-time split by it), and
+   * that sub-name has the group / rule as its own pick (applied, so nothing is cut twice). The
+   * pieces get the usual names, like any rule split ("Walmart - GST").
    */
   async applyOnce(
     scope: BookScope,
     unit: OneTimeUnit,
     rows: OneTimeRows,
   ): Promise<OneTimeResult> {
-    const { todo, key, label } = await this.oneTimeRules(scope, unit);
+    const { todo, key, label, alone } = await this.oneTimeRules(scope, unit);
     const parents = await this.parentsFor(
       scope,
       'transactionId' in rows
@@ -208,6 +214,8 @@ export class SplitRulesService implements OnApplicationBootstrap {
       );
     let split = 0;
     const touched: number[] = [];
+    const left = new Set<number>();
+    const picked = new Set<number>();
     for (const p of parents) {
       const line = this.lineOf(p, new Map());
       const done = new Set(
@@ -218,19 +226,78 @@ export class SplitRulesService implements OnApplicationBootstrap {
       const rules = todo.filter((r) => !done.has(`${line.sourceId}:${r.id}`));
       const splits = rules.length ? stepSplits(line.amount, rules) : [];
       if (!splits.length) continue;
-      await this.write(scope, p, line, splits, [], { key, label });
+      const name = cleanName(p.name);
+      if (name) {
+        const sub = await ensureSplitSubName(
+          this.prisma,
+          scope,
+          name,
+          p.offsetAccount,
+          key,
+          label,
+        );
+        if (!picked.has(sub.id)) {
+          await this.pickOnce(scope, sub.name, todo, alone);
+          picked.add(sub.id);
+        }
+        if (p.subNameId !== sub.id) {
+          await this.prisma.bankTransaction.update({
+            where: { id: p.id },
+            data: { subNameId: sub.id },
+          });
+          if (p.subNameId !== null) left.add(p.subNameId);
+        }
+      }
+      await this.write(scope, p, line, splits);
       split++;
       touched.push(p.id);
     }
+    for (const id of left) await dropUnusedSubName(this.prisma, scope, id);
     if (touched.length) await syncParentSubNames(this.prisma, scope, touched);
     return { split, skipped: parents.length - split };
   }
 
-  /** step12: a one-time split's live rules, its sub-name key and its label. */
+  /**
+   * step12 (2026-11-23): a one-time split's sub-name has the group / rule as its own pick —
+   * marked applied (`applyOnce` cuts now; the once-only guard keeps it from cutting again).
+   */
+  private async pickOnce(
+    scope: BookScope,
+    subName: string,
+    todo: SplitRule[],
+    alone: boolean,
+  ): Promise<void> {
+    // MySQL compares names case-insensitively.
+    const has = await this.prisma.ledgerNameAgency.findMany({
+      where: { ...scopeWhere(scope), name: subName },
+      select: { agencyId: true },
+    });
+    const ids = new Set(has.map((h) => h.agencyId));
+    const data = todo
+      .filter((r) => !ids.has(r.id))
+      .map((r) => ({
+        ...scopeWhere(scope),
+        name: subName,
+        agencyId: r.id,
+        alone,
+        appliedAt: new Date(),
+      }));
+    if (data.length) await this.prisma.ledgerNameAgency.createMany({ data });
+  }
+
+  /**
+   * step12: a one-time split's live rules, its sub-name key and its label. `alone` = one rule
+   * of a group used on its own (its pick says so).
+   */
   private async oneTimeRules(
     scope: BookScope,
     unit: OneTimeUnit,
-  ): Promise<{ todo: SplitRule[]; key: string; label: string }> {
+  ): Promise<{
+    todo: SplitRule[];
+    key: string;
+    label: string;
+    alone: boolean;
+  }> {
     const rules = await this.rules(scope);
     if ('groupId' in unit) {
       const group = await this.prisma.splitGroup.findFirst({
@@ -243,7 +310,7 @@ export class SplitRulesService implements OnApplicationBootstrap {
       const todo = [...rules.values()].filter((r) => r.groupId === group.id);
       if (!todo.length)
         throw new BadRequestException(`“${group.name}” has no split rules`);
-      return { todo, key: `g${group.id}`, label: group.name };
+      return { todo, key: `g${group.id}`, label: group.name, alone: false };
     }
     const agency = await this.prisma.taxAgency.findFirst({
       where: { id: unit.agencyId, ...scopeWhere(scope), deletedAt: null },
@@ -251,12 +318,14 @@ export class SplitRulesService implements OnApplicationBootstrap {
     });
     if (!agency) throw new NotFoundException('Split rule not found');
     const rule = rules.get(agency.id);
-    if (!rule) throw new BadRequestException(`“${agency.name}” is switched off`);
+    if (!rule)
+      throw new BadRequestException(`“${agency.name}” is switched off`);
     // One rule of a group used on its own cuts like an individual rule.
     return {
       todo: [{ ...rule, groupId: null }],
       key: `r${agency.id}`,
       label: agency.name,
+      alone: rule.groupId !== null,
     };
   }
 
@@ -349,31 +418,12 @@ export class SplitRulesService implements OnApplicationBootstrap {
     line: Line,
     splits: ReturnType<typeof ruleSplits>,
     names: ReadonlyArray<string | null> = [],
-    oneTime?: { key: string; label: string },
   ): Promise<number> {
     const parentAmount = Number(p.amount);
     const bank = parentAmount < 0 ? p.creditAccount : p.debitAccount;
     const subOf = new Map<string, number | null>();
     for (const s of splits) {
       if (subOf.has(s.category)) continue;
-      // step12: a one-time split's pieces always go under their own sub-name
-      // ("Amazon - GST - Quebec taxes").
-      if (oneTime && p.name) {
-        subOf.set(
-          s.category,
-          (
-            await ensureSplitSubName(
-              this.prisma,
-              scope,
-              p.name,
-              s.category,
-              oneTime.key,
-              oneTime.label,
-            )
-          ).id,
-        );
-        continue;
-      }
       // The name's own category needs no sub-name ("Walmart - GST" otherwise).
       subOf.set(
         s.category,

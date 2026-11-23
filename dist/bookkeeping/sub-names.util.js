@@ -5,9 +5,9 @@ exports.parentSubName = parentSubName;
 exports.subNameFiling = subNameFiling;
 const subNameOf = (parent, category) => `${parent} - ${category}`.slice(0, 191);
 exports.subNameOf = subNameOf;
-const splitSubNameOf = (parent, category, label) => label.trim().toLowerCase() === category.trim().toLowerCase()
-    ? (0, exports.subNameOf)(parent, category)
-    : `${parent} - ${category} - ${label.trim()}`.slice(0, 191);
+const splitSubNameOf = (parent, category, label) => label.trim()
+    ? `${parent} - ${category} - ${label.trim()}`.slice(0, 191)
+    : (0, exports.subNameOf)(parent, category);
 exports.splitSubNameOf = splitSubNameOf;
 const splitLabelOf = (name, parent, category) => {
     const head = `${parent} - ${category} - `;

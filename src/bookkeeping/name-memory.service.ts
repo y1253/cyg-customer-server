@@ -1578,16 +1578,22 @@ export class NameMemoryService implements OnApplicationBootstrap {
 
     if (!category) return;
     // step12 (2026-11-19): "Only this transaction" for a category — this row alone, a
-    // one-time edit (`syncProvenance` keeps it as an EXCEPTION rule; a wrapper name's row is
-    // filed under its sub-name of that category).
+    // one-time edit (`syncProvenance` keeps it as an EXCEPTION rule, with its sub-name).
+    // step12 (2026-11-23, user's request): the row goes under its name's sub-name of that
+    // category ("Staples - Meals"), made if new — the name becomes a wrapper.
     if (input.scope === 'ONCE') {
+      const owner = cleanName(row.name);
+      const sub = owner
+        ? await ensureSubName(this.prisma, scope, owner, category)
+        : null;
       await this.writeRows(
         scope,
         [matched],
-        // Its old sub-name was of the old category; a wrapper's row gets the new one's.
-        (r) => ({ name: r.name, category, subNameId: null }),
+        (r) => ({ name: r.name, category, subNameId: sub?.id ?? null }),
         true,
       );
+      if (row.subNameId !== (sub?.id ?? null))
+        await dropUnusedSubName(this.prisma, scope, row.subNameId);
       return;
     }
     const current = cleanName(row.name);
