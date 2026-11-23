@@ -11,7 +11,8 @@ import { CustomerAccountsService } from './customer-accounts.service';
 import type { NameFieldDto } from './dto/agency.dto';
 import { doubleEntry } from './ledger.util';
 import { NameMemoryService } from './name-memory.service';
-import { nameKey } from './name-memory.util';
+import { cleanName, nameKey } from './name-memory.util';
+import { UNCLARIFIED_NAME } from './reports.util';
 import { scopeWhere, type BookScope } from './scope';
 import { remainderOf, splitTotals } from './splits.util';
 import { splitLabelOf, splitSubNameOf, subNameOf } from './sub-names.util';
@@ -19,6 +20,7 @@ import {
   copyParentPicks,
   deleteSubName,
   ensureSubName,
+  ledgerNameId,
   syncParentSubNames,
 } from './sub-name-parents';
 import {
@@ -481,6 +483,83 @@ export class SubNamesService implements OnApplicationBootstrap {
       name: input.into,
       subNameId: intoSub ?? undefined,
     });
+  }
+
+  /**
+   * step9 (2026-11-23, user: "the user can change the parent of a sub"): a sub-name dropped on
+   * a name and kept as a sub-name — it moves under that name with its rows, category, rules,
+   * split rules, files and profile; only `nameId` (and the name made from it) changes. A
+   * target that already has a sub-name of this category keeps it: this one stays separate
+   * ("Target - Office - Walmart", `splitKey` `m<id>`). A target with no sub-names becomes a
+   * wrapper (`fileUnderSubNames` files its own rows).
+   */
+  async setParent(
+    scope: BookScope,
+    id: number,
+    rawParent: string,
+  ): Promise<void> {
+    const sub = await this.get(scope, id);
+    const oldParent = await this.parentName(sub.nameId);
+    const parent = cleanName(rawParent);
+    if (!parent) throw new BadRequestException('Pick a name to move it under.');
+    if (nameKey(parent) === nameKey(UNCLARIFIED_NAME))
+      throw new BadRequestException(
+        '"Unclarified name" cannot have sub-names — give its rows a name instead.',
+      );
+    if (oldParent && nameKey(parent) === nameKey(oldParent))
+      throw new BadRequestException(`It is already under “${oldParent}”.`);
+    if (nameKey(parent) === nameKey(sub.name))
+      throw new BadRequestException('A sub-name cannot go under itself.');
+    const agencies = await this.prisma.taxAgency.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null },
+      select: { name: true },
+    });
+    if (agencies.some((a) => nameKey(a.name) === nameKey(parent)))
+      throw new BadRequestException(
+        `"${parent}" is a split rule — it cannot have sub-names.`,
+      );
+    if (
+      await this.prisma.subName.findFirst({
+        where: { bookId: scope.bookId, name: parent },
+        select: { id: true },
+      })
+    )
+      throw new BadRequestException(
+        `"${parent}" is a sub-name — drop it on a name instead.`,
+      );
+
+    const nameId = await ledgerNameId(this.prisma, scope, parent);
+    const clash = await this.prisma.subName.findFirst({
+      where: {
+        bookId: scope.bookId,
+        nameId,
+        category: sub.category,
+        splitKey: sub.splitKey,
+        id: { not: id },
+      },
+      select: { id: true },
+    });
+    const splitKey = clash ? `m${id}` : sub.splitKey;
+    const name = sub.renamed
+      ? sub.name
+      : clash
+        ? splitSubNameOf(parent, sub.category, oldParent ?? sub.name)
+        : sub.splitKey
+          ? splitSubNameOf(
+              parent,
+              sub.category,
+              splitLabelOf(sub.name, oldParent ?? '', sub.category),
+            )
+          : subNameOf(parent, sub.category);
+    if (nameKey(name) !== nameKey(sub.name))
+      await this.refuseTaken(scope, name, id);
+    await this.prisma.subName.update({
+      where: { id },
+      data: { nameId, name, splitKey },
+    });
+    if (name !== sub.name)
+      await this.tax.moveSubNameKeys(scope, sub.name, name);
+    await this.names.reparentSubNameRows(scope, id, parent);
   }
 
   private async get(scope: BookScope, id: number) {

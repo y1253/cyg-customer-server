@@ -480,8 +480,12 @@ let TaxService = class TaxService {
             },
         ]));
         const { descriptionsOf } = groupDescriptions([...named, ...nameless], rulesById);
+        const oneTimeSubs = new Set((await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, NOT: { splitKey: '' } },
+            select: { id: true },
+        })).map((s) => s.id));
         const subDescriptions = Object.fromEntries([
-            ...groupDescriptions(named.flatMap((r) => r.subNameId && !r.splitOfId
+            ...groupDescriptions(named.flatMap((r) => r.subNameId && !r.splitOfId && !oneTimeSubs.has(r.subNameId)
                 ? [{ ...r, name: `#${r.subNameId}` }]
                 : []), rulesById).descriptionsOf,
         ].map(([k, v]) => [Number(k.slice(1)), v]));
@@ -727,9 +731,27 @@ let TaxService = class TaxService {
     async exceptionsOf(scope, rows, rules, descriptionsOf, subDescriptions, usualCategory) {
         const subs = await this.prisma.subName.findMany({
             where: { bookId: scope.bookId },
-            select: { id: true, name: true },
+            select: {
+                id: true,
+                name: true,
+                nameId: true,
+                category: true,
+                splitKey: true,
+            },
         });
         const subName = new Map(subs.map((s) => [s.id, s.name]));
+        const subById = new Map(subs.map((s) => [s.id, s]));
+        const oneTimeOwner = (r) => {
+            const sub = r.subNameId !== null ? subById.get(r.subNameId) : undefined;
+            if (!sub || sub.splitKey === '' || !r.name)
+                return null;
+            const plain = subs.find((s) => s.splitKey === '' &&
+                s.nameId === sub.nameId &&
+                s.category === sub.category);
+            return plain
+                ? { label: plain.name, name: r.name, subNameId: plain.id }
+                : { label: r.name, name: r.name, subNameId: null };
+        };
         const ownerOf = new Map(rules
             .filter((r) => r.matchType === 'DESCRIPTION')
             .map((r) => [r.matchKey, r]));
@@ -750,7 +772,7 @@ let TaxService = class TaxService {
                         subNameId: null,
                     }
                     : null
-                : (0, name_memory_util_1.exceptionOwner)({ ...r, name: r.name ?? null }, ownerOf.get(key), (id) => subName.get(id));
+                : ((0, name_memory_util_1.exceptionOwner)({ ...r, name: r.name ?? null }, ownerOf.get(key), (id) => subName.get(id)) ?? oneTimeOwner(r));
             if (!main &&
                 !parent &&
                 r.manualEdit &&

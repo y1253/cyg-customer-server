@@ -18,6 +18,7 @@ const customer_accounts_service_1 = require("./customer-accounts.service");
 const ledger_util_1 = require("./ledger.util");
 const name_memory_service_1 = require("./name-memory.service");
 const name_memory_util_1 = require("./name-memory.util");
+const reports_util_1 = require("./reports.util");
 const scope_1 = require("./scope");
 const splits_util_1 = require("./splits.util");
 const sub_names_util_1 = require("./sub-names.util");
@@ -307,6 +308,58 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
             name: input.into,
             subNameId: intoSub ?? undefined,
         });
+    }
+    async setParent(scope, id, rawParent) {
+        const sub = await this.get(scope, id);
+        const oldParent = await this.parentName(sub.nameId);
+        const parent = (0, name_memory_util_1.cleanName)(rawParent);
+        if (!parent)
+            throw new common_1.BadRequestException('Pick a name to move it under.');
+        if ((0, name_memory_util_1.nameKey)(parent) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            throw new common_1.BadRequestException('"Unclarified name" cannot have sub-names — give its rows a name instead.');
+        if (oldParent && (0, name_memory_util_1.nameKey)(parent) === (0, name_memory_util_1.nameKey)(oldParent))
+            throw new common_1.BadRequestException(`It is already under “${oldParent}”.`);
+        if ((0, name_memory_util_1.nameKey)(parent) === (0, name_memory_util_1.nameKey)(sub.name))
+            throw new common_1.BadRequestException('A sub-name cannot go under itself.');
+        const agencies = await this.prisma.taxAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { name: true },
+        });
+        if (agencies.some((a) => (0, name_memory_util_1.nameKey)(a.name) === (0, name_memory_util_1.nameKey)(parent)))
+            throw new common_1.BadRequestException(`"${parent}" is a split rule — it cannot have sub-names.`);
+        if (await this.prisma.subName.findFirst({
+            where: { bookId: scope.bookId, name: parent },
+            select: { id: true },
+        }))
+            throw new common_1.BadRequestException(`"${parent}" is a sub-name — drop it on a name instead.`);
+        const nameId = await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, parent);
+        const clash = await this.prisma.subName.findFirst({
+            where: {
+                bookId: scope.bookId,
+                nameId,
+                category: sub.category,
+                splitKey: sub.splitKey,
+                id: { not: id },
+            },
+            select: { id: true },
+        });
+        const splitKey = clash ? `m${id}` : sub.splitKey;
+        const name = sub.renamed
+            ? sub.name
+            : clash
+                ? (0, sub_names_util_1.splitSubNameOf)(parent, sub.category, oldParent ?? sub.name)
+                : sub.splitKey
+                    ? (0, sub_names_util_1.splitSubNameOf)(parent, sub.category, (0, sub_names_util_1.splitLabelOf)(sub.name, oldParent ?? '', sub.category))
+                    : (0, sub_names_util_1.subNameOf)(parent, sub.category);
+        if ((0, name_memory_util_1.nameKey)(name) !== (0, name_memory_util_1.nameKey)(sub.name))
+            await this.refuseTaken(scope, name, id);
+        await this.prisma.subName.update({
+            where: { id },
+            data: { nameId, name, splitKey },
+        });
+        if (name !== sub.name)
+            await this.tax.moveSubNameKeys(scope, sub.name, name);
+        await this.names.reparentSubNameRows(scope, id, parent);
     }
     async get(scope, id) {
         const sub = await this.prisma.subName.findFirst({

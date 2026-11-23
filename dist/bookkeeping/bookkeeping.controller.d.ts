@@ -10,8 +10,11 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { ApplySplitRuleDto, CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
+import { ApplySplitRuleDto, CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SetSubNameParentDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
+import { LedgerQueryDto } from './dto/ledger-query.dto';
+import { LedgerQueryService, type LedgerPage } from './ledger-query.service';
+import type { LedgerSummary } from './ledger-query.util';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -34,10 +37,11 @@ export declare class BookkeepingController {
     private readonly attachments;
     private readonly productMemory;
     private readonly fx;
+    private readonly ledgerQuery;
     private readonly prisma;
     private readonly communications;
     private readonly splitRules;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, ledgerQuery: LedgerQueryService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;
@@ -75,6 +79,7 @@ export declare class BookkeepingController {
     subNameList(scope: BookScope): Promise<SubNameView[]>;
     setSubNameCategory(scope: BookScope, id: number, dto: SetSubNameCategoryDto): Promise<void>;
     setSubNameSettings(scope: BookScope, id: number, dto: SubNameSettingsDto): Promise<void>;
+    setSubNameParent(scope: BookScope, id: number, dto: SetSubNameParentDto): Promise<void>;
     deleteSubName(scope: BookScope, id: number): Promise<void>;
     mergeNames(scope: BookScope, dto: MergeNamesDto): Promise<NamesView>;
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;
@@ -96,6 +101,8 @@ export declare class BookkeepingController {
     removeAttachment(scope: BookScope, id: number): Promise<void>;
     upload(scope: BookScope, files: Express.Multer.File[]): Promise<StatementView[]>;
     list(scope: BookScope): Promise<StatementView[]>;
+    transactionPage(scope: BookScope, dto: LedgerQueryDto): Promise<LedgerPage>;
+    transactionSummary(scope: BookScope, dto: LedgerQueryDto): Promise<LedgerSummary>;
     transactions(scope: BookScope, statementIds?: string): Promise<TransactionView[]>;
     file(scope: BookScope, id: number, res: Response): Promise<StreamableFile>;
     moveStatement(scope: BookScope, id: number, dto: MoveStatementDto): Promise<StatementView>;

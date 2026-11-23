@@ -825,12 +825,22 @@ export class TaxService {
     // step9 (2026-11-17, second request): the same, per sub-name (keyed "#<id>").
     // 2026-11-18: top-level rows only — a split copies its transaction's description, so the
     // description belongs to the main line's sub-name, never to a split's.
+    // step11 (2026-11-23): never a one-time split's sub-name (`splitKey`) — the transaction a
+    // one-time split put there is an exception (`exceptionsOf`), it owns no description.
+    const oneTimeSubs = new Set(
+      (
+        await this.prisma.subName.findMany({
+          where: { bookId: scope.bookId, NOT: { splitKey: '' } },
+          select: { id: true },
+        })
+      ).map((s) => s.id),
+    );
     const subDescriptions: Record<number, NameDescriptionView[]> =
       Object.fromEntries(
         [
           ...groupDescriptions(
             named.flatMap((r) =>
-              r.subNameId && !r.splitOfId
+              r.subNameId && !r.splitOfId && !oneTimeSubs.has(r.subNameId)
                 ? [{ ...r, name: `#${r.subNameId}` }]
                 : [],
             ),
@@ -1169,9 +1179,39 @@ export class TaxService {
   }> {
     const subs = await this.prisma.subName.findMany({
       where: { bookId: scope.bookId },
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        nameId: true,
+        category: true,
+        splitKey: true,
+      },
     });
     const subName = new Map(subs.map((s) => [s.id, s.name]));
+    const subById = new Map(subs.map((s) => [s.id, s]));
+    // step11 (2026-11-23): a transaction a ONE-TIME split put under its sub-name ("Walmart -
+    // Supplies - GST + QST") is an exception from where its description lives: the name's
+    // ordinary sub-name of the same category, else the name.
+    const oneTimeOwner = (r: {
+      name?: string | null;
+      subNameId: number | null;
+    }): {
+      label: string;
+      name: string | null;
+      subNameId: number | null;
+    } | null => {
+      const sub = r.subNameId !== null ? subById.get(r.subNameId) : undefined;
+      if (!sub || sub.splitKey === '' || !r.name) return null;
+      const plain = subs.find(
+        (s) =>
+          s.splitKey === '' &&
+          s.nameId === sub.nameId &&
+          s.category === sub.category,
+      );
+      return plain
+        ? { label: plain.name, name: r.name, subNameId: plain.id }
+        : { label: r.name, name: r.name, subNameId: null };
+    };
     const ownerOf = new Map(
       rules
         .filter((r) => r.matchType === 'DESCRIPTION')
@@ -1209,11 +1249,11 @@ export class TaxService {
               subNameId: null,
             }
           : null
-        : exceptionOwner(
+        : (exceptionOwner(
             { ...r, name: r.name ?? null },
             ownerOf.get(key),
             (id) => subName.get(id),
-          );
+          ) ?? oneTimeOwner(r));
       // A one-time category edit no rule can tell apart (nothing knows the name's category,
       // so no EXCEPTION rule): it is one when it left the name's usual category.
       if (

@@ -73,6 +73,7 @@ import {
   EditSplitDto,
   SetProductDto,
   SetSubNameCategoryDto,
+  SetSubNameParentDto,
   SubNameSettingsDto,
   SetAccountTypeDto,
   SaveNameRuleDto,
@@ -85,6 +86,9 @@ import {
   UpdateAgencyDto,
 } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
+import { LedgerQueryDto, ledgerQueryOf } from './dto/ledger-query.dto';
+import { LedgerQueryService, type LedgerPage } from './ledger-query.service';
+import type { LedgerSummary } from './ledger-query.util';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -135,6 +139,7 @@ export class BookkeepingController {
     private readonly attachments: AttachmentsService,
     private readonly productMemory: ProductMemoryService,
     private readonly fx: FxService,
+    private readonly ledgerQuery: LedgerQueryService,
     private readonly prisma: PrismaService,
     private readonly communications: CommunicationsService,
     private readonly splitRules: SplitRulesService,
@@ -442,6 +447,20 @@ export class BookkeepingController {
     return this.subNames.setSettings(scope, id, dto);
   }
 
+  /**
+   * step9 (2026-11-23): a sub-name moves under another name — it keeps its rows, category,
+   * rules and settings; only its parent changes.
+   */
+  @Patch('sub-names/:id/parent')
+  @HttpCode(204)
+  setSubNameParent(
+    @Book() scope: BookScope,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetSubNameParentDto,
+  ): Promise<void> {
+    return this.subNames.setParent(scope, id, dto.name);
+  }
+
   /** step2 (2026-11-15): remove a sub-name — its rows go back to the name's category. */
   @Delete('sub-names/:id')
   @HttpCode(204)
@@ -661,6 +680,28 @@ export class BookkeepingController {
   @Get('statements')
   list(@Book() scope: BookScope): Promise<StatementView[]> {
     return this.bookkeeping.list(scope);
+  }
+
+  /**
+   * step11 (2026-11-23): the ledger one page of families at a time, filtered, searched and
+   * sorted here (`LedgerQueryService`).
+   */
+  @Get('transactions/page')
+  transactionPage(
+    @Book() scope: BookScope,
+    @Query() dto: LedgerQueryDto,
+  ): Promise<LedgerPage> {
+    const { query, offset, limit } = ledgerQueryOf(dto);
+    return this.ledgerQuery.page(scope, query, offset, limit);
+  }
+
+  /** step11 (2026-11-23): the totals of the same query — counts, net, per category. */
+  @Get('transactions/summary')
+  transactionSummary(
+    @Book() scope: BookScope,
+    @Query() dto: LedgerQueryDto,
+  ): Promise<LedgerSummary> {
+    return this.ledgerQuery.summary(scope, ledgerQueryOf(dto).query);
   }
 
   @Get('transactions')

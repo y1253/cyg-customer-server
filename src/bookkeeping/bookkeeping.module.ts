@@ -1,5 +1,6 @@
 import { CustomColumnsController } from './custom-columns.controller';
 import { CustomColumnsService } from './custom-columns.service';
+import { LedgerQueryService } from './ledger-query.service';
 import { FileLinkController, FileLinkService } from './file-links';
 import { Module } from '@nestjs/common';
 import { OpenAiClient } from '../ai/openai.client';
@@ -52,6 +53,7 @@ import { SplitRulesService } from './split-rules.service';
     PhoneUploadController,
   ],
   providers: [
+    LedgerQueryService,
     AttachmentExtractor,
     AttachmentProcessorService,
     AttachmentsService,

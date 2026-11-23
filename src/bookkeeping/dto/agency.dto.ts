@@ -483,6 +483,18 @@ export class SetSubNameCategoryDto {
   category!: string;
 }
 
+/**
+ * step9 (2026-11-23): `PATCH /api/bookkeeping/sub-names/:id/parent` — the name it moves
+ * under (it stays a sub-name; only its parent changes).
+ */
+export class SetSubNameParentDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  name!: string;
+}
+
 /** `PATCH /api/bookkeeping/attachments/:id` — attach to a transaction, or `null` to detach. */
 export class SetAttachmentTransactionDto {
   @IsOptional()

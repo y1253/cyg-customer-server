@@ -443,17 +443,23 @@ export class NameMemoryService implements OnApplicationBootstrap {
     // step9 (2026-11-18): a split rule's sub-name ("Walmart - GST") merges like any other —
     // its rows keep `splitRuleId`, so the rule never cuts them again.
     let target: { name: string; category: string; sub: typeof from | null };
-    // step9 (2026-11-19): a name with sub-names is only a wrapper — a sub-name goes onto one
-    // of its sub-names, or onto a name with none (it then takes that plain name, no sub).
-    const intoSubId = into.subNameId ?? null;
+    // step9 (2026-11-19): a name with sub-names is only a wrapper. step9 (2026-11-23): a
+    // sub-name dropped on one lands on its sub-name of the same category (made if new); onto
+    // a name with none it takes that plain name, no sub.
+    let intoSubId = into.subNameId ?? null;
     if (
       intoSubId == null &&
       into.name &&
       (await this.isWrapper(scope, into.name))
     )
-      throw new BadRequestException(
-        `"${cleanName(into.name) ?? into.name}" has sub-names — drop it on one of its sub-names.`,
-      );
+      intoSubId = (
+        await ensureSubName(
+          this.prisma,
+          scope,
+          cleanName(into.name) ?? into.name,
+          from.category,
+        )
+      ).id;
     if (intoSubId != null) {
       const sub = await this.subNameOfBook(scope, intoSubId);
       if (sub.id === from.id)
@@ -482,7 +488,74 @@ export class NameMemoryService implements OnApplicationBootstrap {
         sub: null,
       };
     }
-    const subId = target.sub?.id ?? null;
+    const rows = await this.moveSubNameRows(scope, from.id, {
+      name: target.name,
+      category: target.category,
+      subId: target.sub?.id ?? null,
+    });
+
+    // Its split rules, files and profile go to the target; then it goes.
+    if (target.sub) {
+      await this.tax.moveSubNameKeys(scope, from.name, target.sub.name);
+      await this.addFields(scope, from.fields, { subNameId: target.sub.id });
+    } else {
+      await this.tax.dropSubNameKeys(scope, from.name, target.name);
+      await this.addFields(scope, from.fields, { name: target.name });
+    }
+    // step9 (2026-11-19): its default custom-column answers too (the target's own stay).
+    if (
+      await this.prisma.customColumnNameAnswer.count({
+        where: { subNameId: from.id },
+      })
+    )
+      await moveNameAnswers(
+        this.prisma,
+        { subNameId: from.id },
+        target.sub
+          ? { subNameId: target.sub.id }
+          : { nameId: await ledgerNameId(this.prisma, scope, target.name) },
+      );
+    await deleteSubName(this.prisma, from.id);
+    this.logger.log(
+      `book ${bookLabel(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows} rows)`,
+    );
+    await this.syncProvenance(scope);
+  }
+
+  /**
+   * step9 (2026-11-23): a sub-name moved under another name (`SubNamesService.setParent`,
+   * which already re-pointed the `SubName`) — its rows keep their sub-name and category and
+   * take the new parent's name; the rules that file rows under it name it too.
+   */
+  async reparentSubNameRows(
+    scope: BookScope,
+    subNameId: number,
+    parent: string,
+  ): Promise<void> {
+    const sub = await this.subNameOfBook(scope, subNameId);
+    const rows = await this.moveSubNameRows(scope, sub.id, {
+      name: parent,
+      category: sub.category,
+      subId: sub.id,
+    });
+    this.logger.log(
+      `book ${bookLabel(scope)}: sub-name "${sub.name}" moved under "${parent}" (${rows} rows)`,
+    );
+    await this.syncProvenance(scope);
+  }
+
+  /**
+   * The rows of sub-name `fromId` — splits too — take `target`'s name, sub-name and
+   * category; the rules that filed rows under it follow; each of its descriptions whose
+   * top-level rows are all its own gets an exact rule to the target. Returns the row count.
+   */
+  private async moveSubNameRows(
+    scope: BookScope,
+    fromId: number,
+    target: { name: string; category: string; subId: number | null },
+  ): Promise<number> {
+    const from = { id: fromId };
+    const subId = target.subId;
 
     // The rules that filed rows under it now file them under the target.
     const moved = await this.prisma.customerNameRule.findMany({
@@ -585,33 +658,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
           });
         }),
       );
-
-    // Its split rules, files and profile go to the target; then it goes.
-    if (target.sub) {
-      await this.tax.moveSubNameKeys(scope, from.name, target.sub.name);
-      await this.addFields(scope, from.fields, { subNameId: target.sub.id });
-    } else {
-      await this.tax.dropSubNameKeys(scope, from.name, target.name);
-      await this.addFields(scope, from.fields, { name: target.name });
-    }
-    // step9 (2026-11-19): its default custom-column answers too (the target's own stay).
-    if (
-      await this.prisma.customColumnNameAnswer.count({
-        where: { subNameId: from.id },
-      })
-    )
-      await moveNameAnswers(
-        this.prisma,
-        { subNameId: from.id },
-        target.sub
-          ? { subNameId: target.sub.id }
-          : { nameId: await ledgerNameId(this.prisma, scope, target.name) },
-      );
-    await deleteSubName(this.prisma, from.id);
-    this.logger.log(
-      `book ${bookLabel(scope)}: merged sub-name "${from.name}" into "${target.sub?.name ?? target.name}" (${rows.length} rows)`,
-    );
-    await this.syncProvenance(scope);
+    return rows.length;
   }
 
   /** step9 (2026-11-18): whether `name` has sub-names (a wrapper). */
@@ -727,6 +774,14 @@ export class NameMemoryService implements OnApplicationBootstrap {
     const rule = await this.prisma.customerNameRule.findFirst({
       where: { ...scopeWhere(scope), matchType: 'DESCRIPTION', matchKey: key },
     });
+    const oneTimeSubs = new Set(
+      (
+        await this.prisma.subName.findMany({
+          where: { bookId: scope.bookId, NOT: { splitKey: '' } },
+          select: { id: true },
+        })
+      ).map((s) => s.id),
+    );
     // The transactions of this description whose hand-made split has a sub-name, the one
     // just edited first, then the newest.
     const candidates = (
@@ -745,6 +800,8 @@ export class NameMemoryService implements OnApplicationBootstrap {
       })
     )
       .filter((p) => descriptionKey(p.description) === key)
+      // step11 (2026-11-23): a one-time split's sub-name never takes a description.
+      .filter((p) => !oneTimeSubs.has(p.subNameId!))
       // A description another name's rule holds is not taken over.
       .filter(
         (p) =>

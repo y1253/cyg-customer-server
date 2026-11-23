@@ -926,7 +926,8 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     await expect(
       s.mergeSubName(BOOK as never, 24, { subNameId: 24 }),
     ).rejects.toThrow(/same sub-name/);
-    // step9 (2026-11-19): its own parent is a wrapper — a sub-name never lands on a wrapper.
+    // step9 (2026-11-23): onto a wrapper it lands on the wrapper's sub-name of its category —
+    // on its own parent that is itself.
     prisma.subName.findMany.mockResolvedValue([{ nameId: 5 }]);
     prisma.ledgerName.findMany = jest
       .fn()
@@ -934,7 +935,58 @@ describe('NameMemoryService — sub-names merge like names (step9, 2026-11-17 th
     prisma.ledgerName.findFirst.mockResolvedValue({ id: 5 });
     await expect(
       s.mergeSubName(BOOK as never, 24, { name: 'Amazon' }),
-    ).rejects.toThrow(/has sub-names/);
+    ).rejects.toThrow(/same sub-name/);
+  });
+
+  it('a sub-name moved under another name (step9 2026-11-23): its rows take the name and keep the sub-name and category', async () => {
+    const fake = fakePrisma([]);
+    const rows = [
+      {
+        id: 9,
+        description: 'WALMART SUPPLY 1',
+        name: 'Walmart',
+        amount: money(-30),
+        offsetAccount: 'Supplies',
+        debitAccount: 'Supplies',
+        creditAccount: 'BMO 1234',
+        subNameId: 30,
+        personalRuleId: null,
+        splitOfId: null,
+        splitOf: null,
+      },
+    ];
+    const sub = { ...SUB, id: 30, name: 'Staples - Supplies', category: 'Supplies' };
+    const prisma = withSubs(fake.prisma, [sub], { 5: 'Staples' });
+    prisma.bankTransaction.findMany = jest.fn(
+      ({ where }: { where: { subNameId?: number } }) =>
+        Promise.resolve(
+          where.subNameId === 30 || where.subNameId === undefined ? rows : [],
+        ),
+    ) as never;
+    const tax = fakeTax();
+    await service(prisma, tax).reparentSubNameRows(BOOK as never, 30, 'Staples');
+    const [[moved]] = prisma.bankTransaction.update.mock.calls as unknown as [
+      [{ where: { id: number }; data: Record<string, unknown> }],
+    ];
+    expect(moved.data).toMatchObject({
+      name: 'Staples',
+      subNameId: 30,
+      offsetAccount: 'Supplies',
+      debitAccount: 'Supplies',
+      creditAccount: 'BMO 1234',
+    });
+    expect(createdRules(prisma)).toContainEqual(
+      expect.objectContaining({
+        matchType: 'DESCRIPTION',
+        matchKey: 'walmart supply',
+        name: 'Staples',
+        subNameId: 30,
+        category: 'Supplies',
+      }),
+    );
+    // It stays: nothing of it is dropped or moved to another key.
+    expect(tax.dropSubNameKeys).not.toHaveBeenCalled();
+    expect(tax.moveSubNameKeys).not.toHaveBeenCalled();
   });
 });
 

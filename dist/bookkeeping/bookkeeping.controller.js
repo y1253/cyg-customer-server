@@ -31,6 +31,8 @@ const name_memory_service_1 = require("./name-memory.service");
 const product_memory_service_1 = require("./product-memory.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
+const ledger_query_dto_1 = require("./dto/ledger-query.dto");
+const ledger_query_service_1 = require("./ledger-query.service");
 const retry_attachments_dto_1 = require("./dto/retry-attachments.dto");
 const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
@@ -57,10 +59,11 @@ let BookkeepingController = class BookkeepingController {
     attachments;
     productMemory;
     fx;
+    ledgerQuery;
     prisma;
     communications;
     splitRules;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, prisma, communications, splitRules) {
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, ledgerQuery, prisma, communications, splitRules) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -73,6 +76,7 @@ let BookkeepingController = class BookkeepingController {
         this.attachments = attachments;
         this.productMemory = productMemory;
         this.fx = fx;
+        this.ledgerQuery = ledgerQuery;
         this.prisma = prisma;
         this.communications = communications;
         this.splitRules = splitRules;
@@ -197,6 +201,9 @@ let BookkeepingController = class BookkeepingController {
     setSubNameSettings(scope, id, dto) {
         return this.subNames.setSettings(scope, id, dto);
     }
+    setSubNameParent(scope, id, dto) {
+        return this.subNames.setParent(scope, id, dto.name);
+    }
     deleteSubName(scope, id) {
         return this.subNames.remove(scope, id);
     }
@@ -281,6 +288,13 @@ let BookkeepingController = class BookkeepingController {
     }
     list(scope) {
         return this.bookkeeping.list(scope);
+    }
+    transactionPage(scope, dto) {
+        const { query, offset, limit } = (0, ledger_query_dto_1.ledgerQueryOf)(dto);
+        return this.ledgerQuery.page(scope, query, offset, limit);
+    }
+    transactionSummary(scope, dto) {
+        return this.ledgerQuery.summary(scope, (0, ledger_query_dto_1.ledgerQueryOf)(dto).query);
     }
     transactions(scope, statementIds) {
         const ids = statementIds
@@ -609,6 +623,16 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "setSubNameSettings", null);
 __decorate([
+    (0, common_1.Patch)('sub-names/:id/parent'),
+    (0, common_1.HttpCode)(204),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, agency_dto_1.SetSubNameParentDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "setSubNameParent", null);
+__decorate([
     (0, common_1.Delete)('sub-names/:id'),
     (0, common_1.HttpCode)(204),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -768,6 +792,22 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "list", null);
+__decorate([
+    (0, common_1.Get)('transactions/page'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, ledger_query_dto_1.LedgerQueryDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "transactionPage", null);
+__decorate([
+    (0, common_1.Get)('transactions/summary'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, ledger_query_dto_1.LedgerQueryDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "transactionSummary", null);
 __decorate([
     (0, common_1.Get)('transactions'),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -934,6 +974,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         attachments_service_1.AttachmentsService,
         product_memory_service_1.ProductMemoryService,
         fx_service_1.FxService,
+        ledger_query_service_1.LedgerQueryService,
         prisma_service_1.PrismaService,
         communications_service_1.CommunicationsService,
         split_rules_service_1.SplitRulesService])

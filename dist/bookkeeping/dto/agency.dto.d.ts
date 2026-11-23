@@ -108,6 +108,9 @@ export declare class SetProductDto {
 export declare class SetSubNameCategoryDto {
     category: string;
 }
+export declare class SetSubNameParentDto {
+    name: string;
+}
 export declare class SetAttachmentTransactionDto {
     transactionId: number | null;
 }

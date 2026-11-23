@@ -33,6 +33,8 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
         name?: string;
         subNameId?: number;
     }): Promise<void>;
+    reparentSubNameRows(scope: BookScope, subNameId: number, parent: string): Promise<void>;
+    private moveSubNameRows;
     private isWrapper;
     private subNameOfBook;
     private addFields;

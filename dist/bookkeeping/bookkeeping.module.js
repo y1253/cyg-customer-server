@@ -9,6 +9,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingModule = void 0;
 const custom_columns_controller_1 = require("./custom-columns.controller");
 const custom_columns_service_1 = require("./custom-columns.service");
+const ledger_query_service_1 = require("./ledger-query.service");
 const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
@@ -61,6 +62,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             name_files_controller_1.PhoneUploadController,
         ],
         providers: [
+            ledger_query_service_1.LedgerQueryService,
             attachment_extractor_1.AttachmentExtractor,
             attachment_processor_service_1.AttachmentProcessorService,
             attachments_service_1.AttachmentsService,

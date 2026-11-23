@@ -31,11 +31,11 @@ export declare class InstructionsService implements OnModuleInit {
         id: number;
         createdAt: Date;
         reason: string | null;
+        by: string;
         instructionId: number;
         action: string;
         beforeText: string | null;
         afterText: string | null;
-        by: string;
         staffUserId: number | null;
         escalationId: number | null;
         revertedAt: Date | null;
