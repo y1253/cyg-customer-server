@@ -18,6 +18,7 @@ const bank_feeds_controller_1 = require("./bank-feeds.controller");
 const bank_feeds_service_1 = require("./bank-feeds.service");
 const bank_row_categorizer_1 = require("./bank-row-categorizer");
 const plaid_client_1 = require("./plaid.client");
+const staff_bank_feeds_controller_1 = require("./staff-bank-feeds.controller");
 let BankFeedsModule = class BankFeedsModule {
 };
 exports.BankFeedsModule = BankFeedsModule;
@@ -29,7 +30,11 @@ exports.BankFeedsModule = BankFeedsModule = __decorate([
             customer_auth_module_1.CustomerAuthModule,
             messaging_module_1.MessagingModule,
         ],
-        controllers: [bank_feeds_controller_1.BankFeedsController, bank_feeds_controller_1.PlaidWebhookController],
+        controllers: [
+            bank_feeds_controller_1.BankFeedsController,
+            bank_feeds_controller_1.PlaidWebhookController,
+            staff_bank_feeds_controller_1.StaffBankFeedsController,
+        ],
         providers: [
             bank_feed_sync_service_1.BankFeedSyncService,
             bank_feeds_service_1.BankFeedsService,

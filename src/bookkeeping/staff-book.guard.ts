@@ -63,7 +63,7 @@ export class StaffBookGuard implements CanActivate {
     const companyId = Number(req.params?.companyId);
     if (payload.companyId !== companyId) throw new UnauthorizedException();
     if (req.method !== 'GET' && !payload.canEdit) {
-      throw new ForbiddenException('Only a manager can change these rules');
+      throw new ForbiddenException('Your role cannot change this');
     }
     req.staffBook = {
       scope: await this.scopeOf(companyId),

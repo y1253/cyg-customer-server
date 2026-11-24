@@ -67,6 +67,7 @@ Attachments: receipts, invoices, cheques, deposit slips, voice notes, letters (A
 
 Bank feeds (BANK_FEED_CATEGORIZER)
 - Plaid transactions become one statement per account and month. New rows go through the customer's rules and the firm memories first; only rows still nameless or Uncategorized go to the BANK_FEED_CATEGORIZER AI.
+- step11 (internal, 2026-11-23): a registered business's book can also be connected and edited by the firm's staff from the internal app (the same Plaid connections, the customer's own edit path). When an admin turns on "Send bank transactions to QuickBooks" for that business, every NEW bank-feed transaction (since it was turned on) is entered in the business's QuickBooks file right after it is categorized (a Purchase or Deposit, the splits as lines, the payee as vendor / customer, the category as the account — made in QuickBooks if missing), and a later name / category / split change of it is updated there within minutes. A wrong category is fixed here (the books); QuickBooks follows — never the reverse.
 - A bank-feed month has no uploaded file, but it still opens as a PDF: the server builds a statement-like PDF from its rows (account, period, opening / closing balance, every row with its running balance) on every open, so "View statement PDF", the file links and get_link all work for it.
 
 The regular assistant (ASSISTANT)

@@ -32,7 +32,7 @@ let StaffBookGuard = class StaffBookGuard {
         if (payload.companyId !== companyId)
             throw new common_1.UnauthorizedException();
         if (req.method !== 'GET' && !payload.canEdit) {
-            throw new common_1.ForbiddenException('Only a manager can change these rules');
+            throw new common_1.ForbiddenException('Your role cannot change this');
         }
         req.staffBook = {
             scope: await this.scopeOf(companyId),

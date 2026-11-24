@@ -1,6 +1,9 @@
 import { CustomColumnsController } from './custom-columns.controller';
 import { CustomColumnsService } from './custom-columns.service';
 import { LedgerQueryService } from './ledger-query.service';
+import { QboSystemClient } from '../quickbooks-sync/qbo-system.client';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
+import { StaffTransactionsController } from './staff-transactions.controller';
 import { NamesQueryService } from './names-query.service';
 import { FileLinkController, FileLinkService } from './file-links';
 import { Module } from '@nestjs/common';
@@ -49,6 +52,7 @@ import { SplitRulesService } from './split-rules.service';
     BookkeepingController,
     CustomColumnsController,
     StaffRulesController,
+    StaffTransactionsController,
     FileLinkController,
     NameFilesController,
     PhoneUploadController,
@@ -80,6 +84,8 @@ import { SplitRulesService } from './split-rules.service';
     SplitRulesService,
     SplitsService,
     SubNamesService,
+    QboSystemClient,
+    QuickBooksSyncService,
     StaffBookGuard,
     StaffRulesService,
     StatementErrorsService,
@@ -103,7 +109,9 @@ import { SplitRulesService } from './split-rules.service';
     ReportsService,
     RulesService,
     SplitRulesService,
+    QuickBooksSyncService,
     SplitsService,
+    StaffBookGuard,
     StatementErrorsService,
     SubNamesService,
     TaxService,

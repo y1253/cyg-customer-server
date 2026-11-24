@@ -172,16 +172,20 @@ export class BankFeedsService {
     scope: BookScope,
     itemId?: number,
     chooseAccounts = false,
+    staff = false,
   ): Promise<{ linkToken: string }> {
+    // step11 (internal, 2026-11-23): Link opened from the INTERNAL app comes back to its own
+    // domain, which is not an allowed Plaid redirect — so no redirect unless one is set for it.
+    const redirectUri = staff
+      ? this.config.get<string>('PLAID_STAFF_REDIRECT_URI')?.trim() || null
+      : this.plaid.redirectUri;
     const base: Record<string, unknown> = {
       client_name: 'CYG Finance',
       language: 'en',
       country_codes: this.plaid.countryCodes,
       user: { client_user_id: `customer-${scope.customerId}` },
       ...(this.plaid.webhookUrl ? { webhook: this.plaid.webhookUrl } : {}),
-      ...(this.plaid.redirectUri
-        ? { redirect_uri: this.plaid.redirectUri }
-        : {}),
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
       ...(this.plaid.linkCustomization
         ? { link_customization_name: this.plaid.linkCustomization }
         : {}),

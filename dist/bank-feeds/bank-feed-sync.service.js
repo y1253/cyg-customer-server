@@ -38,6 +38,7 @@ const plaid_client_1 = require("./plaid.client");
 const transaction_alert_util_1 = require("./transaction-alert.util");
 const change_feed_1 = require("../assistant/change-feed");
 const plaid_error_util_1 = require("./plaid-error.util");
+const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 const LOGIN_CODES = new Set([
     'ITEM_LOGIN_REQUIRED',
     'PENDING_EXPIRATION',
@@ -65,13 +66,14 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     rules;
     errors;
     splitRules;
+    qbo;
     logger = new common_1.Logger(BankFeedSyncService_1.name);
     running = new Map();
     again = new Set();
     lastRefreshAt = new Map();
     noteLoggedOn = new Map();
     refreshUnsupportedLogged = false;
-    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules, errors, splitRules) {
+    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules, errors, splitRules, qbo) {
         this.prisma = prisma;
         this.plaid = plaid;
         this.config = config;
@@ -82,6 +84,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         this.rules = rules;
         this.errors = errors;
         this.splitRules = splitRules;
+        this.qbo = qbo;
     }
     get key() {
         return (this.config.get('ENCRYPTION_KEY')?.replace(/^"|"$/g, '').trim() ??
@@ -600,6 +603,9 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         this.errors?.refreshSoon((0, scope_1.scopeOf)(item));
     }
     async dropAccount(account) {
+        await this.qbo?.forgetRows({
+            statement: { plaidAccountId: account.id, deletedAt: null },
+        });
         const { count } = await this.prisma.bankStatement.deleteMany({
             where: { plaidAccountId: account.id, deletedAt: null },
         });
@@ -659,6 +665,9 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         const stale = existing.filter((s) => !s.deletedAt &&
             (!s.periodStart || !planned.has((0, bank_feed_util_1.monthOf)(day(s.periodStart)))));
         if (stale.length) {
+            await this.qbo?.forgetRows({
+                statementId: { in: stale.map((s) => s.id) },
+            });
             await this.prisma.bankStatement.deleteMany({
                 where: { id: { in: stale.map((s) => s.id) } },
             });
@@ -738,6 +747,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         });
         const gone = existing.filter((r) => !desired.has(r.externalId));
         if (gone.length) {
+            await this.qbo?.forgetRows({ id: { in: gone.map((r) => r.id) } });
             await this.prisma.bankTransaction.deleteMany({
                 where: { id: { in: gone.map((r) => r.id) } },
             });
@@ -827,6 +837,8 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             });
             await this.splitRules.applyToNew(scope, made.map((m) => m.id));
         }
+        if (data.length && scope.companyId)
+            this.qbo?.syncSoon(scope.bookId);
     }
     async guess(scope, bankName, lines, txns) {
         if (!this.categorizer.configured || !lines.length)
@@ -886,6 +898,7 @@ exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __de
     __param(7, (0, common_1.Optional)()),
     __param(8, (0, common_1.Optional)()),
     __param(9, (0, common_1.Optional)()),
+    __param(10, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         plaid_client_1.PlaidClient,
         config_1.ConfigService,
@@ -895,7 +908,8 @@ exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __de
         customer_messenger_service_1.CustomerMessenger,
         rules_service_1.RulesService,
         statement_errors_service_1.StatementErrorsService,
-        split_rules_service_1.SplitRulesService])
+        split_rules_service_1.SplitRulesService,
+        quickbooks_sync_service_1.QuickBooksSyncService])
 ], BankFeedSyncService);
 function sameDay(a, b) {
     return (a === null && b === null) || (!!a && !!b && day(a) === day(b));

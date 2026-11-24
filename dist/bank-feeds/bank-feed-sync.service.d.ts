@@ -9,6 +9,7 @@ import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BankRowCategorizer } from './bank-row-categorizer';
 import { PlaidClient, type PlaidAccountData } from './plaid.client';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 export type ItemStatus = 'ACTIVE' | 'LOGIN_REQUIRED' | 'ERROR' | 'REMOVED';
 export declare class BankFeedSyncService {
     private readonly prisma;
@@ -21,13 +22,14 @@ export declare class BankFeedSyncService {
     private readonly rules?;
     private readonly errors?;
     private readonly splitRules?;
+    private readonly qbo?;
     private readonly logger;
     private readonly running;
     private readonly again;
     private readonly lastRefreshAt;
     private readonly noteLoggedOn;
     private refreshUnsupportedLogged;
-    constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, outbox: CustomerOutbox, messenger: CustomerMessenger, rules?: RulesService | undefined, errors?: StatementErrorsService | undefined, splitRules?: SplitRulesService | undefined);
+    constructor(prisma: PrismaService, plaid: PlaidClient, config: ConfigService, names: NameMemoryService, categorizer: BankRowCategorizer, outbox: CustomerOutbox, messenger: CustomerMessenger, rules?: RulesService | undefined, errors?: StatementErrorsService | undefined, splitRules?: SplitRulesService | undefined, qbo?: QuickBooksSyncService | undefined);
     private get key();
     syncSoon(itemId: number): void;
     sync(itemId: number): Promise<void>;

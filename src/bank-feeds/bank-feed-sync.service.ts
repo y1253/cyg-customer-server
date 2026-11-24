@@ -56,6 +56,7 @@ import {
 } from './transaction-alert.util';
 import { changeFeed } from '../assistant/change-feed';
 import { explainPlaidError, plaidErrorDetail } from './plaid-error.util';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 
 /** Plaid error codes that mean the customer must sign in to their bank again (update mode). */
 const LOGIN_CODES = new Set([
@@ -128,6 +129,8 @@ export class BankFeedSyncService {
     @Optional() private readonly errors?: StatementErrorsService,
     /** step9 part 4: the names' split rules split the new rows. */
     @Optional() private readonly splitRules?: SplitRulesService,
+    /** step11 (internal, 2026-11-23): new / removed rows reach the company's QuickBooks. */
+    @Optional() private readonly qbo?: QuickBooksSyncService,
   ) {}
 
   private get key(): string {
@@ -807,6 +810,9 @@ export class BankFeedSyncService {
    * customer-deleted month stays as the marker, should it be shared again.
    */
   private async dropAccount(account: PlaidAccount): Promise<void> {
+    await this.qbo?.forgetRows({
+      statement: { plaidAccountId: account.id, deletedAt: null },
+    });
     const { count } = await this.prisma.bankStatement.deleteMany({
       where: { plaidAccountId: account.id, deletedAt: null },
     });
@@ -880,6 +886,9 @@ export class BankFeedSyncService {
         (!s.periodStart || !planned.has(monthOf(day(s.periodStart)))),
     );
     if (stale.length) {
+      await this.qbo?.forgetRows({
+        statementId: { in: stale.map((s) => s.id) },
+      });
       await this.prisma.bankStatement.deleteMany({
         where: { id: { in: stale.map((s) => s.id) } },
       });
@@ -982,6 +991,7 @@ export class BankFeedSyncService {
 
     const gone = existing.filter((r) => !desired.has(r.externalId!));
     if (gone.length) {
+      await this.qbo?.forgetRows({ id: { in: gone.map((r) => r.id) } });
       await this.prisma.bankTransaction.deleteMany({
         where: { id: { in: gone.map((r) => r.id) } },
       });
@@ -1102,6 +1112,8 @@ export class BankFeedSyncService {
         made.map((m) => m.id),
       );
     }
+    // step11 (internal): categorized and split — now into the company's QuickBooks (if on).
+    if (data.length && scope.companyId) this.qbo?.syncSoon(scope.bookId);
   }
 
   /**

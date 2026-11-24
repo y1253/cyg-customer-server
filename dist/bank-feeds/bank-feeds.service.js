@@ -95,16 +95,17 @@ let BankFeedsService = BankFeedsService_1 = class BankFeedsService {
         });
         return viewOf(item, this.sync.isRunning(item.id));
     }
-    async linkToken(scope, itemId, chooseAccounts = false) {
+    async linkToken(scope, itemId, chooseAccounts = false, staff = false) {
+        const redirectUri = staff
+            ? this.config.get('PLAID_STAFF_REDIRECT_URI')?.trim() || null
+            : this.plaid.redirectUri;
         const base = {
             client_name: 'CYG Finance',
             language: 'en',
             country_codes: this.plaid.countryCodes,
             user: { client_user_id: `customer-${scope.customerId}` },
             ...(this.plaid.webhookUrl ? { webhook: this.plaid.webhookUrl } : {}),
-            ...(this.plaid.redirectUri
-                ? { redirect_uri: this.plaid.redirectUri }
-                : {}),
+            ...(redirectUri ? { redirect_uri: redirectUri } : {}),
             ...(this.plaid.linkCustomization
                 ? { link_customization_name: this.plaid.linkCustomization }
                 : {}),

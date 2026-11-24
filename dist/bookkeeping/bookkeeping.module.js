@@ -10,6 +10,9 @@ exports.BookkeepingModule = void 0;
 const custom_columns_controller_1 = require("./custom-columns.controller");
 const custom_columns_service_1 = require("./custom-columns.service");
 const ledger_query_service_1 = require("./ledger-query.service");
+const qbo_system_client_1 = require("../quickbooks-sync/qbo-system.client");
+const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
+const staff_transactions_controller_1 = require("./staff-transactions.controller");
 const names_query_service_1 = require("./names-query.service");
 const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
@@ -58,6 +61,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             bookkeeping_controller_1.BookkeepingController,
             custom_columns_controller_1.CustomColumnsController,
             staff_rules_controller_1.StaffRulesController,
+            staff_transactions_controller_1.StaffTransactionsController,
             file_links_1.FileLinkController,
             name_files_controller_1.NameFilesController,
             name_files_controller_1.PhoneUploadController,
@@ -89,6 +93,8 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             split_rules_service_1.SplitRulesService,
             splits_service_1.SplitsService,
             sub_names_service_1.SubNamesService,
+            qbo_system_client_1.QboSystemClient,
+            quickbooks_sync_service_1.QuickBooksSyncService,
             staff_book_guard_1.StaffBookGuard,
             staff_rules_service_1.StaffRulesService,
             statement_errors_service_1.StatementErrorsService,
@@ -111,7 +117,9 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             reports_service_1.ReportsService,
             rules_service_1.RulesService,
             split_rules_service_1.SplitRulesService,
+            quickbooks_sync_service_1.QuickBooksSyncService,
             splits_service_1.SplitsService,
+            staff_book_guard_1.StaffBookGuard,
             statement_errors_service_1.StatementErrorsService,
             sub_names_service_1.SubNamesService,
             tax_service_1.TaxService,

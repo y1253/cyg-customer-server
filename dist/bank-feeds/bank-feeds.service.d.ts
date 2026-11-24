@@ -41,7 +41,7 @@ export declare class BankFeedsService {
     list(scope: BookScope): Promise<BankConnectionView[]>;
     private owned;
     private view;
-    linkToken(scope: BookScope, itemId?: number, chooseAccounts?: boolean): Promise<{
+    linkToken(scope: BookScope, itemId?: number, chooseAccounts?: boolean, staff?: boolean): Promise<{
         linkToken: string;
     }>;
     exchange(scope: BookScope, publicToken: string): Promise<BankConnectionView>;

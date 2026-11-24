@@ -12,6 +12,7 @@ import {
 import { BankFeedsService } from './bank-feeds.service';
 import { BankRowCategorizer } from './bank-row-categorizer';
 import { PlaidClient } from './plaid.client';
+import { StaffBankFeedsController } from './staff-bank-feeds.controller';
 
 /**
  * step11 — connect a bank through Plaid instead of uploading statements. 2026-10-25: the
@@ -24,7 +25,11 @@ import { PlaidClient } from './plaid.client';
     CustomerAuthModule,
     MessagingModule,
   ],
-  controllers: [BankFeedsController, PlaidWebhookController],
+  controllers: [
+    BankFeedsController,
+    PlaidWebhookController,
+    StaffBankFeedsController,
+  ],
   providers: [
     BankFeedSyncService,
     BankFeedsService,

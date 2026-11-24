@@ -1,0 +1,34 @@
+import type { Prisma } from '@prisma/client';
+import { TaxService } from '../bookkeeping/tax.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { QboSystemClient } from './qbo-system.client';
+export declare class QuickBooksSyncService {
+    private readonly prisma;
+    private readonly client;
+    private readonly tax;
+    private readonly logger;
+    private readonly running;
+    private readonly again;
+    private readonly timers;
+    private sweeping;
+    constructor(prisma: PrismaService, client: QboSystemClient, tax: TaxService);
+    syncSoon(bookId: number): void;
+    sweep(): Promise<void>;
+    sync(bookId: number): Promise<void>;
+    forgetRows(where: Prisma.BankTransactionWhereInput): Promise<void>;
+    private runBook;
+    private removeOrphans;
+    private subNamesOf;
+    private familyOf;
+    private push;
+    private refsFor;
+    private accountId;
+    private bankAccountId;
+    private entityFor;
+    private findOne;
+    private created;
+    private removeQuietly;
+    private fail;
+    private stopOn;
+    private isNotFound;
+}
