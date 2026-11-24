@@ -10,6 +10,7 @@ exports.BookkeepingModule = void 0;
 const custom_columns_controller_1 = require("./custom-columns.controller");
 const custom_columns_service_1 = require("./custom-columns.service");
 const ledger_query_service_1 = require("./ledger-query.service");
+const names_query_service_1 = require("./names-query.service");
 const file_links_1 = require("./file-links");
 const common_1 = require("@nestjs/common");
 const openai_client_1 = require("../ai/openai.client");
@@ -63,6 +64,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
         ],
         providers: [
             ledger_query_service_1.LedgerQueryService,
+            names_query_service_1.NamesQueryService,
             attachment_extractor_1.AttachmentExtractor,
             attachment_processor_service_1.AttachmentProcessorService,
             attachments_service_1.AttachmentsService,

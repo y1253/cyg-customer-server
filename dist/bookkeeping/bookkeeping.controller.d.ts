@@ -15,6 +15,8 @@ import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerQueryDto } from './dto/ledger-query.dto';
 import { LedgerQueryService, type LedgerPage } from './ledger-query.service';
 import type { LedgerSummary } from './ledger-query.util';
+import { NamesPageDto, NamesSearchDto } from './dto/names-page.dto';
+import { NamesQueryService, type NamesPage } from './names-query.service';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -38,10 +40,11 @@ export declare class BookkeepingController {
     private readonly productMemory;
     private readonly fx;
     private readonly ledgerQuery;
+    private readonly namesQuery;
     private readonly prisma;
     private readonly communications;
     private readonly splitRules;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, ledgerQuery: LedgerQueryService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, ledgerQuery: LedgerQueryService, namesQuery: NamesQueryService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;
@@ -55,6 +58,8 @@ export declare class BookkeepingController {
     updateSplitGroup(scope: BookScope, id: number, dto: UpdateSplitGroupDto): Promise<SplitGroupView>;
     removeSplitGroup(scope: BookScope, id: number): Promise<void>;
     names(scope: BookScope): Promise<NamesView>;
+    namesPage(scope: BookScope, dto: NamesPageDto): Promise<NamesPage>;
+    namesUnrecognized(scope: BookScope, dto: NamesSearchDto): Promise<import("./tax.service").UnrecognizedView[]>;
     searchNames(scope: BookScope, q?: string): Promise<{
         name: string;
         key: string;

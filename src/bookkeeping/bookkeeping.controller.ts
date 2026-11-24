@@ -89,6 +89,8 @@ import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerQueryDto, ledgerQueryOf } from './dto/ledger-query.dto';
 import { LedgerQueryService, type LedgerPage } from './ledger-query.service';
 import type { LedgerSummary } from './ledger-query.util';
+import { NamesPageDto, NamesSearchDto, namesPageOf } from './dto/names-page.dto';
+import { NamesQueryService, type NamesPage } from './names-query.service';
 import { RetryAttachmentsDto } from './dto/retry-attachments.dto';
 import { LedgerExportService } from './export.service';
 import { FxService } from './fx.service';
@@ -140,6 +142,7 @@ export class BookkeepingController {
     private readonly productMemory: ProductMemoryService,
     private readonly fx: FxService,
     private readonly ledgerQuery: LedgerQueryService,
+    private readonly namesQuery: NamesQueryService,
     private readonly prisma: PrismaService,
     private readonly communications: CommunicationsService,
     private readonly splitRules: SplitRulesService,
@@ -224,6 +227,25 @@ export class BookkeepingController {
   @Get('names')
   names(@Book() scope: BookScope): Promise<NamesView> {
     return this.tax.names(scope);
+  }
+
+  /**
+   * step11 (2026-11-23, user's request): the Names tab page by page — filtered and searched
+   * here; the first page also carries the chip counts, Unclarified and the groups.
+   */
+  @Get('names/page')
+  namesPage(
+    @Book() scope: BookScope,
+    @Query() dto: NamesPageDto,
+  ): Promise<NamesPage> {
+    const { filter, q, offset, limit } = namesPageOf(dto);
+    return this.namesQuery.page(scope, { filter, q }, offset, limit);
+  }
+
+  /** step11 (2026-11-23): the nameless descriptions — loaded only when the tab shows them. */
+  @Get('names/unrecognized')
+  namesUnrecognized(@Book() scope: BookScope, @Query() dto: NamesSearchDto) {
+    return this.namesQuery.unrecognized(scope, dto.q);
   }
 
   /** step9: which names have rows whose bank description contains `q` (the Names-tab search). */

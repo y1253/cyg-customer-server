@@ -33,6 +33,8 @@ const agency_dto_1 = require("./dto/agency.dto");
 const reports_query_dto_1 = require("./dto/reports-query.dto");
 const ledger_query_dto_1 = require("./dto/ledger-query.dto");
 const ledger_query_service_1 = require("./ledger-query.service");
+const names_page_dto_1 = require("./dto/names-page.dto");
+const names_query_service_1 = require("./names-query.service");
 const retry_attachments_dto_1 = require("./dto/retry-attachments.dto");
 const export_service_1 = require("./export.service");
 const fx_service_1 = require("./fx.service");
@@ -60,10 +62,11 @@ let BookkeepingController = class BookkeepingController {
     productMemory;
     fx;
     ledgerQuery;
+    namesQuery;
     prisma;
     communications;
     splitRules;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, ledgerQuery, prisma, communications, splitRules) {
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, ledgerQuery, namesQuery, prisma, communications, splitRules) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -77,6 +80,7 @@ let BookkeepingController = class BookkeepingController {
         this.productMemory = productMemory;
         this.fx = fx;
         this.ledgerQuery = ledgerQuery;
+        this.namesQuery = namesQuery;
         this.prisma = prisma;
         this.communications = communications;
         this.splitRules = splitRules;
@@ -110,6 +114,13 @@ let BookkeepingController = class BookkeepingController {
     }
     names(scope) {
         return this.tax.names(scope);
+    }
+    namesPage(scope, dto) {
+        const { filter, q, offset, limit } = (0, names_page_dto_1.namesPageOf)(dto);
+        return this.namesQuery.page(scope, { filter, q }, offset, limit);
+    }
+    namesUnrecognized(scope, dto) {
+        return this.namesQuery.unrecognized(scope, dto.q);
     }
     searchNames(scope, q) {
         return this.tax.searchDescriptions(scope, String(q ?? '').slice(0, 100));
@@ -464,6 +475,22 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "names", null);
+__decorate([
+    (0, common_1.Get)('names/page'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, names_page_dto_1.NamesPageDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "namesPage", null);
+__decorate([
+    (0, common_1.Get)('names/unrecognized'),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Query)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, names_page_dto_1.NamesSearchDto]),
+    __metadata("design:returntype", void 0)
+], BookkeepingController.prototype, "namesUnrecognized", null);
 __decorate([
     (0, common_1.Get)('names/search'),
     __param(0, (0, book_scope_guard_1.Book)()),
@@ -975,6 +1002,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         product_memory_service_1.ProductMemoryService,
         fx_service_1.FxService,
         ledger_query_service_1.LedgerQueryService,
+        names_query_service_1.NamesQueryService,
         prisma_service_1.PrismaService,
         communications_service_1.CommunicationsService,
         split_rules_service_1.SplitRulesService])
