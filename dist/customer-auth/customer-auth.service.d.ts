@@ -12,6 +12,7 @@ import type { ResendSignupDto } from './dto/resend-signup.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { UpdateMeDto } from './dto/update-me.dto';
 import type { VerifySignupDto } from './dto/verify-signup.dto';
+import { StripeBillingService } from '../billing/stripe-billing.service';
 export declare const CUSTOMER_TOKEN_TYPE = "customer";
 export interface CustomerJwtPayload {
     sub: number;
@@ -57,6 +58,7 @@ export declare class CustomerAuthService {
     private readonly jwt;
     private readonly config;
     private readonly mail;
+    private readonly stripeBilling?;
     private readonly logger;
     private readonly hits;
     private readonly pending;
@@ -64,7 +66,7 @@ export declare class CustomerAuthService {
     private readonly emailCodes;
     private googleClient;
     private readonly codeMails;
-    constructor(prisma: PrismaService, jwt: JwtService, config: ConfigService, mail: MailService);
+    constructor(prisma: PrismaService, jwt: JwtService, config: ConfigService, mail: MailService, stripeBilling?: StripeBillingService | undefined);
     turnstileSiteKey(): string | null;
     verifyHuman(token: string | undefined, ip: string): Promise<void>;
     googleClientId(): string | null;

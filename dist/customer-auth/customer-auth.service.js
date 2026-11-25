@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var CustomerAuthService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomerAuthService = exports.SIGNUP_RESEND_MS = exports.SIGNUP_CODE_TRIES = exports.SIGNUP_CODE_TTL_MS = exports.AUTH_WINDOW_MS = exports.AUTH_LIMIT = exports.CUSTOMER_TOKEN_TYPE = void 0;
@@ -26,6 +29,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const phone_number_util_1 = require("./phone-number.util");
 const password_reset_email_1 = require("./password-reset-email");
 const signup_code_email_1 = require("./signup-code-email");
+const stripe_billing_service_1 = require("../billing/stripe-billing.service");
 exports.CUSTOMER_TOKEN_TYPE = 'customer';
 const BCRYPT_COST = 12;
 exports.AUTH_LIMIT = 5;
@@ -61,6 +65,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     jwt;
     config;
     mail;
+    stripeBilling;
     logger = new common_1.Logger(CustomerAuthService_1.name);
     hits = new Map();
     pending = new Map();
@@ -68,11 +73,12 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
     emailCodes = new Map();
     googleClient = null;
     codeMails;
-    constructor(prisma, jwt, config, mail) {
+    constructor(prisma, jwt, config, mail, stripeBilling) {
         this.prisma = prisma;
         this.jwt = jwt;
         this.config = config;
         this.mail = mail;
+        this.stripeBilling = stripeBilling;
         const perHour = Number(this.config.get('CODE_MAIL_MAX_PER_HOUR'));
         this.codeMails = new code_mail_limiter_1.CodeMailLimiter(Number.isFinite(perHour) && perHour > 0
             ? perHour
@@ -158,6 +164,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             },
         });
         await (0, books_1.ensureDefaultBook)(this.prisma, customer.id);
+        this.stripeBilling?.ensureStripeCustomerSoon(customer.id);
         return this.sign(customer);
     }
     async resendSignupCode(dto, ip) {
@@ -382,6 +389,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             where: { id: customerId },
             data: { email },
         });
+        this.stripeBilling?.syncStripeCustomerSoon(customerId);
         return toPublicCustomer(updated);
     }
     async issuePasswordCode(email, ip, onLimit) {
@@ -474,6 +482,7 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             },
         });
         await (0, books_1.ensureDefaultBook)(this.prisma, created.id);
+        this.stripeBilling?.ensureStripeCustomerSoon(created.id);
         return this.sign(created);
     }
     async findActive(id) {
@@ -519,6 +528,8 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
             where: { id },
             data,
         });
+        if (data.name !== undefined || data.phone !== undefined)
+            this.stripeBilling?.syncStripeCustomerSoon(id);
         return toPublicCustomer(customer);
     }
     async verifyGoogleCredential(credential) {
@@ -606,9 +617,11 @@ let CustomerAuthService = CustomerAuthService_1 = class CustomerAuthService {
 exports.CustomerAuthService = CustomerAuthService;
 exports.CustomerAuthService = CustomerAuthService = CustomerAuthService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         jwt_1.JwtService,
         config_1.ConfigService,
-        mail_service_1.MailService])
+        mail_service_1.MailService,
+        stripe_billing_service_1.StripeBillingService])
 ], CustomerAuthService);
 //# sourceMappingURL=customer-auth.service.js.map

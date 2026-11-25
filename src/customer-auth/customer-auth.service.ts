@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -41,6 +42,7 @@ import type { ResendSignupDto } from './dto/resend-signup.dto';
 import type { SignupDto } from './dto/signup.dto';
 import type { UpdateMeDto } from './dto/update-me.dto';
 import type { VerifySignupDto } from './dto/verify-signup.dto';
+import { StripeBillingService } from '../billing/stripe-billing.service';
 
 /** Marks a token as a CUSTOMER token. The strategy refuses anything else. */
 export const CUSTOMER_TOKEN_TYPE = 'customer';
@@ -201,6 +203,8 @@ export class CustomerAuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly mail: MailService,
+    /** 2026-11-25: every account gets a Stripe Customer (absent in the specs). */
+    @Optional() private readonly stripeBilling?: StripeBillingService,
   ) {
     const perHour = Number(this.config.get<string>('CODE_MAIL_MAX_PER_HOUR'));
     this.codeMails = new CodeMailLimiter(
@@ -314,6 +318,7 @@ export class CustomerAuthService {
       },
     });
     await ensureDefaultBook(this.prisma, customer.id);
+    this.stripeBilling?.ensureStripeCustomerSoon(customer.id);
     return this.sign(customer);
   }
 
@@ -630,6 +635,7 @@ export class CustomerAuthService {
       where: { id: customerId },
       data: { email },
     });
+    this.stripeBilling?.syncStripeCustomerSoon(customerId);
     return toPublicCustomer(updated);
   }
 
@@ -753,6 +759,7 @@ export class CustomerAuthService {
       },
     });
     await ensureDefaultBook(this.prisma, created.id);
+    this.stripeBilling?.ensureStripeCustomerSoon(created.id);
     return this.sign(created);
   }
 
@@ -819,6 +826,8 @@ export class CustomerAuthService {
       where: { id },
       data,
     });
+    if (data.name !== undefined || data.phone !== undefined)
+      this.stripeBilling?.syncStripeCustomerSoon(id);
     return toPublicCustomer(customer);
   }
 

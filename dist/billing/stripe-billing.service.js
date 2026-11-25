@@ -33,6 +33,7 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
     logger = new common_1.Logger(StripeBillingService_1.name);
     priceCache = null;
     syncing = false;
+    ensuring = false;
     constructor(prisma, config, stripeClient, subs) {
         this.prisma = prisma;
         this.config = config;
@@ -48,6 +49,11 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
             this.logger.error('STRIPE_WEBHOOK_SECRET is not set — subscription changes and failed payments arrive only through the hourly sync');
         if (this.stripeClient.configured && !this.stripeClient.priceId)
             this.logger.error('STRIPE_SUBSCRIPTION_PRICE_ID is not set — customers cannot subscribe');
+    }
+    onApplicationBootstrap() {
+        if (!this.stripeClient.configured)
+            return;
+        setTimeout(() => void this.ensureAllStripeCustomers(), 120_000).unref();
     }
     async price() {
         if (this.priceCache && Date.now() - this.priceCache.at < PRICE_CACHE_MS)
@@ -216,8 +222,10 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
         switch (event.type) {
             case 'checkout.session.completed': {
                 const s = event.data.object;
-                if (s.mode === 'subscription' && s.subscription)
+                if (s.mode === 'subscription' && s.subscription) {
                     await this.syncSubscription(idOf(s.subscription));
+                    await this.saveDefaultCard(idOf(s.subscription));
+                }
                 return;
             }
             case 'customer.subscription.created':
@@ -396,6 +404,7 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
                 }
             }
             await this.adoptMissing();
+            await this.ensureAllStripeCustomers();
             if (rows.length || invoices)
                 this.logger.log(`hourly sync: ${rows.length} subscription(s), ${invoices} invoice row(s) recorded late`);
         }
@@ -434,35 +443,97 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
         return added;
     }
     async adoptMissing() {
-        const customers = await this.prisma.customer.findMany({
-            where: {
-                stripeCustomerId: { not: null },
-                deletedAt: null,
-                OR: [
-                    { subscription: null },
-                    { subscription: { stripeSubscriptionId: null } },
-                ],
-            },
-            select: { id: true, stripeCustomerId: true },
-            take: 100,
+        const sessions = await this.stripeClient.stripe.checkout.sessions.list({
+            status: 'complete',
+            created: { gte: Math.floor(Date.now() / 1000) - 72 * 3_600 },
+            limit: 100,
         });
-        for (const c of customers) {
+        for (const s of sessions.data) {
+            const subId = s.mode === 'subscription' ? idOf(s.subscription) : null;
+            if (!subId)
+                continue;
+            const known = await this.prisma.customerSubscription.findFirst({
+                where: { stripeSubscriptionId: subId },
+                select: { id: true },
+            });
+            if (known)
+                continue;
             try {
-                const list = await this.stripeClient.stripe.subscriptions.list({
-                    customer: c.stripeCustomerId,
-                    status: 'all',
-                    limit: 3,
-                });
-                const live = list.data.find((s) => !FINISHED.includes(s.status));
-                if (live) {
-                    await this.syncSubscription(live.id);
-                    await this.syncInvoices(live.id);
-                }
+                await this.syncSubscription(subId);
+                await this.syncInvoices(subId);
+                await this.saveDefaultCard(subId);
+                this.logger.log(`adopted subscription ${subId} (checkout ${s.id})`);
             }
             catch (err) {
-                this.logger.warn(`adopt customer ${c.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+                this.logger.warn(`adopt ${subId} failed: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
+    }
+    async saveDefaultCard(subscriptionId) {
+        try {
+            const sub = await this.stripeClient.stripe.subscriptions.retrieve(subscriptionId);
+            const pm = idOf(sub.default_payment_method);
+            const cus = idOf(sub.customer);
+            if (!pm || !cus)
+                return;
+            await this.stripeClient.stripe.customers.update(cus, {
+                invoice_settings: { default_payment_method: pm },
+            });
+        }
+        catch (err) {
+            this.logger.warn(`default card of ${subscriptionId} not saved: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    async ensureAllStripeCustomers() {
+        if (this.ensuring || !this.stripeClient.configured)
+            return 0;
+        this.ensuring = true;
+        let made = 0;
+        try {
+            const missing = await this.prisma.customer.findMany({
+                where: { stripeCustomerId: null, deletedAt: null },
+                select: { id: true },
+                orderBy: { id: 'asc' },
+                take: 50,
+            });
+            for (const c of missing) {
+                try {
+                    await this.ensureStripeCustomer(c.id);
+                    made++;
+                }
+                catch (err) {
+                    this.logger.warn(`Stripe customer for customer ${c.id} not made: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
+            if (made)
+                this.logger.log(`made ${made} Stripe customer(s)`);
+        }
+        catch (err) {
+            this.logger.warn(`Stripe customer sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        finally {
+            this.ensuring = false;
+        }
+        return made;
+    }
+    ensureStripeCustomerSoon(customerId) {
+        if (!this.stripeClient.configured)
+            return;
+        this.ensureStripeCustomer(customerId).catch((err) => this.logger.warn(`Stripe customer for new customer ${customerId} not made: ${err instanceof Error ? err.message : String(err)}`));
+    }
+    syncStripeCustomerSoon(customerId) {
+        if (!this.stripeClient.configured)
+            return;
+        void (async () => {
+            const c = await this.prisma.customer.findUnique({ where: { id: customerId } });
+            if (!c?.stripeCustomerId || c.deletedAt)
+                return;
+            await this.stripeClient.stripe.customers.update(c.stripeCustomerId, {
+                email: c.email ?? '',
+                name: c.name || '',
+                phone: c.phone ?? '',
+            });
+        })().catch((err) => this.logger.warn(`Stripe customer of customer ${customerId} not updated: ${err instanceof Error ? err.message : String(err)}`));
     }
     async customerOf(metaId, stripeCustomerId) {
         const n = Number(metaId);
@@ -495,7 +566,7 @@ let StripeBillingService = StripeBillingService_1 = class StripeBillingService {
             name: customer.name || undefined,
             phone: customer.phone ?? undefined,
             metadata: { customerId: String(customerId) },
-        });
+        }, { idempotencyKey: `cyg-customer-${customerId}` });
         const { count } = await this.prisma.customer.updateMany({
             where: { id: customerId, stripeCustomerId: null },
             data: { stripeCustomerId: created.id },

@@ -4,9 +4,11 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { StripeBillingService } from '../billing/stripe-billing.service';
 import { CustomerAuthType, CustomerCreatedWith } from '@prisma/client';
 import { createHash, randomInt, timingSafeEqual } from 'crypto';
 import { ensureDefaultBook } from '../bookkeeping/books';
@@ -82,6 +84,8 @@ export class PhoneAuthService {
     private readonly config: ConfigService,
     private readonly auth: CustomerAuthService,
     private readonly messenger: CustomerMessenger,
+    /** 2026-11-25: every account gets a Stripe Customer (absent in the specs). */
+    @Optional() private readonly stripeBilling?: StripeBillingService,
   ) {
     const perHour = Number(this.config.get<string>('CODE_MAIL_MAX_PER_HOUR'));
     this.limiter = new CodeMailLimiter(
@@ -235,6 +239,7 @@ export class PhoneAuthService {
       },
     });
     await ensureDefaultBook(this.prisma, customer.id);
+    this.stripeBilling?.ensureStripeCustomerSoon(customer.id);
     await this.linkProspect(phone, customer.id);
     this.logger.log(
       `account #${customer.id} opened by ${createdWith} for ${maskPhone(phone)}`,

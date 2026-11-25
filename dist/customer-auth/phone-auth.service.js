@@ -8,11 +8,15 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var PhoneAuthService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PhoneAuthService = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
+const stripe_billing_service_1 = require("../billing/stripe-billing.service");
 const client_1 = require("@prisma/client");
 const crypto_1 = require("crypto");
 const books_1 = require("../bookkeeping/books");
@@ -29,14 +33,16 @@ let PhoneAuthService = PhoneAuthService_1 = class PhoneAuthService {
     config;
     auth;
     messenger;
+    stripeBilling;
     logger = new common_1.Logger(PhoneAuthService_1.name);
     codes = new Map();
     limiter;
-    constructor(prisma, config, auth, messenger) {
+    constructor(prisma, config, auth, messenger, stripeBilling) {
         this.prisma = prisma;
         this.config = config;
         this.auth = auth;
         this.messenger = messenger;
+        this.stripeBilling = stripeBilling;
         const perHour = Number(this.config.get('CODE_MAIL_MAX_PER_HOUR'));
         this.limiter = new code_mail_limiter_1.CodeMailLimiter(Number.isFinite(perHour) && perHour > 0
             ? perHour
@@ -147,6 +153,7 @@ let PhoneAuthService = PhoneAuthService_1 = class PhoneAuthService {
             },
         });
         await (0, books_1.ensureDefaultBook)(this.prisma, customer.id);
+        this.stripeBilling?.ensureStripeCustomerSoon(customer.id);
         await this.linkProspect(phone, customer.id);
         this.logger.log(`account #${customer.id} opened by ${createdWith} for ${maskPhone(phone)}`);
         return { customerId: customer.id, created: true };
@@ -180,9 +187,11 @@ let PhoneAuthService = PhoneAuthService_1 = class PhoneAuthService {
 exports.PhoneAuthService = PhoneAuthService;
 exports.PhoneAuthService = PhoneAuthService = PhoneAuthService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(4, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         customer_auth_service_1.CustomerAuthService,
-        customer_messenger_service_1.CustomerMessenger])
+        customer_messenger_service_1.CustomerMessenger,
+        stripe_billing_service_1.StripeBillingService])
 ], PhoneAuthService);
 //# sourceMappingURL=phone-auth.service.js.map

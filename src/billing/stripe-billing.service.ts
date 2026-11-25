@@ -6,6 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
+  type OnApplicationBootstrap,
   type OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -95,10 +96,11 @@ const PRICE_CACHE_MS = 3_600_000;
  *   end) and their last 40 days of invoices — a missed webhook still lands, exactly once.
  */
 @Injectable()
-export class StripeBillingService implements OnModuleInit {
+export class StripeBillingService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(StripeBillingService.name);
   private priceCache: { at: number; price: PlanPrice } | null = null;
   private syncing = false;
+  private ensuring = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -120,6 +122,12 @@ export class StripeBillingService implements OnModuleInit {
       this.logger.error(
         'STRIPE_SUBSCRIPTION_PRICE_ID is not set — customers cannot subscribe',
       );
+  }
+
+  /** Every account gets its Stripe Customer — the first sweep two minutes after start. */
+  onApplicationBootstrap(): void {
+    if (!this.stripeClient.configured) return;
+    setTimeout(() => void this.ensureAllStripeCustomers(), 120_000).unref();
   }
 
   /** The plan's price, from Stripe (cached 1 h). Null when Stripe is not set up. */
@@ -317,8 +325,10 @@ export class StripeBillingService implements OnModuleInit {
     switch (event.type) {
       case 'checkout.session.completed': {
         const s = event.data.object;
-        if (s.mode === 'subscription' && s.subscription)
+        if (s.mode === 'subscription' && s.subscription) {
           await this.syncSubscription(idOf(s.subscription)!);
+          await this.saveDefaultCard(idOf(s.subscription)!);
+        }
         return;
       }
       case 'customer.subscription.created':
@@ -566,6 +576,7 @@ export class StripeBillingService implements OnModuleInit {
       }
       // Customers who paid in Checkout whose webhook never came: find their subscription.
       await this.adoptMissing();
+      await this.ensureAllStripeCustomers();
       if (rows.length || invoices)
         this.logger.log(
           `hourly sync: ${rows.length} subscription(s), ${invoices} invoice row(s) recorded late`,
@@ -612,38 +623,128 @@ export class StripeBillingService implements OnModuleInit {
     return added;
   }
 
-  /** A Stripe Customer of ours with a live subscription we have no row for. */
+  /**
+   * A Checkout completed in the last 72 h whose subscription we have no row for (its
+   * `checkout.session.completed` was lost). One Stripe call, however many accounts there
+   * are — every account has a Stripe Customer now, so listing per customer would not scale.
+   */
   private async adoptMissing(): Promise<void> {
-    const customers = await this.prisma.customer.findMany({
-      where: {
-        stripeCustomerId: { not: null },
-        deletedAt: null,
-        OR: [
-          { subscription: null },
-          { subscription: { stripeSubscriptionId: null } },
-        ],
-      },
-      select: { id: true, stripeCustomerId: true },
-      take: 100,
+    const sessions = await this.stripeClient.stripe.checkout.sessions.list({
+      status: 'complete',
+      created: { gte: Math.floor(Date.now() / 1000) - 72 * 3_600 },
+      limit: 100,
     });
-    for (const c of customers) {
+    for (const s of sessions.data) {
+      const subId = s.mode === 'subscription' ? idOf(s.subscription) : null;
+      if (!subId) continue;
+      const known = await this.prisma.customerSubscription.findFirst({
+        where: { stripeSubscriptionId: subId },
+        select: { id: true },
+      });
+      if (known) continue;
       try {
-        const list = await this.stripeClient.stripe.subscriptions.list({
-          customer: c.stripeCustomerId!,
-          status: 'all',
-          limit: 3,
-        });
-        const live = list.data.find((s) => !FINISHED.includes(s.status));
-        if (live) {
-          await this.syncSubscription(live.id);
-          await this.syncInvoices(live.id);
-        }
+        await this.syncSubscription(subId);
+        await this.syncInvoices(subId);
+        await this.saveDefaultCard(subId);
+        this.logger.log(`adopted subscription ${subId} (checkout ${s.id})`);
       } catch (err) {
         this.logger.warn(
-          `adopt customer ${c.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+          `adopt ${subId} failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
+  }
+
+  /**
+   * The card a Checkout saved becomes the Stripe Customer's default too (Checkout makes it
+   * only the subscription's), so the Billing Portal shows it and anything billed later
+   * uses it. Never throws.
+   */
+  private async saveDefaultCard(subscriptionId: string): Promise<void> {
+    try {
+      const sub = await this.stripeClient.stripe.subscriptions.retrieve(subscriptionId);
+      const pm = idOf(sub.default_payment_method);
+      const cus = idOf(sub.customer);
+      if (!pm || !cus) return;
+      await this.stripeClient.stripe.customers.update(cus, {
+        invoice_settings: { default_payment_method: pm },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `default card of ${subscriptionId} not saved: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * A Stripe Customer for every live account that has none (user's request 2026-11-25:
+   * "every user should get a Stripe id"): 2 minutes after start, then hourly, 50 a run.
+   * A failure is logged and tried again next hour; never throws.
+   */
+  async ensureAllStripeCustomers(): Promise<number> {
+    if (this.ensuring || !this.stripeClient.configured) return 0;
+    this.ensuring = true;
+    let made = 0;
+    try {
+      const missing = await this.prisma.customer.findMany({
+        where: { stripeCustomerId: null, deletedAt: null },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: 50,
+      });
+      for (const c of missing) {
+        try {
+          await this.ensureStripeCustomer(c.id);
+          made++;
+        } catch (err) {
+          this.logger.warn(
+            `Stripe customer for customer ${c.id} not made: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      if (made) this.logger.log(`made ${made} Stripe customer(s)`);
+    } catch (err) {
+      this.logger.warn(
+        `Stripe customer sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.ensuring = false;
+    }
+    return made;
+  }
+
+  /**
+   * A new account's Stripe Customer, in the background — sign-up never waits on Stripe or
+   * fails because of it (the hourly sweep makes it later when this one fails).
+   */
+  ensureStripeCustomerSoon(customerId: number): void {
+    if (!this.stripeClient.configured) return;
+    this.ensureStripeCustomer(customerId).catch((err) =>
+      this.logger.warn(
+        `Stripe customer for new customer ${customerId} not made: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  }
+
+  /**
+   * The account's name, email and phone copied onto its Stripe Customer (receipts and
+   * failed-payment emails go to Stripe's copy). Background; never throws.
+   */
+  syncStripeCustomerSoon(customerId: number): void {
+    if (!this.stripeClient.configured) return;
+    void (async () => {
+      const c = await this.prisma.customer.findUnique({ where: { id: customerId } });
+      if (!c?.stripeCustomerId || c.deletedAt) return;
+      await this.stripeClient.stripe.customers.update(c.stripeCustomerId, {
+        email: c.email ?? '',
+        name: c.name || '',
+        phone: c.phone ?? '',
+      });
+    })().catch((err) =>
+      this.logger.warn(
+        `Stripe customer of customer ${customerId} not updated: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -674,12 +775,16 @@ export class StripeBillingService implements OnModuleInit {
     });
     if (!customer || customer.deletedAt) throw new UnauthorizedException();
     if (customer.stripeCustomerId) return customer.stripeCustomerId;
-    const created = await this.stripeClient.stripe.customers.create({
-      email: customer.email ?? undefined,
-      name: customer.name || undefined,
-      phone: customer.phone ?? undefined,
-      metadata: { customerId: String(customerId) },
-    });
+    // The key makes a sweep and a Subscribe click racing each other create ONE customer.
+    const created = await this.stripeClient.stripe.customers.create(
+      {
+        email: customer.email ?? undefined,
+        name: customer.name || undefined,
+        phone: customer.phone ?? undefined,
+        metadata: { customerId: String(customerId) },
+      },
+      { idempotencyKey: `cyg-customer-${customerId}` },
+    );
     // Only the first concurrent request wins; a loser uses the winner's id.
     const { count } = await this.prisma.customer.updateMany({
       where: { id: customerId, stripeCustomerId: null },

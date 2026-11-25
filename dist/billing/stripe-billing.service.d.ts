@@ -1,4 +1,4 @@
-import { type OnModuleInit } from '@nestjs/common';
+import { type OnApplicationBootstrap, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type BillingTransaction, type CustomerSubscription } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -45,7 +45,7 @@ export interface SubscriptionView {
     hasStripeCustomer: boolean;
     transactions: BillingTransactionView[];
 }
-export declare class StripeBillingService implements OnModuleInit {
+export declare class StripeBillingService implements OnModuleInit, OnApplicationBootstrap {
     private readonly prisma;
     private readonly config;
     private readonly stripeClient;
@@ -53,8 +53,10 @@ export declare class StripeBillingService implements OnModuleInit {
     private readonly logger;
     private priceCache;
     private syncing;
+    private ensuring;
     constructor(prisma: PrismaService, config: ConfigService, stripeClient: StripeClient, subs: SubscriptionService);
     onModuleInit(): void;
+    onApplicationBootstrap(): void;
     price(): Promise<PlanPrice | null>;
     view(customerId: number): Promise<SubscriptionView>;
     startCheckout(customerId: number): Promise<{
@@ -77,6 +79,10 @@ export declare class StripeBillingService implements OnModuleInit {
     syncAll(): Promise<void>;
     private syncInvoices;
     private adoptMissing;
+    private saveDefaultCard;
+    ensureAllStripeCustomers(): Promise<number>;
+    ensureStripeCustomerSoon(customerId: number): void;
+    syncStripeCustomerSoon(customerId: number): void;
     private customerOf;
     ensureStripeCustomer(customerId: number): Promise<string>;
 }
