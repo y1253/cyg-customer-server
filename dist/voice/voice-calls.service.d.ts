@@ -8,6 +8,7 @@ import { AssistantService } from '../assistant/assistant.service';
 import { CustomerOutbox } from '../assistant/customer-outbox.service';
 import { type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { type CallPurpose, type PersonCallOutcome, type VoiceTokenClaims } from './voice.util';
@@ -54,11 +55,12 @@ export declare class VoiceCallsService implements OnModuleInit {
     private readonly outbox?;
     private readonly usage?;
     private readonly chats?;
+    private readonly subscriptions?;
     private readonly logger;
     private readonly jwt;
     readonly outboundMissed$: Subject<OutboundMissed>;
     private readonly personCalls;
-    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined, usage?: CommUsageService | undefined, chats?: AssistantService | undefined);
+    constructor(prisma: PrismaService, config: ConfigService, signalwire: SignalWireClient, storage: ObjectStorageService, tools?: AssistantTools | undefined, outbox?: CustomerOutbox | undefined, usage?: CommUsageService | undefined, chats?: AssistantService | undefined, subscriptions?: SubscriptionService | undefined);
     onModuleInit(): void;
     callMeNow(ctx: ToolContext, about: string): Promise<{
         ok: true;
@@ -104,6 +106,7 @@ export declare class VoiceCallsService implements OnModuleInit {
     }): void;
     private reportPersonCall;
     private reportToCustomer;
+    planRefusal(customerId: number): Promise<string | null>;
     overCallLimit(customerId: number): Promise<boolean>;
     settings(): Promise<VoiceSettings>;
     canCall(): Promise<boolean>;

@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { type BookScope } from './scope';
 export interface NameFolderView {
@@ -33,10 +34,11 @@ export interface PhoneUploadClaims {
 export declare class NameFilesService {
     private readonly prisma;
     private readonly config;
+    private readonly subscriptions?;
     private readonly logger;
     private readonly jwt;
     private readonly welcomeSent;
-    constructor(prisma: PrismaService, config: ConfigService);
+    constructor(prisma: PrismaService, config: ConfigService, subscriptions?: SubscriptionService | undefined);
     folders(scope: BookScope): Promise<NameFolderView[]>;
     createFolder(scope: BookScope, name: string | null, parentId: number | null, rawTitle: string): Promise<NameFolderView[]>;
     renameFolder(scope: BookScope, id: number, rawTitle: string): Promise<NameFolderView[]>;

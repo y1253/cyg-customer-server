@@ -16,6 +16,7 @@ exports.CustomerAuthController = void 0;
 const common_1 = require("@nestjs/common");
 const customer_auth_service_1 = require("./customer-auth.service");
 const customer_jwt_guard_1 = require("./customer-jwt.guard");
+const no_subscription_needed_decorator_1 = require("./no-subscription-needed.decorator");
 const change_password_dto_1 = require("./dto/change-password.dto");
 const email_change_dto_1 = require("./dto/email-change.dto");
 const forgot_password_dto_1 = require("./dto/forgot-password.dto");
@@ -208,6 +209,7 @@ __decorate([
 ], CustomerAuthController.prototype, "verifyEmail", null);
 exports.CustomerAuthController = CustomerAuthController = __decorate([
     (0, common_1.Controller)('customer-auth'),
+    (0, no_subscription_needed_decorator_1.NoSubscriptionNeeded)(),
     __metadata("design:paramtypes", [customer_auth_service_1.CustomerAuthService])
 ], CustomerAuthController);
 //# sourceMappingURL=customer-auth.controller.js.map

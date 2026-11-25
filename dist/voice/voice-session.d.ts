@@ -5,6 +5,7 @@ import type { AssistantService } from '../assistant/assistant.service';
 import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { SalesService } from '../sales/sales.service';
+import type { SubscriptionService } from '../billing/subscription.service';
 import { type LiveCall } from './live-calls';
 import type { VoiceCallsService } from './voice-calls.service';
 export interface VoiceDeps {
@@ -15,6 +16,7 @@ export interface VoiceDeps {
     signalwire: SignalWireClient;
     usage?: AiUsageService;
     sales?: SalesService;
+    subscriptions?: SubscriptionService;
     openaiKey: string | null;
     model: string | null;
     connect?: (url: string, headers: Record<string, string>) => WebSocket;
@@ -52,6 +54,7 @@ export declare class VoiceSession implements LiveCall {
     private claims;
     private conversation;
     private prospect;
+    private locked;
     private startedAt;
     private model;
     private settings;

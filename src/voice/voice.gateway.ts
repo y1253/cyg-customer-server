@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage, Server } from 'http';
 import type { Duplex } from 'stream';
@@ -9,6 +9,7 @@ import { AssistantService } from '../assistant/assistant.service';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService } from '../sales/sales.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { VoiceCallsService } from './voice-calls.service';
 import { VoiceSession } from './voice-session';
 
@@ -36,6 +37,8 @@ export class VoiceGateway implements OnModuleDestroy {
     private readonly signalwire: SignalWireClient,
     private readonly usage: AiUsageService,
     private readonly sales: SalesService,
+    /** 2026-11-25: locked accounts talk to the salesperson; trial minutes cap a call. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   attach(server: Server): void {
@@ -53,6 +56,7 @@ export class VoiceGateway implements OnModuleDestroy {
             signalwire: this.signalwire,
             usage: this.usage,
             sales: this.sales,
+            subscriptions: this.subscriptions,
             openaiKey:
               this.config.get<string>('OPENAI_API_KEY')?.trim() || null,
             model:

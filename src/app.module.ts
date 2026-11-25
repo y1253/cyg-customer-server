@@ -19,6 +19,7 @@ import { SchedulesModule } from './schedules/schedules.module';
 import { SalesModule } from './sales/sales.module';
 import { VoiceModule } from './voice/voice.module';
 import { StorageModule } from './storage/storage.module';
+import { SubscriptionModule } from './billing/subscription.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { StorageModule } from './storage/storage.module';
     CommUsageModule,
     StorageModule,
     MailModule,
+    SubscriptionModule,
     ContactModule,
     CustomerAuthModule,
     BookkeepingModule,

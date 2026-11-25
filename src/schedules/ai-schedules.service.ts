@@ -1,10 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { AiSchedule, AiScheduleRun } from '@prisma/client';
 import { AssistantService } from '../assistant/assistant.service';
 import { scopeOf, type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { answerHtml } from '../mail/answer-html';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceCallsService } from '../voice/voice-calls.service';
 import { spokenScript } from '../voice/voice.util';
@@ -71,6 +77,8 @@ export class AiSchedulesService implements OnModuleInit {
     private readonly assistant: AssistantService,
     private readonly messenger: CustomerMessenger,
     private readonly voice: VoiceCallsService,
+    /** 2026-11-25: nothing is sent while the customer's plan is not active. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   /** step12b: an AI schedule's call nobody answered is sent again by text / email. */
@@ -210,6 +218,16 @@ export class AiSchedulesService implements OnModuleInit {
         error: 'This book no longer exists.',
       });
     }
+    // 2026-11-25: a plan that is not active (trial used up, cancelled, unpaid) pauses it.
+    const plan = await this.subscriptions
+      ?.state(scope.customerId)
+      .catch(() => null);
+    if (plan && !plan.active)
+      return record({
+        channel: 'NONE',
+        ok: true,
+        text: 'Not sent: the CYG Finance plan is not active.',
+      });
     const delivery = await this.delivery(s, mode === 'NO_CALL');
     if (!delivery.channel || !delivery.to) {
       return record({

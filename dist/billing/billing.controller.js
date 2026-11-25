@@ -14,34 +14,29 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingWebhookController = exports.BillingController = void 0;
 const common_1 = require("@nestjs/common");
-const book_scope_guard_1 = require("../bookkeeping/book-scope.guard");
 const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
-const billing_service_1 = require("./billing.service");
+const no_subscription_needed_decorator_1 = require("../customer-auth/no-subscription-needed.decorator");
 const billing_dto_1 = require("./dto/billing.dto");
+const stripe_billing_service_1 = require("./stripe-billing.service");
 let BillingController = class BillingController {
     billing;
     constructor(billing) {
         this.billing = billing;
     }
-    config() {
-        return this.billing.config();
+    async config() {
+        return { price: await this.billing.price() };
     }
-    quote(dto) {
-        return this.billing.quote(dto.promoCode);
+    subscription(req) {
+        return this.billing.view(req.user.customerId);
     }
-    cards(req) {
-        return this.billing.cards(req.user.customerId);
+    subscribe(req) {
+        return this.billing.startCheckout(req.user.customerId);
     }
-    async removeCard(req, id) {
-        if (!/^pm_[A-Za-z0-9]+$/.test(id))
-            throw new common_1.BadRequestException('Invalid card');
-        await this.billing.removeCard(req.user.customerId, id);
+    portal(req) {
+        return this.billing.portal(req.user.customerId);
     }
-    checkout(scope, dto) {
-        return this.billing.checkout(scope, dto.promoCode, dto.paymentMethodId);
-    }
-    complete(scope, dto) {
-        return this.billing.complete(scope, dto.paymentIntentId);
+    redeem(req, dto) {
+        return this.billing.redeemPromo(req.user.customerId, dto.promoCode);
     }
 };
 exports.BillingController = BillingController;
@@ -52,53 +47,42 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BillingController.prototype, "config", null);
 __decorate([
-    (0, common_1.Post)('quote'),
-    (0, common_1.HttpCode)(200),
-    __param(0, (0, common_1.Body)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [billing_dto_1.QuoteDto]),
-    __metadata("design:returntype", Promise)
-], BillingController.prototype, "quote", null);
-__decorate([
-    (0, common_1.Get)('cards'),
+    (0, common_1.Get)('subscription'),
     __param(0, (0, common_1.Req)()),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
-], BillingController.prototype, "cards", null);
+], BillingController.prototype, "subscription", null);
 __decorate([
-    (0, common_1.Delete)('cards/:id'),
-    (0, common_1.HttpCode)(204),
+    (0, common_1.Post)('subscribe'),
+    (0, common_1.HttpCode)(200),
     __param(0, (0, common_1.Req)()),
-    __param(1, (0, common_1.Param)('id')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
-], BillingController.prototype, "removeCard", null);
+], BillingController.prototype, "subscribe", null);
 __decorate([
-    (0, common_1.Post)('checkout'),
+    (0, common_1.Post)('portal'),
     (0, common_1.HttpCode)(200),
-    (0, common_1.UseGuards)(book_scope_guard_1.BookScopeGuard),
-    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], BillingController.prototype, "portal", null);
+__decorate([
+    (0, common_1.Post)('redeem'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Body)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, billing_dto_1.CheckoutDto]),
+    __metadata("design:paramtypes", [Object, billing_dto_1.RedeemDto]),
     __metadata("design:returntype", Promise)
-], BillingController.prototype, "checkout", null);
-__decorate([
-    (0, common_1.Post)('complete'),
-    (0, common_1.HttpCode)(200),
-    (0, common_1.UseGuards)(book_scope_guard_1.BookScopeGuard),
-    __param(0, (0, book_scope_guard_1.Book)()),
-    __param(1, (0, common_1.Body)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, billing_dto_1.CompleteDto]),
-    __metadata("design:returntype", Promise)
-], BillingController.prototype, "complete", null);
+], BillingController.prototype, "redeem", null);
 exports.BillingController = BillingController = __decorate([
     (0, common_1.Controller)('billing'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard),
-    __metadata("design:paramtypes", [billing_service_1.BillingService])
+    (0, no_subscription_needed_decorator_1.NoSubscriptionNeeded)(),
+    __metadata("design:paramtypes", [stripe_billing_service_1.StripeBillingService])
 ], BillingController);
 let BillingWebhookController = class BillingWebhookController {
     billing;
@@ -124,6 +108,6 @@ __decorate([
 ], BillingWebhookController.prototype, "webhook", null);
 exports.BillingWebhookController = BillingWebhookController = __decorate([
     (0, common_1.Controller)('billing'),
-    __metadata("design:paramtypes", [billing_service_1.BillingService])
+    __metadata("design:paramtypes", [stripe_billing_service_1.StripeBillingService])
 ], BillingWebhookController);
 //# sourceMappingURL=billing.controller.js.map

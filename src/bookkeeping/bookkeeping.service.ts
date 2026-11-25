@@ -2,8 +2,6 @@ import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import {
   BadRequestException,
-  HttpException,
-  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -18,7 +16,7 @@ import {
 } from '@prisma/client';
 import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
-import { readPricing } from '../billing/pricing';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import {
@@ -442,6 +440,8 @@ export class BookkeepingService {
     private readonly fx: FxService,
     /** step9: the saved statement errors. Optional for specs that build this by hand. */
     @Optional() private readonly errors?: StatementErrorsService,
+    /** 2026-11-25: the monthly / trial transaction limit. Optional for specs. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   /**
@@ -483,20 +483,15 @@ export class BookkeepingService {
   }
 
   /**
-   * The customer's own `POST /bookkeeping/generate`: allowed only when it costs nothing —
-   * the admin price is $0, or there are no new statements (a tax-only re-run is free).
-   * A paid Generate goes through billing (`BillingService`), which calls `generate` itself
-   * once the payment is recorded.
+   * The customer's own `POST /bookkeeping/generate` (2026-11-25: free with the plan). New
+   * statements wait while the monthly / trial transaction limit is reached (429). A
+   * tax-only re-run (nothing waiting) is never refused.
    */
-  async generateIfFree(
+  async generateChecked(
     scope: BookScope,
   ): Promise<{ queued: number; taxing: boolean }> {
-    const waiting = await this.waitingCount(scope);
-    if (waiting && (await readPricing(this.prisma)).generatePriceCents > 0)
-      throw new HttpException(
-        'Payment required — pay to read your new statements.',
-        HttpStatus.PAYMENT_REQUIRED,
-      );
+    if (this.subscriptions && (await this.waitingCount(scope)))
+      await this.subscriptions.assertCanAddTransactions(scope.customerId);
     return this.generate(scope);
   }
 

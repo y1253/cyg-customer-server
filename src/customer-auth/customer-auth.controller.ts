@@ -16,6 +16,7 @@ import {
   type SignupStarted,
 } from './customer-auth.service';
 import { CustomerJwtGuard } from './customer-jwt.guard';
+import { NoSubscriptionNeeded } from './no-subscription-needed.decorator';
 import type { CustomerRequestUser } from './customer-jwt.strategy';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { EmailCodeDto, EmailVerifyDto } from './dto/email-change.dto';
@@ -32,9 +33,11 @@ type AuthedRequest = Request & { user: CustomerRequestUser };
 
 /**
  * `/api/customer-auth` — customer accounts for cygfinance.com. There is no logout route:
- * sessions are stateless and signing out is the client discarding its token.
+ * sessions are stateless and signing out is the client discarding its token. Open to a
+ * customer with no active plan (2026-11-25) — they still sign in and edit their profile.
  */
 @Controller('customer-auth')
+@NoSubscriptionNeeded()
 export class CustomerAuthController {
   constructor(private readonly auth: CustomerAuthService) {}
 

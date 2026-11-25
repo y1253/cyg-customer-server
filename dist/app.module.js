@@ -28,6 +28,7 @@ const schedules_module_1 = require("./schedules/schedules.module");
 const sales_module_1 = require("./sales/sales.module");
 const voice_module_1 = require("./voice/voice.module");
 const storage_module_1 = require("./storage/storage.module");
+const subscription_module_1 = require("./billing/subscription.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -41,6 +42,7 @@ exports.AppModule = AppModule = __decorate([
             comm_usage_module_1.CommUsageModule,
             storage_module_1.StorageModule,
             mail_module_1.MailModule,
+            subscription_module_1.SubscriptionModule,
             contact_module_1.ContactModule,
             customer_auth_module_1.CustomerAuthModule,
             bookkeeping_module_1.BookkeepingModule,

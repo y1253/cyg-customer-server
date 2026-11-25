@@ -13,6 +13,7 @@ const ai_contacts_module_1 = require("../ai-contacts/ai-contacts.module");
 const bookkeeping_module_1 = require("../bookkeeping/bookkeeping.module");
 const customer_auth_module_1 = require("../customer-auth/customer-auth.module");
 const messaging_module_1 = require("../messaging/messaging.module");
+const sales_module_1 = require("../sales/sales.module");
 const ai_schedules_store_1 = require("../schedules/ai-schedules.store");
 const assistant_controller_1 = require("./assistant.controller");
 const contact_relay_service_1 = require("./contact-relay.service");
@@ -33,6 +34,7 @@ exports.AssistantModule = AssistantModule = __decorate([
             bookkeeping_module_1.BookkeepingModule,
             customer_auth_module_1.CustomerAuthModule,
             messaging_module_1.MessagingModule,
+            sales_module_1.SalesModule,
         ],
         controllers: [
             assistant_controller_1.AssistantConfigController,

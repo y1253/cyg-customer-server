@@ -89,7 +89,7 @@ let BookkeepingController = class BookkeepingController {
         return (0, books_1.bookOwnerName)(this.prisma, scope);
     }
     generate(scope) {
-        return this.bookkeeping.generateIfFree(scope);
+        return this.bookkeeping.generateChecked(scope);
     }
     taxSettings(scope) {
         return this.tax.settings(scope);

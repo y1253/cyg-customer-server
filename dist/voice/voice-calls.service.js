@@ -27,6 +27,7 @@ const books_1 = require("../bookkeeping/books");
 const scope_1 = require("../bookkeeping/scope");
 const signalwire_client_1 = require("../messaging/signalwire.client");
 const messaging_util_1 = require("../messaging/messaging.util");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const voice_util_1 = require("./voice.util");
@@ -41,11 +42,12 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     outbox;
     usage;
     chats;
+    subscriptions;
     logger = new common_1.Logger(VoiceCallsService_1.name);
     jwt;
     outboundMissed$ = new rxjs_1.Subject();
     personCalls = new Map();
-    constructor(prisma, config, signalwire, storage, tools, outbox, usage, chats) {
+    constructor(prisma, config, signalwire, storage, tools, outbox, usage, chats, subscriptions) {
         this.prisma = prisma;
         this.config = config;
         this.signalwire = signalwire;
@@ -54,6 +56,7 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         this.outbox = outbox;
         this.usage = usage;
         this.chats = chats;
+        this.subscriptions = subscriptions;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
@@ -107,6 +110,9 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }
         if (!(await this.canCall()))
             return { ok: false, error: 'Phone calls are not set up right now.' };
+        const planNo = await this.planRefusal(scope.customerId);
+        if (planNo)
+            return { ok: false, error: planNo };
         if (await this.overCallLimit(scope.customerId)) {
             return {
                 ok: false,
@@ -134,6 +140,9 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
     async callPersonNow(ctx, person, message) {
         if (!(await this.canCall()))
             return { ok: false, error: 'Phone calls are not set up right now.' };
+        const planNo = await this.planRefusal(ctx.scope.customerId);
+        if (planNo)
+            return { ok: false, error: planNo };
         if (await this.overCallLimit(ctx.scope.customerId)) {
             return {
                 ok: false,
@@ -255,6 +264,22 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
         }
         catch (err) {
             this.logger.warn(`call_person report not delivered: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    async planRefusal(customerId) {
+        if (!this.subscriptions)
+            return null;
+        try {
+            const state = await this.subscriptions.state(customerId);
+            if (!state.active)
+                return 'Their CYG Finance plan is not active, so no AI call can be placed — they can subscribe at cygfinance.com.';
+            const left = await this.subscriptions.callMinutesLeft(customerId);
+            if (left !== null && left <= 0)
+                return "Their free trial's call minutes are used up — they can subscribe at cygfinance.com to keep using calls.";
+            return null;
+        }
+        catch {
+            return null;
         }
     }
     async overCallLimit(customerId) {
@@ -483,6 +508,9 @@ let VoiceCallsService = VoiceCallsService_1 = class VoiceCallsService {
             return { error: 'No phone number to call.' };
         if (!(await this.canCall()))
             return { error: 'Phone calls are not set up.' };
+        const planNo = await this.planRefusal(input.scope.customerId);
+        if (planNo)
+            return { error: planNo };
         const from = await this.prisma.intakeNumber.findFirst({
             where: { releasedAt: null },
             orderBy: { createdAt: 'asc' },
@@ -674,6 +702,7 @@ exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate
     __param(5, (0, common_1.Optional)()),
     __param(6, (0, common_1.Optional)()),
     __param(7, (0, common_1.Optional)()),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         signalwire_client_1.SignalWireClient,
@@ -681,7 +710,8 @@ exports.VoiceCallsService = VoiceCallsService = VoiceCallsService_1 = __decorate
         assistant_tools_1.AssistantTools,
         customer_outbox_service_1.CustomerOutbox,
         comm_usage_service_1.CommUsageService,
-        assistant_service_1.AssistantService])
+        assistant_service_1.AssistantService,
+        subscription_service_1.SubscriptionService])
 ], VoiceCallsService);
 function toCallView(c) {
     const inbound = c.direction === 'INBOUND';

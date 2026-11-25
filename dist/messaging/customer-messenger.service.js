@@ -17,6 +17,7 @@ exports.CustomerMessenger = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const comm_usage_service_1 = require("../comm-usage/comm-usage.service");
+const billing_hooks_1 = require("../billing/billing-hooks");
 const prisma_service_1 = require("../prisma/prisma.service");
 const messaging_util_1 = require("./messaging.util");
 const TIMEOUT_MS = 20_000;
@@ -50,6 +51,13 @@ let CustomerMessenger = CustomerMessenger_1 = class CustomerMessenger {
             return 'failed';
         if (!this.configured(input.channel))
             return 'not-configured';
+        const who = input.meta?.customerId;
+        if (who &&
+            billing_hooks_1.billingHooks.allowText &&
+            !(await billing_hooks_1.billingHooks.allowText(who, input.meta?.purpose ?? 'OTHER'))) {
+            this.logger.log(`${input.channel} to customer ${who} not sent (${input.meta?.purpose ?? 'OTHER'}): no texts left in the plan`);
+            return 'failed';
+        }
         try {
             if (input.channel === 'SMS') {
                 if (await this.optedOut(to))

@@ -12,6 +12,7 @@ var CommUsageService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CommUsageService = void 0;
 const common_1 = require("@nestjs/common");
+const billing_hooks_1 = require("../billing/billing-hooks");
 const prisma_service_1 = require("../prisma/prisma.service");
 const comm_usage_util_1 = require("./comm-usage.util");
 const PROVIDER_CACHE_MS = 10 * 60 * 1000;
@@ -68,6 +69,8 @@ let CommUsageService = CommUsageService_1 = class CommUsageService {
                 costUsd: cost,
             },
         });
+        if (m.customerId)
+            billing_hooks_1.billingHooks.usageChanged?.(m.customerId);
     }
     callStarted(c) {
         void (async () => {
@@ -99,6 +102,8 @@ let CommUsageService = CommUsageService_1 = class CommUsageService {
             });
             if (!row)
                 return;
+            if (row.customerId)
+                billing_hooks_1.billingHooks.usageChanged?.(row.customerId);
             const durationSec = Math.max(row.durationSec, Math.round(e.durationSec));
             const recordingSec = e.recorded ? durationSec : row.recordingSec;
             const keepBilled = row.priceSource === 'BILLED';

@@ -28,6 +28,9 @@ let StripeClient = class StripeClient {
     get publishableKey() {
         return this.config.get('STRIPE_PUBLISHABLE_KEY')?.trim() || null;
     }
+    get priceId() {
+        return this.config.get('STRIPE_SUBSCRIPTION_PRICE_ID')?.trim() || null;
+    }
     get webhookSecret() {
         return this.config.get('STRIPE_WEBHOOK_SECRET')?.trim() || null;
     }

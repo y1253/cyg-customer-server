@@ -2,7 +2,8 @@ import { withAiUsage } from '../ai/ai-usage.context';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AttachmentKind, type AiConversation } from '@prisma/client';
-import { OpenAiClient } from '../ai/openai.client';
+import { OpenAiClient, type AgentMessage } from '../ai/openai.client';
+import { SubscriptionService } from '../billing/subscription.service';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
 import { ensureDefaultBook } from '../bookkeeping/books';
 import { scopeOf } from '../bookkeeping/scope';
@@ -11,6 +12,7 @@ import {
   type SendOutcome,
 } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SalesService } from '../sales/sales.service';
 import {
   bookCandidates,
   bookQuestion,
@@ -130,6 +132,9 @@ export class IntakeAgentService {
     private readonly assistant: AssistantService,
     @Optional() private readonly processor?: AttachmentProcessorService,
     @Optional() private readonly messenger?: CustomerMessenger,
+    /** 2026-11-25: a customer with no active plan talks to the salesperson. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
+    @Optional() private readonly sales?: SalesService,
   ) {}
 
   /**
@@ -168,6 +173,16 @@ export class IntakeAgentService {
 
   async agent(customerId: number, input: IntakeInput): Promise<IntakeReply> {
     const sends = this.sendsItself(input);
+    // 2026-11-25: no active plan (trial used up, cancelled, unpaid) → the salesperson
+    // answers and offers the payment link; the books are not touched.
+    const locked = await this.lockedTurn(customerId, input);
+    if (locked) {
+      if (sends && locked.reply) {
+        await this.deliver(customerId, input, locked.reply);
+        return { ...locked, sent: true };
+      }
+      return locked;
+    }
     const turn = await this.turn(customerId, input);
     const { later, ...answer } = turn;
     if (sends) {
@@ -195,6 +210,73 @@ export class IntakeAgentService {
       await this.mark(customerId, input.channel, input.peer, NOT_DELIVERED);
     }
     return { ...answer, reply };
+  }
+
+  /**
+   * The turn of a customer whose plan is not active: the salesperson's answer (or a fixed
+   * line), saved in the channel's thread like any answer. Null = the plan is active.
+   */
+  private async lockedTurn(
+    customerId: number,
+    input: IntakeInput,
+  ): Promise<IntakeReply | null> {
+    if (!this.subscriptions) return null;
+    const state = await this.subscriptions
+      .state(customerId)
+      .catch(() => null);
+    if (!state || state.active) return null;
+    const def = await ensureDefaultBook(this.prisma, customerId);
+    const conversation =
+      (await this.find(customerId, input.channel, input.peer)) ??
+      (await this.prisma.aiConversation.create({
+        data: {
+          customerId,
+          ...ref(def),
+          channel: input.channel,
+          peer: input.peer,
+        },
+      }));
+    const text =
+      input.text?.trim() ||
+      (input.attachmentIds.length
+        ? this.assistant.fileLabel(input.attachmentIds.length)
+        : '');
+    const past = await this.prisma.aiMessage.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { id: 'desc' },
+      take: 10,
+      select: { role: true, text: true },
+    });
+    const history: AgentMessage[] = past
+      .reverse()
+      .map((m) =>
+        m.role === 'USER'
+          ? { role: 'user', content: m.text }
+          : { role: 'assistant', content: m.text },
+      );
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { name: true },
+    });
+    const reply =
+      (text &&
+        (await this.sales?.replyToLockedCustomer({
+          customerId,
+          customer: { name: customer?.name ?? '', reason: state.reason },
+          channel: input.channel,
+          text,
+          history,
+        }))) ||
+      `${state.lockedText ?? 'Your CYG Finance plan is not active.'} Log in at ${this.subscriptions.baseUrl()} to subscribe — your books are kept.`;
+    if (text)
+      await this.assistant.save(conversation, 'USER', text, {
+        attachmentIds: input.attachmentIds,
+      });
+    await this.assistant.save(conversation, 'ASSISTANT', reply);
+    this.logger.log(
+      `customer ${customerId} ${input.channel}: plan not active (${state.reason}) — salesperson answered`,
+    );
+    return { reply, fileText: false, ...ref(def) };
   }
 
   /** SMS / WhatsApp with a receipt number given, and the keys to send from here. */

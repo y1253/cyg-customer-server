@@ -1,4 +1,5 @@
 import { RulesService } from '../assistant/rules.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { NameMemoryService } from './name-memory.service';
@@ -20,15 +21,17 @@ export declare class StatementProcessorService {
     private readonly rules?;
     private readonly errors?;
     private readonly splitRules?;
+    private readonly subscriptions?;
     private readonly logger;
     private sweeping;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined, errors?: StatementErrorsService | undefined, splitRules?: SplitRulesService | undefined);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, extractor: StatementExtractor, tax: TaxService, names: NameMemoryService, images: StatementImagesService, rules?: RulesService | undefined, errors?: StatementErrorsService | undefined, splitRules?: SplitRulesService | undefined, subscriptions?: SubscriptionService | undefined);
     processSoon(): void;
     recheckChains(scope: BookScope, accountNames: Array<string | null> | null): Promise<void>;
     cleanStaging(): Promise<void>;
     sweep(): Promise<void>;
     private runSweep;
     private processOne;
+    private overLimit;
     private knownAccounts;
     private recordFailure;
     private linkedReceipts;

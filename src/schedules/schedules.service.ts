@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -24,6 +25,7 @@ import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { TaxService } from '../bookkeeping/tax.service';
 import { MailService } from '../mail/mail.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceCallsService } from '../voice/voice-calls.service';
 import { spokenScript } from '../voice/voice.util';
@@ -142,6 +144,8 @@ export class SchedulesService implements OnModuleInit {
     private readonly tax: TaxService,
     private readonly assistant: AssistantService,
     private readonly voice: VoiceCallsService,
+    /** 2026-11-25: nothing is sent while the customer's plan is not active. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   /**
@@ -316,6 +320,16 @@ export class SchedulesService implements OnModuleInit {
         error: 'This book no longer exists.',
       });
     }
+    // 2026-11-25: a plan that is not active (trial used up, cancelled, unpaid) pauses it.
+    const plan = await this.subscriptions
+      ?.state(scope.customerId)
+      .catch(() => null);
+    if (plan && !plan.active)
+      return record({
+        channel: 'NONE',
+        ok: true,
+        text: 'Not sent: the CYG Finance plan is not active.',
+      });
     const delivery = await this.delivery(scope.customerId, mode === 'NO_CALL');
     if (!delivery.channel || !delivery.to) {
       return record({

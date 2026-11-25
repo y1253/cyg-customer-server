@@ -4,6 +4,7 @@ import { AiContactsModule } from '../ai-contacts/ai-contacts.module';
 import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { SalesModule } from '../sales/sales.module';
 import { AiSchedulesStore } from '../schedules/ai-schedules.store';
 import {
   AssistantConfigController,
@@ -37,6 +38,8 @@ import { StrongAiService } from './strong-ai.service';
     BookkeepingModule,
     CustomerAuthModule,
     MessagingModule,
+    // 2026-11-25: customers with no active plan are answered by the salesperson.
+    SalesModule,
   ],
   controllers: [
     AssistantConfigController,

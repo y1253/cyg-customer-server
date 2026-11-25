@@ -1,6 +1,7 @@
 import { StatementStatus, type AttachmentKind, type Prisma } from '@prisma/client';
 import { Readable } from 'stream';
 import { OpenAiClient } from '../ai/openai.client';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { type StartDerived, type StartReason } from './opening-balance.util';
@@ -109,10 +110,11 @@ export declare class BookkeepingService {
     private readonly images;
     private readonly fx;
     private readonly errors?;
+    private readonly subscriptions?;
     private readonly logger;
-    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService, errors?: StatementErrorsService | undefined);
+    constructor(prisma: PrismaService, storage: ObjectStorageService, openai: OpenAiClient, processor: StatementProcessorService, tax: TaxService, images: StatementImagesService, fx: FxService, errors?: StatementErrorsService | undefined, subscriptions?: SubscriptionService | undefined);
     upload(scope: BookScope, files: Express.Multer.File[]): Promise<StatementView[]>;
-    generateIfFree(scope: BookScope): Promise<{
+    generateChecked(scope: BookScope): Promise<{
         queued: number;
         taxing: boolean;
     }>;

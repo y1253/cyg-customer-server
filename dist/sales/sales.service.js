@@ -20,7 +20,8 @@ const client_1 = require("@prisma/client");
 const ai_usage_context_1 = require("../ai/ai-usage.context");
 const openai_client_1 = require("../ai/openai.client");
 const instructions_service_1 = require("../assistant/instructions.service");
-const pricing_1 = require("../billing/pricing");
+const stripe_billing_service_1 = require("../billing/stripe-billing.service");
+const subscription_service_1 = require("../billing/subscription.service");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const messaging_util_1 = require("../messaging/messaging.util");
 const reach_1 = require("../messaging/reach");
@@ -36,17 +37,42 @@ let SalesService = SalesService_1 = class SalesService {
     openai;
     messenger;
     instructions;
+    billing;
+    subscriptions;
     logger = new common_1.Logger(SalesService_1.name);
     perPhone = new sales_prompt_1.DailyCounter();
     total = new sales_prompt_1.DailyCounter();
     callsPerPhone = new sales_prompt_1.DailyCounter();
     callTexts = new Map();
-    constructor(prisma, config, openai, messenger, instructions) {
+    constructor(prisma, config, openai, messenger, instructions, billing, subscriptions) {
         this.prisma = prisma;
         this.config = config;
         this.openai = openai;
         this.messenger = messenger;
         this.instructions = instructions;
+        this.billing = billing;
+        this.subscriptions = subscriptions;
+    }
+    async planPricing() {
+        try {
+            const [price, plan] = await Promise.all([
+                this.billing?.price() ?? null,
+                this.subscriptions?.plan() ?? null,
+            ]);
+            if (!price || !plan)
+                return null;
+            return {
+                ...price,
+                trial: {
+                    transactions: plan.trialTransactions,
+                    texts: plan.trialTexts,
+                    callMinutes: plan.trialCallMinutes,
+                },
+            };
+        }
+        catch {
+            return null;
+        }
     }
     num(key, fallback) {
         const n = Number(this.config.get(key));
@@ -112,7 +138,7 @@ let SalesService = SalesService_1 = class SalesService {
     }
     async prompt(p, channel, call) {
         const [pricing, reach, extras] = await Promise.all([
-            (0, pricing_1.readPricing)(this.prisma).catch(() => null),
+            this.planPricing(),
             (0, reach_1.firmReach)(this.prisma, this.config).catch(() => null),
             this.instructions?.sales().catch(() => undefined),
         ]);
@@ -203,6 +229,108 @@ let SalesService = SalesService_1 = class SalesService {
         const reply = (0, sales_prompt_1.withSignupLine)(answer, offered);
         await this.save(prospect.id, input.channel, 'ASSISTANT', reply);
         return { reply, offered };
+    }
+    async lockedPrompt(customer, channel, call) {
+        const [pricing, extras] = await Promise.all([
+            this.planPricing(),
+            this.instructions?.sales().catch(() => undefined),
+        ]);
+        return (0, sales_prompt_1.salesPrompt)({
+            channel,
+            today: new Date().toISOString().slice(0, 10),
+            pricing,
+            reach: null,
+            offered: false,
+            customer,
+            language: call?.language,
+            maxMinutes: call?.maxMinutes,
+        }, extras);
+    }
+    async subscribeUrl(customerId) {
+        if (!this.billing)
+            return null;
+        try {
+            return (await this.billing.startCheckout(customerId)).url;
+        }
+        catch (err) {
+            this.logger.warn(`subscribe link for customer ${customerId}: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
+    async replyToLockedCustomer(input) {
+        const text = input.text.trim();
+        if (!text || !this.openai.configured)
+            return null;
+        if (!this.perPhone.take(`customer-${input.customerId}`, this.num('SALES_REPLIES_PER_PHONE_PER_DAY', 30)))
+            return null;
+        const system = await this.lockedPrompt(input.customer, input.channel === 'EMAIL' ? 'SMS' : input.channel);
+        let url = null;
+        const answer = await (0, ai_usage_context_1.withAiUsage)({
+            customerId: input.customerId,
+            bookId: null,
+            companyId: null,
+            feature: 'SALES',
+        }, async () => {
+            const messages = [
+                { role: 'system', content: system },
+                ...input.history,
+                { role: 'user', content: text },
+            ];
+            for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+                const last = round === MAX_TOOL_ROUNDS;
+                const r = await this.openai.chatMessages({
+                    model: this.model(),
+                    messages,
+                    tools: last ? undefined : [sales_prompt_1.SEND_SUBSCRIBE_LINK_TOOL],
+                    maxTokens: 500,
+                    timeoutMs: 60_000,
+                });
+                if (!r.toolCalls.length || last)
+                    return r.content?.trim() || null;
+                messages.push({
+                    role: 'assistant',
+                    content: r.content,
+                    toolCalls: r.toolCalls,
+                });
+                for (const call of r.toolCalls) {
+                    let content = `Unknown tool ${call.name}.`;
+                    if (call.name === sales_prompt_1.SEND_SUBSCRIBE_LINK_TOOL.name) {
+                        url = url ?? (await this.subscribeUrl(input.customerId));
+                        content = url
+                            ? 'Done: the secure payment link is added under your answer. Write only a short, warm answer.'
+                            : 'The link could not be made right now: tell them to log in at cygfinance.com and click Subscribe.';
+                    }
+                    messages.push({ role: 'tool', toolCallId: call.id, content });
+                }
+            }
+            return null;
+        }).catch((err) => {
+            this.logger.warn(`locked customer ${input.customerId} ${input.channel} reply failed: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        });
+        if (!answer)
+            return null;
+        return (0, sales_prompt_1.withSubscribeLink)(answer, url);
+    }
+    async subscribeLinkOnCall(customerId, phone, from) {
+        if (this.callTexts.has(`sub-${customerId}`)) {
+            return 'The link was already texted on this call: tell them to open it.';
+        }
+        const url = await this.subscribeUrl(customerId);
+        if (!url)
+            return 'The link could not be made: tell them to log in at cygfinance.com and click Subscribe.';
+        const outcome = await this.messenger.send({
+            channel: 'SMS',
+            to: phone,
+            from: from ?? null,
+            body: `CYG Finance — subscribe here: ${url}`,
+            meta: { customerId, purpose: 'SUBSCRIBE_LINK' },
+        });
+        if (outcome !== 'sent')
+            return 'The text could not be sent: tell them to log in at cygfinance.com and click Subscribe.';
+        this.callTexts.set(`sub-${customerId}`, 1);
+        setTimeout(() => this.callTexts.delete(`sub-${customerId}`), 10 * 60_000).unref?.();
+        return 'Texted. Tell them you just sent the secure payment link and everything starts again once they pay.';
     }
     async offerOnCall(prospectId, from) {
         const p = await this.prisma.prospect.findUnique({
@@ -301,10 +429,14 @@ exports.SalesService = SalesService;
 exports.SalesService = SalesService = SalesService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
+    __param(5, (0, common_1.Optional)()),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         openai_client_1.OpenAiClient,
         customer_messenger_service_1.CustomerMessenger,
-        instructions_service_1.InstructionsService])
+        instructions_service_1.InstructionsService,
+        stripe_billing_service_1.StripeBillingService,
+        subscription_service_1.SubscriptionService])
 ], SalesService);
 //# sourceMappingURL=sales.service.js.map

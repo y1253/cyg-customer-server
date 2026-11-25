@@ -6,9 +6,11 @@ import {
   Logger,
   NotFoundException,
   UnauthorizedException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { nameKeyOf } from './attachment-name.util';
 import { cleanName } from './attachments.service';
@@ -70,6 +72,8 @@ export class NameFilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    /** 2026-11-25: the phone upload page needs an active plan. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {
     this.jwt = new JwtService({
       secret: config.getOrThrow<string>('CUSTOMER_JWT_SECRET'),
@@ -269,6 +273,8 @@ export class NameFilesService {
       select: { id: true, customerId: true, companyId: true, name: true },
     });
     if (!book) throw new UnauthorizedException('This link is not valid.');
+    // 2026-11-25: the QR page is locked like the site when the plan is not active.
+    await this.subscriptions?.assertActive(book.customerId);
     return {
       scope: bookScope(book),
       name: c.name ?? null,

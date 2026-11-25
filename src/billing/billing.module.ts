@@ -1,16 +1,13 @@
 import { Module } from '@nestjs/common';
-import { BookkeepingModule } from '../bookkeeping/bookkeeping.module';
 import { CustomerAuthModule } from '../customer-auth/customer-auth.module';
 import {
   BillingController,
   BillingWebhookController,
 } from './billing.controller';
-import { BillingService } from './billing.service';
-import { StripeClient } from './stripe.client';
 
+/** The billing routes. The services live in the global `SubscriptionModule`. */
 @Module({
-  imports: [CustomerAuthModule, BookkeepingModule],
+  imports: [CustomerAuthModule],
   controllers: [BillingController, BillingWebhookController],
-  providers: [BillingService, StripeClient],
 })
 export class BillingModule {}

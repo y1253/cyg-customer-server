@@ -4,7 +4,8 @@ import { Prisma, type Prospect, type ProspectMessage } from '@prisma/client';
 import { withAiUsage } from '../ai/ai-usage.context';
 import { OpenAiClient, type AgentMessage } from '../ai/openai.client';
 import { InstructionsService } from '../assistant/instructions.service';
-import { readPricing } from '../billing/pricing';
+import { StripeBillingService } from '../billing/stripe-billing.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { asE164 } from '../messaging/messaging.util';
 import { firmReach } from '../messaging/reach';
@@ -15,8 +16,12 @@ import {
   DailyCounter,
   MAX_CALL_TEXTS,
   OFFER_SIGNUP_TOOL,
+  SEND_SUBSCRIBE_LINK_TOOL,
   salesPrompt,
   withSignupLine,
+  withSubscribeLink,
+  type LockedCustomer,
+  type PlanPricing,
   type ProspectChannel,
 } from './sales-prompt';
 
@@ -53,7 +58,30 @@ export class SalesService {
     private readonly openai: OpenAiClient,
     private readonly messenger: CustomerMessenger,
     @Optional() private readonly instructions?: InstructionsService,
+    @Optional() private readonly billing?: StripeBillingService,
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
+
+  /** 2026-11-25: the monthly plan + trial, for the pitch (null = unknown). */
+  async planPricing(): Promise<PlanPricing | null> {
+    try {
+      const [price, plan] = await Promise.all([
+        this.billing?.price() ?? null,
+        this.subscriptions?.plan() ?? null,
+      ]);
+      if (!price || !plan) return null;
+      return {
+        ...price,
+        trial: {
+          transactions: plan.trialTransactions,
+          texts: plan.trialTexts,
+          callMinutes: plan.trialCallMinutes,
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
 
   private num(key: string, fallback: number): number {
     const n = Number(this.config.get<string>(key));
@@ -149,7 +177,7 @@ export class SalesService {
     call?: { language: string; maxMinutes: number },
   ): Promise<string> {
     const [pricing, reach, extras] = await Promise.all([
-      readPricing(this.prisma).catch(() => null),
+      this.planPricing(),
       firmReach(this.prisma, this.config).catch(() => null),
       this.instructions?.sales().catch(() => undefined),
     ]);
@@ -260,6 +288,150 @@ export class SalesService {
     const reply = withSignupLine(answer, offered);
     await this.save(prospect.id, input.channel, 'ASSISTANT', reply);
     return { reply, offered };
+  }
+
+  /**
+   * 2026-11-25: the prompt for an EXISTING customer whose plan is not active (texts and
+   * calls) — the salesperson asks them to subscribe / renew.
+   */
+  async lockedPrompt(
+    customer: LockedCustomer,
+    channel: ProspectChannel,
+    call?: { language: string; maxMinutes: number },
+  ): Promise<string> {
+    const [pricing, extras] = await Promise.all([
+      this.planPricing(),
+      this.instructions?.sales().catch(() => undefined),
+    ]);
+    return salesPrompt(
+      {
+        channel,
+        today: new Date().toISOString().slice(0, 10),
+        pricing,
+        reach: null,
+        offered: false,
+        customer,
+        language: call?.language,
+        maxMinutes: call?.maxMinutes,
+      },
+      extras,
+    );
+  }
+
+  /** A Stripe Checkout link for this customer (null when it cannot be made). */
+  async subscribeUrl(customerId: number): Promise<string | null> {
+    if (!this.billing) return null;
+    try {
+      return (await this.billing.startCheckout(customerId)).url;
+    } catch (err) {
+      this.logger.warn(
+        `subscribe link for customer ${customerId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * 2026-11-25: a text / WhatsApp / email from an existing customer whose plan is not
+   * active. `history` = their recent messages on that channel. Null = could not answer (the
+   * caller sends a fixed line).
+   */
+  async replyToLockedCustomer(input: {
+    customerId: number;
+    customer: LockedCustomer;
+    channel: 'SMS' | 'WHATSAPP' | 'EMAIL';
+    text: string;
+    history: AgentMessage[];
+  }): Promise<string | null> {
+    const text = input.text.trim();
+    if (!text || !this.openai.configured) return null;
+    if (
+      !this.perPhone.take(
+        `customer-${input.customerId}`,
+        this.num('SALES_REPLIES_PER_PHONE_PER_DAY', 30),
+      )
+    )
+      return null;
+    const system = await this.lockedPrompt(
+      input.customer,
+      input.channel === 'EMAIL' ? 'SMS' : input.channel,
+    );
+    let url: string | null = null;
+    const answer = await withAiUsage(
+      {
+        customerId: input.customerId,
+        bookId: null,
+        companyId: null,
+        feature: 'SALES',
+      },
+      async () => {
+        const messages: AgentMessage[] = [
+          { role: 'system', content: system },
+          ...input.history,
+          { role: 'user', content: text },
+        ];
+        for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+          const last = round === MAX_TOOL_ROUNDS;
+          const r = await this.openai.chatMessages({
+            model: this.model(),
+            messages,
+            tools: last ? undefined : [SEND_SUBSCRIBE_LINK_TOOL],
+            maxTokens: 500,
+            timeoutMs: 60_000,
+          });
+          if (!r.toolCalls.length || last) return r.content?.trim() || null;
+          messages.push({
+            role: 'assistant',
+            content: r.content,
+            toolCalls: r.toolCalls,
+          });
+          for (const call of r.toolCalls) {
+            let content = `Unknown tool ${call.name}.`;
+            if (call.name === SEND_SUBSCRIBE_LINK_TOOL.name) {
+              url = url ?? (await this.subscribeUrl(input.customerId));
+              content = url
+                ? 'Done: the secure payment link is added under your answer. Write only a short, warm answer.'
+                : 'The link could not be made right now: tell them to log in at cygfinance.com and click Subscribe.';
+            }
+            messages.push({ role: 'tool', toolCallId: call.id, content });
+          }
+        }
+        return null;
+      },
+    ).catch((err: unknown) => {
+      this.logger.warn(
+        `locked customer ${input.customerId} ${input.channel} reply failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    });
+    if (!answer) return null;
+    return withSubscribeLink(answer, url);
+  }
+
+  /** `send_subscribe_link` on a call: texts the payment link once (10 min). */
+  async subscribeLinkOnCall(
+    customerId: number,
+    phone: string,
+    from: string | null | undefined,
+  ): Promise<string> {
+    if (this.callTexts.has(`sub-${customerId}`)) {
+      return 'The link was already texted on this call: tell them to open it.';
+    }
+    const url = await this.subscribeUrl(customerId);
+    if (!url)
+      return 'The link could not be made: tell them to log in at cygfinance.com and click Subscribe.';
+    const outcome = await this.messenger.send({
+      channel: 'SMS',
+      to: phone,
+      from: from ?? null,
+      body: `CYG Finance — subscribe here: ${url}`,
+      meta: { customerId, purpose: 'SUBSCRIBE_LINK' },
+    });
+    if (outcome !== 'sent')
+      return 'The text could not be sent: tell them to log in at cygfinance.com and click Subscribe.';
+    this.callTexts.set(`sub-${customerId}`, 1);
+    setTimeout(() => this.callTexts.delete(`sub-${customerId}`), 10 * 60_000).unref?.();
+    return 'Texted. Tell them you just sent the secure payment link and everything starts again once they pay.';
   }
 
   /**

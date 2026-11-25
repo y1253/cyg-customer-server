@@ -8,12 +8,16 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var NameFilesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.NameFilesService = exports.CUSTOMER_SYSTEM_TOKEN_TYPE = exports.PHONE_UPLOAD_TOKEN_TYPE = void 0;
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const jwt_1 = require("@nestjs/jwt");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const attachment_name_util_1 = require("./attachment-name.util");
 const attachments_service_1 = require("./attachments.service");
@@ -26,12 +30,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 let NameFilesService = NameFilesService_1 = class NameFilesService {
     prisma;
     config;
+    subscriptions;
     logger = new common_1.Logger(NameFilesService_1.name);
     jwt;
     welcomeSent = new Map();
-    constructor(prisma, config) {
+    constructor(prisma, config, subscriptions) {
         this.prisma = prisma;
         this.config = config;
+        this.subscriptions = subscriptions;
         this.jwt = new jwt_1.JwtService({
             secret: config.getOrThrow('CUSTOMER_JWT_SECRET'),
         });
@@ -193,6 +199,7 @@ let NameFilesService = NameFilesService_1 = class NameFilesService {
         });
         if (!book)
             throw new common_1.UnauthorizedException('This link is not valid.');
+        await this.subscriptions?.assertActive(book.customerId);
         return {
             scope: (0, scope_1.bookScope)(book),
             name: c.name ?? null,
@@ -273,8 +280,10 @@ let NameFilesService = NameFilesService_1 = class NameFilesService {
 exports.NameFilesService = NameFilesService;
 exports.NameFilesService = NameFilesService = NameFilesService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(2, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        config_1.ConfigService])
+        config_1.ConfigService,
+        subscription_service_1.SubscriptionService])
 ], NameFilesService);
 function cleanTitle(raw) {
     const t = raw?.replace(/\s+/g, ' ').trim().slice(0, 128);

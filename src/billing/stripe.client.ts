@@ -5,8 +5,8 @@ import Stripe from 'stripe';
 /**
  * The one Stripe SDK instance. Built lazily, so the server starts (and every free route
  * works) without keys; a paid route then answers 503 instead of crashing on boot.
- * `STRIPE_SECRET_KEY` may be a restricted key (`rk_…`) with Customers, PaymentIntents and
- * PaymentMethods write + Charges read.
+ * `STRIPE_SECRET_KEY` may be a restricted key (`rk_…`): Customers, Checkout Sessions,
+ * Subscriptions and Billing Portal write; Invoices, Prices, Charges and Disputes read.
  */
 @Injectable()
 export class StripeClient {
@@ -20,6 +20,11 @@ export class StripeClient {
 
   get publishableKey(): string | null {
     return this.config.get<string>('STRIPE_PUBLISHABLE_KEY')?.trim() || null;
+  }
+
+  /** 2026-11-25: the monthly plan's Stripe price (`price_…`). */
+  get priceId(): string | null {
+    return this.config.get<string>('STRIPE_SUBSCRIPTION_PRICE_ID')?.trim() || null;
   }
 
   get webhookSecret(): string | null {

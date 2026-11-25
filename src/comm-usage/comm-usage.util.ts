@@ -23,6 +23,12 @@ export type CommPurpose =
   | 'FEATURE_DONE'
   | 'BANK_ALERT'
   | 'WELCOME'
+  /** 2026-11-25: the 80% / 100% monthly transaction notices (free, never counted). */
+  | 'USAGE_LIMIT'
+  /** 2026-11-25: "your free trial is over" (free, never counted). */
+  | 'TRIAL_NOTICE'
+  /** 2026-11-25: the salesperson's subscribe link to a locked account (free). */
+  | 'SUBSCRIBE_LINK'
   | 'OTHER';
 
 /** A provider's list prices in USD (null = unknown). */

@@ -2,84 +2,68 @@ import {
   BadRequestException,
   Body,
   Controller,
-  Delete,
   Get,
   Headers,
   HttpCode,
-  Param,
   Post,
   Req,
   UseGuards,
   type RawBodyRequest,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { Book, BookScopeGuard } from '../bookkeeping/book-scope.guard';
-import type { BookScope } from '../bookkeeping/scope';
 import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import type { CustomerRequestUser } from '../customer-auth/customer-jwt.strategy';
+import { NoSubscriptionNeeded } from '../customer-auth/no-subscription-needed.decorator';
+import { RedeemDto } from './dto/billing.dto';
 import {
-  BillingService,
-  type BillingConfigView,
-  type CheckoutView,
-  type QuoteView,
-  type SavedCardView,
-} from './billing.service';
-import { CheckoutDto, CompleteDto, QuoteDto } from './dto/billing.dto';
+  StripeBillingService,
+  type PlanPrice,
+  type SubscriptionView,
+} from './stripe-billing.service';
 
 type AuthedRequest = Request & { user: CustomerRequestUser };
 
-/** `/api/billing` — pay per Generate. Every route acts only on the signed-in customer. */
+/**
+ * `/api/billing` — the monthly subscription (2026-11-25). Open to a LOCKED customer (it is
+ * how they unlock); every route acts only on the signed-in customer.
+ */
 @Controller('billing')
 @UseGuards(CustomerJwtGuard)
+@NoSubscriptionNeeded()
 export class BillingController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(private readonly billing: StripeBillingService) {}
 
   @Get('config')
-  config(): Promise<BillingConfigView> {
-    return this.billing.config();
+  async config(): Promise<{ price: PlanPrice | null }> {
+    return { price: await this.billing.price() };
   }
 
-  @Post('quote')
+  @Get('subscription')
+  subscription(@Req() req: AuthedRequest): Promise<SubscriptionView> {
+    return this.billing.view(req.user.customerId);
+  }
+
+  /** A Stripe Checkout page for the plan; the client redirects to `url`. */
+  @Post('subscribe')
   @HttpCode(200)
-  quote(@Body() dto: QuoteDto): Promise<QuoteView> {
-    return this.billing.quote(dto.promoCode);
+  subscribe(@Req() req: AuthedRequest): Promise<{ url: string }> {
+    return this.billing.startCheckout(req.user.customerId);
   }
 
-  @Get('cards')
-  cards(@Req() req: AuthedRequest): Promise<SavedCardView[]> {
-    return this.billing.cards(req.user.customerId);
+  /** The Stripe Billing Portal (card, cancel, invoices). */
+  @Post('portal')
+  @HttpCode(200)
+  portal(@Req() req: AuthedRequest): Promise<{ url: string }> {
+    return this.billing.portal(req.user.customerId);
   }
 
-  @Delete('cards/:id')
-  @HttpCode(204)
-  async removeCard(
+  @Post('redeem')
+  @HttpCode(200)
+  redeem(
     @Req() req: AuthedRequest,
-    @Param('id') id: string,
-  ): Promise<void> {
-    if (!/^pm_[A-Za-z0-9]+$/.test(id))
-      throw new BadRequestException('Invalid card');
-    await this.billing.removeCard(req.user.customerId, id);
-  }
-
-  /** Pays for (and runs) a Generate of one book — `?companyId=` as on `/bookkeeping`. */
-  @Post('checkout')
-  @HttpCode(200)
-  @UseGuards(BookScopeGuard)
-  checkout(
-    @Book() scope: BookScope,
-    @Body() dto: CheckoutDto,
-  ): Promise<CheckoutView> {
-    return this.billing.checkout(scope, dto.promoCode, dto.paymentMethodId);
-  }
-
-  @Post('complete')
-  @HttpCode(200)
-  @UseGuards(BookScopeGuard)
-  complete(
-    @Book() scope: BookScope,
-    @Body() dto: CompleteDto,
-  ): Promise<{ queued: number; taxing: boolean }> {
-    return this.billing.complete(scope, dto.paymentIntentId);
+    @Body() dto: RedeemDto,
+  ): Promise<{ freeUntil: string | null; freeForever: boolean }> {
+    return this.billing.redeemPromo(req.user.customerId, dto.promoCode);
   }
 }
 
@@ -89,7 +73,7 @@ export class BillingController {
  */
 @Controller('billing')
 export class BillingWebhookController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(private readonly billing: StripeBillingService) {}
 
   @Post('webhook')
   @HttpCode(200)

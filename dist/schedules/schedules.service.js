@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var SchedulesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SchedulesService = void 0;
@@ -24,6 +27,7 @@ const scope_1 = require("../bookkeeping/scope");
 const tax_service_1 = require("../bookkeeping/tax.service");
 const mail_service_1 = require("../mail/mail.service");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const voice_calls_service_1 = require("../voice/voice-calls.service");
 const voice_util_1 = require("../voice/voice.util");
@@ -62,9 +66,10 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
     tax;
     assistant;
     voice;
+    subscriptions;
     logger = new common_1.Logger(SchedulesService_1.name);
     ticking = false;
-    constructor(prisma, config, mail, messenger, links, reports, tax, assistant, voice) {
+    constructor(prisma, config, mail, messenger, links, reports, tax, assistant, voice, subscriptions) {
         this.prisma = prisma;
         this.config = config;
         this.mail = mail;
@@ -74,6 +79,7 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
         this.tax = tax;
         this.assistant = assistant;
         this.voice = voice;
+        this.subscriptions = subscriptions;
     }
     onModuleInit() {
         this.voice.outboundMissed$.subscribe(({ runId, status }) => {
@@ -204,6 +210,15 @@ let SchedulesService = SchedulesService_1 = class SchedulesService {
                 error: 'This book no longer exists.',
             });
         }
+        const plan = await this.subscriptions
+            ?.state(scope.customerId)
+            .catch(() => null);
+        if (plan && !plan.active)
+            return record({
+                channel: 'NONE',
+                ok: true,
+                text: 'Not sent: the CYG Finance plan is not active.',
+            });
         const delivery = await this.delivery(scope.customerId, mode === 'NO_CALL');
         if (!delivery.channel || !delivery.to) {
             return record({
@@ -559,6 +574,7 @@ __decorate([
 ], SchedulesService.prototype, "tick", null);
 exports.SchedulesService = SchedulesService = SchedulesService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(9, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         mail_service_1.MailService,
@@ -567,6 +583,7 @@ exports.SchedulesService = SchedulesService = SchedulesService_1 = __decorate([
         reports_service_1.ReportsService,
         tax_service_1.TaxService,
         assistant_service_1.AssistantService,
-        voice_calls_service_1.VoiceCallsService])
+        voice_calls_service_1.VoiceCallsService,
+        subscription_service_1.SubscriptionService])
 ], SchedulesService);
 //# sourceMappingURL=schedules.service.js.map

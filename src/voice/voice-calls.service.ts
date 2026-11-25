@@ -24,6 +24,7 @@ import { ensureDefaultBook, legacyBook } from '../bookkeeping/books';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { SignalWireClient } from '../messaging/signalwire.client';
 import { asE164 } from '../messaging/messaging.util';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import {
@@ -134,6 +135,8 @@ export class VoiceCallsService implements OnModuleInit {
     @Optional() private readonly usage?: CommUsageService,
     /** step2: the statement / attachment chats a "Call me" is about. */
     @Optional() private readonly chats?: AssistantService,
+    /** 2026-11-25: no AI call without an active plan / trial minutes left. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {
     this.jwt = new JwtService({
       secret: config.getOrThrow<string>('CUSTOMER_JWT_SECRET'),
@@ -243,6 +246,8 @@ export class VoiceCallsService implements OnModuleInit {
     }
     if (!(await this.canCall()))
       return { ok: false, error: 'Phone calls are not set up right now.' };
+    const planNo = await this.planRefusal(scope.customerId);
+    if (planNo) return { ok: false, error: planNo };
     if (await this.overCallLimit(scope.customerId)) {
       return {
         ok: false,
@@ -282,6 +287,8 @@ export class VoiceCallsService implements OnModuleInit {
   ): Promise<{ ok: true; summary: string } | { ok: false; error: string }> {
     if (!(await this.canCall()))
       return { ok: false, error: 'Phone calls are not set up right now.' };
+    const planNo = await this.planRefusal(ctx.scope.customerId);
+    if (planNo) return { ok: false, error: planNo };
     if (await this.overCallLimit(ctx.scope.customerId)) {
       return {
         ok: false,
@@ -424,6 +431,25 @@ export class VoiceCallsService implements OnModuleInit {
   }
 
   /** The AI already phoned this customer the most times allowed today (UTC day). */
+  /**
+   * 2026-11-25: why this customer cannot get an AI call now (plan not active, or the free
+   * trial's call minutes used up), else null. Never throws.
+   */
+  async planRefusal(customerId: number): Promise<string | null> {
+    if (!this.subscriptions) return null;
+    try {
+      const state = await this.subscriptions.state(customerId);
+      if (!state.active)
+        return 'Their CYG Finance plan is not active, so no AI call can be placed — they can subscribe at cygfinance.com.';
+      const left = await this.subscriptions.callMinutesLeft(customerId);
+      if (left !== null && left <= 0)
+        return "Their free trial's call minutes are used up — they can subscribe at cygfinance.com to keep using calls.";
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async overCallLimit(customerId: number): Promise<boolean> {
     const max = Number(this.config.get<string>('AI_CALLS_PER_DAY'));
     const limit =
@@ -728,6 +754,8 @@ export class VoiceCallsService implements OnModuleInit {
     if (!to) return { error: 'No phone number to call.' };
     if (!(await this.canCall()))
       return { error: 'Phone calls are not set up.' };
+    const planNo = await this.planRefusal(input.scope.customerId);
+    if (planNo) return { error: planNo };
     const from = await this.prisma.intakeNumber.findFirst({
       where: { releasedAt: null },
       orderBy: { createdAt: 'asc' },

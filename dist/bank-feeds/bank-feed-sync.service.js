@@ -30,6 +30,7 @@ const statement_errors_service_1 = require("../bookkeeping/statement-errors.serv
 const name_memory_util_1 = require("../bookkeeping/name-memory.util");
 const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const bank_feed_util_1 = require("./bank-feed.util");
 const bank_row_categorizer_1 = require("./bank-row-categorizer");
@@ -67,13 +68,14 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
     errors;
     splitRules;
     qbo;
+    subscriptions;
     logger = new common_1.Logger(BankFeedSyncService_1.name);
     running = new Map();
     again = new Set();
     lastRefreshAt = new Map();
     noteLoggedOn = new Map();
     refreshUnsupportedLogged = false;
-    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules, errors, splitRules, qbo) {
+    constructor(prisma, plaid, config, names, categorizer, outbox, messenger, rules, errors, splitRules, qbo, subscriptions) {
         this.prisma = prisma;
         this.plaid = plaid;
         this.config = config;
@@ -85,6 +87,7 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         this.errors = errors;
         this.splitRules = splitRules;
         this.qbo = qbo;
+        this.subscriptions = subscriptions;
     }
     get key() {
         return (this.config.get('ENCRYPTION_KEY')?.replace(/^"|"$/g, '').trim() ??
@@ -218,7 +221,25 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             this.logger.warn(`alert of item #${item.id} failed: ${String(err)}`);
         }
     }
+    async paused(customerId) {
+        if (!this.subscriptions)
+            return false;
+        try {
+            return (await this.subscriptions.remainingTransactions(customerId)) <= 0;
+        }
+        catch {
+            return false;
+        }
+    }
     async sendAlerts(item) {
+        if (this.subscriptions &&
+            !(await this.subscriptions.state(item.customerId).catch(() => null))?.active) {
+            await this.prisma.plaidTransaction.updateMany({
+                where: { alert: 'DUE', account: { plaidItemId: item.id } },
+                data: { alert: 'SKIPPED' },
+            });
+            return;
+        }
         const due = await this.prisma.plaidTransaction.findMany({
             where: { alert: 'DUE', account: { plaidItemId: item.id } },
             select: { id: true, transactionId: true },
@@ -594,6 +615,8 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
         });
         if (!item || !item.setupAt)
             return;
+        if (await this.paused(item.customerId))
+            return;
         for (const account of item.accounts) {
             if (account.shared)
                 await this.rebuildAccount(item, account);
@@ -827,6 +850,9 @@ let BankFeedSyncService = BankFeedSyncService_1 = class BankFeedSyncService {
             });
         }
         this.logger.log(`item #${item.id}: ${data.length} new ledger row(s)`);
+        await this.subscriptions?.recordUsage(scope, 'BANK_FEED', data.length, {
+            plaidItemId: item.id,
+        });
         if (this.splitRules && data.length) {
             const made = await this.prisma.bankTransaction.findMany({
                 where: {
@@ -899,6 +925,7 @@ exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __de
     __param(8, (0, common_1.Optional)()),
     __param(9, (0, common_1.Optional)()),
     __param(10, (0, common_1.Optional)()),
+    __param(11, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         plaid_client_1.PlaidClient,
         config_1.ConfigService,
@@ -909,7 +936,8 @@ exports.BankFeedSyncService = BankFeedSyncService = BankFeedSyncService_1 = __de
         rules_service_1.RulesService,
         statement_errors_service_1.StatementErrorsService,
         split_rules_service_1.SplitRulesService,
-        quickbooks_sync_service_1.QuickBooksSyncService])
+        quickbooks_sync_service_1.QuickBooksSyncService,
+        subscription_service_1.SubscriptionService])
 ], BankFeedSyncService);
 function sameDay(a, b) {
     return (a === null && b === null) || (!!a && !!b && day(a) === day(b));

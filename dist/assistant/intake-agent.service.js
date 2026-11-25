@@ -19,11 +19,13 @@ const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
 const client_1 = require("@prisma/client");
 const openai_client_1 = require("../ai/openai.client");
+const subscription_service_1 = require("../billing/subscription.service");
 const attachment_processor_service_1 = require("../bookkeeping/attachment-processor.service");
 const books_1 = require("../bookkeeping/books");
 const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const prisma_service_1 = require("../prisma/prisma.service");
+const sales_service_1 = require("../sales/sales.service");
 const assistant_prompt_1 = require("./assistant-prompt");
 const assistant_service_1 = require("./assistant.service");
 const book_switch_1 = require("./book-switch");
@@ -53,14 +55,18 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
     assistant;
     processor;
     messenger;
+    subscriptions;
+    sales;
     logger = new common_1.Logger(IntakeAgentService_1.name);
-    constructor(prisma, config, openai, assistant, processor, messenger) {
+    constructor(prisma, config, openai, assistant, processor, messenger, subscriptions, sales) {
         this.prisma = prisma;
         this.config = config;
         this.openai = openai;
         this.assistant = assistant;
         this.processor = processor;
         this.messenger = messenger;
+        this.subscriptions = subscriptions;
+        this.sales = sales;
     }
     async route(customerId, channel, peer, text) {
         if (!this.assistant.enabled) {
@@ -87,6 +93,14 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
     }
     async agent(customerId, input) {
         const sends = this.sendsItself(input);
+        const locked = await this.lockedTurn(customerId, input);
+        if (locked) {
+            if (sends && locked.reply) {
+                await this.deliver(customerId, input, locked.reply);
+                return { ...locked, sent: true };
+            }
+            return locked;
+        }
         const turn = await this.turn(customerId, input);
         const { later, ...answer } = turn;
         if (sends) {
@@ -108,6 +122,60 @@ let IntakeAgentService = IntakeAgentService_1 = class IntakeAgentService {
             await this.mark(customerId, input.channel, input.peer, exports.NOT_DELIVERED);
         }
         return { ...answer, reply };
+    }
+    async lockedTurn(customerId, input) {
+        if (!this.subscriptions)
+            return null;
+        const state = await this.subscriptions
+            .state(customerId)
+            .catch(() => null);
+        if (!state || state.active)
+            return null;
+        const def = await (0, books_1.ensureDefaultBook)(this.prisma, customerId);
+        const conversation = (await this.find(customerId, input.channel, input.peer)) ??
+            (await this.prisma.aiConversation.create({
+                data: {
+                    customerId,
+                    ...ref(def),
+                    channel: input.channel,
+                    peer: input.peer,
+                },
+            }));
+        const text = input.text?.trim() ||
+            (input.attachmentIds.length
+                ? this.assistant.fileLabel(input.attachmentIds.length)
+                : '');
+        const past = await this.prisma.aiMessage.findMany({
+            where: { conversationId: conversation.id },
+            orderBy: { id: 'desc' },
+            take: 10,
+            select: { role: true, text: true },
+        });
+        const history = past
+            .reverse()
+            .map((m) => m.role === 'USER'
+            ? { role: 'user', content: m.text }
+            : { role: 'assistant', content: m.text });
+        const customer = await this.prisma.customer.findUnique({
+            where: { id: customerId },
+            select: { name: true },
+        });
+        const reply = (text &&
+            (await this.sales?.replyToLockedCustomer({
+                customerId,
+                customer: { name: customer?.name ?? '', reason: state.reason },
+                channel: input.channel,
+                text,
+                history,
+            }))) ||
+            `${state.lockedText ?? 'Your CYG Finance plan is not active.'} Log in at ${this.subscriptions.baseUrl()} to subscribe — your books are kept.`;
+        if (text)
+            await this.assistant.save(conversation, 'USER', text, {
+                attachmentIds: input.attachmentIds,
+            });
+        await this.assistant.save(conversation, 'ASSISTANT', reply);
+        this.logger.log(`customer ${customerId} ${input.channel}: plan not active (${state.reason}) — salesperson answered`);
+        return { reply, fileText: false, ...ref(def) };
     }
     sendsItself(input) {
         if (input.channel === 'EMAIL' || !input.replyFrom?.trim())
@@ -358,11 +426,15 @@ exports.IntakeAgentService = IntakeAgentService = IntakeAgentService_1 = __decor
     (0, common_1.Injectable)(),
     __param(4, (0, common_1.Optional)()),
     __param(5, (0, common_1.Optional)()),
+    __param(6, (0, common_1.Optional)()),
+    __param(7, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         openai_client_1.OpenAiClient,
         assistant_service_1.AssistantService,
         attachment_processor_service_1.AttachmentProcessorService,
-        customer_messenger_service_1.CustomerMessenger])
+        customer_messenger_service_1.CustomerMessenger,
+        subscription_service_1.SubscriptionService,
+        sales_service_1.SalesService])
 ], IntakeAgentService);
 //# sourceMappingURL=intake-agent.service.js.map

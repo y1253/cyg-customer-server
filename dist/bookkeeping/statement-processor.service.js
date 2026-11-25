@@ -22,6 +22,7 @@ const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const client_1 = require("@prisma/client");
 const rules_service_1 = require("../assistant/rules.service");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const account_identity_util_1 = require("./account-identity.util");
@@ -56,9 +57,10 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
     rules;
     errors;
     splitRules;
+    subscriptions;
     logger = new common_1.Logger(StatementProcessorService_1.name);
     sweeping = false;
-    constructor(prisma, storage, extractor, tax, names, images, rules, errors, splitRules) {
+    constructor(prisma, storage, extractor, tax, names, images, rules, errors, splitRules, subscriptions) {
         this.prisma = prisma;
         this.storage = storage;
         this.extractor = extractor;
@@ -68,6 +70,7 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
         this.rules = rules;
         this.errors = errors;
         this.splitRules = splitRules;
+        this.subscriptions = subscriptions;
     }
     processSoon() {
         void this.sweep().catch(() => undefined);
@@ -135,6 +138,8 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             setTimeout(() => this.processSoon(), 0);
     }
     async processOne(row) {
+        if (await this.overLimit(row))
+            return;
         const claimed = await this.prisma.bankStatement.updateMany({
             where: {
                 id: row.id,
@@ -248,6 +253,10 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
             ]);
             if (linked.length)
                 await this.relinkReceipts(row.id, linked, !mismatch);
+            if (!mismatch)
+                await this.subscriptions?.recordUsage(scope, 'STATEMENT', rows.length, {
+                    statementId: row.id,
+                });
             if (!mismatch && this.splitRules) {
                 const made = await this.prisma.bankTransaction.findMany({
                     where: { statementId: row.id, splitOfId: null },
@@ -288,6 +297,39 @@ let StatementProcessorService = StatementProcessorService_1 = class StatementPro
                 return;
             }
             await this.recordFailure(row, err);
+        }
+    }
+    async overLimit(row) {
+        if (!this.subscriptions || row.status !== client_1.StatementStatus.PENDING)
+            return false;
+        try {
+            if (await this.subscriptions.statementCounted(row.id))
+                return false;
+            if ((await this.subscriptions.remainingTransactions(row.customerId)) > 0)
+                return false;
+            const state = await this.subscriptions.state(row.customerId);
+            const when = state.monthly
+                ? new Date(state.monthly.resetsAt).toLocaleDateString('en-CA', {
+                    timeZone: 'America/Toronto',
+                    month: 'long',
+                    day: 'numeric',
+                })
+                : null;
+            const message = !state.active
+                ? 'Waiting — your plan is not active. Subscribe, then click Generate.'
+                : when
+                    ? `Waiting — monthly transaction limit reached. Click Generate after ${when}.`
+                    : "Waiting — your free trial's transactions are used up. Subscribe, then click Generate.";
+            const { count } = await this.prisma.bankStatement.updateMany({
+                where: { id: row.id, status: client_1.StatementStatus.PENDING },
+                data: { status: client_1.StatementStatus.UPLOADED, error: message },
+            });
+            if (count)
+                this.logger.log(`statement #${row.id} waits: ${message}`);
+            return true;
+        }
+        catch {
+            return false;
         }
     }
     async knownAccounts(scope, exceptId) {
@@ -411,6 +453,7 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
     __param(6, (0, common_1.Optional)()),
     __param(7, (0, common_1.Optional)()),
     __param(8, (0, common_1.Optional)()),
+    __param(9, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         statement_extractor_1.StatementExtractor,
@@ -419,7 +462,8 @@ exports.StatementProcessorService = StatementProcessorService = StatementProcess
         statement_images_service_1.StatementImagesService,
         rules_service_1.RulesService,
         statement_errors_service_1.StatementErrorsService,
-        split_rules_service_1.SplitRulesService])
+        split_rules_service_1.SplitRulesService,
+        subscription_service_1.SubscriptionService])
 ], StatementProcessorService);
 function isoDay(d) {
     return d ? d.toISOString().slice(0, 10) : null;

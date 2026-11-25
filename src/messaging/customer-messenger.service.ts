@@ -5,6 +5,7 @@ import {
   type CommWho,
 } from '../comm-usage/comm-usage.service';
 import type { CommPurpose } from '../comm-usage/comm-usage.util';
+import { billingHooks } from '../billing/billing-hooks';
 import { PrismaService } from '../prisma/prisma.service';
 import { asE164, smsForm, whatsappTextPayload } from './messaging.util';
 
@@ -75,6 +76,19 @@ export class CustomerMessenger {
     const to = asE164(input.to);
     if (!to || !input.body.trim()) return 'failed';
     if (!this.configured(input.channel)) return 'not-configured';
+    // 2026-11-25: an AI text to a customer whose free trial has no texts left (or whose
+    // plan is not active) is not sent.
+    const who = input.meta?.customerId;
+    if (
+      who &&
+      billingHooks.allowText &&
+      !(await billingHooks.allowText(who, input.meta?.purpose ?? 'OTHER'))
+    ) {
+      this.logger.log(
+        `${input.channel} to customer ${who} not sent (${input.meta?.purpose ?? 'OTHER'}): no texts left in the plan`,
+      );
+      return 'failed';
+    }
     try {
       if (input.channel === 'SMS') {
         if (await this.optedOut(to)) return 'opted-out';

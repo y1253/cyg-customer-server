@@ -9,33 +9,16 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CompleteDto = exports.CheckoutDto = exports.QuoteDto = void 0;
+exports.RedeemDto = void 0;
 const class_validator_1 = require("class-validator");
-class QuoteDto {
+class RedeemDto {
     promoCode;
 }
-exports.QuoteDto = QuoteDto;
+exports.RedeemDto = RedeemDto;
 __decorate([
-    (0, class_validator_1.IsOptional)(),
     (0, class_validator_1.IsString)(),
+    (0, class_validator_1.MinLength)(1),
     (0, class_validator_1.MaxLength)(64),
     __metadata("design:type", String)
-], QuoteDto.prototype, "promoCode", void 0);
-class CheckoutDto extends QuoteDto {
-    paymentMethodId;
-}
-exports.CheckoutDto = CheckoutDto;
-__decorate([
-    (0, class_validator_1.IsOptional)(),
-    (0, class_validator_1.Matches)(/^pm_[A-Za-z0-9]+$/, { message: 'Invalid card' }),
-    __metadata("design:type", String)
-], CheckoutDto.prototype, "paymentMethodId", void 0);
-class CompleteDto {
-    paymentIntentId;
-}
-exports.CompleteDto = CompleteDto;
-__decorate([
-    (0, class_validator_1.Matches)(/^pi_[A-Za-z0-9]+$/, { message: 'Invalid payment' }),
-    __metadata("design:type", String)
-], CompleteDto.prototype, "paymentIntentId", void 0);
+], RedeemDto.prototype, "promoCode", void 0);
 //# sourceMappingURL=billing.dto.js.map

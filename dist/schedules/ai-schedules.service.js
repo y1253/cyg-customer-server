@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var AiSchedulesService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AiSchedulesService = void 0;
@@ -17,6 +20,7 @@ const assistant_service_1 = require("../assistant/assistant.service");
 const scope_1 = require("../bookkeeping/scope");
 const customer_messenger_service_1 = require("../messaging/customer-messenger.service");
 const answer_html_1 = require("../mail/answer-html");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const voice_calls_service_1 = require("../voice/voice-calls.service");
 const voice_util_1 = require("../voice/voice.util");
@@ -31,15 +35,17 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
     assistant;
     messenger;
     voice;
+    subscriptions;
     logger = new common_1.Logger(AiSchedulesService_1.name);
     ticking = false;
-    constructor(prisma, store, schedules, assistant, messenger, voice) {
+    constructor(prisma, store, schedules, assistant, messenger, voice, subscriptions) {
         this.prisma = prisma;
         this.store = store;
         this.schedules = schedules;
         this.assistant = assistant;
         this.messenger = messenger;
         this.voice = voice;
+        this.subscriptions = subscriptions;
     }
     onModuleInit() {
         this.voice.outboundMissed$.subscribe(({ aiRunId, status }) => {
@@ -141,6 +147,15 @@ let AiSchedulesService = AiSchedulesService_1 = class AiSchedulesService {
                 error: 'This book no longer exists.',
             });
         }
+        const plan = await this.subscriptions
+            ?.state(scope.customerId)
+            .catch(() => null);
+        if (plan && !plan.active)
+            return record({
+                channel: 'NONE',
+                ok: true,
+                text: 'Not sent: the CYG Finance plan is not active.',
+            });
         const delivery = await this.delivery(s, mode === 'NO_CALL');
         if (!delivery.channel || !delivery.to) {
             return record({
@@ -311,11 +326,13 @@ __decorate([
 ], AiSchedulesService.prototype, "tick", null);
 exports.AiSchedulesService = AiSchedulesService = AiSchedulesService_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(6, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         ai_schedules_store_1.AiSchedulesStore,
         schedules_service_1.SchedulesService,
         assistant_service_1.AssistantService,
         customer_messenger_service_1.CustomerMessenger,
-        voice_calls_service_1.VoiceCallsService])
+        voice_calls_service_1.VoiceCallsService,
+        subscription_service_1.SubscriptionService])
 ], AiSchedulesService);
 //# sourceMappingURL=ai-schedules.service.js.map

@@ -13,7 +13,12 @@ import {
 
 const base = {
   today: '2026-10-25',
-  pricing: { generatePriceCents: 2500, currency: 'cad' },
+  pricing: {
+    priceCents: 1999,
+    currency: 'cad',
+    interval: 'month',
+    trial: { transactions: 100, texts: 15, callMinutes: 20 },
+  },
   reach: {
     numbers: ['+14385550000'],
     whatsapp: ['+14385550000'],
@@ -27,7 +32,8 @@ describe('salesPrompt (step12f)', () => {
   it('pitches the firm with the live price and reach, and never offers to follow up', () => {
     const p = salesPrompt({ ...base, channel: 'SMS' });
     expect(p).toContain('does NOT have a CYG Finance account');
-    expect(p).toContain('$25.00 CAD');
+    expect(p).toContain('$19.99 CAD a month');
+    expect(p).toContain('100 transactions, 15 AI texts and 20 minutes');
     expect(p).toContain('text, WhatsApp or call +14385550000');
     expect(p).toContain('never promise to call or text them later');
     expect(p).toContain(SALES_PITCH_DEFAULT);
@@ -49,13 +55,22 @@ describe('salesPrompt (step12f)', () => {
     expect(p).toContain('[The caller just texted you');
   });
 
-  it('free pricing never quotes a price', () => {
+  it('an existing customer with no plan is asked to subscribe, never signed up', () => {
     const p = salesPrompt({
       ...base,
-      channel: 'WHATSAPP',
-      pricing: { generatePriceCents: 0, currency: 'cad' },
+      channel: 'SMS',
+      customer: { name: 'Dana', reason: 'TRIAL_USED' },
     });
-    expect(p).toContain('free right now');
+    expect(p).toContain('Dana');
+    expect(p).toContain('free trial is used up');
+    expect(p).toContain('send_subscribe_link');
+    expect(p).not.toContain('offer_signup');
+    expect(p).not.toContain('does NOT have a CYG Finance account');
+  });
+
+  it('no price known → never quotes one', () => {
+    const p = salesPrompt({ ...base, channel: 'WHATSAPP', pricing: null });
+    expect(p).toContain('you do not know it right now');
     expect(p).not.toContain('$');
   });
 
@@ -76,7 +91,7 @@ describe('salesPrompt (step12f)', () => {
   });
 
   it('priceWords', () => {
-    expect(priceWords({ generatePriceCents: 1999, currency: 'usd' })).toBe(
+    expect(priceWords({ priceCents: 1999, currency: 'usd' })).toBe(
       '$19.99 USD',
     );
   });

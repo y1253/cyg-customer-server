@@ -8,6 +8,7 @@ import {
   type BankStatement,
 } from '@prisma/client';
 import { RulesService } from '../assistant/rules.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ObjectStorageService } from '../storage/object-storage.service';
 import { canonicalAccountName } from './account-identity.util';
@@ -65,6 +66,8 @@ export class StatementProcessorService {
     @Optional() private readonly errors?: StatementErrorsService,
     /** step9 part 4: the names' split rules split the new rows. Optional for specs. */
     @Optional() private readonly splitRules?: SplitRulesService,
+    /** 2026-11-25: the monthly / trial transaction limit. Optional for specs. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   /** Kick the queue now, without waiting. Never throws. */
@@ -158,6 +161,9 @@ export class StatementProcessorService {
   }
 
   private async processOne(row: BankStatement): Promise<void> {
+    // 2026-11-25: a statement never read before waits while the customer has no
+    // transactions left this month (or in the free trial). A re-read never waits.
+    if (await this.overLimit(row)) return;
     // Claim: only one runner moves a row out of its current state.
     const claimed = await this.prisma.bankStatement.updateMany({
       where: {
@@ -322,6 +328,11 @@ export class StatementProcessorService {
         }),
       ]);
       if (linked.length) await this.relinkReceipts(row.id, linked, !mismatch);
+      // 2026-11-25: its first DONE read counts its transactions (once — a re-read never).
+      if (!mismatch)
+        await this.subscriptions?.recordUsage(scope, 'STATEMENT', rows.length, {
+          statementId: row.id,
+        });
       if (!mismatch && this.splitRules) {
         // step9 part 4: every new row gets its name's split rules, once (never throws).
         const made = await this.prisma.bankTransaction.findMany({
@@ -378,6 +389,41 @@ export class StatementProcessorService {
         return;
       }
       await this.recordFailure(row, err);
+    }
+  }
+
+  /**
+   * True = the statement went back to UPLOADED because the customer is at the limit (or has
+   * no active plan). Only for a statement that was never counted; never throws.
+   */
+  private async overLimit(row: BankStatement): Promise<boolean> {
+    if (!this.subscriptions || row.status !== StatementStatus.PENDING) return false;
+    try {
+      if (await this.subscriptions.statementCounted(row.id)) return false;
+      if ((await this.subscriptions.remainingTransactions(row.customerId)) > 0)
+        return false;
+      const state = await this.subscriptions.state(row.customerId);
+      const when = state.monthly
+        ? new Date(state.monthly.resetsAt).toLocaleDateString('en-CA', {
+            timeZone: 'America/Toronto',
+            month: 'long',
+            day: 'numeric',
+          })
+        : null;
+      const message = !state.active
+        ? 'Waiting — your plan is not active. Subscribe, then click Generate.'
+        : when
+          ? `Waiting — monthly transaction limit reached. Click Generate after ${when}.`
+          : "Waiting — your free trial's transactions are used up. Subscribe, then click Generate.";
+      const { count } = await this.prisma.bankStatement.updateMany({
+        where: { id: row.id, status: StatementStatus.PENDING },
+        data: { status: StatementStatus.UPLOADED, error: message },
+      });
+      if (count)
+        this.logger.log(`statement #${row.id} waits: ${message}`);
+      return true;
+    } catch {
+      return false;
     }
   }
 

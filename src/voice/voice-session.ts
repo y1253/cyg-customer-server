@@ -13,10 +13,13 @@ import type { SignalWireClient } from '../messaging/signalwire.client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   OFFER_SIGNUP_TOOL,
+  SEND_SUBSCRIBE_LINK_TOOL,
   TEXT_CALLER_TOOL,
   salesOpening,
 } from '../sales/sales-prompt';
 import type { SalesService } from '../sales/sales.service';
+import type { SubscriptionService } from '../billing/subscription.service';
+import type { LockedCustomer } from '../sales/sales-prompt';
 import { liveCalls, type LiveCall } from './live-calls';
 import type { VoiceCallsService, VoiceSettings } from './voice-calls.service';
 import {
@@ -44,6 +47,8 @@ export interface VoiceDeps {
   usage?: AiUsageService;
   /** step12f: the AI salesperson for a PROSPECT call (absent in the spec). */
   sales?: SalesService;
+  /** 2026-11-25: plan / trial (absent in the spec = no limits). */
+  subscriptions?: SubscriptionService;
   openaiKey: string | null;
   model: string | null;
   /** Opens the Realtime socket — injectable so the spec can hand in a fake. */
@@ -212,6 +217,8 @@ export class VoiceSession implements LiveCall {
   private conversation: AiConversation | null = null;
   /** step12f: a PROSPECT call — the caller has no account; no conversation, no books. */
   private prospect: Prospect | null = null;
+  /** 2026-11-25: a customer whose plan is not active — the salesperson, no books. */
+  private locked: LockedCustomer | null = null;
   private startedAt = 0;
   /** step12: the Realtime model, for cost tracking. */
   private model = DEFAULT_REALTIME_MODEL;
@@ -363,9 +370,22 @@ export class VoiceSession implements LiveCall {
         this.callSid,
       );
     }
+    // 2026-11-25: a plan that is not active → the salesperson asks them to subscribe; a
+    // free trial's call ends with its minutes (never longer than the usual maximum).
+    let minutes = this.settings.maxMinutes;
+    const subs = this.deps.subscriptions;
+    if (subs && claims.purpose !== 'THIRD_PARTY') {
+      const state = await subs.state(claims.sub).catch(() => null);
+      if (state && !state.active) {
+        this.locked = { name: customer.name, reason: state.reason };
+      } else if (state) {
+        const left = await subs.callMinutesLeft(claims.sub).catch(() => null);
+        if (left !== null) minutes = Math.max(1, Math.min(minutes, left));
+      }
+    }
     this.timer = setTimeout(
       () => void this.hangUp('max length'),
-      this.settings.maxMinutes * 60_000,
+      minutes * 60_000,
     );
 
     const over = await this.deps.assistant.isOverLimit(claims.sub);
@@ -428,6 +448,21 @@ export class VoiceSession implements LiveCall {
     const claims = this.claims!;
     const model = this.deps.model || DEFAULT_REALTIME_MODEL;
     this.model = model;
+    // 2026-11-25: a customer with no active plan gets the salesperson (subscribe link).
+    if (this.locked && this.deps.sales) {
+      const language = languageName(this.settings!.language);
+      const prompt = await this.deps.sales.lockedPrompt(this.locked, 'CALL', {
+        language,
+        maxMinutes: this.settings!.maxMinutes,
+      });
+      this.connectRealtime(
+        model,
+        prompt,
+        [SEND_SUBSCRIBE_LINK_TOOL],
+        `In ${language}: greet ${customerName.trim().split(/\s+/)[0] || 'them'} warmly as CYG Finance's assistant and ask how you can help.`,
+      );
+      return;
+    }
     // step12c: a call to someone else for the customer knows only the message.
     const thirdParty = claims.purpose === 'THIRD_PARTY';
     const instructions = thirdParty
@@ -812,6 +847,22 @@ export class VoiceSession implements LiveCall {
                 args,
               )
             : `Unknown tool ${name}.`;
+      this.sendOpenAi({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output },
+      });
+      this.toolOutputsPending = true;
+      return;
+    }
+    if (this.locked) {
+      const output =
+        name === SEND_SUBSCRIBE_LINK_TOOL.name && this.claims
+          ? await this.deps.sales!.subscribeLinkOnCall(
+              this.claims.sub,
+              this.claims.peer,
+              this.claims.to,
+            )
+          : `Unknown tool ${name}.`;
       this.sendOpenAi({
         type: 'conversation.item.create',
         item: { type: 'function_call_output', call_id: callId, output },

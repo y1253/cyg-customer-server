@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { billingHooks } from '../billing/billing-hooks';
 import type { CommProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -111,6 +112,8 @@ export class CommUsageService {
         costUsd: cost,
       },
     });
+    // 2026-11-25: the free trial counts AI texts — drop the cached count.
+    if (m.customerId) billingHooks.usageChanged?.(m.customerId);
   }
 
   /** A call started (or was placed). Idempotent on `callSid`. */
@@ -163,6 +166,7 @@ export class CommUsageService {
         include: { provider: true },
       });
       if (!row) return;
+      if (row.customerId) billingHooks.usageChanged?.(row.customerId);
       const durationSec = Math.max(row.durationSec, Math.round(e.durationSec));
       const recordingSec = e.recorded ? durationSec : row.recordingSec;
       const keepBilled = row.priceSource === 'BILLED';

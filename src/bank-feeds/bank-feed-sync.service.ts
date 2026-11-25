@@ -24,6 +24,7 @@ import { StatementErrorsService } from '../bookkeeping/statement-errors.service'
 import { resolveRow } from '../bookkeeping/name-memory.util';
 import { scopeOf, scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
+import { SubscriptionService } from '../billing/subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   bankDelayNote,
@@ -131,6 +132,8 @@ export class BankFeedSyncService {
     @Optional() private readonly splitRules?: SplitRulesService,
     /** step11 (internal, 2026-11-23): new / removed rows reach the company's QuickBooks. */
     @Optional() private readonly qbo?: QuickBooksSyncService,
+    /** 2026-11-25: the monthly / trial transaction limit. */
+    @Optional() private readonly subscriptions?: SubscriptionService,
   ) {}
 
   private get key(): string {
@@ -302,7 +305,28 @@ export class BankFeedSyncService {
    * filed (unshared account, before the start date, a month an upload covers) → SKIPPED.
    * Rows are claimed (DUE → SENT) before the send, so a re-run never sends twice.
    */
+  /** True = no new bank rows are filed now (limit reached, or no active plan). */
+  async paused(customerId: number): Promise<boolean> {
+    if (!this.subscriptions) return false;
+    try {
+      return (await this.subscriptions.remainingTransactions(customerId)) <= 0;
+    } catch {
+      return false;
+    }
+  }
+
   private async sendAlerts(item: PlaidItem): Promise<void> {
+    // 2026-11-25: no alerts while the customer's plan is not active.
+    if (
+      this.subscriptions &&
+      !(await this.subscriptions.state(item.customerId).catch(() => null))?.active
+    ) {
+      await this.prisma.plaidTransaction.updateMany({
+        where: { alert: 'DUE', account: { plaidItemId: item.id } },
+        data: { alert: 'SKIPPED' },
+      });
+      return;
+    }
     const due = await this.prisma.plaidTransaction.findMany({
       where: { alert: 'DUE', account: { plaidItemId: item.id } },
       select: { id: true, transactionId: true },
@@ -798,6 +822,9 @@ export class BankFeedSyncService {
     });
     // No month is filed before the customer has chosen each account's start date.
     if (!item || !item.setupAt) return;
+    // 2026-11-25: at the monthly / trial limit (or with no active plan) nothing is filed;
+    // the raw feed is kept and the first rebuild after it resets files everything.
+    if (await this.paused(item.customerId)) return;
     for (const account of item.accounts) {
       if (account.shared) await this.rebuildAccount(item, account);
       else await this.dropAccount(account);
@@ -1098,6 +1125,9 @@ export class BankFeedSyncService {
       });
     }
     this.logger.log(`item #${item.id}: ${data.length} new ledger row(s)`);
+    await this.subscriptions?.recordUsage(scope, 'BANK_FEED', data.length, {
+      plaidItemId: item.id,
+    });
     if (this.splitRules && data.length) {
       // step9 part 4: each new row gets its name's split rules, once (never throws).
       const made = await this.prisma.bankTransaction.findMany({

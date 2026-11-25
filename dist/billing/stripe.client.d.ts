@@ -6,6 +6,7 @@ export declare class StripeClient {
     constructor(config: ConfigService);
     get configured(): boolean;
     get publishableKey(): string | null;
+    get priceId(): string | null;
     get webhookSecret(): string | null;
     get stripe(): Stripe;
 }

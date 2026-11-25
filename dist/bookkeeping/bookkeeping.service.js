@@ -25,7 +25,7 @@ const common_1 = require("@nestjs/common");
 const client_1 = require("@prisma/client");
 const stream_1 = require("stream");
 const openai_client_1 = require("../ai/openai.client");
-const pricing_1 = require("../billing/pricing");
+const subscription_service_1 = require("../billing/subscription.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const object_storage_service_1 = require("../storage/object-storage.service");
 const opening_balance_query_1 = require("./opening-balance.query");
@@ -204,8 +204,9 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
     images;
     fx;
     errors;
+    subscriptions;
     logger = new common_1.Logger(BookkeepingService_1.name);
-    constructor(prisma, storage, openai, processor, tax, images, fx, errors) {
+    constructor(prisma, storage, openai, processor, tax, images, fx, errors, subscriptions) {
         this.prisma = prisma;
         this.storage = storage;
         this.openai = openai;
@@ -214,6 +215,7 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         this.images = images;
         this.fx = fx;
         this.errors = errors;
+        this.subscriptions = subscriptions;
     }
     async upload(scope, files) {
         try {
@@ -242,10 +244,9 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
             await Promise.all((files ?? []).map((f) => (0, promises_1.unlink)(f.path).catch(() => undefined)));
         }
     }
-    async generateIfFree(scope) {
-        const waiting = await this.waitingCount(scope);
-        if (waiting && (await (0, pricing_1.readPricing)(this.prisma)).generatePriceCents > 0)
-            throw new common_1.HttpException('Payment required — pay to read your new statements.', common_1.HttpStatus.PAYMENT_REQUIRED);
+    async generateChecked(scope) {
+        if (this.subscriptions && (await this.waitingCount(scope)))
+            await this.subscriptions.assertCanAddTransactions(scope.customerId);
         return this.generate(scope);
     }
     waitingCount(scope) {
@@ -771,6 +772,7 @@ exports.BookkeepingService = BookkeepingService;
 exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(7, (0, common_1.Optional)()),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         object_storage_service_1.ObjectStorageService,
         openai_client_1.OpenAiClient,
@@ -778,7 +780,8 @@ exports.BookkeepingService = BookkeepingService = BookkeepingService_1 = __decor
         tax_service_1.TaxService,
         statement_images_service_1.StatementImagesService,
         fx_service_1.FxService,
-        statement_errors_service_1.StatementErrorsService])
+        statement_errors_service_1.StatementErrorsService,
+        subscription_service_1.SubscriptionService])
 ], BookkeepingService);
 function rereadable(s) {
     if (s.source === 'PLAID')

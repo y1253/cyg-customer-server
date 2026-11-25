@@ -1,8 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { OpenAiClient } from '../ai/openai.client';
+import { SubscriptionService } from '../billing/subscription.service';
 import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.service';
 import { CustomerMessenger } from '../messaging/customer-messenger.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SalesService } from '../sales/sales.service';
 import { AssistantService } from './assistant.service';
 export type IntakeChannel = 'SMS' | 'WHATSAPP' | 'EMAIL';
 export interface BookRef {
@@ -34,10 +36,13 @@ export declare class IntakeAgentService {
     private readonly assistant;
     private readonly processor?;
     private readonly messenger?;
+    private readonly subscriptions?;
+    private readonly sales?;
     private readonly logger;
-    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, assistant: AssistantService, processor?: AttachmentProcessorService | undefined, messenger?: CustomerMessenger | undefined);
+    constructor(prisma: PrismaService, config: ConfigService, openai: OpenAiClient, assistant: AssistantService, processor?: AttachmentProcessorService | undefined, messenger?: CustomerMessenger | undefined, subscriptions?: SubscriptionService | undefined, sales?: SalesService | undefined);
     route(customerId: number, channel: IntakeChannel, peer: string, text?: string | null): Promise<IntakeRoute>;
     agent(customerId: number, input: IntakeInput): Promise<IntakeReply>;
+    private lockedTurn;
     private sendsItself;
     private deliver;
     private mark;

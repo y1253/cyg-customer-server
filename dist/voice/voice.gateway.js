@@ -8,6 +8,9 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
 var VoiceGateway_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceGateway = exports.VOICE_WS_PATH = void 0;
@@ -20,6 +23,7 @@ const assistant_service_1 = require("../assistant/assistant.service");
 const signalwire_client_1 = require("../messaging/signalwire.client");
 const prisma_service_1 = require("../prisma/prisma.service");
 const sales_service_1 = require("../sales/sales.service");
+const subscription_service_1 = require("../billing/subscription.service");
 const voice_calls_service_1 = require("./voice-calls.service");
 const voice_session_1 = require("./voice-session");
 exports.VOICE_WS_PATH = '/api/voice/stream';
@@ -32,9 +36,10 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
     signalwire;
     usage;
     sales;
+    subscriptions;
     logger = new common_1.Logger(VoiceGateway_1.name);
     wss = new ws_1.WebSocketServer({ noServer: true });
-    constructor(prisma, config, calls, assistant, tools, signalwire, usage, sales) {
+    constructor(prisma, config, calls, assistant, tools, signalwire, usage, sales, subscriptions) {
         this.prisma = prisma;
         this.config = config;
         this.calls = calls;
@@ -43,6 +48,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
         this.signalwire = signalwire;
         this.usage = usage;
         this.sales = sales;
+        this.subscriptions = subscriptions;
     }
     attach(server) {
         server.on('upgrade', (req, socket, head) => {
@@ -58,6 +64,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
                     signalwire: this.signalwire,
                     usage: this.usage,
                     sales: this.sales,
+                    subscriptions: this.subscriptions,
                     openaiKey: this.config.get('OPENAI_API_KEY')?.trim() || null,
                     model: this.config.get('OPENAI_REALTIME_MODEL')?.trim() || null,
                 });
@@ -74,6 +81,7 @@ let VoiceGateway = VoiceGateway_1 = class VoiceGateway {
 exports.VoiceGateway = VoiceGateway;
 exports.VoiceGateway = VoiceGateway = VoiceGateway_1 = __decorate([
     (0, common_1.Injectable)(),
+    __param(8, (0, common_1.Optional)()),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         config_1.ConfigService,
         voice_calls_service_1.VoiceCallsService,
@@ -81,6 +89,7 @@ exports.VoiceGateway = VoiceGateway = VoiceGateway_1 = __decorate([
         assistant_tools_1.AssistantTools,
         signalwire_client_1.SignalWireClient,
         ai_usage_service_1.AiUsageService,
-        sales_service_1.SalesService])
+        sales_service_1.SalesService,
+        subscription_service_1.SubscriptionService])
 ], VoiceGateway);
 //# sourceMappingURL=voice.gateway.js.map

@@ -94,6 +94,7 @@ class VoiceSession {
     claims = null;
     conversation = null;
     prospect = null;
+    locked = null;
     startedAt = 0;
     model = voice_util_1.DEFAULT_REALTIME_MODEL;
     settings = null;
@@ -200,7 +201,20 @@ class VoiceSession {
         if (claims.dir === 'INBOUND') {
             this.recordingSid = await this.deps.signalwire.startRecording(this.callSid);
         }
-        this.timer = setTimeout(() => void this.hangUp('max length'), this.settings.maxMinutes * 60_000);
+        let minutes = this.settings.maxMinutes;
+        const subs = this.deps.subscriptions;
+        if (subs && claims.purpose !== 'THIRD_PARTY') {
+            const state = await subs.state(claims.sub).catch(() => null);
+            if (state && !state.active) {
+                this.locked = { name: customer.name, reason: state.reason };
+            }
+            else if (state) {
+                const left = await subs.callMinutesLeft(claims.sub).catch(() => null);
+                if (left !== null)
+                    minutes = Math.max(1, Math.min(minutes, left));
+            }
+        }
+        this.timer = setTimeout(() => void this.hangUp('max length'), minutes * 60_000);
         const over = await this.deps.assistant.isOverLimit(claims.sub);
         if (!this.deps.openaiKey || over) {
             this.logger.warn(`call ${this.callSid}: AI not available (${over ? 'daily limit' : 'no key'})`);
@@ -239,6 +253,15 @@ class VoiceSession {
         const claims = this.claims;
         const model = this.deps.model || voice_util_1.DEFAULT_REALTIME_MODEL;
         this.model = model;
+        if (this.locked && this.deps.sales) {
+            const language = (0, voice_util_1.languageName)(this.settings.language);
+            const prompt = await this.deps.sales.lockedPrompt(this.locked, 'CALL', {
+                language,
+                maxMinutes: this.settings.maxMinutes,
+            });
+            this.connectRealtime(model, prompt, [sales_prompt_1.SEND_SUBSCRIBE_LINK_TOOL], `In ${language}: greet ${customerName.trim().split(/\s+/)[0] || 'them'} warmly as CYG Finance's assistant and ask how you can help.`);
+            return;
+        }
         const thirdParty = claims.purpose === 'THIRD_PARTY';
         const instructions = thirdParty
             ? (0, voice_util_1.thirdPartyInstructions)({
@@ -523,6 +546,17 @@ class VoiceSession {
                 : name === sales_prompt_1.TEXT_CALLER_TOOL.name
                     ? await this.deps.sales.textOnCall(this.prospect.id, this.claims?.to, this.callSid, args)
                     : `Unknown tool ${name}.`;
+            this.sendOpenAi({
+                type: 'conversation.item.create',
+                item: { type: 'function_call_output', call_id: callId, output },
+            });
+            this.toolOutputsPending = true;
+            return;
+        }
+        if (this.locked) {
+            const output = name === sales_prompt_1.SEND_SUBSCRIBE_LINK_TOOL.name && this.claims
+                ? await this.deps.sales.subscribeLinkOnCall(this.claims.sub, this.claims.peer, this.claims.to)
+                : `Unknown tool ${name}.`;
             this.sendOpenAi({
                 type: 'conversation.item.create',
                 item: { type: 'function_call_output', call_id: callId, output },

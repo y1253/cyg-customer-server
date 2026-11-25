@@ -154,14 +154,14 @@ export class BookkeepingController {
   }
 
   /**
-   * Reads every UPLOADED statement and re-applies changed tax settings — only when it is
-   * free (402 otherwise; a paid Generate is `POST /billing/checkout`).
+   * Reads every UPLOADED statement. 429 while the month's (or the free trial's) transaction
+   * limit is reached.
    */
   @Post('generate')
   generate(
     @Book() scope: BookScope,
   ): Promise<{ queued: number; taxing: boolean }> {
-    return this.bookkeeping.generateIfFree(scope);
+    return this.bookkeeping.generateChecked(scope);
   }
 
   @Get('tax')
