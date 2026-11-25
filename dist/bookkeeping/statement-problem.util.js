@@ -58,6 +58,16 @@ function chainProblem(s) {
         const before = r.previousEnd
             ? `The statement ending ${longDay(r.previousEnd)}`
             : 'The statement before it';
+        if (s.previousPrinted != null &&
+            Math.round(s.previousPrinted * 100) === Math.round(r.opening * 100)) {
+            return {
+                kind: 'MISMATCH',
+                title: exports.PROBLEM_TITLES.MISMATCH,
+                text: `${before} ends at ${money(s.previousPrinted)} by its own running balance — where this one opens — ` +
+                    `but its transactions as read don't add up to that, so one of them was read wrong. ` +
+                    `Your books start again here at ${money(r.opening)} until that statement is read again.`,
+            };
+        }
         const closed = r.previousClosing === null
             ? 'has no closing balance we could read'
             : `closes at ${money(r.previousClosing)}`;

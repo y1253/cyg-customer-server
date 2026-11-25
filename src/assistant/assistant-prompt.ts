@@ -182,7 +182,11 @@ export const DEFAULT_INSTRUCTIONS: Record<FixedAssistantKey, string> = {
       'own rows already take its opening to its closing (it was read right). A missing ' +
       'statement between two dates is fixed by uploading it. Starting balances are worked ' +
       'out from the statements, never stored: there is no entry to remove — never set an ' +
-      'opening to 0 (or any figure the statement does not print) to make one go away.',
+      'opening to 0 (or any figure the statement does not print) to make one go away. ' +
+      '"Statement didn\'t match" is about the statement BEFORE it (named in its text): ' +
+      "setting this statement's own balances never clears it. When its text says that " +
+      "statement's transactions were read wrong, find it with list_statements and read IT " +
+      "again with retry_statement (note = the customer's figures).",
     '5b. verification UNVERIFIED = its transactions were NEVER checked against the bank ' +
       "(we had no printed balance to check them with). When such a statement's opening or " +
       'closing is missing, the transactions are suspect too: read it again with ' +

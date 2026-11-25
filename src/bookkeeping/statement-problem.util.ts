@@ -92,6 +92,11 @@ export interface ProblemInput {
    * (`printedEnding`); absent / null = none printed, the running balance is not checked.
    */
   printedEnding?: number | null;
+  /**
+   * MISMATCH only: where the PREVIOUS statement's own running balance ends (`printedEnding`).
+   * Equal to this opening = that statement's rows were read wrong, not a balance (2026-11-25).
+   */
+  previousPrinted?: number | null;
   /** step9: how its starting balance was worked out (`openingChain`), when not read. */
   startDerived?: StartDerived;
 }
@@ -134,6 +139,22 @@ function chainProblem(s: ProblemInput): StatementProblem | null {
     const before = r.previousEnd
       ? `The statement ending ${longDay(r.previousEnd)}`
       : 'The statement before it';
+    // 2026-11-25 (TD 4051 #207 → #220): the previous statement's running balance ends right
+    // where this one opens, so ITS rows were read wrong (a flipped sign) — "has no closing
+    // balance" sent the AI to set this statement's closing, which fixed nothing.
+    if (
+      s.previousPrinted != null &&
+      Math.round(s.previousPrinted * 100) === Math.round(r.opening * 100)
+    ) {
+      return {
+        kind: 'MISMATCH',
+        title: PROBLEM_TITLES.MISMATCH,
+        text:
+          `${before} ends at ${money(s.previousPrinted)} by its own running balance — where this one opens — ` +
+          `but its transactions as read don't add up to that, so one of them was read wrong. ` +
+          `Your books start again here at ${money(r.opening)} until that statement is read again.`,
+      };
+    }
     const closed =
       r.previousClosing === null
         ? 'has no closing balance we could read'

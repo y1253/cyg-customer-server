@@ -21,10 +21,12 @@ import { pageTextHint } from './pipeline/tool-results';
 import { dropChequeCaptions } from './cheque-caption.util';
 import { chronological } from './statement-order.util';
 import {
+  cents,
   describeCheck,
   perPageBoxes,
   reconcileStatement,
   score,
+  totalsCoverAll,
   type ReconcileResult,
   type StatedFigures,
 } from './reconcile.util';
@@ -903,7 +905,16 @@ export function assemble(
   // no longer block each other (`repairSignsFromTotals`).
   let totalsFlips = 0;
   const fixFromTotals = (rows: typeof finite, f: StatedFigures) => {
-    if (f.totalsScope === 'partial') return;
+    // "Partial" is the model's word; rows filling the box exactly, only signs apart, prove
+    // it covers them all (`totalsCoverAll`, TD 4051 #207 2026-11-25).
+    if (
+      f.totalsScope === 'partial' &&
+      !totalsCoverAll(
+        f,
+        rows.map((t) => cents(t.amount)),
+      )
+    )
+      return;
     const fix = repairSignsFromTotals(rows, {
       deposits: f.totalDeposits,
       withdrawals: f.totalWithdrawals,

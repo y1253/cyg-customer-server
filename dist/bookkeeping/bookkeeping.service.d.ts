@@ -149,6 +149,7 @@ export declare class BookkeepingService {
         closingBalance?: number | null;
         reason: string;
     }): Promise<StatementBalancesResult>;
+    private carryOverAdvice;
     remove(scope: BookScope, id: number): Promise<void>;
     moveStatement(scope: BookScope, id: number, rawName: string): Promise<StatementView>;
     private owned;

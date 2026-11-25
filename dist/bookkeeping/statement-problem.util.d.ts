@@ -24,6 +24,7 @@ export interface ProblemInput {
     rechecked?: boolean;
     rechecking?: boolean;
     printedEnding?: number | null;
+    previousPrinted?: number | null;
     startDerived?: StartDerived;
 }
 export declare function statementProblem(s: ProblemInput): StatementProblem | null;

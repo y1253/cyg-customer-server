@@ -3,6 +3,7 @@ import {
   perPageBoxes,
   reconcile,
   score,
+  totalsCoverAll,
   type ReconcileRow,
   type StatedFigures,
 } from './reconcile.util';
@@ -204,6 +205,42 @@ describe('reconcile', () => {
       expect(r.checks.filter((c) => c.skipped)).toEqual([]);
     });
 
+    it('…nor when the rows fill the totals exactly with only a sign apart (TD 4051 #207: "RTN NSF" +6.90 read as −6.90)', () => {
+      const flipped = [
+        { amount: -6.9, balanceAfter: null, page: 0 },
+        { amount: -6.9, balanceAfter: -21.02, page: 0 },
+        { amount: 100, balanceAfter: 78.98, page: 0 },
+      ];
+      const r = reconcile(
+        {
+          ...NONE,
+          totalDeposits: 106.9,
+          totalWithdrawals: 6.9,
+          depositCount: 2,
+          withdrawalCount: 1,
+          totalsScope: 'partial',
+        },
+        flipped,
+      );
+      expect(r.verification).toBe('MISMATCH');
+      expect(r.checks.filter((c) => c.skipped)).toEqual([]);
+    });
+
+    it('a really partial box (the rows hold more than it counts) is still skipped', () => {
+      const bare = rows().map((r) => ({ ...r, balanceAfter: null }));
+      const r = reconcile(
+        {
+          ...NONE,
+          totalDeposits: 50,
+          totalWithdrawals: 20,
+          totalsScope: 'partial',
+        },
+        bare,
+      );
+      expect(r.verification).toBe('UNVERIFIED');
+      expect(r.checks.every((c) => c.skipped)).toBe(true);
+    });
+
     it('a running balance on every row and nothing else printed → VERIFIED by the chain', () => {
       const r = reconcile(NONE, rows());
       expect(r.checks.map((c) => c.name)).toEqual(['runningBalance']);
@@ -312,5 +349,34 @@ describe('running balance: one balance copied a row too early (#574, 2026-11-11)
   it('a different wrong figure still breaks', () => {
     const r = reconcile(stated, rows(120));
     expect(r.checks.find((c) => c.name === 'runningBalance')?.ok).toBe(false);
+  });
+});
+
+describe('totalsCoverAll (2026-11-25, TD 4051 #207)', () => {
+  const box = {
+    totalDeposits: 106.9,
+    totalWithdrawals: 6.9,
+    depositCount: 2,
+    withdrawalCount: 1,
+  };
+
+  it('true when the rows fill the box exactly, only a sign apart', () => {
+    expect(totalsCoverAll(box, [-690, -690, 10000])).toBe(true);
+    expect(
+      totalsCoverAll(
+        { ...box, depositCount: null, withdrawalCount: null },
+        [-690, -690, 10000],
+      ),
+    ).toBe(true);
+  });
+
+  it('false when the gross or a count is off, or a total is not printed', () => {
+    expect(totalsCoverAll(box, [-690, 10000])).toBe(false);
+    expect(totalsCoverAll({ ...box, depositCount: 3 }, [-690, -690, 10000])).toBe(
+      false,
+    );
+    expect(
+      totalsCoverAll({ ...box, totalDeposits: null }, [-690, -690, 10000]),
+    ).toBe(false);
   });
 });

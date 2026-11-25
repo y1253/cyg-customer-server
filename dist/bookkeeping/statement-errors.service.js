@@ -272,6 +272,9 @@ let StatementErrorsService = StatementErrorsService_1 = class StatementErrorsSer
                 printedEnding: rowsOf.has(r.id)
                     ? (0, statement_problem_util_1.printedEnding)(rowsOf.get(r.id), r.accountKind === 'CREDIT_CARD')
                     : undefined,
+                previousPrinted: previous && rowsOf.has(previous.id)
+                    ? (0, statement_problem_util_1.printedEnding)(rowsOf.get(previous.id), previous.accountKind === 'CREDIT_CARD')
+                    : undefined,
                 startDerived: start?.derived,
             }));
         }

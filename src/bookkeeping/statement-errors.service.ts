@@ -345,6 +345,13 @@ export class StatementErrorsService implements OnApplicationBootstrap {
           printedEnding: rowsOf.has(r.id)
             ? printedEnding(rowsOf.get(r.id)!, r.accountKind === 'CREDIT_CARD')
             : undefined,
+          previousPrinted:
+            previous && rowsOf.has(previous.id)
+              ? printedEnding(
+                  rowsOf.get(previous.id)!,
+                  previous.accountKind === 'CREDIT_CARD',
+                )
+              : undefined,
           startDerived: start?.derived,
         }),
       );

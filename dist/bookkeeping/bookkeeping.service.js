@@ -654,18 +654,34 @@ let BookkeepingService = BookkeepingService_1 = class BookkeepingService {
         });
         await this.errors?.refreshBook(scope);
         const saved = await this.errors?.openFor(scope, [s.id]);
+        const fitAdvice = fit.balancesMatch === true
+            ? null
+            : fit.balancesMatch === false
+                ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
+                : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.';
+        const carry = saved
+            ?.get(s.id)
+            ?.some((e) => e.kind === 'MISMATCH')
+            ? await this.carryOverAdvice(scope, s.id)
+            : null;
+        const advice = [fitAdvice, carry].filter(Boolean).join(' ');
         return {
             statement: toView(checked, undefined, {
                 net: Number(sum._sum.amount ?? 0),
                 ...(saved && { saved: saved.get(s.id) ?? [] }),
             }),
             ...fit,
-            ...(fit.balancesMatch !== true && {
-                advice: fit.balancesMatch === false
-                    ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
-                    : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.',
-            }),
+            ...(advice ? { advice } : {}),
         };
+    }
+    async carryOverAdvice(scope, statementId) {
+        const start = (0, opening_balance_util_1.openingChain)(await (0, opening_balance_query_1.loadOpeningStatements)(this.prisma, scope)).find((r) => r.statementId === statementId);
+        const previous = start?.reason && 'previousStatementId' in start.reason
+            ? start.reason.previousStatementId
+            : null;
+        return (`It still does not carry over from the statement before it${previous ? ` (statementId ${previous})` : ''} — ` +
+            "setting THIS statement's balances never fixes that, so do not say it is fixed. " +
+            `When that statement's running balance ends where this one opens, its transactions were read wrong: read ${previous ? `statement ${previous}` : 'it'} again with retry_statement (note = the customer's figures).`);
     }
     async remove(scope, id) {
         const s = await this.owned(scope, id);

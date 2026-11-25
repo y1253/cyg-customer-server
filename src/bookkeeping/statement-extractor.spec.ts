@@ -149,6 +149,59 @@ describe('StatementExtractor re-reads', () => {
     expect(out.rereads).toBe(2);
   });
 
+  describe('a "partial" box the rows fill exactly, only a sign apart (TD 4051 #207, 2026-11-25)', () => {
+    const row = (description: string, amount: number, balanceAfter: number | null) => ({
+      pendingDate: null,
+      postingDate: '2021-12-07',
+      description,
+      amount,
+      balanceAfter,
+      offsetAccount: 'Office Expense',
+    });
+    const page = (transactions: ReturnType<typeof row>[], deposits: number) =>
+      reply({
+        totalDeposits: deposits,
+        totalWithdrawals: 6.9,
+        depositCount: 2,
+        withdrawalCount: 1,
+        totalsScope: 'partial',
+        transactions,
+      });
+
+    it('fixes the flipped sign when one row fits', async () => {
+      const { ex } = extractor(() =>
+        page(
+          [
+            row('RTN NSF', -7.25, null),
+            row('18004INTUIT MSP', -6.9, null),
+            row('E-TRANSFER', 100, null),
+          ],
+          107.25,
+        ),
+      );
+      const out = await ex.extract(await pdf(1), 's.pdf');
+      expect(out.transactions.map((t) => t.amount)).toEqual([7.25, -6.9, 100]);
+      expect(out.signFixes).toBe(1);
+      expect(out.verification.verification).toBe('VERIFIED');
+    });
+
+    it('two rows that fit equally are never guessed — the statement fails and is re-read', async () => {
+      const { ex } = extractor(() =>
+        page(
+          [
+            row('RTN NSF', -6.9, null),
+            row('18004INTUIT MSP 6.90', -6.9, -21.02),
+            row('E-TRANSFER', 100, 78.98),
+          ],
+          106.9,
+        ),
+      );
+      const out = await ex.extract(await pdf(1), 's.pdf');
+      expect(out.verification.verification).toBe('MISMATCH');
+      expect(out.rereads).toBeGreaterThan(0);
+    });
+  });
+
   it('escalates: suspect pages, then the stronger model, then every page', () => {
     expect(rereadRound(0)).toEqual({ verifyModel: false, allPages: false });
     expect(rereadRound(1)).toEqual({ verifyModel: true, allPages: false });

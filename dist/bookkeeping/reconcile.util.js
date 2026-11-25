@@ -4,6 +4,7 @@ exports.score = exports.cents = void 0;
 exports.reconcile = reconcile;
 exports.perPageBoxes = perPageBoxes;
 exports.reconcileStatement = reconcileStatement;
+exports.totalsCoverAll = totalsCoverAll;
 exports.describeCheck = describeCheck;
 const cents = (n) => Math.round(n * 100);
 exports.cents = cents;
@@ -43,7 +44,7 @@ function reconcile(stated, rows) {
             'the balances printed on the rows are not a running balance (a subtotal)';
         balances.suspect.clear();
     }
-    const reason = skipReason(stated, balances);
+    const reason = skipReason(stated, balances, amounts);
     for (const c of [...totals, ...counts]) {
         if (!c.ok && reason)
             c.skipped = reason;
@@ -187,17 +188,32 @@ function fit(b) {
     const broken = b.running ? b.running.expected - b.running.actual : 0;
     return passing * 1e9 + (b.selfConsistent ? 1e6 : 0) - broken;
 }
-function skipReason(stated, b) {
+function skipReason(stated, b, amounts) {
     if (b.selfConsistent === false) {
         return "the statement's totals don't add up to its own opening and closing balance, so they count something else";
     }
     if (b.running?.ok && b.balance?.ok) {
         return "every row matches the bank's running balance, so the printed figure counts something different";
     }
-    if (stated.totalsScope === 'partial' && b.selfConsistent !== true) {
+    if (stated.totalsScope === 'partial' &&
+        b.selfConsistent !== true &&
+        !totalsCoverAll(stated, amounts)) {
         return 'the printed figure does not cover every transaction on the statement';
     }
     return null;
+}
+function totalsCoverAll(stated, amounts) {
+    if (stated.totalDeposits === null || stated.totalWithdrawals === null)
+        return false;
+    const gross = amounts.reduce((s, a) => s + Math.abs(a), 0);
+    const printed = (0, exports.cents)(Math.abs(stated.totalDeposits)) +
+        (0, exports.cents)(Math.abs(stated.totalWithdrawals));
+    if (gross !== printed)
+        return false;
+    if (stated.depositCount === null || stated.withdrawalCount === null)
+        return true;
+    return (amounts.filter((a) => a !== 0).length ===
+        stated.depositCount + stated.withdrawalCount);
 }
 function runningBalance(printed, amounts, pages, opening) {
     const suspect = new Set();

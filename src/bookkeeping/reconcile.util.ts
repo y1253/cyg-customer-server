@@ -168,7 +168,7 @@ export function reconcile(
     balances.suspect.clear();
   }
 
-  const reason = skipReason(stated, balances);
+  const reason = skipReason(stated, balances, amounts);
   for (const c of [...totals, ...counts]) {
     if (!c.ok && reason) c.skipped = reason;
   }
@@ -405,19 +405,58 @@ function fit(b: BalanceChecks): number {
  *  2. every row is proven: the running-balance chain AND opening + net = closing hold.
  *     (The balance alone is no proof — two offsetting misreads pass it.)
  *  3. the model said the totals are partial — believed only when (1) cannot prove them
- *     complete, so "partial" can't be used to hide a dropped row.
+ *     complete, so "partial" can't be used to hide a dropped row, and never when the rows
+ *     fill the printed totals exactly with only signs apart (`totalsCoverAll`).
  */
-function skipReason(stated: StatedFigures, b: BalanceChecks): string | null {
+function skipReason(
+  stated: StatedFigures,
+  b: BalanceChecks,
+  amounts: number[],
+): string | null {
   if (b.selfConsistent === false) {
     return "the statement's totals don't add up to its own opening and closing balance, so they count something else";
   }
   if (b.running?.ok && b.balance?.ok) {
     return "every row matches the bank's running balance, so the printed figure counts something different";
   }
-  if (stated.totalsScope === 'partial' && b.selfConsistent !== true) {
+  if (
+    stated.totalsScope === 'partial' &&
+    b.selfConsistent !== true &&
+    !totalsCoverAll(stated, amounts)
+  ) {
     return 'the printed figure does not cover every transaction on the statement';
   }
   return null;
+}
+
+/**
+ * The printed totals count EVERY row and only signs are apart: the rows' money in + out is
+ * exactly the printed deposits + withdrawals, and (when both counts are printed) the rows
+ * are exactly as many. A box that left fees or one category out can't hit both by chance —
+ * so "partial" is not believed then (2026-11-25, TD 4051 #207: page 1 called "partial", one
+ * "RTN NSF" +$6.90 read as −$6.90, deposits short and withdrawals over by $6.90, 8 / 23 rows
+ * vs 9 / 22 — VERIFIED, and the next statement "didn't match"). `amounts` in cents.
+ */
+export function totalsCoverAll(
+  stated: Pick<
+    StatedFigures,
+    'totalDeposits' | 'totalWithdrawals' | 'depositCount' | 'withdrawalCount'
+  >,
+  amounts: number[],
+): boolean {
+  if (stated.totalDeposits === null || stated.totalWithdrawals === null)
+    return false;
+  const gross = amounts.reduce((s, a) => s + Math.abs(a), 0);
+  const printed =
+    cents(Math.abs(stated.totalDeposits)) +
+    cents(Math.abs(stated.totalWithdrawals));
+  if (gross !== printed) return false;
+  if (stated.depositCount === null || stated.withdrawalCount === null)
+    return true;
+  return (
+    amounts.filter((a) => a !== 0).length ===
+    stated.depositCount + stated.withdrawalCount
+  );
 }
 
 function runningBalance(

@@ -582,7 +582,8 @@ function assemble(readings) {
     const finite = read.filter((t) => Number.isFinite(t.amount));
     let totalsFlips = 0;
     const fixFromTotals = (rows, f) => {
-        if (f.totalsScope === 'partial')
+        if (f.totalsScope === 'partial' &&
+            !(0, reconcile_util_1.totalsCoverAll)(f, rows.map((t) => (0, reconcile_util_1.cents)(t.amount))))
             return;
         const fix = (0, sign_repair_1.repairSignsFromTotals)(rows, {
             deposits: f.totalDeposits,

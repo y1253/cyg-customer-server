@@ -1054,19 +1054,47 @@ export class BookkeepingService {
     // step9: its saved errors follow the new balances at once (and say so to the AI).
     await this.errors?.refreshBook(scope);
     const saved = await this.errors?.openFor(scope, [s.id]);
+    const fitAdvice =
+      fit.balancesMatch === true
+        ? null
+        : fit.balancesMatch === false
+          ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
+          : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.';
+    // 2026-11-25 (TD 4051 #220): a "didn't match" is the PREVIOUS statement's doing; the AI
+    // set this one's closing, said "the balances add up" and the break stayed.
+    const carry = saved
+      ?.get(s.id)
+      ?.some((e) => e.kind === 'MISMATCH')
+      ? await this.carryOverAdvice(scope, s.id)
+      : null;
+    const advice = [fitAdvice, carry].filter(Boolean).join(' ');
     return {
       statement: toView(checked, undefined, {
         net: Number(sum._sum.amount ?? 0),
         ...(saved && { saved: saved.get(s.id) ?? [] }),
       }),
       ...fit,
-      ...(fit.balancesMatch !== true && {
-        advice:
-          fit.balancesMatch === false
-            ? `Opening ± this statement's transactions comes to ${fit.expectedClosing?.toFixed(2)}, not the closing balance — the transactions themselves were read wrong. Tell the customer, and read it again with retry_statement (a note quoting the printed balances) instead of setting more balances.`
-            : 'Its opening or closing balance is still unknown, so its transactions are NOT checked. Read it again with retry_statement (a note quoting the printed balances) so they are.',
-      }),
+      ...(advice ? { advice } : {}),
     };
+  }
+
+  /** What to tell the AI while a statement still does not carry over from the one before it. */
+  private async carryOverAdvice(
+    scope: BookScope,
+    statementId: number,
+  ): Promise<string> {
+    const start = openingChain(
+      await loadOpeningStatements(this.prisma, scope),
+    ).find((r) => r.statementId === statementId);
+    const previous =
+      start?.reason && 'previousStatementId' in start.reason
+        ? start.reason.previousStatementId
+        : null;
+    return (
+      `It still does not carry over from the statement before it${previous ? ` (statementId ${previous})` : ''} — ` +
+      "setting THIS statement's balances never fixes that, so do not say it is fixed. " +
+      `When that statement's running balance ends where this one opens, its transactions were read wrong: read ${previous ? `statement ${previous}` : 'it'} again with retry_statement (note = the customer's figures).`
+    );
   }
 
   /**

@@ -46,5 +46,6 @@ export interface PageFigures {
 }
 export declare function perPageBoxes(pages: readonly StatedFigures[]): boolean;
 export declare function reconcileStatement(stated: StatedFigures, pages: PageFigures[]): ReconcileResult;
+export declare function totalsCoverAll(stated: Pick<StatedFigures, 'totalDeposits' | 'totalWithdrawals' | 'depositCount' | 'withdrawalCount'>, amounts: number[]): boolean;
 export declare const score: (r: ReconcileResult) => number;
 export declare function describeCheck(c: Check): string;

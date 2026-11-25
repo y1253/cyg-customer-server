@@ -94,6 +94,27 @@ describe('statementProblem (step2, 2026-11-11)', () => {
     ).toContain("We're re-reading both");
   });
 
+  it("MISMATCH where the previous statement's running balance ends at this opening: its rows were read wrong (TD 4051 #207 → #220)", () => {
+    const reason = {
+      kind: 'MISMATCH' as const,
+      previousStatementId: 207,
+      previousEnd: '2021-12-31',
+      previousClosing: null,
+      opening: 31.26,
+    };
+    const p = statementProblem(done({ reason, previousPrinted: 31.26 }));
+    expect(p?.kind).toBe('MISMATCH');
+    expect(p?.text).toBe(
+      'The statement ending Dec 31, 2021 ends at $31.26 by its own running balance — where this one opens — ' +
+        "but its transactions as read don't add up to that, so one of them was read wrong. " +
+        'Your books start again here at $31.26 until that statement is read again.',
+    );
+    // A running balance ending elsewhere keeps the usual text.
+    expect(
+      statementProblem(done({ reason, previousPrinted: 17.46 }))?.text,
+    ).toContain('has no closing balance we could read');
+  });
+
   it('MISSING: names the gap', () => {
     const p = statementProblem(
       done({
