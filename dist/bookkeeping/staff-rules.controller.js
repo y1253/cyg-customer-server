@@ -15,6 +15,7 @@ var StaffRulesController_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StaffRulesController = void 0;
 const common_1 = require("@nestjs/common");
+const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const name_memory_service_1 = require("./name-memory.service");
@@ -27,18 +28,23 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
     accounts;
     nameMemory;
     productMemory;
+    qbo;
     logger = new common_1.Logger(StaffRulesController_1.name);
-    constructor(rules, accounts, nameMemory, productMemory) {
+    constructor(rules, accounts, nameMemory, productMemory, qbo) {
         this.rules = rules;
         this.accounts = accounts;
         this.nameMemory = nameMemory;
         this.productMemory = productMemory;
+        this.qbo = qbo;
     }
     view(_companyId, staff) {
         return this.rules.view(staff.scope);
     }
     async saveNameRule(_companyId, staff, dto) {
         const { name, category } = await this.accounts.editValues(staff.scope, dto);
+        const pushedAs = dto.matchType === 'NAME' && name
+            ? await this.qbo.pushedPayee(staff.scope, dto.matchKey)
+            : null;
         await this.nameMemory.saveRule(staff.scope, {
             matchType: dto.matchType,
             matchKey: dto.matchKey,
@@ -47,6 +53,7 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
             scope: 'ALWAYS',
             replace: true,
         });
+        this.qbo.renamePayee(staff.scope, pushedAs, name);
         this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
         return this.rules.view(staff.scope);
     }
@@ -120,6 +127,7 @@ exports.StaffRulesController = StaffRulesController = StaffRulesController_1 = _
     __metadata("design:paramtypes", [staff_rules_service_1.StaffRulesService,
         customer_accounts_service_1.CustomerAccountsService,
         name_memory_service_1.NameMemoryService,
-        product_memory_service_1.ProductMemoryService])
+        product_memory_service_1.ProductMemoryService,
+        quickbooks_sync_service_1.QuickBooksSyncService])
 ], StaffRulesController);
 //# sourceMappingURL=staff-rules.controller.js.map

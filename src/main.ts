@@ -18,6 +18,9 @@ async function bootstrap() {
   // untouched — the same convention as the internal app.
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
+  // step11.md (2026-11-25): the internal API sends a company's QuickBooks history in one
+  // request (`staff/books/:id/qbo-import/analyze`) — far past express's 100 kB default.
+  app.useBodyParser('json', { limit: '10mb' });
 
   // step12: SignalWire streams AI phone calls to /api/voice/stream (WebSocket upgrade).
   app.get(VoiceGateway).attach(app.getHttpServer());

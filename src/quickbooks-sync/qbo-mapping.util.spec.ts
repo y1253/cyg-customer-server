@@ -3,6 +3,7 @@ import {
   familyLines,
   qboBody,
   qboCategoryName,
+  qboPayeeName,
   qboQuote,
   qboText,
   qboTypeOf,
@@ -129,5 +130,17 @@ describe('qboBody', () => {
       accountIds,
     });
     expect(body).toMatchObject({ PaymentType: 'CreditCard', Credit: true });
+  });
+});
+
+describe('qboPayeeName', () => {
+  it('keeps a plain name as QuickBooks accepts it', () => {
+    expect(qboPayeeName('Walmart: Store', false)).toBe('Walmart Store');
+  });
+  it('adds -mix to a name of several categories, within 100 characters', () => {
+    expect(qboPayeeName('Walmart', true)).toBe('Walmart-mix');
+    const long = qboPayeeName('x'.repeat(120), true);
+    expect(long).toHaveLength(100);
+    expect(long.endsWith('-mix')).toBe(true);
   });
 });

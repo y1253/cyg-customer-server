@@ -9,6 +9,7 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import {
   ResetNameRuleDto,
@@ -38,6 +39,7 @@ export class StaffRulesController {
     private readonly accounts: CustomerAccountsService,
     private readonly nameMemory: NameMemoryService,
     private readonly productMemory: ProductMemoryService,
+    private readonly qbo: QuickBooksSyncService,
   ) {}
 
   @Get()
@@ -55,6 +57,11 @@ export class StaffRulesController {
     @Body() dto: SaveNameRuleDto,
   ): Promise<StaffRulesView> {
     const { name, category } = await this.accounts.editValues(staff.scope, dto);
+    // step11.md (2026-11-25): a renamed payee is renamed in QuickBooks too.
+    const pushedAs =
+      dto.matchType === 'NAME' && name
+        ? await this.qbo.pushedPayee(staff.scope, dto.matchKey)
+        : null;
     // Staff always edit the saved rule, never a one-time change — and their word moves a
     // description already linked to another name (step2: no RULE_CONFLICT for staff).
     await this.nameMemory.saveRule(staff.scope, {
@@ -65,6 +72,7 @@ export class StaffRulesController {
       scope: 'ALWAYS',
       replace: true,
     });
+    this.qbo.renamePayee(staff.scope, pushedAs, name);
     this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
     return this.rules.view(staff.scope);
   }

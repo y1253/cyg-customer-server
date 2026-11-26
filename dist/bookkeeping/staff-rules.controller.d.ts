@@ -1,3 +1,4 @@
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { ResetNameRuleDto, ResetProductRuleDto, SaveNameRuleDto, SaveProductRuleDto } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
@@ -9,8 +10,9 @@ export declare class StaffRulesController {
     private readonly accounts;
     private readonly nameMemory;
     private readonly productMemory;
+    private readonly qbo;
     private readonly logger;
-    constructor(rules: StaffRulesService, accounts: CustomerAccountsService, nameMemory: NameMemoryService, productMemory: ProductMemoryService);
+    constructor(rules: StaffRulesService, accounts: CustomerAccountsService, nameMemory: NameMemoryService, productMemory: ProductMemoryService, qbo: QuickBooksSyncService);
     view(_companyId: number, staff: StaffBook): Promise<StaffRulesView>;
     saveNameRule(_companyId: number, staff: StaffBook, dto: SaveNameRuleDto): Promise<StaffRulesView>;
     resetNameRule(_companyId: number, staff: StaffBook, dto: ResetNameRuleDto): Promise<StaffRulesView>;

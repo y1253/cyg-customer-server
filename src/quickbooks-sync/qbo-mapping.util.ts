@@ -121,6 +121,19 @@ export function qboText(value: string, max = 100): string {
     .trim();
 }
 
+/** step11.md (2026-11-25): what a payee of several categories is called in QuickBooks. */
+export const MIX_SUFFIX = '-mix';
+
+/**
+ * The payee as QuickBooks shows it. A name whose transactions sit under sub-names of two or
+ * more categories ("Walmart - Office", "Walmart - Meals") has no one category, and QuickBooks
+ * has no sub-names for a payee — so it is pushed as "Walmart-mix" (user's decision, step11.md).
+ */
+export function qboPayeeName(name: string, mixed: boolean): string {
+  if (!mixed) return qboText(name);
+  return `${qboText(name, 100 - MIX_SUFFIX.length)}${MIX_SUFFIX}`;
+}
+
 /** A string literal in a QuickBooks query (`'Owner\'s Loan'`). */
 export function qboQuote(value: string): string {
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;

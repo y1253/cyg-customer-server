@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UNCATEGORIZED_INCOME = exports.UNCATEGORIZED_EXPENSE = void 0;
+exports.MIX_SUFFIX = exports.UNCATEGORIZED_INCOME = exports.UNCATEGORIZED_EXPENSE = void 0;
 exports.familyLines = familyLines;
 exports.qboTypeOf = qboTypeOf;
 exports.qboCategoryName = qboCategoryName;
 exports.qboAccountType = qboAccountType;
 exports.qboText = qboText;
+exports.qboPayeeName = qboPayeeName;
 exports.qboQuote = qboQuote;
 exports.familyHash = familyHash;
 exports.qboBody = qboBody;
@@ -70,6 +71,12 @@ function qboText(value, max = 100) {
         .trim()
         .slice(0, max)
         .trim();
+}
+exports.MIX_SUFFIX = '-mix';
+function qboPayeeName(name, mixed) {
+    if (!mixed)
+        return qboText(name);
+    return `${qboText(name, 100 - exports.MIX_SUFFIX.length)}${exports.MIX_SUFFIX}`;
 }
 function qboQuote(value) {
     return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;

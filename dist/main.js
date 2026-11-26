@@ -12,6 +12,7 @@ async function bootstrap() {
     app.enableCors({ origin: true, credentials: true });
     app.setGlobalPrefix('api');
     app.useGlobalPipes(new common_1.ValidationPipe({ whitelist: true }));
+    app.useBodyParser('json', { limit: '10mb' });
     app.get(voice_gateway_1.VoiceGateway).attach(app.getHttpServer());
     const port = process.env.PORT ?? 3001;
     await app.listen(port);

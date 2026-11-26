@@ -1,3 +1,4 @@
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import {
   BadRequestException,
   Body,
@@ -146,6 +147,7 @@ export class BookkeepingController {
     private readonly prisma: PrismaService,
     private readonly communications: CommunicationsService,
     private readonly splitRules: SplitRulesService,
+    private readonly qbo: QuickBooksSyncService,
   ) {}
 
   /** Whose name heads an export: the book's (the company's) name. */
@@ -326,6 +328,11 @@ export class BookkeepingController {
     @Body() dto: SaveNameRuleDto,
   ): Promise<NamesView> {
     const { name, category } = await this.accounts.editValues(scope, dto);
+    // step11.md (2026-11-25): a renamed payee is renamed in QuickBooks too.
+    const pushedAs =
+      dto.matchType === 'NAME' && name
+        ? await this.qbo.pushedPayee(scope, dto.matchKey)
+        : null;
     await this.nameMemory.saveRule(scope, {
       matchType: dto.matchType,
       matchKey: dto.matchKey,
@@ -335,6 +342,7 @@ export class BookkeepingController {
       replace: dto.replace,
       subNameId: dto.subNameId ?? null,
     });
+    this.qbo.renamePayee(scope, pushedAs, name);
     return this.tax.names(scope);
   }
 

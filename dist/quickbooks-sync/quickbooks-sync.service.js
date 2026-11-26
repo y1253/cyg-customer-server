@@ -14,6 +14,7 @@ exports.QuickBooksSyncService = void 0;
 const common_1 = require("@nestjs/common");
 const schedule_1 = require("@nestjs/schedule");
 const chart_of_accounts_1 = require("../bookkeeping/chart-of-accounts");
+const scope_1 = require("../bookkeeping/scope");
 const tax_service_1 = require("../bookkeeping/tax.service");
 const prisma_service_1 = require("../prisma/prisma.service");
 const qbo_mapping_util_1 = require("./qbo-mapping.util");
@@ -132,6 +133,76 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
             this.logger.warn(`forgetRows failed: ${String(err)}`);
         }
     }
+    async pushedPayee(scope, matchKey) {
+        try {
+            const key = matchKey.trim().toLowerCase();
+            if (!key || !scope.companyId)
+                return null;
+            const rule = await this.prisma.customerNameRule.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), matchType: 'NAME', matchKey: key },
+                select: { name: true },
+            });
+            const names = [key, ...(rule?.name ? [rule.name] : [])];
+            const row = await this.prisma.bankTransaction.findFirst({
+                where: {
+                    ...(0, scope_1.scopeWhere)(scope),
+                    splitOfId: null,
+                    qboId: { not: null },
+                    name: { in: names },
+                },
+                select: { name: true },
+                orderBy: { qboSyncedAt: 'desc' },
+            });
+            return row?.name ?? null;
+        }
+        catch (err) {
+            this.logger.warn(`pushedPayee failed: ${String(err)}`);
+            return null;
+        }
+    }
+    renamePayee(scope, from, to) {
+        if (!from || !to || !scope.companyId)
+            return;
+        if (from.trim() === to.trim())
+            return;
+        void this.renameNow(scope.bookId, scope.companyId, from, to)
+            .catch((err) => this.logger.warn(`book #${scope.bookId}: QuickBooks rename "${from}" → "${to}" failed: ${String(err)}`))
+            .finally(() => this.syncSoon(scope.bookId));
+    }
+    async renameNow(bookId, companyId, from, to) {
+        const qbo = await this.prisma.quickBooksAccount.findUnique({
+            where: { companyId },
+            select: { updateQuickbooks: true, lastError: true },
+        });
+        if (!qbo?.updateQuickbooks || qbo.lastError)
+            return;
+        for (const mixed of [false, true]) {
+            const oldName = (0, qbo_mapping_util_1.qboPayeeName)(from, mixed);
+            const newName = (0, qbo_mapping_util_1.qboPayeeName)(to, mixed);
+            if (oldName === newName)
+                continue;
+            const found = await this.findEntity(companyId, oldName);
+            if (!found)
+                continue;
+            const taken = await this.findEntity(companyId, newName);
+            if (taken && taken.id !== found.id) {
+                this.logger.log(`book #${bookId}: QuickBooks already has "${newName}" — the rows move onto it`);
+                continue;
+            }
+            await this.client.update(companyId, found.type, found.id, {
+                DisplayName: newName,
+            });
+            this.logger.log(`book #${bookId}: renamed QuickBooks ${found.type} ${found.id} "${oldName}" → "${newName}"`);
+        }
+    }
+    async findEntity(companyId, name) {
+        for (const type of ['Vendor', 'Customer', 'Employee']) {
+            const id = await this.findOne(companyId, type, `DisplayName = ${(0, qbo_mapping_util_1.qboQuote)(name)}`);
+            if (id)
+                return { id, type };
+        }
+        return null;
+    }
     async runBook(bookId) {
         const book = await this.prisma.book.findUnique({
             where: { id: bookId },
@@ -165,13 +236,14 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                 orderBy: { id: 'asc' },
             });
             const subNames = await this.subNamesOf(rows);
+            const mixed = await this.mixedNames(bookId);
             let cache = null;
             for (const row of rows) {
                 if (writes >= MAX_PER_RUN) {
                     this.again.add(bookId);
                     break;
                 }
-                const family = this.familyOf(row, subNames);
+                const family = this.familyOf(row, subNames, mixed);
                 if (!family)
                     continue;
                 const hash = (0, qbo_mapping_util_1.familyHash)(family);
@@ -243,7 +315,26 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
         });
         return new Map(found.map((s) => [s.id, s.name]));
     }
-    familyOf(row, subNames) {
+    async mixedNames(bookId) {
+        const groups = await this.prisma.bankTransaction.groupBy({
+            by: ['name', 'offsetAccount'],
+            where: {
+                bookId,
+                splitOfId: null,
+                subNameId: { not: null },
+                name: { not: null },
+            },
+        });
+        const categories = new Map();
+        for (const g of groups) {
+            const key = g.name.trim().toLowerCase();
+            const set = categories.get(key) ?? new Set();
+            set.add(g.offsetAccount);
+            categories.set(key, set);
+        }
+        return new Set([...categories].filter(([, c]) => c.size > 1).map(([k]) => k));
+    }
+    familyOf(row, subNames, mixed) {
         const account = row.statement.plaidAccount;
         const date = row.postingDate ?? row.pendingDate;
         const amount = Number(row.amount);
@@ -256,7 +347,10 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
             externalId: row.externalId,
             date: day(date),
             cents: Math.round(amount * 100),
-            name: row.name ? (0, qbo_mapping_util_1.qboText)(row.name) || null : null,
+            name: row.name
+                ? (0, qbo_mapping_util_1.qboPayeeName)(row.name, mixed.has(row.name.trim().toLowerCase())) ||
+                    null
+                : null,
             description: row.description,
             kind: account.kind === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK',
             plaidAccountId: account.id,

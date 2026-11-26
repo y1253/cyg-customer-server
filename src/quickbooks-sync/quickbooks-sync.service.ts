@@ -5,7 +5,7 @@ import {
   typeFor,
   type TypeContext,
 } from '../bookkeeping/chart-of-accounts';
-import type { BookScope } from '../bookkeeping/scope';
+import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { TaxService } from '../bookkeeping/tax.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -14,6 +14,7 @@ import {
   qboAccountType,
   qboBody,
   qboCategoryName,
+  qboPayeeName,
   qboQuote,
   qboText,
   qboTypeOf,
@@ -176,6 +177,109 @@ export class QuickBooksSyncService {
     }
   }
 
+  // ── step11.md (2026-11-25): a payee renamed in our books is renamed in QuickBooks ──
+
+  /**
+   * The name a payee's rows were last pushed under, before a NAME rule for `matchKey`
+   * renames them: the rule's current name (an earlier rename), else the key itself. Read it
+   * BEFORE the rule is saved. null = nothing of it was pushed yet (nothing to rename there).
+   */
+  async pushedPayee(
+    scope: BookScope,
+    matchKey: string,
+  ): Promise<string | null> {
+    try {
+      const key = matchKey.trim().toLowerCase();
+      if (!key || !scope.companyId) return null;
+      const rule = await this.prisma.customerNameRule.findFirst({
+        where: { ...scopeWhere(scope), matchType: 'NAME', matchKey: key },
+        select: { name: true },
+      });
+      const names = [key, ...(rule?.name ? [rule.name] : [])];
+      const row = await this.prisma.bankTransaction.findFirst({
+        where: {
+          ...scopeWhere(scope),
+          splitOfId: null,
+          qboId: { not: null },
+          name: { in: names },
+        },
+        select: { name: true },
+        orderBy: { qboSyncedAt: 'desc' },
+      });
+      return row?.name ?? null;
+    } catch (err) {
+      this.logger.warn(`pushedPayee failed: ${String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Renames the payee in QuickBooks (its Vendor / Customer / Employee DisplayName) and pushes
+   * the book's rows now. When QuickBooks already has a payee called `to`, nothing is renamed
+   * — the push then moves the rows onto it. Runs in the background; never throws.
+   */
+  renamePayee(scope: BookScope, from: string | null, to: string | null): void {
+    if (!from || !to || !scope.companyId) return;
+    if (from.trim() === to.trim()) return;
+    void this.renameNow(scope.bookId, scope.companyId, from, to)
+      .catch((err) =>
+        this.logger.warn(
+          `book #${scope.bookId}: QuickBooks rename "${from}" → "${to}" failed: ${String(err)}`,
+        ),
+      )
+      .finally(() => this.syncSoon(scope.bookId));
+  }
+
+  private async renameNow(
+    bookId: number,
+    companyId: number,
+    from: string,
+    to: string,
+  ): Promise<void> {
+    const qbo = await this.prisma.quickBooksAccount.findUnique({
+      where: { companyId },
+      select: { updateQuickbooks: true, lastError: true },
+    });
+    if (!qbo?.updateQuickbooks || qbo.lastError) return;
+    // The plain name and its "-mix" form: whichever QuickBooks has is renamed.
+    for (const mixed of [false, true]) {
+      const oldName = qboPayeeName(from, mixed);
+      const newName = qboPayeeName(to, mixed);
+      if (oldName === newName) continue;
+      const found = await this.findEntity(companyId, oldName);
+      if (!found) continue;
+      const taken = await this.findEntity(companyId, newName);
+      // (QuickBooks compares names without case: "walmart" → "Walmart" finds itself.)
+      if (taken && taken.id !== found.id) {
+        this.logger.log(
+          `book #${bookId}: QuickBooks already has "${newName}" — the rows move onto it`,
+        );
+        continue;
+      }
+      await this.client.update(companyId, found.type, found.id, {
+        DisplayName: newName,
+      });
+      this.logger.log(
+        `book #${bookId}: renamed QuickBooks ${found.type} ${found.id} "${oldName}" → "${newName}"`,
+      );
+    }
+  }
+
+  private async findEntity(
+    companyId: number,
+    name: string,
+  ): Promise<{ id: string; type: EntityType } | null> {
+    for (const type of ['Vendor', 'Customer', 'Employee'] as const) {
+      const id = await this.findOne(
+        companyId,
+        type,
+        `DisplayName = ${qboQuote(name)}`,
+      );
+      if (id) return { id, type };
+    }
+    return null;
+  }
+
   // ── A book's run ─────────────────────────────────────────────────────────
 
   private async runBook(bookId: number): Promise<void> {
@@ -210,13 +314,14 @@ export class QuickBooksSyncService {
         orderBy: { id: 'asc' },
       });
       const subNames = await this.subNamesOf(rows);
+      const mixed = await this.mixedNames(bookId);
       let cache: RunCache | null = null;
       for (const row of rows) {
         if (writes >= MAX_PER_RUN) {
           this.again.add(bookId);
           break;
         }
-        const family = this.familyOf(row, subNames);
+        const family = this.familyOf(row, subNames, mixed);
         if (!family) continue;
         const hash = familyHash(family);
         if (row.qboId && row.qboHash === hash) continue;
@@ -287,7 +392,37 @@ export class QuickBooksSyncService {
     return new Map(found.map((s) => [s.id, s.name]));
   }
 
-  private familyOf(row: Row, subNames: ReadonlyMap<number, string>): QboFamily | null {
+  /**
+   * step11.md (2026-11-25): the book's names (lower-cased) whose transactions sit under
+   * sub-names of two or more categories — pushed as "<name>-mix" (`qboPayeeName`).
+   */
+  private async mixedNames(bookId: number): Promise<Set<string>> {
+    const groups = await this.prisma.bankTransaction.groupBy({
+      by: ['name', 'offsetAccount'],
+      where: {
+        bookId,
+        splitOfId: null,
+        subNameId: { not: null },
+        name: { not: null },
+      },
+    });
+    const categories = new Map<string, Set<string>>();
+    for (const g of groups) {
+      const key = g.name!.trim().toLowerCase();
+      const set = categories.get(key) ?? new Set<string>();
+      set.add(g.offsetAccount);
+      categories.set(key, set);
+    }
+    return new Set(
+      [...categories].filter(([, c]) => c.size > 1).map(([k]) => k),
+    );
+  }
+
+  private familyOf(
+    row: Row,
+    subNames: ReadonlyMap<number, string>,
+    mixed: ReadonlySet<string>,
+  ): QboFamily | null {
     const account = row.statement.plaidAccount;
     const date = row.postingDate ?? row.pendingDate;
     const amount = Number(row.amount);
@@ -300,7 +435,10 @@ export class QuickBooksSyncService {
       externalId: row.externalId,
       date: day(date),
       cents: Math.round(amount * 100),
-      name: row.name ? qboText(row.name) || null : null,
+      name: row.name
+        ? qboPayeeName(row.name, mixed.has(row.name.trim().toLowerCase())) ||
+          null
+        : null,
       description: row.description,
       kind: account.kind === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK',
       plaidAccountId: account.id,

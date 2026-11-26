@@ -237,6 +237,38 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         await this.applyRule(scope, input);
         await this.syncProvenance(scope);
     }
+    async saveImported(scope, ops) {
+        const errors = [];
+        for (const op of ops) {
+            try {
+                if (op.kind === 'CATEGORY') {
+                    const clean = (0, name_memory_util_1.cleanName)(op.name);
+                    if (!clean)
+                        continue;
+                    await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, clean);
+                    await this.setNameCategory(scope, clean, (0, chart_of_accounts_1.normalizeAccount)(op.category, await this.customAccountsOf(scope)));
+                    continue;
+                }
+                const input = op.input;
+                if (input.matchType === 'NAME') {
+                    if (input.category)
+                        await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, input.name ?? input.matchKey);
+                }
+                else if (input.subNameId == null) {
+                    await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, input.name);
+                }
+                await this.applyRule(scope, input);
+            }
+            catch (err) {
+                const what = op.kind === 'CATEGORY'
+                    ? `${op.name} → ${op.category}`
+                    : `${op.input.matchType === 'NAME' ? 'name' : 'description'} “${op.input.matchKey}”`;
+                errors.push(`${what}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+        await this.syncProvenance(scope);
+        return errors;
+    }
     async editTransaction(scope, id, input) {
         await this.applyEdit(scope, id, input);
         await this.syncProvenance(scope);

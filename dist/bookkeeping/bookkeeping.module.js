@@ -50,6 +50,8 @@ const communications_service_1 = require("./communications.service");
 const document_pipeline_1 = require("./pipeline/document-pipeline");
 const ocr_service_1 = require("./pipeline/ocr.service");
 const split_rules_service_1 = require("./split-rules.service");
+const qbo_import_service_1 = require("./qbo-import.service");
+const staff_qbo_import_controller_1 = require("./staff-qbo-import.controller");
 let BookkeepingModule = class BookkeepingModule {
 };
 exports.BookkeepingModule = BookkeepingModule;
@@ -61,6 +63,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             bookkeeping_controller_1.BookkeepingController,
             custom_columns_controller_1.CustomColumnsController,
             staff_rules_controller_1.StaffRulesController,
+            staff_qbo_import_controller_1.StaffQboImportController,
             staff_transactions_controller_1.StaffTransactionsController,
             file_links_1.FileLinkController,
             name_files_controller_1.NameFilesController,
@@ -95,6 +98,7 @@ exports.BookkeepingModule = BookkeepingModule = __decorate([
             sub_names_service_1.SubNamesService,
             qbo_system_client_1.QboSystemClient,
             quickbooks_sync_service_1.QuickBooksSyncService,
+            qbo_import_service_1.QboImportService,
             staff_book_guard_1.StaffBookGuard,
             staff_rules_service_1.StaffRulesService,
             statement_errors_service_1.StatementErrorsService,

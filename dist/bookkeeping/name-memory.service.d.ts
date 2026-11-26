@@ -25,6 +25,14 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
         customAccounts: Set<string>;
     }>;
     saveRule(scope: BookScope, input: Parameters<NameMemoryService['applyRule']>[1]): Promise<void>;
+    saveImported(scope: BookScope, ops: Array<{
+        kind: 'RULE';
+        input: Parameters<NameMemoryService['applyRule']>[1];
+    } | {
+        kind: 'CATEGORY';
+        name: string;
+        category: string;
+    }>): Promise<string[]>;
     editTransaction(scope: BookScope, id: number, input: Parameters<NameMemoryService['applyEdit']>[2]): Promise<void>;
     setCategoryOfName(scope: BookScope, name: string, category: string): Promise<void>;
     mergeNames(scope: BookScope, from: string, into: string): Promise<void>;

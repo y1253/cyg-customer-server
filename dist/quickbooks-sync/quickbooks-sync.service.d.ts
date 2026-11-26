@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { type BookScope } from '../bookkeeping/scope';
 import { TaxService } from '../bookkeeping/tax.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QboSystemClient } from './qbo-system.client';
@@ -16,9 +17,14 @@ export declare class QuickBooksSyncService {
     sweep(): Promise<void>;
     sync(bookId: number): Promise<void>;
     forgetRows(where: Prisma.BankTransactionWhereInput): Promise<void>;
+    pushedPayee(scope: BookScope, matchKey: string): Promise<string | null>;
+    renamePayee(scope: BookScope, from: string | null, to: string | null): void;
+    private renameNow;
+    private findEntity;
     private runBook;
     private removeOrphans;
     private subNamesOf;
+    private mixedNames;
     private familyOf;
     private push;
     private refsFor;

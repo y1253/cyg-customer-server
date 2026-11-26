@@ -364,6 +364,59 @@ export class NameMemoryService implements OnApplicationBootstrap {
     await this.syncProvenance(scope);
   }
 
+  /**
+   * step11.md (2026-11-25): the rules the QuickBooks import made, saved as `saveRule` /
+   * `setCategoryOfName` save them (wrappers refused the same way) — one that fails is
+   * reported and never stops the rest — then ONE `syncProvenance` for them all. Answers the
+   * failures, one sentence each.
+   */
+  async saveImported(
+    scope: BookScope,
+    ops: Array<
+      | { kind: 'RULE'; input: Parameters<NameMemoryService['applyRule']>[1] }
+      | { kind: 'CATEGORY'; name: string; category: string }
+    >,
+  ): Promise<string[]> {
+    const errors: string[] = [];
+    for (const op of ops) {
+      try {
+        if (op.kind === 'CATEGORY') {
+          const clean = cleanName(op.name);
+          if (!clean) continue;
+          await refuseWrapper(this.prisma, scope, clean);
+          await this.setNameCategory(
+            scope,
+            clean,
+            normalizeAccount(op.category, await this.customAccountsOf(scope)),
+          );
+          continue;
+        }
+        const input = op.input;
+        if (input.matchType === 'NAME') {
+          if (input.category)
+            await refuseWrapper(
+              this.prisma,
+              scope,
+              input.name ?? input.matchKey,
+            );
+        } else if (input.subNameId == null) {
+          await refuseWrapper(this.prisma, scope, input.name);
+        }
+        await this.applyRule(scope, input);
+      } catch (err) {
+        const what =
+          op.kind === 'CATEGORY'
+            ? `${op.name} → ${op.category}`
+            : `${op.input.matchType === 'NAME' ? 'name' : 'description'} “${op.input.matchKey}”`;
+        errors.push(
+          `${what}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    await this.syncProvenance(scope);
+    return errors;
+  }
+
   /** See `applyEdit`. A ONE-TIME edit becomes an EXCEPTION rule (`syncProvenance`). */
   async editTransaction(
     scope: BookScope,

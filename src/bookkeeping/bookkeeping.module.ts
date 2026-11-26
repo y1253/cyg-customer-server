@@ -45,6 +45,8 @@ import { DocumentPipeline } from './pipeline/document-pipeline';
 import { OcrService } from './pipeline/ocr.service';
 import { SplitRulesService } from './split-rules.service';
 
+import { QboImportService } from './qbo-import.service';
+import { StaffQboImportController } from './staff-qbo-import.controller';
 @Module({
   imports: [CustomerAuthModule],
   controllers: [
@@ -52,6 +54,7 @@ import { SplitRulesService } from './split-rules.service';
     BookkeepingController,
     CustomColumnsController,
     StaffRulesController,
+    StaffQboImportController,
     StaffTransactionsController,
     FileLinkController,
     NameFilesController,
@@ -86,6 +89,7 @@ import { SplitRulesService } from './split-rules.service';
     SubNamesService,
     QboSystemClient,
     QuickBooksSyncService,
+    QboImportService,
     StaffBookGuard,
     StaffRulesService,
     StatementErrorsService,

@@ -1,3 +1,4 @@
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { StreamableFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { CustomerAuthService } from '../customer-auth/customer-auth.service';
@@ -44,7 +45,8 @@ export declare class BookkeepingController {
     private readonly prisma;
     private readonly communications;
     private readonly splitRules;
-    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, ledgerQuery: LedgerQueryService, namesQuery: NamesQueryService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService);
+    private readonly qbo;
+    constructor(bookkeeping: BookkeepingService, exporter: LedgerExportService, customers: CustomerAuthService, reportsService: ReportsService, tax: TaxService, nameMemory: NameMemoryService, accounts: CustomerAccountsService, splits: SplitsService, subNames: SubNamesService, attachments: AttachmentsService, productMemory: ProductMemoryService, fx: FxService, ledgerQuery: LedgerQueryService, namesQuery: NamesQueryService, prisma: PrismaService, communications: CommunicationsService, splitRules: SplitRulesService, qbo: QuickBooksSyncService);
     private ownerName;
     generate(scope: BookScope): Promise<{
         queued: number;

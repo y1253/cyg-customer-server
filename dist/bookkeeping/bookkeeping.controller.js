@@ -13,6 +13,7 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BookkeepingController = void 0;
+const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 const common_1 = require("@nestjs/common");
 const platform_express_1 = require("@nestjs/platform-express");
 const customer_auth_service_1 = require("../customer-auth/customer-auth.service");
@@ -66,7 +67,8 @@ let BookkeepingController = class BookkeepingController {
     prisma;
     communications;
     splitRules;
-    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, ledgerQuery, namesQuery, prisma, communications, splitRules) {
+    qbo;
+    constructor(bookkeeping, exporter, customers, reportsService, tax, nameMemory, accounts, splits, subNames, attachments, productMemory, fx, ledgerQuery, namesQuery, prisma, communications, splitRules, qbo) {
         this.bookkeeping = bookkeeping;
         this.exporter = exporter;
         this.customers = customers;
@@ -84,6 +86,7 @@ let BookkeepingController = class BookkeepingController {
         this.prisma = prisma;
         this.communications = communications;
         this.splitRules = splitRules;
+        this.qbo = qbo;
     }
     ownerName(scope) {
         return (0, books_1.bookOwnerName)(this.prisma, scope);
@@ -150,6 +153,9 @@ let BookkeepingController = class BookkeepingController {
     }
     async saveNameRule(scope, dto) {
         const { name, category } = await this.accounts.editValues(scope, dto);
+        const pushedAs = dto.matchType === 'NAME' && name
+            ? await this.qbo.pushedPayee(scope, dto.matchKey)
+            : null;
         await this.nameMemory.saveRule(scope, {
             matchType: dto.matchType,
             matchKey: dto.matchKey,
@@ -159,6 +165,7 @@ let BookkeepingController = class BookkeepingController {
             replace: dto.replace,
             subNameId: dto.subNameId ?? null,
         });
+        this.qbo.renamePayee(scope, pushedAs, name);
         return this.tax.names(scope);
     }
     async editTransaction(scope, id, dto) {
@@ -1005,6 +1012,7 @@ exports.BookkeepingController = BookkeepingController = __decorate([
         names_query_service_1.NamesQueryService,
         prisma_service_1.PrismaService,
         communications_service_1.CommunicationsService,
-        split_rules_service_1.SplitRulesService])
+        split_rules_service_1.SplitRulesService,
+        quickbooks_sync_service_1.QuickBooksSyncService])
 ], BookkeepingController);
 //# sourceMappingURL=bookkeeping.controller.js.map
