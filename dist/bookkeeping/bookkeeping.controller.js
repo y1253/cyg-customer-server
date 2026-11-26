@@ -21,6 +21,7 @@ const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const prisma_service_1 = require("../prisma/prisma.service");
 const book_scope_guard_1 = require("./book-scope.guard");
 const books_1 = require("./books");
+const merge_names_1 = require("./merge-names");
 const scope_1 = require("./scope");
 const attachments_service_1 = require("./attachments.service");
 const attachment_uploads_1 = require("./attachment-uploads");
@@ -226,7 +227,7 @@ let BookkeepingController = class BookkeepingController {
         return this.subNames.remove(scope, id);
     }
     async mergeNames(scope, dto) {
-        await this.subNames.merge(scope, dto);
+        await (0, merge_names_1.mergeNamesAndQuickBooks)(this.subNames, this.qbo, scope, dto);
         return this.tax.names(scope);
     }
     async resetNameRule(scope, dto) {

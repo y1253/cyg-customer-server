@@ -21,6 +21,9 @@ export declare class QuickBooksSyncService {
     renamePayee(scope: BookScope, from: string | null, to: string | null): void;
     private renameNow;
     private findEntity;
+    mergePayee(scope: BookScope, from: string | null, into: string | null): void;
+    private mergeNow;
+    private repointAll;
     private runBook;
     private removeOrphans;
     private subNamesOf;

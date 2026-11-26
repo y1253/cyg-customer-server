@@ -35,6 +35,11 @@ export declare function qboAccountType(name: string, type: AccountType): {
 export declare function qboText(value: string, max?: number): string;
 export declare const MIX_SUFFIX = "-mix";
 export declare function qboPayeeName(name: string, mixed: boolean): string;
+export interface QboPayeeRef {
+    id: string;
+    type: string;
+}
+export declare function repointEntity(type: QboTxnType, txn: Record<string, unknown>, fromId: string, to: QboPayeeRef): Record<string, unknown> | null;
 export declare function qboQuote(value: string): string;
 export declare function familyHash(family: QboFamily): string;
 export interface QboRefs {

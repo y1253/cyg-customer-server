@@ -20,22 +20,37 @@ const customer_accounts_service_1 = require("./customer-accounts.service");
 const agency_dto_1 = require("./dto/agency.dto");
 const name_memory_service_1 = require("./name-memory.service");
 const product_memory_service_1 = require("./product-memory.service");
+const merge_names_1 = require("./merge-names");
 const scope_1 = require("./scope");
 const staff_book_guard_1 = require("./staff-book.guard");
 const staff_rules_service_1 = require("./staff-rules.service");
+const sub_names_service_1 = require("./sub-names.service");
+const tax_service_1 = require("./tax.service");
 let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
     rules;
     accounts;
     nameMemory;
     productMemory;
     qbo;
+    tax;
+    subNames;
     logger = new common_1.Logger(StaffRulesController_1.name);
-    constructor(rules, accounts, nameMemory, productMemory, qbo) {
+    constructor(rules, accounts, nameMemory, productMemory, qbo, tax, subNames) {
         this.rules = rules;
         this.accounts = accounts;
         this.nameMemory = nameMemory;
         this.productMemory = productMemory;
         this.qbo = qbo;
+        this.tax = tax;
+        this.subNames = subNames;
+    }
+    namesList(_companyId, staff) {
+        return (0, merge_names_1.staffNames)(this.tax, this.subNames, staff.scope);
+    }
+    async mergeNames(_companyId, staff, dto) {
+        await (0, merge_names_1.mergeNamesAndQuickBooks)(this.subNames, this.qbo, staff.scope, dto);
+        this.log(staff, `merged ${dto.from ?? `sub-name #${dto.fromSubNameId}`} into ${dto.into ?? `sub-name #${dto.intoSubNameId}`}`);
+        return (0, merge_names_1.staffNames)(this.tax, this.subNames, staff.scope);
     }
     view(_companyId, staff) {
         return this.rules.view(staff.scope);
@@ -77,6 +92,24 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
     }
 };
 exports.StaffRulesController = StaffRulesController;
+__decorate([
+    (0, common_1.Get)('names-list'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "namesList", null);
+__decorate([
+    (0, common_1.Post)('names/merge'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.MergeNamesDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "mergeNames", null);
 __decorate([
     (0, common_1.Get)(),
     __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
@@ -128,6 +161,8 @@ exports.StaffRulesController = StaffRulesController = StaffRulesController_1 = _
         customer_accounts_service_1.CustomerAccountsService,
         name_memory_service_1.NameMemoryService,
         product_memory_service_1.ProductMemoryService,
-        quickbooks_sync_service_1.QuickBooksSyncService])
+        quickbooks_sync_service_1.QuickBooksSyncService,
+        tax_service_1.TaxService,
+        sub_names_service_1.SubNamesService])
 ], StaffRulesController);
 //# sourceMappingURL=staff-rules.controller.js.map

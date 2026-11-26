@@ -134,6 +134,53 @@ export function qboPayeeName(name: string, mixed: boolean): string {
   return `${qboText(name, 100 - MIX_SUFFIX.length)}${MIX_SUFFIX}`;
 }
 
+/** A QuickBooks payee (Vendor / Customer / Employee) as a reference. */
+export interface QboPayeeRef {
+  id: string;
+  type: string;
+}
+
+type RefLike = { value?: unknown } | undefined;
+const refId = (ref: unknown): string | null => {
+  const v = (ref as RefLike)?.value;
+  return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
+};
+
+/**
+ * step11 part 2 (2026-11-26): a QuickBooks Purchase / Deposit, as read, moved from payee
+ * `fromId` to `to` (a name merge). Returns the sparse-update body, or null when the
+ * transaction does not name that payee. A Deposit names its payee per LINE, and a sparse
+ * update replaces the whole `Line` array, so every line is sent back (only the matching
+ * ones changed).
+ */
+export function repointEntity(
+  type: QboTxnType,
+  txn: Record<string, unknown>,
+  fromId: string,
+  to: QboPayeeRef,
+): Record<string, unknown> | null {
+  const syncToken =
+    typeof txn.SyncToken === 'string' ? { SyncToken: txn.SyncToken } : {};
+  const ref = { value: to.id, type: to.type };
+  if (type === 'Purchase') {
+    if (refId(txn.EntityRef) !== fromId) return null;
+    return { ...syncToken, EntityRef: ref };
+  }
+  const lines = Array.isArray(txn.Line)
+    ? (txn.Line as Array<Record<string, unknown>>)
+    : [];
+  let changed = false;
+  const Line = lines.map((line) => {
+    const detail = line.DepositLineDetail as
+      | Record<string, unknown>
+      | undefined;
+    if (!detail || refId(detail.Entity) !== fromId) return line;
+    changed = true;
+    return { ...line, DepositLineDetail: { ...detail, Entity: ref } };
+  });
+  return changed ? { ...syncToken, Line } : null;
+}
+
 /** A string literal in a QuickBooks query (`'Owner\'s Loan'`). */
 export function qboQuote(value: string): string {
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;

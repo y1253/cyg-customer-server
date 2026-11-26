@@ -18,6 +18,7 @@ import {
   qboQuote,
   qboText,
   qboTypeOf,
+  repointEntity,
   type QboFamily,
   type QboRefs,
 } from './qbo-mapping.util';
@@ -25,6 +26,8 @@ import { QboCallError, QboSystemClient } from './qbo-system.client';
 
 /** At most this many QuickBooks writes per book per run — the next run takes the rest. */
 const MAX_PER_RUN = 150;
+/** QuickBooks transactions read per query when a name merge moves a payee's history. */
+const MERGE_PAGE = 200;
 const DEBOUNCE_MS = 2_000;
 
 type EntityType = 'Vendor' | 'Customer' | 'Employee';
@@ -278,6 +281,116 @@ export class QuickBooksSyncService {
       if (id) return { id, type };
     }
     return null;
+  }
+
+  // ── step11 part 2 (2026-11-26): a name merged in our books is merged in QuickBooks ──
+
+  /**
+   * After `from` was merged into `into` (Names tab drag, the customer's or staff's): the
+   * QuickBooks payee our rows of `from` were pushed under is merged into `into`'s. No payee
+   * called `into` there → the old one is simply renamed. Otherwise every Purchase / Deposit
+   * of the old payee (not only ours — user's decision: a full merge) is moved onto the
+   * target and the old payee is made inactive. Then the book's rows are pushed. Runs in the
+   * background; never throws; only while the push is on.
+   */
+  mergePayee(scope: BookScope, from: string | null, into: string | null): void {
+    if (!scope.companyId) return;
+    const companyId = scope.companyId;
+    if (
+      !from ||
+      !into ||
+      from.trim().toLowerCase() === into.trim().toLowerCase()
+    ) {
+      this.syncSoon(scope.bookId);
+      return;
+    }
+    void this.mergeNow(scope.bookId, companyId, from, into)
+      .catch((err) =>
+        this.logger.warn(
+          `book #${scope.bookId}: QuickBooks merge "${from}" → "${into}" failed: ${String(err)}`,
+        ),
+      )
+      .finally(() => this.syncSoon(scope.bookId));
+  }
+
+  private async mergeNow(
+    bookId: number,
+    companyId: number,
+    from: string,
+    into: string,
+  ): Promise<void> {
+    const qbo = await this.prisma.quickBooksAccount.findUnique({
+      where: { companyId },
+      select: { updateQuickbooks: true, lastError: true },
+    });
+    if (!qbo?.updateQuickbooks || qbo.lastError) return;
+    for (const mixed of [false, true]) {
+      const oldName = qboPayeeName(from, mixed);
+      const found = await this.findEntity(companyId, oldName);
+      if (!found) continue;
+      const target =
+        (await this.findEntity(companyId, qboPayeeName(into, mixed))) ??
+        (await this.findEntity(companyId, qboPayeeName(into, !mixed)));
+      if (!target) {
+        const newName = qboPayeeName(into, mixed);
+        await this.client.update(companyId, found.type, found.id, {
+          DisplayName: newName,
+        });
+        this.logger.log(
+          `book #${bookId}: merge renamed QuickBooks ${found.type} ${found.id} "${oldName}" → "${newName}"`,
+        );
+        continue;
+      }
+      if (target.id === found.id && target.type === found.type) continue;
+      const moved = await this.repointAll(companyId, found, target);
+      try {
+        await this.client.update(companyId, found.type, found.id, {
+          Active: false,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `book #${bookId}: could not make QuickBooks ${found.type} ${found.id} inactive: ${String(err)}`,
+        );
+      }
+      this.logger.log(
+        `book #${bookId}: merged QuickBooks ${found.type} ${found.id} "${oldName}" into ${target.type} ${target.id} (${moved} transaction(s) moved)`,
+      );
+    }
+  }
+
+  /** Every Purchase / Deposit naming `from`, re-pointed at `to`. Each failure is logged. */
+  private async repointAll(
+    companyId: number,
+    from: { id: string; type: EntityType },
+    to: { id: string; type: EntityType },
+  ): Promise<number> {
+    let moved = 0;
+    for (const type of ['Purchase', 'Deposit'] as const) {
+      for (let start = 1; ; start += MERGE_PAGE) {
+        const res = await this.client.query<Record<string, unknown>>(
+          companyId,
+          `select * from ${type} STARTPOSITION ${start} MAXRESULTS ${MERGE_PAGE}`,
+        );
+        const list =
+          (res[type] as Array<Record<string, unknown>> | undefined) ?? [];
+        for (const txn of list) {
+          const body = repointEntity(type, txn, from.id, to);
+          const id = typeof txn.Id === 'string' ? txn.Id : null;
+          if (!body || !id) continue;
+          try {
+            await this.client.update(companyId, type, id, body);
+            moved++;
+          } catch (err) {
+            this.stopOn(err);
+            this.logger.warn(
+              `company #${companyId}: could not move QuickBooks ${type} ${id} to ${to.type} ${to.id}: ${String(err)}`,
+            );
+          }
+        }
+        if (list.length < MERGE_PAGE) break;
+      }
+    }
+    return moved;
   }
 
   // ── A book's run ─────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import {
   qboQuote,
   qboText,
   qboTypeOf,
+  repointEntity,
   type QboFamily,
 } from './qbo-mapping.util';
 
@@ -142,5 +143,66 @@ describe('qboPayeeName', () => {
     const long = qboPayeeName('x'.repeat(120), true);
     expect(long).toHaveLength(100);
     expect(long.endsWith('-mix')).toBe(true);
+  });
+});
+
+describe('repointEntity (step11 part 2: a name merge moves the payee)', () => {
+  const to = { id: '9', type: 'Vendor' };
+
+  it('moves a Purchase of the old payee, keeping its SyncToken', () => {
+    expect(
+      repointEntity(
+        'Purchase',
+        { Id: '1', SyncToken: '3', EntityRef: { value: '5', name: 'Old' } },
+        '5',
+        to,
+      ),
+    ).toEqual({ SyncToken: '3', EntityRef: { value: '9', type: 'Vendor' } });
+  });
+
+  it('leaves another payee’s Purchase alone', () => {
+    expect(
+      repointEntity('Purchase', { EntityRef: { value: '6' } }, '5', to),
+    ).toBeNull();
+    expect(repointEntity('Purchase', {}, '5', to)).toBeNull();
+  });
+
+  it('a Deposit sends every line back, only the old payee’s changed', () => {
+    const other = {
+      Amount: 2,
+      DepositLineDetail: { Entity: { value: '7', type: 'Customer' } },
+    };
+    const body = repointEntity(
+      'Deposit',
+      {
+        SyncToken: '0',
+        Line: [
+          {
+            Amount: 1,
+            DepositLineDetail: {
+              AccountRef: { value: '40' },
+              Entity: { value: '5', type: 'Customer' },
+            },
+          },
+          other,
+        ],
+      },
+      '5',
+      to,
+    );
+    expect(body).toEqual({
+      SyncToken: '0',
+      Line: [
+        {
+          Amount: 1,
+          DepositLineDetail: {
+            AccountRef: { value: '40' },
+            Entity: { value: '9', type: 'Vendor' },
+          },
+        },
+        other,
+      ],
+    });
+    expect(repointEntity('Deposit', { Line: [other] }, '5', to)).toBeNull();
   });
 });

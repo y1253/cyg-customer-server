@@ -169,6 +169,15 @@ export class SubNamesService implements OnApplicationBootstrap {
     return ensureSubName(this.prisma, scope, parent, category);
   }
 
+  /** The parent name of a sub-name of the book (null = no such sub-name). */
+  async parentOfSubName(scope: BookScope, id: number): Promise<string | null> {
+    const sub = await this.prisma.subName.findFirst({
+      where: { id, bookId: scope.bookId },
+      select: { nameId: true },
+    });
+    return sub ? this.parentName(sub.nameId) : null;
+  }
+
   /** Every sub-name of the book with its parent, how many rows it has and its total. */
   async list(scope: BookScope): Promise<SubNameView[]> {
     const subs = await this.prisma.subName.findMany({

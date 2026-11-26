@@ -26,6 +26,7 @@ import { CustomerJwtGuard } from '../customer-auth/customer-jwt.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { Book, BookScopeGuard } from './book-scope.guard';
 import { bookOwnerName } from './books';
+import { mergeNamesAndQuickBooks } from './merge-names';
 import { scopeWhere, type BookScope } from './scope';
 import {
   AttachmentsService,
@@ -512,7 +513,8 @@ export class BookkeepingController {
     @Book() scope: BookScope,
     @Body() dto: MergeNamesDto,
   ): Promise<NamesView> {
-    await this.subNames.merge(scope, dto);
+    // step11 part 2 (2026-11-26): QuickBooks follows the merge (while the push is on).
+    await mergeNamesAndQuickBooks(this.subNames, this.qbo, scope, dto);
     return this.tax.names(scope);
   }
 

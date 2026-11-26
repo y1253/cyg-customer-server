@@ -41,6 +41,7 @@ export declare class SubNamesService implements OnApplicationBootstrap {
         id: number;
         name: string;
     }>;
+    parentOfSubName(scope: BookScope, id: number): Promise<string | null>;
     list(scope: BookScope): Promise<SubNameView[]>;
     private rowTotals;
     setCategory(scope: BookScope, id: number, rawCategory: string): Promise<void>;

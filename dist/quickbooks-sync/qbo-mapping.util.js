@@ -7,6 +7,7 @@ exports.qboCategoryName = qboCategoryName;
 exports.qboAccountType = qboAccountType;
 exports.qboText = qboText;
 exports.qboPayeeName = qboPayeeName;
+exports.repointEntity = repointEntity;
 exports.qboQuote = qboQuote;
 exports.familyHash = familyHash;
 exports.qboBody = qboBody;
@@ -77,6 +78,31 @@ function qboPayeeName(name, mixed) {
     if (!mixed)
         return qboText(name);
     return `${qboText(name, 100 - exports.MIX_SUFFIX.length)}${exports.MIX_SUFFIX}`;
+}
+const refId = (ref) => {
+    const v = ref?.value;
+    return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
+};
+function repointEntity(type, txn, fromId, to) {
+    const syncToken = typeof txn.SyncToken === 'string' ? { SyncToken: txn.SyncToken } : {};
+    const ref = { value: to.id, type: to.type };
+    if (type === 'Purchase') {
+        if (refId(txn.EntityRef) !== fromId)
+            return null;
+        return { ...syncToken, EntityRef: ref };
+    }
+    const lines = Array.isArray(txn.Line)
+        ? txn.Line
+        : [];
+    let changed = false;
+    const Line = lines.map((line) => {
+        const detail = line.DepositLineDetail;
+        if (!detail || refId(detail.Entity) !== fromId)
+            return line;
+        changed = true;
+        return { ...line, DepositLineDetail: { ...detail, Entity: ref } };
+    });
+    return changed ? { ...syncToken, Line } : null;
 }
 function qboQuote(value) {
     return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;

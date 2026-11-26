@@ -86,6 +86,13 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
     async ensure(scope, parent, category) {
         return (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, parent, category);
     }
+    async parentOfSubName(scope, id) {
+        const sub = await this.prisma.subName.findFirst({
+            where: { id, bookId: scope.bookId },
+            select: { nameId: true },
+        });
+        return sub ? this.parentName(sub.nameId) : null;
+    }
     async list(scope) {
         const subs = await this.prisma.subName.findMany({
             where: { bookId: scope.bookId },

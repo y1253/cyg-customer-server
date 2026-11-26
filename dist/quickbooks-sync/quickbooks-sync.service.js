@@ -20,6 +20,7 @@ const prisma_service_1 = require("../prisma/prisma.service");
 const qbo_mapping_util_1 = require("./qbo-mapping.util");
 const qbo_system_client_1 = require("./qbo-system.client");
 const MAX_PER_RUN = 150;
+const MERGE_PAGE = 200;
 const DEBOUNCE_MS = 2_000;
 class StopRun extends Error {
 }
@@ -202,6 +203,82 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                 return { id, type };
         }
         return null;
+    }
+    mergePayee(scope, from, into) {
+        if (!scope.companyId)
+            return;
+        const companyId = scope.companyId;
+        if (!from ||
+            !into ||
+            from.trim().toLowerCase() === into.trim().toLowerCase()) {
+            this.syncSoon(scope.bookId);
+            return;
+        }
+        void this.mergeNow(scope.bookId, companyId, from, into)
+            .catch((err) => this.logger.warn(`book #${scope.bookId}: QuickBooks merge "${from}" → "${into}" failed: ${String(err)}`))
+            .finally(() => this.syncSoon(scope.bookId));
+    }
+    async mergeNow(bookId, companyId, from, into) {
+        const qbo = await this.prisma.quickBooksAccount.findUnique({
+            where: { companyId },
+            select: { updateQuickbooks: true, lastError: true },
+        });
+        if (!qbo?.updateQuickbooks || qbo.lastError)
+            return;
+        for (const mixed of [false, true]) {
+            const oldName = (0, qbo_mapping_util_1.qboPayeeName)(from, mixed);
+            const found = await this.findEntity(companyId, oldName);
+            if (!found)
+                continue;
+            const target = (await this.findEntity(companyId, (0, qbo_mapping_util_1.qboPayeeName)(into, mixed))) ??
+                (await this.findEntity(companyId, (0, qbo_mapping_util_1.qboPayeeName)(into, !mixed)));
+            if (!target) {
+                const newName = (0, qbo_mapping_util_1.qboPayeeName)(into, mixed);
+                await this.client.update(companyId, found.type, found.id, {
+                    DisplayName: newName,
+                });
+                this.logger.log(`book #${bookId}: merge renamed QuickBooks ${found.type} ${found.id} "${oldName}" → "${newName}"`);
+                continue;
+            }
+            if (target.id === found.id && target.type === found.type)
+                continue;
+            const moved = await this.repointAll(companyId, found, target);
+            try {
+                await this.client.update(companyId, found.type, found.id, {
+                    Active: false,
+                });
+            }
+            catch (err) {
+                this.logger.warn(`book #${bookId}: could not make QuickBooks ${found.type} ${found.id} inactive: ${String(err)}`);
+            }
+            this.logger.log(`book #${bookId}: merged QuickBooks ${found.type} ${found.id} "${oldName}" into ${target.type} ${target.id} (${moved} transaction(s) moved)`);
+        }
+    }
+    async repointAll(companyId, from, to) {
+        let moved = 0;
+        for (const type of ['Purchase', 'Deposit']) {
+            for (let start = 1;; start += MERGE_PAGE) {
+                const res = await this.client.query(companyId, `select * from ${type} STARTPOSITION ${start} MAXRESULTS ${MERGE_PAGE}`);
+                const list = res[type] ?? [];
+                for (const txn of list) {
+                    const body = (0, qbo_mapping_util_1.repointEntity)(type, txn, from.id, to);
+                    const id = typeof txn.Id === 'string' ? txn.Id : null;
+                    if (!body || !id)
+                        continue;
+                    try {
+                        await this.client.update(companyId, type, id, body);
+                        moved++;
+                    }
+                    catch (err) {
+                        this.stopOn(err);
+                        this.logger.warn(`company #${companyId}: could not move QuickBooks ${type} ${id} to ${to.type} ${to.id}: ${String(err)}`);
+                    }
+                }
+                if (list.length < MERGE_PAGE)
+                    break;
+            }
+        }
+        return moved;
     }
     async runBook(bookId) {
         const book = await this.prisma.book.findUnique({

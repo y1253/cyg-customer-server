@@ -3,15 +3,18 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Logger,
   Param,
   ParseIntPipe,
+  Post,
   Put,
   UseGuards,
 } from '@nestjs/common';
 import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import {
+  MergeNamesDto,
   ResetNameRuleDto,
   ResetProductRuleDto,
   SaveNameRuleDto,
@@ -19,9 +22,16 @@ import {
 } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
+import {
+  mergeNamesAndQuickBooks,
+  staffNames,
+  type StaffNameView,
+} from './merge-names';
 import { bookLabel } from './scope';
 import { Staff, StaffBookGuard, type StaffBook } from './staff-book.guard';
 import { StaffRulesService, type StaffRulesView } from './staff-rules.service';
+import { SubNamesService } from './sub-names.service';
+import { TaxService } from './tax.service';
 
 /**
  * `/api/staff/books/:companyId/rules` — the customer's own rules for one company's book,
@@ -40,7 +50,37 @@ export class StaffRulesController {
     private readonly nameMemory: NameMemoryService,
     private readonly productMemory: ProductMemoryService,
     private readonly qbo: QuickBooksSyncService,
+    private readonly tax: TaxService,
+    private readonly subNames: SubNamesService,
   ) {}
+
+  /** step11 part 2 (2026-11-26): every name with its sub-names — the Rules tab's drag list. */
+  @Get('names-list')
+  namesList(
+    @Param('companyId', ParseIntPipe) _companyId: number,
+    @Staff() staff: StaffBook,
+  ): Promise<StaffNameView[]> {
+    return staffNames(this.tax, this.subNames, staff.scope);
+  }
+
+  /**
+   * step11 part 2: a name / sub-name dragged onto another in the Rules tab — the customer's
+   * own merge (`SubNamesService.merge`), then QuickBooks follows (`mergeNamesAndQuickBooks`).
+   */
+  @Post('names/merge')
+  @HttpCode(200)
+  async mergeNames(
+    @Param('companyId', ParseIntPipe) _companyId: number,
+    @Staff() staff: StaffBook,
+    @Body() dto: MergeNamesDto,
+  ): Promise<StaffNameView[]> {
+    await mergeNamesAndQuickBooks(this.subNames, this.qbo, staff.scope, dto);
+    this.log(
+      staff,
+      `merged ${dto.from ?? `sub-name #${dto.fromSubNameId}`} into ${dto.into ?? `sub-name #${dto.intoSubNameId}`}`,
+    );
+    return staffNames(this.tax, this.subNames, staff.scope);
+  }
 
   @Get()
   view(
