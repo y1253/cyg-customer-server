@@ -12,6 +12,7 @@ export interface CustomColumnView {
         id: number;
         label: string;
     }>;
+    qbo: 'CLASS' | 'FIELD' | null;
 }
 export interface CustomAnswerView {
     value: string | null;
@@ -57,6 +58,12 @@ export declare class CustomColumnsService {
         value?: string | null;
         dropDownId?: number | null;
         option?: string;
+    }): Promise<number>;
+    ensureQboColumn(scope: BookScope, col: {
+        kind: 'CLASS' | 'FIELD';
+        ref: string | null;
+        name: string;
+        options: string[];
     }): Promise<number>;
     setNameAnswer(scope: BookScope, columnId: number, target: {
         name?: string;

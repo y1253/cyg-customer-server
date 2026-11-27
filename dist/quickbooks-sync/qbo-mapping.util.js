@@ -17,10 +17,12 @@ exports.UNCATEGORIZED_INCOME = 'Uncategorized Income';
 const cents = (n) => Math.round(n * 100);
 function familyLines(parent, splits) {
     const total = Math.abs(cents(parent.amount));
+    const withClass = (c) => c ? { className: c } : {};
     const parts = splits.map((s) => ({
         category: s.category,
         cents: Math.abs(cents(s.amount)),
         description: s.description,
+        ...withClass(s.className || parent.className),
     }));
     const taken = parts.reduce((sum, p) => sum + p.cents, 0);
     const lines = [];
@@ -29,6 +31,7 @@ function familyLines(parent, splits) {
             category: parent.category,
             cents: total - taken,
             description: parent.description,
+            ...withClass(parent.className),
         });
     }
     for (const p of parts)
@@ -114,12 +117,17 @@ function familyHash(family) {
         cents: family.cents,
         name: family.name,
         account: family.plaidAccountId,
-        lines: family.lines.map((l) => [l.category, l.cents, l.description]),
+        lines: family.lines.map((l) => l.className
+            ? [l.category, l.cents, l.description, l.className]
+            : [l.category, l.cents, l.description]),
+        ...(family.fields?.length
+            ? { fields: family.fields.map((f) => [f.ref, f.value]) }
+            : {}),
     };
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(key)).digest('hex');
 }
 const money = (c) => Number((c / 100).toFixed(2));
-function qboBody(family, refs) {
+function qboBody(family, refs, omit = {}) {
     const moneyOut = family.cents < 0;
     const note = qboText(`${family.description} · bank feed ${family.externalId}`, 4000);
     const accountOf = (category) => {
@@ -128,11 +136,27 @@ function qboBody(family, refs) {
             throw new Error(`No QuickBooks account for "${category}"`);
         return id;
     };
+    const classRef = (l) => {
+        const id = !omit.classes && l.className
+            ? refs.classIds?.get(l.className)
+            : undefined;
+        return id ? { ClassRef: { value: id } } : {};
+    };
+    const custom = !omit.fields && family.fields?.length
+        ? {
+            CustomField: family.fields.map((f) => ({
+                DefinitionId: f.ref,
+                Type: 'StringType',
+                StringValue: f.value.slice(0, 255),
+            })),
+        }
+        : {};
     if (qboTypeOf(family) === 'Deposit') {
         return {
             DepositToAccountRef: { value: refs.bankAccountId },
             TxnDate: family.date,
             PrivateNote: note,
+            ...custom,
             Line: family.lines.map((l) => ({
                 DetailType: 'DepositLineDetail',
                 Amount: money(l.cents),
@@ -142,6 +166,7 @@ function qboBody(family, refs) {
                     ...(refs.entity
                         ? { Entity: { value: refs.entity.id, type: refs.entity.type } }
                         : {}),
+                    ...classRef(l),
                 },
             })),
         };
@@ -155,12 +180,14 @@ function qboBody(family, refs) {
         ...(refs.entity
             ? { EntityRef: { value: refs.entity.id, type: refs.entity.type } }
             : {}),
+        ...custom,
         Line: family.lines.map((l) => ({
             DetailType: 'AccountBasedExpenseLineDetail',
             Amount: money(l.cents),
             ...(l.description ? { Description: qboText(l.description, 4000) } : {}),
             AccountBasedExpenseLineDetail: {
                 AccountRef: { value: accountOf(l.category) },
+                ...classRef(l),
             },
         })),
     };

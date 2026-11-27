@@ -9,6 +9,7 @@ import {
   answerProblem,
   cleanColumn,
   MAX_CUSTOM_COLUMNS,
+  MAX_OPTIONS,
   storedAnswerFit,
   type ColumnInput,
   type CustomColumnType,
@@ -26,6 +27,8 @@ export interface CustomColumnView {
   maxChars: number | null;
   required: boolean;
   options: Array<{ id: number; label: string }>;
+  /** step11 part 3: linked to QuickBooks (its class / a custom field); null = not. */
+  qbo: 'CLASS' | 'FIELD' | null;
 }
 
 /** A cell: the typed value, or the picked option (with its label). */
@@ -161,6 +164,7 @@ export class CustomColumnsService {
       maxChars: c.maxChars,
       required: c.required,
       options: c.options,
+      qbo: c.qboKind === 'CLASS' || c.qboKind === 'FIELD' ? c.qboKind : null,
     }));
   }
 
@@ -575,6 +579,94 @@ export class CustomColumnsService {
    * sub-names is only a wrapper: its defaults go on its sub-names. Returns how many cells
    * it filled.
    */
+  /**
+   * step11 part 3 (2026-11-26): the book's column linked to a QuickBooks class (`CLASS`) or
+   * custom field (`FIELD` + its DefinitionId) — found by the link, else made (DROPDOWN for a
+   * class, TEXT for a field; the name gets " (QuickBooks)" when it is taken). Missing dropdown
+   * options are added; none is ever removed. Answers the column id. Called by the import.
+   */
+  async ensureQboColumn(
+    scope: BookScope,
+    col: {
+      kind: 'CLASS' | 'FIELD';
+      ref: string | null;
+      name: string;
+      options: string[];
+    },
+  ): Promise<number> {
+    const ref = col.kind === 'FIELD' ? col.ref : null;
+    const labels = [
+      ...new Map(
+        col.options
+          .map((o) => o.trim().replace(/\s+/g, ' ').slice(0, 120))
+          .filter(Boolean)
+          .map((o) => [o.toLowerCase(), o] as const),
+      ).values(),
+    ];
+    const found = await this.prisma.customColumn.findFirst({
+      where: {
+        ...scopeWhere(scope),
+        deletedAt: null,
+        qboKind: col.kind,
+        qboRef: ref,
+      },
+      include: { options: { where: { deletedAt: null } } },
+    });
+    if (found) {
+      if (found.type !== 'DROPDOWN') return found.id;
+      const have = new Set(found.options.map((o) => o.label.toLowerCase()));
+      const add = labels
+        .filter((l) => !have.has(l.toLowerCase()))
+        .slice(0, Math.max(0, MAX_OPTIONS - found.options.length));
+      if (add.length) {
+        await this.prisma.customColumnDropDown.createMany({
+          data: add.map((label, i) => ({
+            customColumnId: found.id,
+            label,
+            sortOrder: found.options.length + i,
+          })),
+        });
+      }
+      return found.id;
+    }
+    const count = await this.prisma.customColumn.count({
+      where: { ...scopeWhere(scope), deletedAt: null },
+    });
+    if (count >= MAX_CUSTOM_COLUMNS) {
+      throw new BadRequestException(
+        `A book has at most ${MAX_CUSTOM_COLUMNS} columns of its own — “${col.name}” was not added`,
+      );
+    }
+    const base =
+      col.name.trim().replace(/\s+/g, ' ').slice(0, 64) || 'QuickBooks field';
+    let name = base;
+    if (await this.nameTaken(scope, name)) {
+      name = `${base.slice(0, 51)} (QuickBooks)`;
+      for (let n = 2; await this.nameTaken(scope, name); n++) {
+        name = `${base.slice(0, 47)} (QuickBooks ${n})`;
+      }
+    }
+    const dropdown = col.kind === 'CLASS';
+    const made = await this.prisma.customColumn.create({
+      data: {
+        ...scopeWhere(scope),
+        name,
+        type: dropdown ? 'DROPDOWN' : 'TEXT',
+        sortOrder: count,
+        qboKind: col.kind,
+        qboRef: ref,
+        options: dropdown
+          ? {
+              create: labels
+                .slice(0, MAX_OPTIONS)
+                .map((label, i) => ({ label, sortOrder: i })),
+            }
+          : undefined,
+      },
+    });
+    return made.id;
+  }
+
   async setNameAnswer(
     scope: BookScope,
     columnId: number,

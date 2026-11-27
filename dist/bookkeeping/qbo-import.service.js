@@ -15,6 +15,7 @@ exports.cleanPlan = cleanPlan;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const chart_of_accounts_1 = require("./chart-of-accounts");
+const custom_columns_service_1 = require("./custom-columns.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
 const name_memory_util_1 = require("./name-memory.util");
@@ -26,11 +27,13 @@ let QboImportService = QboImportService_1 = class QboImportService {
     prisma;
     accounts;
     names;
+    columns;
     logger = new common_1.Logger(QboImportService_1.name);
-    constructor(prisma, accounts, names) {
+    constructor(prisma, accounts, names, columns) {
         this.prisma = prisma;
         this.accounts = accounts;
         this.names = names;
+        this.columns = columns;
     }
     async analyze(scope, input) {
         const since = typeof input.since === 'string' && /^\d{4}-\d{2}-\d{2}/.test(input.since)
@@ -223,15 +226,102 @@ let QboImportService = QboImportService_1 = class QboImportService {
             });
         }
         errors.push(...(await this.names.saveImported(scope, ops)));
+        const columnIds = new Map();
+        for (const col of plan.columns) {
+            const used = plan.defaults
+                .filter((d) => d.kind === col.kind && d.ref === col.ref)
+                .map((d) => d.value);
+            try {
+                const id = await this.columns.ensureQboColumn(scope, {
+                    ...col,
+                    options: [...used, ...col.options],
+                });
+                columnIds.set(`${col.kind}:${col.ref ?? ''}`, id);
+            }
+            catch (err) {
+                errors.push(`column “${col.name}”: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+        let defaults = 0;
+        const nowWrappers = await (0, sub_name_parents_1.wrapperNames)(this.prisma, scope);
+        const given = new Set();
+        const ordered = [
+            ...plan.defaults.filter((d) => d.category),
+            ...plan.defaults.filter((d) => !d.category),
+        ];
+        for (const d of ordered) {
+            const columnId = columnIds.get(`${d.kind}:${d.ref ?? ''}`);
+            if (!columnId)
+                continue;
+            let targets = [
+                { name: d.payee },
+            ];
+            if (d.category) {
+                const cat = ours(d.category);
+                if (!cat || cat === chart_of_accounts_1.UNCATEGORIZED)
+                    continue;
+                const subNameId = await ensure(d.payee, cat);
+                if (!subNameId)
+                    continue;
+                targets = [{ subNameId }];
+            }
+            else if (nowWrappers.has((0, qbo_import_util_1.nameKey)(d.payee))) {
+                targets = (await this.subNamesOf(scope, d.payee))
+                    .filter((id) => !given.has(`${columnId}:${id}`))
+                    .map((subNameId) => ({ subNameId }));
+            }
+            else if (!(await this.bookHasName(scope, d.payee))) {
+                continue;
+            }
+            for (const target of targets) {
+                try {
+                    await this.columns.setNameAnswer(scope, columnId, target, d.kind === 'CLASS' ? { option: d.value } : { value: d.value });
+                    if (target.subNameId)
+                        given.add(`${columnId}:${target.subNameId}`);
+                    defaults++;
+                }
+                catch (err) {
+                    errors.push(`${d.payee}${d.category ? ` (${d.category})` : ''} ${d.kind === 'CLASS' ? 'class' : 'field'} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            }
+        }
         this.logger.log(`${(0, scope_1.bookLabel)(scope)}: QuickBooks import saved ${ops.length} rule(s), ` +
             `${created.length} new categor${created.length === 1 ? 'y' : 'ies'}, ` +
-            `${subNames} sub-name(s), ${errors.length} problem(s)`);
+            `${subNames} sub-name(s), ${columnIds.size} QuickBooks column(s), ` +
+            `${defaults} name default(s), ${errors.length} problem(s)`);
         return {
             rules: ops.length,
             categoriesCreated: created,
             subNames,
             errors,
+            columns: columnIds.size,
+            defaults,
         };
+    }
+    async bookHasName(scope, name) {
+        const row = await this.prisma.bankTransaction.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
+            select: { id: true },
+        });
+        if (row)
+            return true;
+        return !!(await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
+            select: { id: true },
+        }));
+    }
+    async subNamesOf(scope, name) {
+        const ledger = await this.prisma.ledgerName.findFirst({
+            where: { ...(0, scope_1.scopeWhere)(scope), name },
+            select: { id: true },
+        });
+        if (!ledger)
+            return [];
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, nameId: ledger.id, splitKey: '' },
+            select: { id: true },
+        });
+        return subs.map((x) => x.id);
     }
     async categories(scope, list, errors) {
         const own = new Set((await this.accounts.list(scope))
@@ -273,7 +363,8 @@ exports.QboImportService = QboImportService = QboImportService_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         customer_accounts_service_1.CustomerAccountsService,
-        name_memory_service_1.NameMemoryService])
+        name_memory_service_1.NameMemoryService,
+        custom_columns_service_1.CustomColumnsService])
 ], QboImportService);
 function cleanPlan(raw) {
     const p = (raw ?? {});
@@ -316,6 +407,31 @@ function cleanPlan(raw) {
             category: str(d.category, 120) || null,
         }))
             .filter((d) => d.key && d.payee),
+        columns: arr(p.columns)
+            .map((c) => ({
+            kind: qboKind(c.kind),
+            ref: str(c.ref, 64) || null,
+            name: str(c.name, 64),
+            options: Array.isArray(c.options)
+                ? c.options
+                    .map((o) => str(o, 120))
+                    .filter(Boolean)
+                    .slice(0, 1000)
+                : [],
+        }))
+            .filter((c) => !!c.kind && !!c.name && (c.kind === 'CLASS' || !!c.ref))
+            .map((c) => (c.kind === 'CLASS' ? { ...c, ref: null } : c)),
+        defaults: arr(p.defaults)
+            .map((d) => ({
+            payee: str(d.payee, 100),
+            category: str(d.category, 120) || null,
+            kind: qboKind(d.kind),
+            ref: str(d.ref, 64) || null,
+            value: str(d.value, 255),
+        }))
+            .filter((d) => !!d.kind && !!d.payee && !!d.value)
+            .map((d) => (d.kind === 'CLASS' ? { ...d, ref: null } : d)),
     };
 }
+const qboKind = (v) => v === 'CLASS' || v === 'FIELD' ? v : null;
 //# sourceMappingURL=qbo-import.service.js.map

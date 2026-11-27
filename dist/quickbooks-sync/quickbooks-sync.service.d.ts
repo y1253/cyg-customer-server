@@ -28,11 +28,17 @@ export declare class QuickBooksSyncService {
     private removeOrphans;
     private subNamesOf;
     private mixedNames;
+    private linkedAnswers;
     private familyOf;
     private push;
+    private write;
+    private classId;
     private refsFor;
     private accountId;
     private bankAccountId;
+    private matchBankAccount;
+    private qboBankAccounts;
+    private recentQboTxns;
     private entityFor;
     private findOne;
     private created;

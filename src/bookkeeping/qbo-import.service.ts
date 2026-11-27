@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeAccount, UNCATEGORIZED } from './chart-of-accounts';
+import { CustomColumnsService } from './custom-columns.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { cleanName } from './name-memory.util';
@@ -32,6 +33,22 @@ export interface ImportPlan {
     splitCategories: string[];
   }>;
   descriptions: Array<{ key: string; payee: string; category: string | null }>;
+  /** step11 part 3: QuickBooks' class / custom fields → linked columns of the book. */
+  columns: Array<{
+    kind: 'CLASS' | 'FIELD';
+    /** FIELD: the DefinitionId. */
+    ref: string | null;
+    name: string;
+    options: string[];
+  }>;
+  /** Each payee's (category set = its sub-name's) most used class / field value. */
+  defaults: Array<{
+    payee: string;
+    category: string | null;
+    kind: 'CLASS' | 'FIELD';
+    ref: string | null;
+    value: string;
+  }>;
 }
 
 export interface ImportResult {
@@ -39,6 +56,9 @@ export interface ImportResult {
   categoriesCreated: string[];
   subNames: number;
   errors: string[];
+  /** step11 part 3: linked columns made or found, and name defaults set. */
+  columns: number;
+  defaults: number;
 }
 
 const str = (v: unknown, max = 191): string =>
@@ -57,6 +77,7 @@ export class QboImportService {
     private readonly prisma: PrismaService,
     private readonly accounts: CustomerAccountsService,
     private readonly names: NameMemoryService,
+    private readonly columns: CustomColumnsService,
   ) {}
 
   async analyze(
@@ -278,17 +299,115 @@ export class QboImportService {
     }
 
     errors.push(...(await this.names.saveImported(scope, ops)));
+
+    // step11 part 3: QuickBooks' class / custom fields as linked columns, each payee's most
+    // used value as its default (a split payee's per sub-name). After the rules, so the
+    // defaults fill the rows where the rules just put them.
+    const columnIds = new Map<string, number>();
+    for (const col of plan.columns) {
+      // Make sure every value a default uses is an option, even past the first 100.
+      const used = plan.defaults
+        .filter((d) => d.kind === col.kind && d.ref === col.ref)
+        .map((d) => d.value);
+      try {
+        const id = await this.columns.ensureQboColumn(scope, {
+          ...col,
+          options: [...used, ...col.options],
+        });
+        columnIds.set(`${col.kind}:${col.ref ?? ''}`, id);
+      } catch (err) {
+        errors.push(
+          `column “${col.name}”: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    let defaults = 0;
+    // A name with sub-names keeps its settings on them: its default goes on each of its
+    // sub-names that QuickBooks gave no value of their own (the per-category ones first).
+    const nowWrappers = await wrapperNames(this.prisma, scope);
+    const given = new Set<string>(); // `${column}:${subNameId}`
+    const ordered = [
+      ...plan.defaults.filter((d) => d.category),
+      ...plan.defaults.filter((d) => !d.category),
+    ];
+    for (const d of ordered) {
+      const columnId = columnIds.get(`${d.kind}:${d.ref ?? ''}`);
+      if (!columnId) continue;
+      let targets: Array<{ name?: string; subNameId?: number }> = [
+        { name: d.payee },
+      ];
+      if (d.category) {
+        const cat = ours(d.category);
+        if (!cat || cat === UNCATEGORIZED) continue;
+        const subNameId = await ensure(d.payee, cat);
+        if (!subNameId) continue;
+        targets = [{ subNameId }];
+      } else if (nowWrappers.has(nameKey(d.payee))) {
+        targets = (await this.subNamesOf(scope, d.payee))
+          .filter((id) => !given.has(`${columnId}:${id}`))
+          .map((subNameId) => ({ subNameId }));
+      } else if (!(await this.bookHasName(scope, d.payee))) {
+        continue; // a QuickBooks payee none of the book's rows carry — no empty name made
+      }
+      for (const target of targets) {
+        try {
+          await this.columns.setNameAnswer(
+            scope,
+            columnId,
+            target,
+            d.kind === 'CLASS' ? { option: d.value } : { value: d.value },
+          );
+          if (target.subNameId) given.add(`${columnId}:${target.subNameId}`);
+          defaults++;
+        } catch (err) {
+          errors.push(
+            `${d.payee}${d.category ? ` (${d.category})` : ''} ${d.kind === 'CLASS' ? 'class' : 'field'} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     this.logger.log(
       `${bookLabel(scope)}: QuickBooks import saved ${ops.length} rule(s), ` +
         `${created.length} new categor${created.length === 1 ? 'y' : 'ies'}, ` +
-        `${subNames} sub-name(s), ${errors.length} problem(s)`,
+        `${subNames} sub-name(s), ${columnIds.size} QuickBooks column(s), ` +
+        `${defaults} name default(s), ${errors.length} problem(s)`,
     );
     return {
       rules: ops.length,
       categoriesCreated: created,
       subNames,
       errors,
+      columns: columnIds.size,
+      defaults,
     };
+  }
+
+  /** Does any row of the book carry this name (or the book keep it as a name)? */
+  private async bookHasName(scope: BookScope, name: string): Promise<boolean> {
+    const row = await this.prisma.bankTransaction.findFirst({
+      where: { ...scopeWhere(scope), name },
+      select: { id: true },
+    });
+    if (row) return true;
+    return !!(await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name },
+      select: { id: true },
+    }));
+  }
+
+  /** The ordinary sub-names of a name (none = []). */
+  private async subNamesOf(scope: BookScope, name: string): Promise<number[]> {
+    const ledger = await this.prisma.ledgerName.findFirst({
+      where: { ...scopeWhere(scope), name },
+      select: { id: true },
+    });
+    if (!ledger) return [];
+    const subs = await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId, nameId: ledger.id, splitKey: '' },
+      select: { id: true },
+    });
+    return subs.map((x) => x.id);
   }
 
   /**
@@ -382,5 +501,38 @@ export function cleanPlan(raw: unknown): ImportPlan {
         category: str(d.category, 120) || null,
       }))
       .filter((d) => d.key && d.payee),
+    columns: arr(p.columns)
+      .map((c) => ({
+        kind: qboKind(c.kind),
+        ref: str(c.ref, 64) || null,
+        name: str(c.name, 64),
+        options: Array.isArray(c.options)
+          ? (c.options as unknown[])
+              .map((o) => str(o, 120))
+              .filter(Boolean)
+              .slice(0, 1000)
+          : [],
+      }))
+      .filter(
+        (c): c is ImportPlan['columns'][number] =>
+          !!c.kind && !!c.name && (c.kind === 'CLASS' || !!c.ref),
+      )
+      .map((c) => (c.kind === 'CLASS' ? { ...c, ref: null } : c)),
+    defaults: arr(p.defaults)
+      .map((d) => ({
+        payee: str(d.payee, 100),
+        category: str(d.category, 120) || null,
+        kind: qboKind(d.kind),
+        ref: str(d.ref, 64) || null,
+        value: str(d.value, 255),
+      }))
+      .filter(
+        (d): d is ImportPlan['defaults'][number] =>
+          !!d.kind && !!d.payee && !!d.value,
+      )
+      .map((d) => (d.kind === 'CLASS' ? { ...d, ref: null } : d)),
   };
 }
+
+const qboKind = (v: unknown): 'CLASS' | 'FIELD' | null =>
+  v === 'CLASS' || v === 'FIELD' ? v : null;

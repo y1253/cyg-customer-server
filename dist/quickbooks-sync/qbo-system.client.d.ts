@@ -4,7 +4,7 @@ export declare class QboCallError extends Error {
     readonly status: number;
     constructor(status: number, message: string);
 }
-type Entity = 'Account' | 'Customer' | 'Deposit' | 'Employee' | 'Purchase' | 'Vendor';
+type Entity = 'Account' | 'Class' | 'Customer' | 'Deposit' | 'Employee' | 'Purchase' | 'Vendor';
 export declare class QboSystemClient {
     private readonly config;
     private readonly jwt;

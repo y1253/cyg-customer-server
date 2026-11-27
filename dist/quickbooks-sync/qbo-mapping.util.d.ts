@@ -3,6 +3,11 @@ export interface QboLine {
     category: string;
     cents: number;
     description: string | null;
+    className?: string | null;
+}
+export interface QboFieldValue {
+    ref: string;
+    value: string;
 }
 export interface QboFamily {
     rowId: number;
@@ -14,6 +19,7 @@ export interface QboFamily {
     kind: 'BANK' | 'CREDIT_CARD';
     plaidAccountId: number;
     lines: QboLine[];
+    fields?: QboFieldValue[];
 }
 export type QboTxnType = 'Purchase' | 'Deposit';
 export declare const UNCATEGORIZED_EXPENSE = "Uncategorized Expense";
@@ -22,10 +28,12 @@ export declare function familyLines(parent: {
     amount: number;
     category: string;
     description: string | null;
+    className?: string | null;
 }, splits: ReadonlyArray<{
     amount: number;
     category: string;
     description: string | null;
+    className?: string | null;
 }>): QboLine[];
 export declare function qboTypeOf(family: Pick<QboFamily, 'cents' | 'kind'>): QboTxnType;
 export declare function qboCategoryName(category: string, moneyOut: boolean): string;
@@ -49,5 +57,10 @@ export interface QboRefs {
         type: 'Vendor' | 'Customer' | 'Employee';
     } | null;
     accountIds: ReadonlyMap<string, string>;
+    classIds?: ReadonlyMap<string, string>;
 }
-export declare function qboBody(family: QboFamily, refs: QboRefs): Record<string, unknown>;
+export interface QboBodyOmit {
+    classes?: boolean;
+    fields?: boolean;
+}
+export declare function qboBody(family: QboFamily, refs: QboRefs, omit?: QboBodyOmit): Record<string, unknown>;

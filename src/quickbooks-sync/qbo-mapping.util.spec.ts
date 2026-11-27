@@ -27,9 +27,10 @@ const family = (over: Partial<QboFamily> = {}): QboFamily => ({
 describe('familyLines', () => {
   it('keeps the remainder in the parent category, then each split', () => {
     expect(
-      familyLines({ amount: -100, category: 'Office Expense', description: null }, [
-        { amount: -30, category: 'Meals', description: 'Walmart - Meals' },
-      ]),
+      familyLines(
+        { amount: -100, category: 'Office Expense', description: null },
+        [{ amount: -30, category: 'Meals', description: 'Walmart - Meals' }],
+      ),
     ).toEqual([
       { category: 'Office Expense', cents: 7000, description: null },
       { category: 'Meals', cents: 3000, description: 'Walmart - Meals' },
@@ -56,8 +57,12 @@ describe('qboTypeOf', () => {
 
 describe('names and quoting', () => {
   it('maps Uncategorized to QuickBooks own accounts by direction', () => {
-    expect(qboCategoryName('Uncategorized', true)).toBe('Uncategorized Expense');
-    expect(qboCategoryName('Uncategorized', false)).toBe('Uncategorized Income');
+    expect(qboCategoryName('Uncategorized', true)).toBe(
+      'Uncategorized Expense',
+    );
+    expect(qboCategoryName('Uncategorized', false)).toBe(
+      'Uncategorized Income',
+    );
   });
 
   it('strips the sub-account colon and caps the length', () => {
@@ -76,7 +81,9 @@ describe('familyHash', () => {
     expect(familyHash(a)).toBe(familyHash(family()));
     expect(familyHash(a)).not.toBe(
       familyHash(
-        family({ lines: [{ category: 'Meals', cents: 10000, description: null }] }),
+        family({
+          lines: [{ category: 'Meals', cents: 10000, description: null }],
+        }),
       ),
     );
   });
@@ -204,5 +211,148 @@ describe('repointEntity (step11 part 2: a name merge moves the payee)', () => {
       ],
     });
     expect(repointEntity('Deposit', { Line: [other] }, '5', to)).toBeNull();
+  });
+});
+
+describe('classes and custom fields (step11 part 3)', () => {
+  const accountIds = new Map([
+    ['Office Expense', '50'],
+    ['Sales Income', '60'],
+  ]);
+  const classIds = new Map([['Montreal', '700']]);
+
+  it('a split takes its own class, else its transaction’s', () => {
+    expect(
+      familyLines(
+        {
+          amount: -100,
+          category: 'Office Expense',
+          description: null,
+          className: 'Montreal',
+        },
+        [
+          {
+            amount: -30,
+            category: 'Meals',
+            description: null,
+            className: 'Laval',
+          },
+          { amount: -20, category: 'Meals', description: null },
+        ],
+      ).map((l) => l.className),
+    ).toEqual(['Montreal', 'Laval', 'Montreal']);
+  });
+
+  it('puts the ClassRef on a Purchase line and the CustomField on the Purchase', () => {
+    const body = qboBody(
+      family({
+        lines: [
+          {
+            category: 'Office Expense',
+            cents: 10000,
+            description: null,
+            className: 'Montreal',
+          },
+        ],
+        fields: [{ ref: '1', value: 'Job 42' }],
+      }),
+      { bankAccountId: '35', entity: null, accountIds, classIds },
+    );
+    expect(body).toMatchObject({
+      CustomField: [
+        { DefinitionId: '1', Type: 'StringType', StringValue: 'Job 42' },
+      ],
+      Line: [
+        {
+          AccountBasedExpenseLineDetail: {
+            AccountRef: { value: '50' },
+            ClassRef: { value: '700' },
+          },
+        },
+      ],
+    });
+  });
+
+  it('puts the ClassRef on a Deposit line; a class QuickBooks has not = none', () => {
+    const body = qboBody(
+      family({
+        cents: 2550,
+        lines: [
+          {
+            category: 'Sales Income',
+            cents: 1550,
+            description: null,
+            className: 'Montreal',
+          },
+          {
+            category: 'Sales Income',
+            cents: 1000,
+            description: null,
+            className: 'Unknown',
+          },
+        ],
+      }),
+      { bankAccountId: '35', entity: null, accountIds, classIds },
+    );
+    const lines = body.Line as Array<{
+      DepositLineDetail: Record<string, unknown>;
+    }>;
+    expect(lines[0].DepositLineDetail.ClassRef).toEqual({ value: '700' });
+    expect(lines[1].DepositLineDetail).not.toHaveProperty('ClassRef');
+  });
+
+  it('leaves out what QuickBooks refused', () => {
+    const body = qboBody(
+      family({
+        lines: [
+          {
+            category: 'Office Expense',
+            cents: 10000,
+            description: null,
+            className: 'Montreal',
+          },
+        ],
+        fields: [{ ref: '1', value: 'Job 42' }],
+      }),
+      { bankAccountId: '35', entity: null, accountIds, classIds },
+      { classes: true, fields: true },
+    );
+    expect(body).not.toHaveProperty('CustomField');
+    expect(JSON.stringify(body)).not.toContain('ClassRef');
+  });
+
+  it('the hash moves with a class or a field, and is the old one without them', () => {
+    const plain = familyHash(family());
+    expect(
+      familyHash(
+        family({
+          lines: [
+            {
+              category: 'Office Expense',
+              cents: 10000,
+              description: null,
+              className: null,
+            },
+          ],
+        }),
+      ),
+    ).toBe(plain);
+    expect(
+      familyHash(
+        family({
+          lines: [
+            {
+              category: 'Office Expense',
+              cents: 10000,
+              description: null,
+              className: 'Montreal',
+            },
+          ],
+        }),
+      ),
+    ).not.toBe(plain);
+    expect(
+      familyHash(family({ fields: [{ ref: '1', value: 'Job 42' }] })),
+    ).not.toBe(plain);
   });
 });

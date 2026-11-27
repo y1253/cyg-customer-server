@@ -1,10 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import type { Prisma } from '@prisma/client';
-import {
-  typeFor,
-  type TypeContext,
-} from '../bookkeeping/chart-of-accounts';
+import { typeFor, type TypeContext } from '../bookkeeping/chart-of-accounts';
 import { scopeWhere, type BookScope } from '../bookkeeping/scope';
 import { TaxService } from '../bookkeeping/tax.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,9 +16,18 @@ import {
   qboText,
   qboTypeOf,
   repointEntity,
+  type QboBodyOmit,
   type QboFamily,
+  type QboFieldValue,
   type QboRefs,
 } from './qbo-mapping.util';
+import {
+  acceptMatch,
+  candidatesFor,
+  verifyMatch,
+  type DatedCents,
+  type QboBankAccount,
+} from './qbo-bank-match.util';
 import { QboCallError, QboSystemClient } from './qbo-system.client';
 
 /** At most this many QuickBooks writes per book per run — the next run takes the rest. */
@@ -29,6 +35,10 @@ const MAX_PER_RUN = 150;
 /** QuickBooks transactions read per query when a name merge moves a payee's history. */
 const MERGE_PAGE = 200;
 const DEBOUNCE_MS = 2_000;
+/** step11 part 3: how far back a bank account's transactions are compared (days). */
+const MATCH_DAYS = 90;
+/** QuickBooks transactions read per query for that comparison (its maximum). */
+const MATCH_PAGE = 1000;
 
 type EntityType = 'Vendor' | 'Customer' | 'Employee';
 
@@ -56,7 +66,13 @@ const ROW_SELECT = {
     },
   },
   splits: {
-    select: { amount: true, offsetAccount: true, name: true, subNameId: true },
+    select: {
+      id: true,
+      amount: true,
+      offsetAccount: true,
+      name: true,
+      subNameId: true,
+    },
   },
 } satisfies Prisma.BankTransactionSelect;
 
@@ -67,6 +83,18 @@ interface RunCache {
   accounts: Map<string, string>;
   entities: Map<string, { id: string; type: EntityType } | null>;
   types: TypeContext;
+  /** step11 part 3: class name → QuickBooks Class id (null = none could be found / made). */
+  classes: Map<string, string | null>;
+  /** step11 part 3: QuickBooks' Bank + Credit Card accounts (read once a run). */
+  bankAccounts?: QboBankAccount[];
+  /** QuickBooks transactions of the last MATCH_DAYS, by their bank account id. */
+  recent?: Map<string, DatedCents[]>;
+}
+
+/** step11 part 3: the answers of the book's QuickBooks-linked columns, per transaction id. */
+interface LinkedAnswers {
+  classOf: Map<number, string>;
+  fieldsOf: Map<number, QboFieldValue[]>;
 }
 
 const day = (d: Date): string => d.toISOString().slice(0, 10);
@@ -146,7 +174,9 @@ export class QuickBooksSyncService {
           await this.runBook(bookId);
         } while (this.again.has(bookId));
       } catch (err) {
-        this.logger.warn(`book #${bookId}: QuickBooks push failed: ${String(err)}`);
+        this.logger.warn(
+          `book #${bookId}: QuickBooks push failed: ${String(err)}`,
+        );
       } finally {
         this.running.delete(bookId);
       }
@@ -168,7 +198,11 @@ export class QuickBooksSyncService {
       });
       for (const r of rows) {
         void this.client
-          .remove(r.companyId!, r.qboType === 'Deposit' ? 'Deposit' : 'Purchase', r.qboId!)
+          .remove(
+            r.companyId!,
+            r.qboType === 'Deposit' ? 'Deposit' : 'Purchase',
+            r.qboId!,
+          )
           .catch((err) =>
             this.logger.warn(
               `company #${r.companyId}: QuickBooks ${r.qboType} ${r.qboId} not removed: ${String(err)}`,
@@ -428,13 +462,14 @@ export class QuickBooksSyncService {
       });
       const subNames = await this.subNamesOf(rows);
       const mixed = await this.mixedNames(bookId);
+      const linked = await this.linkedAnswers(bookId, rows);
       let cache: RunCache | null = null;
       for (const row of rows) {
         if (writes >= MAX_PER_RUN) {
           this.again.add(bookId);
           break;
         }
-        const family = this.familyOf(row, subNames, mixed);
+        const family = this.familyOf(row, subNames, mixed, linked);
         if (!family) continue;
         const hash = familyHash(family);
         if (row.qboId && row.qboHash === hash) continue;
@@ -442,21 +477,27 @@ export class QuickBooksSyncService {
           accounts: new Map(),
           entities: new Map(),
           types: await this.tax.typeContext(scope),
+          classes: new Map(),
         };
         writes++;
-        await this.push(companyId, row, family, hash, cache);
+        await this.push(companyId, scope, row, family, hash, cache);
       }
     } catch (err) {
       if (err instanceof StopRun) return;
       throw err;
     }
     if (writes) {
-      this.logger.log(`book #${bookId} (company #${companyId}): ${writes} QuickBooks write(s)`);
+      this.logger.log(
+        `book #${bookId} (company #${companyId}): ${writes} QuickBooks write(s)`,
+      );
     }
   }
 
   /** A pushed row whose statement was deleted leaves QuickBooks too. */
-  private async removeOrphans(bookId: number, companyId: number): Promise<number> {
+  private async removeOrphans(
+    bookId: number,
+    companyId: number,
+  ): Promise<number> {
     const rows = await this.prisma.bankTransaction.findMany({
       where: {
         bookId,
@@ -485,7 +526,13 @@ export class QuickBooksSyncService {
       }
       await this.prisma.bankTransaction.update({
         where: { id: r.id },
-        data: { qboId: null, qboType: null, qboHash: null, qboSyncedAt: null, qboError: null },
+        data: {
+          qboId: null,
+          qboType: null,
+          qboHash: null,
+          qboSyncedAt: null,
+          qboError: null,
+        },
       });
     }
     return rows.length;
@@ -531,10 +578,64 @@ export class QuickBooksSyncService {
     );
   }
 
+  /**
+   * step11 part 3: the answers of the book's columns linked to QuickBooks (a CLASS dropdown,
+   * FIELD columns) for these rows and their splits. No linked column = nothing read.
+   */
+  private async linkedAnswers(
+    bookId: number,
+    rows: readonly Row[],
+  ): Promise<LinkedAnswers> {
+    const out: LinkedAnswers = { classOf: new Map(), fieldsOf: new Map() };
+    if (!rows.length) return out;
+    const columns = await this.prisma.customColumn.findMany({
+      where: { bookId, deletedAt: null, qboKind: { not: null } },
+      select: { id: true, qboKind: true, qboRef: true },
+    });
+    if (!columns.length) return out;
+    const byId = new Map(columns.map((c) => [c.id, c]));
+    const ids = rows.flatMap((r) => [r.id, ...r.splits.map((s) => s.id)]);
+    for (let i = 0; i < ids.length; i += 1000) {
+      const answers = await this.prisma.customColumnAnswer.findMany({
+        where: {
+          customColumnId: { in: [...byId.keys()] },
+          transactionId: { in: ids.slice(i, i + 1000) },
+        },
+        select: {
+          customColumnId: true,
+          transactionId: true,
+          value: true,
+          dropDown: { select: { label: true, deletedAt: true } },
+        },
+      });
+      for (const a of answers) {
+        const col = byId.get(a.customColumnId);
+        if (!col) continue;
+        const value = (
+          a.dropDown && !a.dropDown.deletedAt
+            ? a.dropDown.label
+            : (a.value ?? '')
+        ).trim();
+        if (!value) continue;
+        if (col.qboKind === 'CLASS') {
+          out.classOf.set(a.transactionId, value);
+        } else if (col.qboKind === 'FIELD' && col.qboRef) {
+          const list = out.fieldsOf.get(a.transactionId) ?? [];
+          list.push({ ref: col.qboRef, value });
+          out.fieldsOf.set(a.transactionId, list);
+        }
+      }
+    }
+    for (const list of out.fieldsOf.values())
+      list.sort((x, y) => x.ref.localeCompare(y.ref));
+    return out;
+  }
+
   private familyOf(
     row: Row,
     subNames: ReadonlyMap<number, string>,
     mixed: ReadonlySet<string>,
+    linked: LinkedAnswers = { classOf: new Map(), fieldsOf: new Map() },
   ): QboFamily | null {
     const account = row.statement.plaidAccount;
     const date = row.postingDate ?? row.pendingDate;
@@ -560,19 +661,25 @@ export class QuickBooksSyncService {
           amount,
           category: row.offsetAccount,
           description: label(row.subNameId, null),
+          className: linked.classOf.get(row.id) ?? null,
         },
         row.splits.map((s) => ({
           amount: Number(s.amount),
           category: s.offsetAccount,
           description: label(s.subNameId, s.name),
+          className: linked.classOf.get(s.id) ?? null,
         })),
       ),
+      ...(linked.fieldsOf.get(row.id)?.length
+        ? { fields: linked.fieldsOf.get(row.id) }
+        : {}),
     };
   }
 
   /** Creates or updates the row's QuickBooks transaction; a failure is kept on the row. */
   private async push(
     companyId: number,
+    scope: BookScope,
     row: Row,
     family: QboFamily,
     hash: string,
@@ -580,26 +687,43 @@ export class QuickBooksSyncService {
   ): Promise<void> {
     const type = qboTypeOf(family);
     try {
-      const refs = await this.refsFor(companyId, row, family, cache);
-      const body = qboBody(family, refs);
+      const refs = await this.refsFor(companyId, scope, row, family, cache);
       let id = row.qboId;
       if (id && row.qboType !== type) {
         await this.removeQuietly(companyId, row.qboType, id);
         id = null;
       }
-      if (id) {
+      // step11 part 3: a file whose plan takes no custom fields on expenses, or with class
+      // tracking off, refuses the write — it is sent again without them (and logged).
+      const omit: QboBodyOmit = {};
+      const hasClass = !!refs.classIds?.size;
+      for (;;) {
         try {
-          await this.client.update(companyId, type, id, body);
+          id = await this.write(
+            companyId,
+            type,
+            id,
+            qboBody(family, refs, omit),
+          );
+          break;
         } catch (err) {
           this.stopOn(err);
-          if (!this.isNotFound(err)) throw err;
-          id = null; // deleted in QuickBooks by hand — make it again
+          const message = err instanceof Error ? err.message : String(err);
+          if (
+            !omit.fields &&
+            family.fields?.length &&
+            /custom ?field/i.test(message)
+          ) {
+            omit.fields = true;
+          } else if (!omit.classes && hasClass && /class/i.test(message)) {
+            omit.classes = true;
+          } else {
+            throw err;
+          }
+          this.logger.warn(
+            `row #${row.id}: QuickBooks refused part of it (${message}) — sending it without the ${omit.classes ? 'class' : 'custom fields'}`,
+          );
         }
-      }
-      if (!id) {
-        const res = await this.client.create(companyId, type, body);
-        id = res[type]?.Id ?? null;
-        if (!id) throw new Error(`QuickBooks did not return the new ${type}'s id`);
       }
       await this.prisma.bankTransaction.update({
         where: { id: row.id },
@@ -617,8 +741,65 @@ export class QuickBooksSyncService {
     }
   }
 
+  /** Updates the QuickBooks transaction, or creates it (again); answers its id. */
+  private async write(
+    companyId: number,
+    type: 'Purchase' | 'Deposit',
+    id: string | null,
+    body: Record<string, unknown>,
+  ): Promise<string> {
+    if (id) {
+      try {
+        await this.client.update(companyId, type, id, body);
+        return id;
+      } catch (err) {
+        this.stopOn(err);
+        if (!this.isNotFound(err)) throw err;
+        // deleted in QuickBooks by hand — make it again
+      }
+    }
+    const res = await this.client.create(companyId, type, body);
+    const made = res[type]?.Id ?? null;
+    if (!made)
+      throw new Error(`QuickBooks did not return the new ${type}'s id`);
+    return made;
+  }
+
+  /**
+   * step11 part 3: the QuickBooks Class of a name — by its full name ("Parent:Child"), else
+   * made (a plain name only; a sub-class is never made). Null = no class on the line.
+   */
+  private async classId(
+    companyId: number,
+    name: string,
+    cache: RunCache,
+  ): Promise<string | null> {
+    if (cache.classes.has(name)) return cache.classes.get(name) ?? null;
+    let id: string | null = null;
+    try {
+      id = await this.findOne(
+        companyId,
+        'Class',
+        `FullyQualifiedName = ${qboQuote(name)}`,
+      );
+      if (!id && !name.includes(':')) {
+        id = await this.created(companyId, 'Class', {
+          Name: name.slice(0, 100),
+        });
+      }
+    } catch (err) {
+      this.stopOn(err);
+      this.logger.warn(
+        `company #${companyId}: QuickBooks class "${name}" not found or made: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    cache.classes.set(name, id);
+    return id;
+  }
+
   private async refsFor(
     companyId: number,
+    scope: BookScope,
     row: Row,
     family: QboFamily,
     cache: RunCache,
@@ -630,15 +811,27 @@ export class QuickBooksSyncService {
       if (!name || accountIds.has(name)) continue;
       accountIds.set(
         name,
-        await this.accountId(companyId, name, typeFor(line.category, cache.types), cache),
+        await this.accountId(
+          companyId,
+          name,
+          typeFor(line.category, cache.types),
+          cache,
+        ),
       );
     }
+    const classIds = new Map<string, string>();
+    for (const line of family.lines) {
+      if (!line.className || classIds.has(line.className)) continue;
+      const id = await this.classId(companyId, line.className, cache);
+      if (id) classIds.set(line.className, id);
+    }
     return {
-      bankAccountId: await this.bankAccountId(companyId, row),
+      bankAccountId: await this.bankAccountId(companyId, scope, row, cache),
       entity: family.name
         ? await this.entityFor(companyId, family.name, moneyOut, cache)
         : null,
       accountIds,
+      classIds,
     };
   }
 
@@ -651,7 +844,11 @@ export class QuickBooksSyncService {
   ): Promise<string> {
     const known = cache.accounts.get(name);
     if (known) return known;
-    const found = await this.findOne(companyId, 'Account', `Name = ${qboQuote(name)}`);
+    const found = await this.findOne(
+      companyId,
+      'Account',
+      `Name = ${qboQuote(name)}`,
+    );
     const id =
       found ??
       (await this.created(companyId, 'Account', {
@@ -662,12 +859,22 @@ export class QuickBooksSyncService {
     return id;
   }
 
-  /** The bank / credit card account the Plaid account posts to (remembered on it). */
-  private async bankAccountId(companyId: number, row: Row): Promise<string> {
+  /**
+   * The bank / credit card account the Plaid account posts to (remembered on it). step11
+   * part 3: first the one QuickBooks already has — candidates by name, proven by the
+   * transactions both sides hold (`matchBankAccount`); else found by our name; else made.
+   */
+  private async bankAccountId(
+    companyId: number,
+    scope: BookScope,
+    row: Row,
+    cache: RunCache,
+  ): Promise<string> {
     const account = row.statement.plaidAccount!;
     if (account.qboAccountId) return account.qboAccountId;
     const name = qboText(account.accountName) || `Bank account ${account.id}`;
     const id =
+      (await this.matchBankAccount(companyId, scope, account.id, cache)) ??
       (await this.findOne(companyId, 'Account', `Name = ${qboQuote(name)}`)) ??
       (await this.created(companyId, 'Account', {
         Name: name,
@@ -679,6 +886,154 @@ export class QuickBooksSyncService {
     });
     row.statement.plaidAccount!.qboAccountId = id;
     return id;
+  }
+
+  /**
+   * step11 part 3: the QuickBooks account this Plaid account already is, or null. Never
+   * throws (a failed look = null, the old exact-name / create path then runs).
+   */
+  private async matchBankAccount(
+    companyId: number,
+    scope: BookScope,
+    plaidAccountId: number,
+    cache: RunCache,
+  ): Promise<string | null> {
+    try {
+      const plaid = await this.prisma.plaidAccount.findUnique({
+        where: { id: plaidAccountId },
+        select: {
+          accountName: true,
+          mask: true,
+          kind: true,
+          item: { select: { institutionName: true } },
+        },
+      });
+      if (!plaid) return null;
+      cache.bankAccounts ??= await this.qboBankAccounts(companyId);
+      // An account another of the book's Plaid accounts already posts to is not a candidate.
+      const taken = new Set(
+        (
+          await this.prisma.plaidAccount.findMany({
+            where: {
+              qboAccountId: { not: null },
+              item: { bookId: scope.bookId },
+              id: { not: plaidAccountId },
+            },
+            select: { qboAccountId: true },
+          })
+        ).map((a) => a.qboAccountId!),
+      );
+      const ours = {
+        accountName: plaid.accountName,
+        mask: plaid.mask,
+        institution: plaid.item.institutionName,
+        kind: plaid.kind === 'CREDIT_CARD' ? 'CREDIT_CARD' : 'BANK',
+      } as const;
+      const candidates = candidatesFor(
+        ours,
+        cache.bankAccounts.filter((a) => !taken.has(a.id)),
+      );
+      if (!candidates.length) return null;
+      const since = new Date(Date.now() - MATCH_DAYS * 86_400_000);
+      const ourRows: DatedCents[] = (
+        await this.prisma.bankTransaction.findMany({
+          where: {
+            splitOfId: null,
+            statement: { plaidAccountId, deletedAt: null },
+            OR: [
+              { postingDate: { gte: since } },
+              { pendingDate: { gte: since } },
+            ],
+          },
+          select: { amount: true, postingDate: true, pendingDate: true },
+        })
+      ).flatMap((r) => {
+        const d = r.postingDate ?? r.pendingDate;
+        return d
+          ? [{ date: day(d), cents: Math.round(Number(r.amount) * 100) }]
+          : [];
+      });
+      cache.recent ??= await this.recentQboTxns(companyId, day(since));
+      for (const { account, score } of candidates) {
+        const theirs = cache.recent.get(account.id) ?? [];
+        const v = verifyMatch(ourRows, theirs);
+        if (acceptMatch(score, v, theirs.length)) {
+          this.logger.log(
+            `company #${companyId}: Plaid account #${plaidAccountId} (${plaid.accountName}) is QuickBooks account ${account.id} "${account.name}" (name score ${score}, ${v.matched} of ${v.compared} transactions found)`,
+          );
+          return account.id;
+        }
+      }
+      this.logger.log(
+        `company #${companyId}: no QuickBooks account matched ${plaid.accountName} (checked ${candidates.map((c) => `"${c.account.name}"`).join(', ')})`,
+      );
+      return null;
+    } catch (err) {
+      this.stopOn(err);
+      this.logger.warn(
+        `company #${companyId}: QuickBooks account match failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** QuickBooks' live Bank and Credit Card accounts. */
+  private async qboBankAccounts(companyId: number): Promise<QboBankAccount[]> {
+    const out: QboBankAccount[] = [];
+    for (const type of ['Bank', 'Credit Card']) {
+      const res = await this.client.query<Record<string, unknown>>(
+        companyId,
+        `select * from Account where AccountType = ${qboQuote(type)} MAXRESULTS ${MATCH_PAGE}`,
+      );
+      for (const a of (res.Account as Array<Record<string, unknown>>) ?? []) {
+        if (typeof a.Id !== 'string' || a.Active === false) continue;
+        out.push({
+          id: a.Id,
+          name: typeof a.Name === 'string' ? a.Name : '',
+          acctNum: typeof a.AcctNum === 'string' ? a.AcctNum : null,
+          type,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * QuickBooks' Purchases and Deposits since a day, by the bank account they are in (a
+   * Purchase in its `AccountRef`, a Deposit in its `DepositToAccountRef`); + = money in.
+   * QuickBooks cannot filter on those refs, so the whole period is paged (≤ 10 pages each).
+   */
+  private async recentQboTxns(
+    companyId: number,
+    since: string,
+  ): Promise<Map<string, DatedCents[]>> {
+    const out = new Map<string, DatedCents[]>();
+    const add = (account: unknown, date: unknown, cents: number) => {
+      const id = (account as { value?: string } | undefined)?.value;
+      if (!id || typeof date !== 'string' || !cents) return;
+      const list = out.get(id) ?? [];
+      list.push({ date: date.slice(0, 10), cents });
+      out.set(id, list);
+    };
+    for (const type of ['Purchase', 'Deposit'] as const) {
+      for (let page = 0; page < 10; page++) {
+        const res = await this.client.query<Record<string, unknown>>(
+          companyId,
+          `select * from ${type} where TxnDate >= ${qboQuote(since)} STARTPOSITION ${page * MATCH_PAGE + 1} MAXRESULTS ${MATCH_PAGE}`,
+        );
+        const list = (res[type] as Array<Record<string, unknown>>) ?? [];
+        for (const t of list) {
+          const total = Math.round(Math.abs(Number(t.TotalAmt ?? 0)) * 100);
+          if (type === 'Purchase') {
+            add(t.AccountRef, t.TxnDate, t.Credit === true ? total : -total);
+          } else {
+            add(t.DepositToAccountRef, t.TxnDate, total);
+          }
+        }
+        if (list.length < MATCH_PAGE) break;
+      }
+    }
+    return out;
   }
 
   /** The payee: an existing vendor / customer / employee by name, else a new one. */
@@ -713,7 +1068,7 @@ export class QuickBooksSyncService {
 
   private async findOne(
     companyId: number,
-    entity: 'Account' | EntityType,
+    entity: 'Account' | 'Class' | EntityType,
     where: string,
   ): Promise<string | null> {
     const res = await this.client.query<Record<string, unknown>>(
@@ -726,13 +1081,16 @@ export class QuickBooksSyncService {
 
   private async created(
     companyId: number,
-    entity: 'Account' | EntityType,
+    entity: 'Account' | 'Class' | EntityType,
     body: Record<string, unknown>,
   ): Promise<string> {
     const res = await this.client.create(companyId, entity, body);
     const id = res[entity]?.Id;
-    if (!id) throw new Error(`QuickBooks did not return the new ${entity}'s id`);
-    this.logger.log(`company #${companyId}: created QuickBooks ${entity} ${id} (${JSON.stringify(body)})`);
+    if (!id)
+      throw new Error(`QuickBooks did not return the new ${entity}'s id`);
+    this.logger.log(
+      `company #${companyId}: created QuickBooks ${entity} ${id} (${JSON.stringify(body)})`,
+    );
     return id;
   }
 
@@ -742,7 +1100,11 @@ export class QuickBooksSyncService {
     id: string,
   ): Promise<void> {
     try {
-      await this.client.remove(companyId, type === 'Deposit' ? 'Deposit' : 'Purchase', id);
+      await this.client.remove(
+        companyId,
+        type === 'Deposit' ? 'Deposit' : 'Purchase',
+        id,
+      );
     } catch (err) {
       this.stopOn(err);
       if (!this.isNotFound(err)) throw err;
@@ -753,7 +1115,10 @@ export class QuickBooksSyncService {
     const message = err instanceof Error ? err.message : String(err);
     this.logger.warn(`row #${rowId}: QuickBooks push failed: ${message}`);
     await this.prisma.bankTransaction
-      .update({ where: { id: rowId }, data: { qboError: message.slice(0, 2000) } })
+      .update({
+        where: { id: rowId },
+        data: { qboError: message.slice(0, 2000) },
+      })
       .catch(() => undefined);
   }
 

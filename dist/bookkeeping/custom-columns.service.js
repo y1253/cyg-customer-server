@@ -112,6 +112,7 @@ let CustomColumnsService = class CustomColumnsService {
             maxChars: c.maxChars,
             required: c.required,
             options: c.options,
+            qbo: c.qboKind === 'CLASS' || c.qboKind === 'FIELD' ? c.qboKind : null,
         }));
     }
     async templates(scope) {
@@ -446,6 +447,75 @@ let CustomColumnsService = class CustomColumnsService {
             update: { value, dropDownId },
         })));
         return ids.length;
+    }
+    async ensureQboColumn(scope, col) {
+        const ref = col.kind === 'FIELD' ? col.ref : null;
+        const labels = [
+            ...new Map(col.options
+                .map((o) => o.trim().replace(/\s+/g, ' ').slice(0, 120))
+                .filter(Boolean)
+                .map((o) => [o.toLowerCase(), o])).values(),
+        ];
+        const found = await this.prisma.customColumn.findFirst({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                deletedAt: null,
+                qboKind: col.kind,
+                qboRef: ref,
+            },
+            include: { options: { where: { deletedAt: null } } },
+        });
+        if (found) {
+            if (found.type !== 'DROPDOWN')
+                return found.id;
+            const have = new Set(found.options.map((o) => o.label.toLowerCase()));
+            const add = labels
+                .filter((l) => !have.has(l.toLowerCase()))
+                .slice(0, Math.max(0, custom_column_util_1.MAX_OPTIONS - found.options.length));
+            if (add.length) {
+                await this.prisma.customColumnDropDown.createMany({
+                    data: add.map((label, i) => ({
+                        customColumnId: found.id,
+                        label,
+                        sortOrder: found.options.length + i,
+                    })),
+                });
+            }
+            return found.id;
+        }
+        const count = await this.prisma.customColumn.count({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+        });
+        if (count >= custom_column_util_1.MAX_CUSTOM_COLUMNS) {
+            throw new common_1.BadRequestException(`A book has at most ${custom_column_util_1.MAX_CUSTOM_COLUMNS} columns of its own — “${col.name}” was not added`);
+        }
+        const base = col.name.trim().replace(/\s+/g, ' ').slice(0, 64) || 'QuickBooks field';
+        let name = base;
+        if (await this.nameTaken(scope, name)) {
+            name = `${base.slice(0, 51)} (QuickBooks)`;
+            for (let n = 2; await this.nameTaken(scope, name); n++) {
+                name = `${base.slice(0, 47)} (QuickBooks ${n})`;
+            }
+        }
+        const dropdown = col.kind === 'CLASS';
+        const made = await this.prisma.customColumn.create({
+            data: {
+                ...(0, scope_1.scopeWhere)(scope),
+                name,
+                type: dropdown ? 'DROPDOWN' : 'TEXT',
+                sortOrder: count,
+                qboKind: col.kind,
+                qboRef: ref,
+                options: dropdown
+                    ? {
+                        create: labels
+                            .slice(0, custom_column_util_1.MAX_OPTIONS)
+                            .map((label, i) => ({ label, sortOrder: i })),
+                    }
+                    : undefined,
+            },
+        });
+        return made.id;
     }
     async setNameAnswer(scope, columnId, target, input) {
         const col = await this.owned(scope, columnId);

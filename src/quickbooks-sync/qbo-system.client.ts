@@ -15,7 +15,7 @@ export class QboCallError extends Error {
   }
 }
 
-type Entity = 'Account' | 'Customer' | 'Deposit' | 'Employee' | 'Purchase' | 'Vendor';
+type Entity = 'Account' | 'Class' | 'Customer' | 'Deposit' | 'Employee' | 'Purchase' | 'Vendor';
 
 /**
  * step11 (internal, 2026-11-23): QuickBooks calls go through the INTERNAL API, which owns the
