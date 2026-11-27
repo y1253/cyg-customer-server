@@ -113,6 +113,8 @@ export class StaffRulesController {
       replace: true,
     });
     this.qbo.renamePayee(staff.scope, pushedAs, name);
+    // step11 part 4: a new category (or name) re-files rows — they go to QuickBooks now.
+    this.qbo.syncSoon(staff.scope.bookId);
     this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
     return this.rules.view(staff.scope);
   }
@@ -124,6 +126,7 @@ export class StaffRulesController {
     @Body() dto: ResetNameRuleDto,
   ): Promise<StaffRulesView> {
     await this.nameMemory.resetRule(staff.scope, dto);
+    this.qbo.syncSoon(staff.scope.bookId);
     this.log(staff, `removed ${dto.matchType} rule "${dto.matchKey}"`);
     return this.rules.view(staff.scope);
   }

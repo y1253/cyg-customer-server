@@ -18,7 +18,9 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const custom_columns_service_1 = require("./custom-columns.service");
 const agency_dto_1 = require("./dto/agency.dto");
+const custom_column_dto_1 = require("./dto/custom-column.dto");
 const ledger_query_dto_1 = require("./dto/ledger-query.dto");
 const ledger_query_service_1 = require("./ledger-query.service");
 const name_memory_service_1 = require("./name-memory.service");
@@ -30,13 +32,43 @@ let StaffTransactionsController = StaffTransactionsController_1 = class StaffTra
     nameMemory;
     qbo;
     prisma;
+    columns;
     logger = new common_1.Logger(StaffTransactionsController_1.name);
-    constructor(ledgerQuery, accounts, nameMemory, qbo, prisma) {
+    constructor(ledgerQuery, accounts, nameMemory, qbo, prisma, columns) {
         this.ledgerQuery = ledgerQuery;
         this.accounts = accounts;
         this.nameMemory = nameMemory;
         this.qbo = qbo;
         this.prisma = prisma;
+        this.columns = columns;
+    }
+    async cellsOf(ids) {
+        const out = new Map();
+        if (!ids.length)
+            return out;
+        const answers = await this.prisma.customColumnAnswer.findMany({
+            where: {
+                transactionId: { in: ids },
+                column: { deletedAt: null },
+            },
+            select: {
+                transactionId: true,
+                customColumnId: true,
+                value: true,
+                dropDownId: true,
+                dropDown: { select: { label: true, deletedAt: true } },
+            },
+        });
+        for (const a of answers) {
+            const cells = out.get(a.transactionId) ?? {};
+            const live = a.dropDown && !a.dropDown.deletedAt;
+            cells[a.customColumnId] = {
+                value: live ? a.dropDown.label : a.value,
+                dropDownId: live ? a.dropDownId : null,
+            };
+            out.set(a.transactionId, cells);
+        }
+        return out;
     }
     async page(staff, dto) {
         const { query, offset, limit } = (0, ledger_query_dto_1.ledgerQueryOf)(dto);
@@ -50,6 +82,7 @@ let StaffTransactionsController = StaffTransactionsController_1 = class StaffTra
             })
             : [];
         const byId = new Map(qbo.map((q) => [q.id, q]));
+        const cells = await this.cellsOf(rows.map((r) => r.id));
         return {
             nextOffset: page.nextOffset,
             rows: rows.map((r) => {
@@ -74,6 +107,7 @@ let StaffTransactionsController = StaffTransactionsController_1 = class StaffTra
                             syncedAt: q.qboSyncedAt?.toISOString() ?? null,
                             error: q.qboError,
                         },
+                    custom: cells.get(r.id) ?? {},
                 };
             }),
         };
@@ -83,6 +117,15 @@ let StaffTransactionsController = StaffTransactionsController_1 = class StaffTra
     }
     categories(staff) {
         return this.accounts.list(staff.scope);
+    }
+    async customColumns(staff) {
+        return (await this.columns.view(staff.scope)).columns;
+    }
+    async answer(_companyId, id, columnId, staff, dto) {
+        await this.columns.answer(staff.scope, [id], columnId, dto);
+        this.logger.log(`staff user #${staff.staffUserId} set column #${columnId} on transaction #${id} for ${(0, scope_1.bookLabel)(staff.scope)}`);
+        this.qbo.syncSoon(staff.scope.bookId);
+        return (await this.cellsOf([id])).get(id) ?? {};
     }
     async edit(_companyId, id, staff, dto) {
         const { name, category } = await this.accounts.editValues(staff.scope, dto);
@@ -127,6 +170,24 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], StaffTransactionsController.prototype, "categories", null);
 __decorate([
+    (0, common_1.Get)('custom-columns'),
+    __param(0, (0, staff_book_guard_1.Staff)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], StaffTransactionsController.prototype, "customColumns", null);
+__decorate([
+    (0, common_1.Put)(':id/custom/:columnId'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.Param)('columnId', common_1.ParseIntPipe)),
+    __param(3, (0, staff_book_guard_1.Staff)()),
+    __param(4, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Number, Number, Object, custom_column_dto_1.CustomAnswerDto]),
+    __metadata("design:returntype", Promise)
+], StaffTransactionsController.prototype, "answer", null);
+__decorate([
     (0, common_1.Patch)(':id'),
     (0, common_1.HttpCode)(204),
     __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
@@ -144,6 +205,7 @@ exports.StaffTransactionsController = StaffTransactionsController = StaffTransac
         customer_accounts_service_1.CustomerAccountsService,
         name_memory_service_1.NameMemoryService,
         quickbooks_sync_service_1.QuickBooksSyncService,
-        prisma_service_1.PrismaService])
+        prisma_service_1.PrismaService,
+        custom_columns_service_1.CustomColumnsService])
 ], StaffTransactionsController);
 //# sourceMappingURL=staff-transactions.controller.js.map

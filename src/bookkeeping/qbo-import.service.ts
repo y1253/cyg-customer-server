@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeAccount, UNCATEGORIZED } from './chart-of-accounts';
-import { CustomColumnsService } from './custom-columns.service';
+import {
+  CustomColumnsService,
+  qboColumnKind,
+  type QboColumnKind,
+} from './custom-columns.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { cleanName } from './name-memory.util';
@@ -14,6 +18,7 @@ import {
   type BookRow,
   type ExistingRule,
   type ImportAnalysis,
+  type QboMatch,
 } from './qbo-import.util';
 import { bookLabel, scopeWhere, type BookScope } from './scope';
 import { ensureSubName, wrapperNames } from './sub-name-parents';
@@ -35,7 +40,7 @@ export interface ImportPlan {
   descriptions: Array<{ key: string; payee: string; category: string | null }>;
   /** step11 part 3: QuickBooks' class / custom fields → linked columns of the book. */
   columns: Array<{
-    kind: 'CLASS' | 'FIELD';
+    kind: QboColumnKind;
     /** FIELD: the DefinitionId. */
     ref: string | null;
     name: string;
@@ -45,7 +50,14 @@ export interface ImportPlan {
   defaults: Array<{
     payee: string;
     category: string | null;
-    kind: 'CLASS' | 'FIELD';
+    kind: QboColumnKind;
+    ref: string | null;
+    value: string;
+  }>;
+  /** step11 part 4: a matched transaction's (or split's) own value — empty cells only. */
+  cells: Array<{
+    transactionId: number;
+    kind: QboColumnKind;
     ref: string | null;
     value: string;
   }>;
@@ -59,6 +71,8 @@ export interface ImportResult {
   /** step11 part 3: linked columns made or found, and name defaults set. */
   columns: number;
   defaults: number;
+  /** step11 part 4: transaction cells filled with their own QuickBooks value. */
+  cells: number;
 }
 
 const str = (v: unknown, max = 191): string =>
@@ -94,12 +108,32 @@ export class QboImportService {
       this.rules(scope),
     ]);
     const result = analyze({ since, txns, rows, rules });
+    await this.withSplits(result.matches);
     this.logger.log(
       `${bookLabel(scope)}: QuickBooks import analysed ${txns.length} transaction(s), ` +
         `${result.stats.matched} matched, ${result.names.length} payee(s), ` +
         `${result.questions.length} question(s)`,
     );
     return result;
+  }
+
+  /** step11 part 4: each matched row's splits (their own QuickBooks values go on them). */
+  private async withSplits(matches: QboMatch[]): Promise<void> {
+    const byRow = new Map(matches.map((m) => [m.transactionId, m]));
+    for (let i = 0; i < matches.length; i += 1000) {
+      const splits = await this.prisma.bankTransaction.findMany({
+        where: {
+          splitOfId: {
+            in: matches.slice(i, i + 1000).map((m) => m.transactionId),
+          },
+        },
+        select: { id: true, splitOfId: true, offsetAccount: true },
+      });
+      for (const sp of splits)
+        byRow
+          .get(sp.splitOfId!)
+          ?.splits.push({ id: sp.id, category: sp.offsetAccount });
+    }
   }
 
   private async rowsSince(
@@ -306,7 +340,7 @@ export class QboImportService {
     const columnIds = new Map<string, number>();
     for (const col of plan.columns) {
       // Make sure every value a default uses is an option, even past the first 100.
-      const used = plan.defaults
+      const used = [...plan.defaults, ...plan.cells]
         .filter((d) => d.kind === col.kind && d.ref === col.ref)
         .map((d) => d.value);
       try {
@@ -318,6 +352,26 @@ export class QboImportService {
       } catch (err) {
         errors.push(
           `column “${col.name}”: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // step11 part 4: each matched transaction's own value first (empty cells only), so the
+    // name defaults below fill only what QuickBooks said nothing about.
+    let cells = 0;
+    const cellsByColumn = new Map<number, ImportPlan['cells']>();
+    for (const cell of plan.cells) {
+      const columnId = columnIds.get(`${cell.kind}:${cell.ref ?? ''}`);
+      if (!columnId) continue;
+      const list = cellsByColumn.get(columnId) ?? [];
+      list.push(cell);
+      cellsByColumn.set(columnId, list);
+    }
+    for (const [columnId, list] of cellsByColumn) {
+      try {
+        cells += await this.columns.fillEmpty(scope, columnId, list);
+      } catch (err) {
+        errors.push(
+          `${kindLabel(list[0].kind)} values: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -355,13 +409,13 @@ export class QboImportService {
             scope,
             columnId,
             target,
-            d.kind === 'CLASS' ? { option: d.value } : { value: d.value },
+            d.kind === 'FIELD' ? { value: d.value } : { option: d.value },
           );
           if (target.subNameId) given.add(`${columnId}:${target.subNameId}`);
           defaults++;
         } catch (err) {
           errors.push(
-            `${d.payee}${d.category ? ` (${d.category})` : ''} ${d.kind === 'CLASS' ? 'class' : 'field'} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`,
+            `${d.payee}${d.category ? ` (${d.category})` : ''} ${kindLabel(d.kind)} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
@@ -371,7 +425,7 @@ export class QboImportService {
       `${bookLabel(scope)}: QuickBooks import saved ${ops.length} rule(s), ` +
         `${created.length} new categor${created.length === 1 ? 'y' : 'ies'}, ` +
         `${subNames} sub-name(s), ${columnIds.size} QuickBooks column(s), ` +
-        `${defaults} name default(s), ${errors.length} problem(s)`,
+        `${defaults} name default(s), ${cells} transaction value(s), ${errors.length} problem(s)`,
     );
     return {
       rules: ops.length,
@@ -380,6 +434,7 @@ export class QboImportService {
       errors,
       columns: columnIds.size,
       defaults,
+      cells,
     };
   }
 
@@ -515,9 +570,9 @@ export function cleanPlan(raw: unknown): ImportPlan {
       }))
       .filter(
         (c): c is ImportPlan['columns'][number] =>
-          !!c.kind && !!c.name && (c.kind === 'CLASS' || !!c.ref),
+          !!c.kind && !!c.name && (c.kind !== 'FIELD' || !!c.ref),
       )
-      .map((c) => (c.kind === 'CLASS' ? { ...c, ref: null } : c)),
+      .map((c) => (c.kind !== 'FIELD' ? { ...c, ref: null } : c)),
     defaults: arr(p.defaults)
       .map((d) => ({
         payee: str(d.payee, 100),
@@ -530,9 +585,33 @@ export function cleanPlan(raw: unknown): ImportPlan {
         (d): d is ImportPlan['defaults'][number] =>
           !!d.kind && !!d.payee && !!d.value,
       )
-      .map((d) => (d.kind === 'CLASS' ? { ...d, ref: null } : d)),
+      .map((d) => (d.kind !== 'FIELD' ? { ...d, ref: null } : d)),
+    cells: arr(p.cells)
+      .map((c) => ({
+        transactionId: Number(c.transactionId),
+        kind: qboKind(c.kind),
+        ref: str(c.ref, 64) || null,
+        value: str(c.value, 255),
+      }))
+      .filter(
+        (c): c is ImportPlan['cells'][number] =>
+          Number.isInteger(c.transactionId) &&
+          c.transactionId > 0 &&
+          !!c.kind &&
+          !!c.value &&
+          (c.kind !== 'FIELD' || !!c.ref),
+      )
+      .map((c) => (c.kind !== 'FIELD' ? { ...c, ref: null } : c))
+      .slice(0, 50_000),
   };
 }
 
-const qboKind = (v: unknown): 'CLASS' | 'FIELD' | null =>
-  v === 'CLASS' || v === 'FIELD' ? v : null;
+const qboKind = qboColumnKind;
+
+const kindLabel = (kind: QboColumnKind): string =>
+  ({
+    CLASS: 'class',
+    FIELD: 'field',
+    LOCATION: 'location',
+    CUSTOMER: 'customer',
+  })[kind];

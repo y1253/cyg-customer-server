@@ -1,6 +1,9 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { type ColumnInput, type CustomColumnType } from './custom-column.util';
 import { type BookScope } from './scope';
+export type QboColumnKind = 'CLASS' | 'FIELD' | 'LOCATION' | 'CUSTOMER';
+export declare const QBO_COLUMN_KINDS: readonly QboColumnKind[];
+export declare const qboColumnKind: (v: unknown) => QboColumnKind | null;
 export interface CustomColumnView {
     id: number;
     name: string;
@@ -12,7 +15,7 @@ export interface CustomColumnView {
         id: number;
         label: string;
     }>;
-    qbo: 'CLASS' | 'FIELD' | null;
+    qbo: QboColumnKind | null;
 }
 export interface CustomAnswerView {
     value: string | null;
@@ -59,8 +62,12 @@ export declare class CustomColumnsService {
         dropDownId?: number | null;
         option?: string;
     }): Promise<number>;
+    fillEmpty(scope: BookScope, columnId: number, cells: ReadonlyArray<{
+        transactionId: number;
+        value: string;
+    }>): Promise<number>;
     ensureQboColumn(scope: BookScope, col: {
-        kind: 'CLASS' | 'FIELD';
+        kind: QboColumnKind;
         ref: string | null;
         name: string;
         options: string[];

@@ -356,3 +356,112 @@ describe('classes and custom fields (step11 part 3)', () => {
     ).not.toBe(plain);
   });
 });
+
+describe('location and customer (step11 part 4)', () => {
+  const accountIds = new Map([
+    ['Office Expense', '50'],
+    ['Sales Income', '60'],
+  ]);
+  const withCustomer = family({
+    location: 'Laval',
+    lines: [
+      {
+        category: 'Office Expense',
+        cents: 10000,
+        description: null,
+        customerName: 'Acme',
+      },
+    ],
+  });
+
+  it('a split takes its own customer, else its transaction’s', () => {
+    expect(
+      familyLines(
+        {
+          amount: -100,
+          category: 'Office Expense',
+          description: null,
+          customerName: 'Acme',
+        },
+        [
+          {
+            amount: -30,
+            category: 'Meals',
+            description: null,
+            customerName: 'Beta',
+          },
+        ],
+      ).map((l) => l.customerName),
+    ).toEqual(['Acme', 'Beta']);
+  });
+
+  it('puts the DepartmentRef on the Purchase and the CustomerRef on its line', () => {
+    const body = qboBody(withCustomer, {
+      bankAccountId: '35',
+      entity: null,
+      accountIds,
+      departmentId: '4',
+      customerIds: new Map([['Acme', '90']]),
+    });
+    expect(body).toMatchObject({
+      DepartmentRef: { value: '4' },
+      Line: [
+        {
+          AccountBasedExpenseLineDetail: {
+            AccountRef: { value: '50' },
+            CustomerRef: { value: '90' },
+          },
+        },
+      ],
+    });
+  });
+
+  it('a Deposit gets the location, never a CustomerRef', () => {
+    const body = qboBody(
+      family({
+        cents: 1000,
+        location: 'Laval',
+        lines: [
+          {
+            category: 'Sales Income',
+            cents: 1000,
+            description: null,
+            customerName: 'Acme',
+          },
+        ],
+      }),
+      {
+        bankAccountId: '35',
+        entity: null,
+        accountIds,
+        departmentId: '4',
+        customerIds: new Map([['Acme', '90']]),
+      },
+    );
+    expect(body.DepartmentRef).toEqual({ value: '4' });
+    expect(JSON.stringify(body)).not.toContain('CustomerRef');
+  });
+
+  it('leaves out what QuickBooks refused', () => {
+    const body = qboBody(
+      withCustomer,
+      {
+        bankAccountId: '35',
+        entity: null,
+        accountIds,
+        departmentId: '4',
+        customerIds: new Map([['Acme', '90']]),
+      },
+      { locations: true, customers: true },
+    );
+    expect(body).not.toHaveProperty('DepartmentRef');
+    expect(JSON.stringify(body)).not.toContain('CustomerRef');
+  });
+
+  it('the hash moves with them and is the old one without them', () => {
+    const plain = familyHash(family());
+    expect(familyHash(withCustomer)).not.toBe(plain);
+    expect(familyHash(family({ location: 'Laval' }))).not.toBe(plain);
+    expect(familyHash(family({ location: null }))).toBe(plain);
+  });
+});

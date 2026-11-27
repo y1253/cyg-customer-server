@@ -85,6 +85,9 @@ interface RunCache {
   types: TypeContext;
   /** step11 part 3: class name → QuickBooks Class id (null = none could be found / made). */
   classes: Map<string, string | null>;
+  /** step11 part 4: location → Department id, customer → Customer id (null = none). */
+  locations: Map<string, string | null>;
+  customers: Map<string, string | null>;
   /** step11 part 3: QuickBooks' Bank + Credit Card accounts (read once a run). */
   bankAccounts?: QboBankAccount[];
   /** QuickBooks transactions of the last MATCH_DAYS, by their bank account id. */
@@ -95,7 +98,17 @@ interface RunCache {
 interface LinkedAnswers {
   classOf: Map<number, string>;
   fieldsOf: Map<number, QboFieldValue[]>;
+  /** step11 part 4 */
+  locationOf: Map<number, string>;
+  customerOf: Map<number, string>;
 }
+
+const noLinkedAnswers = (): LinkedAnswers => ({
+  classOf: new Map(),
+  fieldsOf: new Map(),
+  locationOf: new Map(),
+  customerOf: new Map(),
+});
 
 const day = (d: Date): string => d.toISOString().slice(0, 10);
 
@@ -478,6 +491,8 @@ export class QuickBooksSyncService {
           entities: new Map(),
           types: await this.tax.typeContext(scope),
           classes: new Map(),
+          locations: new Map(),
+          customers: new Map(),
         };
         writes++;
         await this.push(companyId, scope, row, family, hash, cache);
@@ -586,7 +601,7 @@ export class QuickBooksSyncService {
     bookId: number,
     rows: readonly Row[],
   ): Promise<LinkedAnswers> {
-    const out: LinkedAnswers = { classOf: new Map(), fieldsOf: new Map() };
+    const out = noLinkedAnswers();
     if (!rows.length) return out;
     const columns = await this.prisma.customColumn.findMany({
       where: { bookId, deletedAt: null, qboKind: { not: null } },
@@ -619,6 +634,10 @@ export class QuickBooksSyncService {
         if (!value) continue;
         if (col.qboKind === 'CLASS') {
           out.classOf.set(a.transactionId, value);
+        } else if (col.qboKind === 'LOCATION') {
+          out.locationOf.set(a.transactionId, value);
+        } else if (col.qboKind === 'CUSTOMER') {
+          out.customerOf.set(a.transactionId, value);
         } else if (col.qboKind === 'FIELD' && col.qboRef) {
           const list = out.fieldsOf.get(a.transactionId) ?? [];
           list.push({ ref: col.qboRef, value });
@@ -635,7 +654,7 @@ export class QuickBooksSyncService {
     row: Row,
     subNames: ReadonlyMap<number, string>,
     mixed: ReadonlySet<string>,
-    linked: LinkedAnswers = { classOf: new Map(), fieldsOf: new Map() },
+    linked: LinkedAnswers = noLinkedAnswers(),
   ): QboFamily | null {
     const account = row.statement.plaidAccount;
     const date = row.postingDate ?? row.pendingDate;
@@ -662,16 +681,21 @@ export class QuickBooksSyncService {
           category: row.offsetAccount,
           description: label(row.subNameId, null),
           className: linked.classOf.get(row.id) ?? null,
+          customerName: linked.customerOf.get(row.id) ?? null,
         },
         row.splits.map((s) => ({
           amount: Number(s.amount),
           category: s.offsetAccount,
           description: label(s.subNameId, s.name),
           className: linked.classOf.get(s.id) ?? null,
+          customerName: linked.customerOf.get(s.id) ?? null,
         })),
       ),
       ...(linked.fieldsOf.get(row.id)?.length
         ? { fields: linked.fieldsOf.get(row.id) }
+        : {}),
+      ...(linked.locationOf.get(row.id)
+        ? { location: linked.locationOf.get(row.id) }
         : {}),
     };
   }
@@ -697,6 +721,8 @@ export class QuickBooksSyncService {
       // tracking off, refuses the write — it is sent again without them (and logged).
       const omit: QboBodyOmit = {};
       const hasClass = !!refs.classIds?.size;
+      const hasLocation = !!refs.departmentId;
+      const hasCustomer = !!refs.customerIds?.size;
       for (;;) {
         try {
           id = await this.write(
@@ -717,11 +743,31 @@ export class QuickBooksSyncService {
             omit.fields = true;
           } else if (!omit.classes && hasClass && /class/i.test(message)) {
             omit.classes = true;
+          } else if (
+            !omit.locations &&
+            hasLocation &&
+            /department|location/i.test(message)
+          ) {
+            // step11 part 4: location tracking off in this file.
+            omit.locations = true;
+          } else if (
+            !omit.customers &&
+            hasCustomer &&
+            /customer|project/i.test(message)
+          ) {
+            omit.customers = true;
           } else {
             throw err;
           }
           this.logger.warn(
-            `row #${row.id}: QuickBooks refused part of it (${message}) — sending it without the ${omit.classes ? 'class' : 'custom fields'}`,
+            `row #${row.id}: QuickBooks refused part of it (${message}) — sending it without ${[
+              omit.fields && 'the custom fields',
+              omit.classes && 'the class',
+              omit.locations && 'the location',
+              omit.customers && 'the customer',
+            ]
+              .filter(Boolean)
+              .join(', ')}`,
           );
         }
       }
@@ -797,6 +843,58 @@ export class QuickBooksSyncService {
     return id;
   }
 
+  /**
+   * step11 part 4: the QuickBooks Department (location) of a name — found, else made (a plain
+   * name only). The Customer of a line's customer / project — found by DisplayName (or its
+   * full "Parent:Job" name), never made: a customer is more than a name. Null = none.
+   */
+  private async listId(
+    companyId: number,
+    entity: 'Department' | 'Customer',
+    name: string,
+    cache: Map<string, string | null>,
+  ): Promise<string | null> {
+    if (cache.has(name)) return cache.get(name) ?? null;
+    let id: string | null = null;
+    try {
+      id =
+        entity === 'Department'
+          ? await this.findOne(
+              companyId,
+              'Department',
+              `FullyQualifiedName = ${qboQuote(name)}`,
+            )
+          : ((await this.findOne(
+              companyId,
+              'Customer',
+              `DisplayName = ${qboQuote(name)}`,
+            )) ??
+            (name.includes(':')
+              ? await this.findOne(
+                  companyId,
+                  'Customer',
+                  `FullyQualifiedName = ${qboQuote(name)}`,
+                )
+              : null));
+      if (!id && entity === 'Department' && !name.includes(':')) {
+        id = await this.created(companyId, 'Department', {
+          Name: name.slice(0, 100),
+        });
+      }
+      if (!id && entity === 'Customer')
+        this.logger.warn(
+          `company #${companyId}: QuickBooks has no customer "${name}" — lines sent without it`,
+        );
+    } catch (err) {
+      this.stopOn(err);
+      this.logger.warn(
+        `company #${companyId}: QuickBooks ${entity === 'Department' ? 'location' : 'customer'} "${name}" not found or made: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    cache.set(name, id);
+    return id;
+  }
+
   private async refsFor(
     companyId: number,
     scope: BookScope,
@@ -825,7 +923,30 @@ export class QuickBooksSyncService {
       const id = await this.classId(companyId, line.className, cache);
       if (id) classIds.set(line.className, id);
     }
+    const customerIds = new Map<string, string>();
+    if (qboTypeOf(family) === 'Purchase') {
+      for (const line of family.lines) {
+        if (!line.customerName || customerIds.has(line.customerName)) continue;
+        const id = await this.listId(
+          companyId,
+          'Customer',
+          line.customerName,
+          cache.customers,
+        );
+        if (id) customerIds.set(line.customerName, id);
+      }
+    }
+    const departmentId = family.location
+      ? await this.listId(
+          companyId,
+          'Department',
+          family.location,
+          cache.locations,
+        )
+      : null;
     return {
+      departmentId,
+      customerIds,
       bankAccountId: await this.bankAccountId(companyId, scope, row, cache),
       entity: family.name
         ? await this.entityFor(companyId, family.name, moneyOut, cache)
@@ -1068,7 +1189,7 @@ export class QuickBooksSyncService {
 
   private async findOne(
     companyId: number,
-    entity: 'Account' | 'Class' | EntityType,
+    entity: 'Account' | 'Class' | 'Department' | EntityType,
     where: string,
   ): Promise<string | null> {
     const res = await this.client.query<Record<string, unknown>>(
@@ -1081,7 +1202,7 @@ export class QuickBooksSyncService {
 
   private async created(
     companyId: number,
-    entity: 'Account' | 'Class' | EntityType,
+    entity: 'Account' | 'Class' | 'Department' | EntityType,
     body: Record<string, unknown>,
   ): Promise<string> {
     const res = await this.client.create(companyId, entity, body);

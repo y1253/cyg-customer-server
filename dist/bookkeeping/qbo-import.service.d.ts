@@ -1,5 +1,5 @@
 import { PrismaService } from '../prisma/prisma.service';
-import { CustomColumnsService } from './custom-columns.service';
+import { CustomColumnsService, type QboColumnKind } from './custom-columns.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
 import { type ImportAnalysis } from './qbo-import.util';
@@ -25,7 +25,7 @@ export interface ImportPlan {
         category: string | null;
     }>;
     columns: Array<{
-        kind: 'CLASS' | 'FIELD';
+        kind: QboColumnKind;
         ref: string | null;
         name: string;
         options: string[];
@@ -33,7 +33,13 @@ export interface ImportPlan {
     defaults: Array<{
         payee: string;
         category: string | null;
-        kind: 'CLASS' | 'FIELD';
+        kind: QboColumnKind;
+        ref: string | null;
+        value: string;
+    }>;
+    cells: Array<{
+        transactionId: number;
+        kind: QboColumnKind;
         ref: string | null;
         value: string;
     }>;
@@ -45,6 +51,7 @@ export interface ImportResult {
     errors: string[];
     columns: number;
     defaults: number;
+    cells: number;
 }
 export declare class QboImportService {
     private readonly prisma;
@@ -57,6 +64,7 @@ export declare class QboImportService {
         since?: unknown;
         txns?: unknown;
     }): Promise<ImportAnalysis>;
+    private withSplits;
     private rowsSince;
     private rules;
     apply(scope: BookScope, raw: unknown): Promise<ImportResult>;

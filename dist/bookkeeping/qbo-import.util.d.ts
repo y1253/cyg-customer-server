@@ -107,6 +107,16 @@ export interface ImportAnalysis {
         name: string;
         type: string | null;
     }>;
+    matches: QboMatch[];
+}
+export interface QboMatch {
+    qboId: string;
+    transactionId: number;
+    category: string;
+    splits: Array<{
+        id: number;
+        category: string;
+    }>;
 }
 export declare const SPLIT = "__SPLIT__";
 export declare const SKIP = "__SKIP__";

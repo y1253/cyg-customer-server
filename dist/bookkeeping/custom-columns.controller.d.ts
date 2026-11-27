@@ -1,9 +1,11 @@
 import { CustomColumnsService, type CustomColumnsView } from './custom-columns.service';
 import { CopyCustomColumnsDto, CustomAnswerDto, CustomColumnDto, CustomColumnOrderDto, CustomNameAnswerDto } from './dto/custom-column.dto';
 import type { BookScope } from './scope';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 export declare class CustomColumnsController {
     private readonly columns;
-    constructor(columns: CustomColumnsService);
+    private readonly qbo;
+    constructor(columns: CustomColumnsService, qbo: QuickBooksSyncService);
     view(scope: BookScope): Promise<CustomColumnsView>;
     create(scope: BookScope, dto: CustomColumnDto): Promise<CustomColumnsView>;
     copy(scope: BookScope, dto: CopyCustomColumnsDto): Promise<CustomColumnsView>;

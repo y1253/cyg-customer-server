@@ -69,11 +69,13 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
             replace: true,
         });
         this.qbo.renamePayee(staff.scope, pushedAs, name);
+        this.qbo.syncSoon(staff.scope.bookId);
         this.log(staff, `saved ${dto.matchType} rule "${dto.matchKey}"`);
         return this.rules.view(staff.scope);
     }
     async resetNameRule(_companyId, staff, dto) {
         await this.nameMemory.resetRule(staff.scope, dto);
+        this.qbo.syncSoon(staff.scope.bookId);
         this.log(staff, `removed ${dto.matchType} rule "${dto.matchKey}"`);
         return this.rules.view(staff.scope);
     }

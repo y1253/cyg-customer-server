@@ -24,6 +24,7 @@ import {
   CustomNameAnswerDto,
 } from './dto/custom-column.dto';
 import type { BookScope } from './scope';
+import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 
 /**
  * step8 (2026-11-11): `/api/bookkeeping/custom-columns` — the customer's own ledger columns
@@ -33,7 +34,10 @@ import type { BookScope } from './scope';
 @Controller('bookkeeping')
 @UseGuards(CustomerJwtGuard, BookScopeGuard)
 export class CustomColumnsController {
-  constructor(private readonly columns: CustomColumnsService) {}
+  constructor(
+    private readonly columns: CustomColumnsService,
+    private readonly qbo: QuickBooksSyncService,
+  ) {}
 
   @Get('custom-columns')
   view(@Book() scope: BookScope): Promise<CustomColumnsView> {
@@ -94,6 +98,8 @@ export class CustomColumnsController {
     @Body() dto: CustomAnswerDto,
   ): Promise<CustomColumnsView> {
     await this.columns.answer(scope, [id], columnId, dto);
+    // step11 part 4: a QuickBooks-linked answer reaches QuickBooks now, not at the next sweep.
+    this.qbo.syncSoon(scope.bookId);
     return this.columns.view(scope);
   }
 

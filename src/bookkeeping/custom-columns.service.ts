@@ -19,6 +19,22 @@ import { scopeWhere, type BookScope } from './scope';
 import { refuseWrapper, ledgerNameId } from './sub-name-parents';
 import { UNCLARIFIED_NAME } from './reports.util';
 
+/**
+ * What a column is linked to in QuickBooks: its class, a custom field (step11 part 3), its
+ * location (`DepartmentRef`) or a line's customer / project (step11 part 4, 2026-11-27).
+ */
+export type QboColumnKind = 'CLASS' | 'FIELD' | 'LOCATION' | 'CUSTOMER';
+
+export const QBO_COLUMN_KINDS: readonly QboColumnKind[] = [
+  'CLASS',
+  'FIELD',
+  'LOCATION',
+  'CUSTOMER',
+];
+
+export const qboColumnKind = (v: unknown): QboColumnKind | null =>
+  QBO_COLUMN_KINDS.includes(v as QboColumnKind) ? (v as QboColumnKind) : null;
+
 export interface CustomColumnView {
   id: number;
   name: string;
@@ -27,8 +43,8 @@ export interface CustomColumnView {
   maxChars: number | null;
   required: boolean;
   options: Array<{ id: number; label: string }>;
-  /** step11 part 3: linked to QuickBooks (its class / a custom field); null = not. */
-  qbo: 'CLASS' | 'FIELD' | null;
+  /** step11 part 3: linked to QuickBooks (its class / a custom field / …); null = not. */
+  qbo: QboColumnKind | null;
 }
 
 /** A cell: the typed value, or the picked option (with its label). */
@@ -164,7 +180,7 @@ export class CustomColumnsService {
       maxChars: c.maxChars,
       required: c.required,
       options: c.options,
-      qbo: c.qboKind === 'CLASS' || c.qboKind === 'FIELD' ? c.qboKind : null,
+      qbo: qboColumnKind(c.qboKind),
     }));
   }
 
@@ -587,6 +603,48 @@ export class CustomColumnsService {
   }
 
   /**
+   * step11 part 4 (2026-11-27): the QuickBooks import's per-transaction values — written only
+   * into EMPTY cells (what the customer typed is never replaced). A dropdown value must be an
+   * option already (the import adds them). Answers how many cells it filled.
+   */
+  async fillEmpty(
+    scope: BookScope,
+    columnId: number,
+    cells: ReadonlyArray<{ transactionId: number; value: string }>,
+  ): Promise<number> {
+    if (!cells.length) return 0;
+    const col = await this.owned(scope, columnId);
+    const taken = new Set(
+      (
+        await this.prisma.customColumnAnswer.findMany({
+          where: {
+            customColumnId: col.id,
+            transactionId: { in: cells.map((c) => c.transactionId) },
+          },
+          select: { transactionId: true },
+        })
+      ).map((a) => a.transactionId),
+    );
+    const byValue = new Map<string, number[]>();
+    for (const c of cells) {
+      if (taken.has(c.transactionId)) continue;
+      taken.add(c.transactionId);
+      const list = byValue.get(c.value) ?? [];
+      list.push(c.transactionId);
+      byValue.set(c.value, list);
+    }
+    let filled = 0;
+    for (const [value, ids] of byValue)
+      filled += await this.answer(
+        scope,
+        ids,
+        col.id,
+        col.type === 'DROPDOWN' ? { option: value } : { value },
+      );
+    return filled;
+  }
+
+  /**
    * step9 (2026-11-19): the default answer of a name (`name`) or a sub-name (`subNameId`) in
    * a column — checked like a cell; empty = removed. It fills every EMPTY cell of its rows at
    * once (and of every row that gets it later); answers already there stay. A name with
@@ -602,7 +660,7 @@ export class CustomColumnsService {
   async ensureQboColumn(
     scope: BookScope,
     col: {
-      kind: 'CLASS' | 'FIELD';
+      kind: QboColumnKind;
       ref: string | null;
       name: string;
       options: string[];
@@ -660,7 +718,8 @@ export class CustomColumnsService {
         name = `${base.slice(0, 47)} (QuickBooks ${n})`;
       }
     }
-    const dropdown = col.kind === 'CLASS';
+    // Everything but a custom field is a list QuickBooks keeps (classes, locations, customers).
+    const dropdown = col.kind !== 'FIELD';
     const made = await this.prisma.customColumn.create({
       data: {
         ...scopeWhere(scope),

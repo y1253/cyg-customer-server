@@ -45,10 +45,28 @@ let QboImportService = QboImportService_1 = class QboImportService {
             this.rules(scope),
         ]);
         const result = (0, qbo_import_util_1.analyze)({ since, txns, rows, rules });
+        await this.withSplits(result.matches);
         this.logger.log(`${(0, scope_1.bookLabel)(scope)}: QuickBooks import analysed ${txns.length} transaction(s), ` +
             `${result.stats.matched} matched, ${result.names.length} payee(s), ` +
             `${result.questions.length} question(s)`);
         return result;
+    }
+    async withSplits(matches) {
+        const byRow = new Map(matches.map((m) => [m.transactionId, m]));
+        for (let i = 0; i < matches.length; i += 1000) {
+            const splits = await this.prisma.bankTransaction.findMany({
+                where: {
+                    splitOfId: {
+                        in: matches.slice(i, i + 1000).map((m) => m.transactionId),
+                    },
+                },
+                select: { id: true, splitOfId: true, offsetAccount: true },
+            });
+            for (const sp of splits)
+                byRow
+                    .get(sp.splitOfId)
+                    ?.splits.push({ id: sp.id, category: sp.offsetAccount });
+        }
     }
     async rowsSince(scope, since) {
         const from = since ? new Date(`${since}T00:00:00Z`) : null;
@@ -228,7 +246,7 @@ let QboImportService = QboImportService_1 = class QboImportService {
         errors.push(...(await this.names.saveImported(scope, ops)));
         const columnIds = new Map();
         for (const col of plan.columns) {
-            const used = plan.defaults
+            const used = [...plan.defaults, ...plan.cells]
                 .filter((d) => d.kind === col.kind && d.ref === col.ref)
                 .map((d) => d.value);
             try {
@@ -240,6 +258,24 @@ let QboImportService = QboImportService_1 = class QboImportService {
             }
             catch (err) {
                 errors.push(`column “${col.name}”: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+        let cells = 0;
+        const cellsByColumn = new Map();
+        for (const cell of plan.cells) {
+            const columnId = columnIds.get(`${cell.kind}:${cell.ref ?? ''}`);
+            if (!columnId)
+                continue;
+            const list = cellsByColumn.get(columnId) ?? [];
+            list.push(cell);
+            cellsByColumn.set(columnId, list);
+        }
+        for (const [columnId, list] of cellsByColumn) {
+            try {
+                cells += await this.columns.fillEmpty(scope, columnId, list);
+            }
+            catch (err) {
+                errors.push(`${kindLabel(list[0].kind)} values: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
         let defaults = 0;
@@ -275,20 +311,20 @@ let QboImportService = QboImportService_1 = class QboImportService {
             }
             for (const target of targets) {
                 try {
-                    await this.columns.setNameAnswer(scope, columnId, target, d.kind === 'CLASS' ? { option: d.value } : { value: d.value });
+                    await this.columns.setNameAnswer(scope, columnId, target, d.kind === 'FIELD' ? { value: d.value } : { option: d.value });
                     if (target.subNameId)
                         given.add(`${columnId}:${target.subNameId}`);
                     defaults++;
                 }
                 catch (err) {
-                    errors.push(`${d.payee}${d.category ? ` (${d.category})` : ''} ${d.kind === 'CLASS' ? 'class' : 'field'} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`);
+                    errors.push(`${d.payee}${d.category ? ` (${d.category})` : ''} ${kindLabel(d.kind)} “${d.value}”: ${err instanceof Error ? err.message : String(err)}`);
                 }
             }
         }
         this.logger.log(`${(0, scope_1.bookLabel)(scope)}: QuickBooks import saved ${ops.length} rule(s), ` +
             `${created.length} new categor${created.length === 1 ? 'y' : 'ies'}, ` +
             `${subNames} sub-name(s), ${columnIds.size} QuickBooks column(s), ` +
-            `${defaults} name default(s), ${errors.length} problem(s)`);
+            `${defaults} name default(s), ${cells} transaction value(s), ${errors.length} problem(s)`);
         return {
             rules: ops.length,
             categoriesCreated: created,
@@ -296,6 +332,7 @@ let QboImportService = QboImportService_1 = class QboImportService {
             errors,
             columns: columnIds.size,
             defaults,
+            cells,
         };
     }
     async bookHasName(scope, name) {
@@ -419,8 +456,8 @@ function cleanPlan(raw) {
                     .slice(0, 1000)
                 : [],
         }))
-            .filter((c) => !!c.kind && !!c.name && (c.kind === 'CLASS' || !!c.ref))
-            .map((c) => (c.kind === 'CLASS' ? { ...c, ref: null } : c)),
+            .filter((c) => !!c.kind && !!c.name && (c.kind !== 'FIELD' || !!c.ref))
+            .map((c) => (c.kind !== 'FIELD' ? { ...c, ref: null } : c)),
         defaults: arr(p.defaults)
             .map((d) => ({
             payee: str(d.payee, 100),
@@ -430,8 +467,28 @@ function cleanPlan(raw) {
             value: str(d.value, 255),
         }))
             .filter((d) => !!d.kind && !!d.payee && !!d.value)
-            .map((d) => (d.kind === 'CLASS' ? { ...d, ref: null } : d)),
+            .map((d) => (d.kind !== 'FIELD' ? { ...d, ref: null } : d)),
+        cells: arr(p.cells)
+            .map((c) => ({
+            transactionId: Number(c.transactionId),
+            kind: qboKind(c.kind),
+            ref: str(c.ref, 64) || null,
+            value: str(c.value, 255),
+        }))
+            .filter((c) => Number.isInteger(c.transactionId) &&
+            c.transactionId > 0 &&
+            !!c.kind &&
+            !!c.value &&
+            (c.kind !== 'FIELD' || !!c.ref))
+            .map((c) => (c.kind !== 'FIELD' ? { ...c, ref: null } : c))
+            .slice(0, 50_000),
     };
 }
-const qboKind = (v) => v === 'CLASS' || v === 'FIELD' ? v : null;
+const qboKind = custom_columns_service_1.qboColumnKind;
+const kindLabel = (kind) => ({
+    CLASS: 'class',
+    FIELD: 'field',
+    LOCATION: 'location',
+    CUSTOMER: 'customer',
+})[kind];
 //# sourceMappingURL=qbo-import.service.js.map

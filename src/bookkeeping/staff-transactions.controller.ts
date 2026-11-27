@@ -7,6 +7,7 @@ import {
   Param,
   ParseIntPipe,
   Patch,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -16,7 +17,12 @@ import {
   CustomerAccountsService,
   type AccountView,
 } from './customer-accounts.service';
+import {
+  CustomColumnsService,
+  type CustomColumnView,
+} from './custom-columns.service';
 import { EditTransactionDto } from './dto/agency.dto';
+import { CustomAnswerDto } from './dto/custom-column.dto';
 import { LedgerQueryDto, ledgerQueryOf } from './dto/ledger-query.dto';
 import { LedgerQueryService } from './ledger-query.service';
 import type { LedgerSummary } from './ledger-query.util';
@@ -40,6 +46,13 @@ export interface StaffTransactionRow {
   account: string;
   /** Transactions only: where it stands in QuickBooks. */
   qbo: { id: string | null; syncedAt: string | null; error: string | null } | null;
+  /** step11 part 4: its answers in the book's own columns (column id → cell). */
+  custom: Record<number, StaffCell>;
+}
+
+export interface StaffCell {
+  value: string | null;
+  dropDownId: number | null;
 }
 
 export interface StaffTransactionPage {
@@ -65,7 +78,39 @@ export class StaffTransactionsController {
     private readonly nameMemory: NameMemoryService,
     private readonly qbo: QuickBooksSyncService,
     private readonly prisma: PrismaService,
+    private readonly columns: CustomColumnsService,
   ) {}
+
+  /** step11 part 4: the cells of these rows (splits too), live options only. */
+  private async cellsOf(
+    ids: number[],
+  ): Promise<Map<number, Record<number, StaffCell>>> {
+    const out = new Map<number, Record<number, StaffCell>>();
+    if (!ids.length) return out;
+    const answers = await this.prisma.customColumnAnswer.findMany({
+      where: {
+        transactionId: { in: ids },
+        column: { deletedAt: null },
+      },
+      select: {
+        transactionId: true,
+        customColumnId: true,
+        value: true,
+        dropDownId: true,
+        dropDown: { select: { label: true, deletedAt: true } },
+      },
+    });
+    for (const a of answers) {
+      const cells = out.get(a.transactionId) ?? {};
+      const live = a.dropDown && !a.dropDown.deletedAt;
+      cells[a.customColumnId] = {
+        value: live ? a.dropDown!.label : a.value,
+        dropDownId: live ? a.dropDownId : null,
+      };
+      out.set(a.transactionId, cells);
+    }
+    return out;
+  }
 
   @Get('page')
   async page(
@@ -85,6 +130,7 @@ export class StaffTransactionsController {
         })
       : [];
     const byId = new Map(qbo.map((q) => [q.id, q]));
+    const cells = await this.cellsOf(rows.map((r) => r.id));
     return {
       nextOffset: page.nextOffset,
       rows: rows.map((r) => {
@@ -110,6 +156,7 @@ export class StaffTransactionsController {
                   syncedAt: q.qboSyncedAt?.toISOString() ?? null,
                   error: q.qboError,
                 },
+          custom: cells.get(r.id) ?? {},
         };
       }),
     };
@@ -126,6 +173,32 @@ export class StaffTransactionsController {
   @Get('categories')
   categories(@Staff() staff: StaffBook): Promise<AccountView[]> {
     return this.accounts.list(staff.scope);
+  }
+
+  /** step11 part 4: the book's own columns (QuickBooks-linked ones carry `qbo`). */
+  @Get('custom-columns')
+  async customColumns(@Staff() staff: StaffBook): Promise<CustomColumnView[]> {
+    return (await this.columns.view(staff.scope)).columns;
+  }
+
+  /**
+   * step11 part 4: one cell of a transaction or split — checked like the customer's own
+   * (`CustomColumnsService.answer`), then QuickBooks (a linked column goes with the push).
+   */
+  @Put(':id/custom/:columnId')
+  async answer(
+    @Param('companyId', ParseIntPipe) _companyId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('columnId', ParseIntPipe) columnId: number,
+    @Staff() staff: StaffBook,
+    @Body() dto: CustomAnswerDto,
+  ): Promise<Record<number, StaffCell>> {
+    await this.columns.answer(staff.scope, [id], columnId, dto);
+    this.logger.log(
+      `staff user #${staff.staffUserId} set column #${columnId} on transaction #${id} for ${bookLabel(staff.scope)}`,
+    );
+    this.qbo.syncSoon(staff.scope.bookId);
+    return (await this.cellsOf([id])).get(id) ?? {};
   }
 
   /** A transaction's name and / or category — the customer's own edit, then QuickBooks. */

@@ -344,6 +344,12 @@ function analyze(input) {
         descriptions,
         questions,
         categories: [...categories].map(([name, type]) => ({ name, type })),
+        matches: [...matches].map(([qboId, row]) => ({
+            qboId,
+            transactionId: row.id,
+            category: row.category,
+            splits: [],
+        })),
     };
 }
 function accountTypeOf(qboType) {

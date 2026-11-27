@@ -57,6 +57,12 @@ const ROW_SELECT = {
         },
     },
 };
+const noLinkedAnswers = () => ({
+    classOf: new Map(),
+    fieldsOf: new Map(),
+    locationOf: new Map(),
+    customerOf: new Map(),
+});
 const day = (d) => d.toISOString().slice(0, 10);
 let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncService {
     prisma;
@@ -341,6 +347,8 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                     entities: new Map(),
                     types: await this.tax.typeContext(scope),
                     classes: new Map(),
+                    locations: new Map(),
+                    customers: new Map(),
                 };
                 writes++;
                 await this.push(companyId, scope, row, family, hash, cache);
@@ -429,7 +437,7 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
         return new Set([...categories].filter(([, c]) => c.size > 1).map(([k]) => k));
     }
     async linkedAnswers(bookId, rows) {
-        const out = { classOf: new Map(), fieldsOf: new Map() };
+        const out = noLinkedAnswers();
         if (!rows.length)
             return out;
         const columns = await this.prisma.customColumn.findMany({
@@ -465,6 +473,12 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                 if (col.qboKind === 'CLASS') {
                     out.classOf.set(a.transactionId, value);
                 }
+                else if (col.qboKind === 'LOCATION') {
+                    out.locationOf.set(a.transactionId, value);
+                }
+                else if (col.qboKind === 'CUSTOMER') {
+                    out.customerOf.set(a.transactionId, value);
+                }
                 else if (col.qboKind === 'FIELD' && col.qboRef) {
                     const list = out.fieldsOf.get(a.transactionId) ?? [];
                     list.push({ ref: col.qboRef, value });
@@ -476,7 +490,7 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
             list.sort((x, y) => x.ref.localeCompare(y.ref));
         return out;
     }
-    familyOf(row, subNames, mixed, linked = { classOf: new Map(), fieldsOf: new Map() }) {
+    familyOf(row, subNames, mixed, linked = noLinkedAnswers()) {
         const account = row.statement.plaidAccount;
         const date = row.postingDate ?? row.pendingDate;
         const amount = Number(row.amount);
@@ -501,14 +515,19 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                 category: row.offsetAccount,
                 description: label(row.subNameId, null),
                 className: linked.classOf.get(row.id) ?? null,
+                customerName: linked.customerOf.get(row.id) ?? null,
             }, row.splits.map((s) => ({
                 amount: Number(s.amount),
                 category: s.offsetAccount,
                 description: label(s.subNameId, s.name),
                 className: linked.classOf.get(s.id) ?? null,
+                customerName: linked.customerOf.get(s.id) ?? null,
             }))),
             ...(linked.fieldsOf.get(row.id)?.length
                 ? { fields: linked.fieldsOf.get(row.id) }
+                : {}),
+            ...(linked.locationOf.get(row.id)
+                ? { location: linked.locationOf.get(row.id) }
                 : {}),
         };
     }
@@ -523,6 +542,8 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
             }
             const omit = {};
             const hasClass = !!refs.classIds?.size;
+            const hasLocation = !!refs.departmentId;
+            const hasCustomer = !!refs.customerIds?.size;
             for (;;) {
                 try {
                     id = await this.write(companyId, type, id, (0, qbo_mapping_util_1.qboBody)(family, refs, omit));
@@ -539,10 +560,27 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
                     else if (!omit.classes && hasClass && /class/i.test(message)) {
                         omit.classes = true;
                     }
+                    else if (!omit.locations &&
+                        hasLocation &&
+                        /department|location/i.test(message)) {
+                        omit.locations = true;
+                    }
+                    else if (!omit.customers &&
+                        hasCustomer &&
+                        /customer|project/i.test(message)) {
+                        omit.customers = true;
+                    }
                     else {
                         throw err;
                     }
-                    this.logger.warn(`row #${row.id}: QuickBooks refused part of it (${message}) — sending it without the ${omit.classes ? 'class' : 'custom fields'}`);
+                    this.logger.warn(`row #${row.id}: QuickBooks refused part of it (${message}) — sending it without ${[
+                        omit.fields && 'the custom fields',
+                        omit.classes && 'the class',
+                        omit.locations && 'the location',
+                        omit.customers && 'the customer',
+                    ]
+                        .filter(Boolean)
+                        .join(', ')}`);
                 }
             }
             await this.prisma.bankTransaction.update({
@@ -598,6 +636,33 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
         cache.classes.set(name, id);
         return id;
     }
+    async listId(companyId, entity, name, cache) {
+        if (cache.has(name))
+            return cache.get(name) ?? null;
+        let id = null;
+        try {
+            id =
+                entity === 'Department'
+                    ? await this.findOne(companyId, 'Department', `FullyQualifiedName = ${(0, qbo_mapping_util_1.qboQuote)(name)}`)
+                    : ((await this.findOne(companyId, 'Customer', `DisplayName = ${(0, qbo_mapping_util_1.qboQuote)(name)}`)) ??
+                        (name.includes(':')
+                            ? await this.findOne(companyId, 'Customer', `FullyQualifiedName = ${(0, qbo_mapping_util_1.qboQuote)(name)}`)
+                            : null));
+            if (!id && entity === 'Department' && !name.includes(':')) {
+                id = await this.created(companyId, 'Department', {
+                    Name: name.slice(0, 100),
+                });
+            }
+            if (!id && entity === 'Customer')
+                this.logger.warn(`company #${companyId}: QuickBooks has no customer "${name}" — lines sent without it`);
+        }
+        catch (err) {
+            this.stopOn(err);
+            this.logger.warn(`company #${companyId}: QuickBooks ${entity === 'Department' ? 'location' : 'customer'} "${name}" not found or made: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        cache.set(name, id);
+        return id;
+    }
     async refsFor(companyId, scope, row, family, cache) {
         const moneyOut = family.cents < 0;
         const accountIds = new Map();
@@ -615,7 +680,22 @@ let QuickBooksSyncService = QuickBooksSyncService_1 = class QuickBooksSyncServic
             if (id)
                 classIds.set(line.className, id);
         }
+        const customerIds = new Map();
+        if ((0, qbo_mapping_util_1.qboTypeOf)(family) === 'Purchase') {
+            for (const line of family.lines) {
+                if (!line.customerName || customerIds.has(line.customerName))
+                    continue;
+                const id = await this.listId(companyId, 'Customer', line.customerName, cache.customers);
+                if (id)
+                    customerIds.set(line.customerName, id);
+            }
+        }
+        const departmentId = family.location
+            ? await this.listId(companyId, 'Department', family.location, cache.locations)
+            : null;
         return {
+            departmentId,
+            customerIds,
             bankAccountId: await this.bankAccountId(companyId, scope, row, cache),
             entity: family.name
                 ? await this.entityFor(companyId, family.name, moneyOut, cache)

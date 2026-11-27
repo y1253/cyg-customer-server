@@ -15,6 +15,8 @@ export interface QboLine {
   description: string | null;
   /** step11 part 3: the line's QuickBooks class (the book's CLASS column); null = none. */
   className?: string | null;
+  /** step11 part 4: the line's QuickBooks customer / project (the CUSTOMER column). */
+  customerName?: string | null;
 }
 
 /** step11 part 3: a QuickBooks custom field's value (`ref` = its DefinitionId). */
@@ -39,6 +41,8 @@ export interface QboFamily {
   lines: QboLine[];
   /** step11 part 3: the transaction's custom field values (the book's FIELD columns). */
   fields?: QboFieldValue[];
+  /** step11 part 4: the transaction's QuickBooks location (the LOCATION column). */
+  location?: string | null;
 }
 
 export type QboTxnType = 'Purchase' | 'Deposit';
@@ -59,23 +63,33 @@ export function familyLines(
     category: string;
     description: string | null;
     className?: string | null;
+    customerName?: string | null;
   },
   splits: ReadonlyArray<{
     amount: number;
     category: string;
     description: string | null;
     className?: string | null;
+    customerName?: string | null;
   }>,
 ): QboLine[] {
   const total = Math.abs(cents(parent.amount));
-  // step11 part 3: a split's own class, else its transaction's.
-  const withClass = (c: string | null | undefined) =>
-    c ? { className: c } : {};
+  // step11 part 3: a split's own class, else its transaction's (step11 part 4: its customer too).
+  const withClass = (
+    c: string | null | undefined,
+    customer?: string | null,
+  ) => ({
+    ...(c ? { className: c } : {}),
+    ...(customer ? { customerName: customer } : {}),
+  });
   const parts = splits.map((s) => ({
     category: s.category,
     cents: Math.abs(cents(s.amount)),
     description: s.description,
-    ...withClass(s.className || parent.className),
+    ...withClass(
+      s.className || parent.className,
+      s.customerName || parent.customerName,
+    ),
   }));
   const taken = parts.reduce((sum, p) => sum + p.cents, 0);
   const lines: QboLine[] = [];
@@ -84,7 +98,7 @@ export function familyLines(
       category: parent.category,
       cents: total - taken,
       description: parent.description,
-      ...withClass(parent.className),
+      ...withClass(parent.className, parent.customerName),
     });
   }
   for (const p of parts) if (p.cents > 0) lines.push(p);
@@ -217,16 +231,19 @@ export function familyHash(family: QboFamily): string {
     cents: family.cents,
     name: family.name,
     account: family.plaidAccountId,
-    lines: family.lines.map((l) =>
+    lines: family.lines.map((l) => {
       // step11 part 3: a class joins the key only when there is one, so books without
-      // classes keep their old hashes (nothing re-pushed for them).
-      l.className
+      // classes keep their old hashes (nothing re-pushed for them). Same for a customer.
+      const key: unknown[] = l.className
         ? [l.category, l.cents, l.description, l.className]
-        : [l.category, l.cents, l.description],
-    ),
+        : [l.category, l.cents, l.description];
+      if (l.customerName) key.push({ customer: l.customerName });
+      return key;
+    }),
     ...(family.fields?.length
       ? { fields: family.fields.map((f) => [f.ref, f.value]) }
       : {}),
+    ...(family.location ? { location: family.location } : {}),
   };
   return createHash('sha256').update(JSON.stringify(key)).digest('hex');
 }
@@ -238,12 +255,19 @@ export interface QboRefs {
   accountIds: ReadonlyMap<string, string>;
   /** step11 part 3: class name → QuickBooks Class id (a name missing = no ClassRef). */
   classIds?: ReadonlyMap<string, string>;
+  /** step11 part 4: the location's QuickBooks Department id (none = no DepartmentRef). */
+  departmentId?: string | null;
+  /** step11 part 4: customer name → QuickBooks Customer id (a name missing = no CustomerRef). */
+  customerIds?: ReadonlyMap<string, string>;
 }
 
 /** step11 part 3: what to leave out of the body (QuickBooks refused it on this file). */
 export interface QboBodyOmit {
   classes?: boolean;
   fields?: boolean;
+  /** step11 part 4 */
+  locations?: boolean;
+  customers?: boolean;
 }
 
 const money = (c: number): number => Number((c / 100).toFixed(2));
@@ -281,12 +305,25 @@ export function qboBody(
           })),
         }
       : {};
+  // step11 part 4: the transaction's location; a Purchase line's customer / project.
+  const department =
+    !omit.locations && refs.departmentId
+      ? { DepartmentRef: { value: refs.departmentId } }
+      : {};
+  const customerRef = (l: QboLine): Record<string, unknown> => {
+    const id =
+      !omit.customers && l.customerName
+        ? refs.customerIds?.get(l.customerName)
+        : undefined;
+    return id ? { CustomerRef: { value: id } } : {};
+  };
   if (qboTypeOf(family) === 'Deposit') {
     return {
       DepositToAccountRef: { value: refs.bankAccountId },
       TxnDate: family.date,
       PrivateNote: note,
       ...custom,
+      ...department,
       Line: family.lines.map((l) => ({
         DetailType: 'DepositLineDetail',
         Amount: money(l.cents),
@@ -311,6 +348,7 @@ export function qboBody(
       ? { EntityRef: { value: refs.entity.id, type: refs.entity.type } }
       : {}),
     ...custom,
+    ...department,
     Line: family.lines.map((l) => ({
       DetailType: 'AccountBasedExpenseLineDetail',
       Amount: money(l.cents),
@@ -318,6 +356,7 @@ export function qboBody(
       AccountBasedExpenseLineDetail: {
         AccountRef: { value: accountOf(l.category) },
         ...classRef(l),
+        ...customerRef(l),
       },
     })),
   };

@@ -129,6 +129,18 @@ export interface ImportAnalysis {
   questions: ImportQuestion[];
   /** Every QuickBooks category used, with its type — made the customer's own if new. */
   categories: Array<{ name: string; type: string | null }>;
+  /**
+   * step11 part 4 (2026-11-27): which bank row each QuickBooks transaction is (and that row's
+   * splits, filled by the service) — the internal API gives each its own QuickBooks values.
+   */
+  matches: QboMatch[];
+}
+
+export interface QboMatch {
+  qboId: string;
+  transactionId: number;
+  category: string;
+  splits: Array<{ id: number; category: string }>;
 }
 
 /** The answer values every question understands besides its own options. */
@@ -552,6 +564,12 @@ export function analyze(input: {
     descriptions,
     questions,
     categories: [...categories].map(([name, type]) => ({ name, type })),
+    matches: [...matches].map(([qboId, row]) => ({
+      qboId,
+      transactionId: row.id,
+      category: row.category,
+      splits: [],
+    })),
   };
 }
 

@@ -9,7 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CustomColumnsService = void 0;
+exports.CustomColumnsService = exports.qboColumnKind = exports.QBO_COLUMN_KINDS = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const custom_column_defaults_1 = require("./custom-column-defaults");
@@ -18,6 +18,14 @@ const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
 const sub_name_parents_1 = require("./sub-name-parents");
 const reports_util_1 = require("./reports.util");
+exports.QBO_COLUMN_KINDS = [
+    'CLASS',
+    'FIELD',
+    'LOCATION',
+    'CUSTOMER',
+];
+const qboColumnKind = (v) => exports.QBO_COLUMN_KINDS.includes(v) ? v : null;
+exports.qboColumnKind = qboColumnKind;
 let CustomColumnsService = class CustomColumnsService {
     prisma;
     constructor(prisma) {
@@ -112,7 +120,7 @@ let CustomColumnsService = class CustomColumnsService {
             maxChars: c.maxChars,
             required: c.required,
             options: c.options,
-            qbo: c.qboKind === 'CLASS' || c.qboKind === 'FIELD' ? c.qboKind : null,
+            qbo: (0, exports.qboColumnKind)(c.qboKind),
         }));
     }
     async templates(scope) {
@@ -461,6 +469,31 @@ let CustomColumnsService = class CustomColumnsService {
         }
         return ids.length;
     }
+    async fillEmpty(scope, columnId, cells) {
+        if (!cells.length)
+            return 0;
+        const col = await this.owned(scope, columnId);
+        const taken = new Set((await this.prisma.customColumnAnswer.findMany({
+            where: {
+                customColumnId: col.id,
+                transactionId: { in: cells.map((c) => c.transactionId) },
+            },
+            select: { transactionId: true },
+        })).map((a) => a.transactionId));
+        const byValue = new Map();
+        for (const c of cells) {
+            if (taken.has(c.transactionId))
+                continue;
+            taken.add(c.transactionId);
+            const list = byValue.get(c.value) ?? [];
+            list.push(c.transactionId);
+            byValue.set(c.value, list);
+        }
+        let filled = 0;
+        for (const [value, ids] of byValue)
+            filled += await this.answer(scope, ids, col.id, col.type === 'DROPDOWN' ? { option: value } : { value });
+        return filled;
+    }
     async ensureQboColumn(scope, col) {
         const ref = col.kind === 'FIELD' ? col.ref : null;
         const labels = [
@@ -510,7 +543,7 @@ let CustomColumnsService = class CustomColumnsService {
                 name = `${base.slice(0, 47)} (QuickBooks ${n})`;
             }
         }
-        const dropdown = col.kind === 'CLASS';
+        const dropdown = col.kind !== 'FIELD';
         const made = await this.prisma.customColumn.create({
             data: {
                 ...(0, scope_1.scopeWhere)(scope),

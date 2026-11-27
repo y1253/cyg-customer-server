@@ -17,12 +17,15 @@ exports.UNCATEGORIZED_INCOME = 'Uncategorized Income';
 const cents = (n) => Math.round(n * 100);
 function familyLines(parent, splits) {
     const total = Math.abs(cents(parent.amount));
-    const withClass = (c) => c ? { className: c } : {};
+    const withClass = (c, customer) => ({
+        ...(c ? { className: c } : {}),
+        ...(customer ? { customerName: customer } : {}),
+    });
     const parts = splits.map((s) => ({
         category: s.category,
         cents: Math.abs(cents(s.amount)),
         description: s.description,
-        ...withClass(s.className || parent.className),
+        ...withClass(s.className || parent.className, s.customerName || parent.customerName),
     }));
     const taken = parts.reduce((sum, p) => sum + p.cents, 0);
     const lines = [];
@@ -31,7 +34,7 @@ function familyLines(parent, splits) {
             category: parent.category,
             cents: total - taken,
             description: parent.description,
-            ...withClass(parent.className),
+            ...withClass(parent.className, parent.customerName),
         });
     }
     for (const p of parts)
@@ -117,12 +120,18 @@ function familyHash(family) {
         cents: family.cents,
         name: family.name,
         account: family.plaidAccountId,
-        lines: family.lines.map((l) => l.className
-            ? [l.category, l.cents, l.description, l.className]
-            : [l.category, l.cents, l.description]),
+        lines: family.lines.map((l) => {
+            const key = l.className
+                ? [l.category, l.cents, l.description, l.className]
+                : [l.category, l.cents, l.description];
+            if (l.customerName)
+                key.push({ customer: l.customerName });
+            return key;
+        }),
         ...(family.fields?.length
             ? { fields: family.fields.map((f) => [f.ref, f.value]) }
             : {}),
+        ...(family.location ? { location: family.location } : {}),
     };
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(key)).digest('hex');
 }
@@ -151,12 +160,22 @@ function qboBody(family, refs, omit = {}) {
             })),
         }
         : {};
+    const department = !omit.locations && refs.departmentId
+        ? { DepartmentRef: { value: refs.departmentId } }
+        : {};
+    const customerRef = (l) => {
+        const id = !omit.customers && l.customerName
+            ? refs.customerIds?.get(l.customerName)
+            : undefined;
+        return id ? { CustomerRef: { value: id } } : {};
+    };
     if (qboTypeOf(family) === 'Deposit') {
         return {
             DepositToAccountRef: { value: refs.bankAccountId },
             TxnDate: family.date,
             PrivateNote: note,
             ...custom,
+            ...department,
             Line: family.lines.map((l) => ({
                 DetailType: 'DepositLineDetail',
                 Amount: money(l.cents),
@@ -181,6 +200,7 @@ function qboBody(family, refs, omit = {}) {
             ? { EntityRef: { value: refs.entity.id, type: refs.entity.type } }
             : {}),
         ...custom,
+        ...department,
         Line: family.lines.map((l) => ({
             DetailType: 'AccountBasedExpenseLineDetail',
             Amount: money(l.cents),
@@ -188,6 +208,7 @@ function qboBody(family, refs, omit = {}) {
             AccountBasedExpenseLineDetail: {
                 AccountRef: { value: accountOf(l.category) },
                 ...classRef(l),
+                ...customerRef(l),
             },
         })),
     };

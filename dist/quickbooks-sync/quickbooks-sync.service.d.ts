@@ -33,6 +33,7 @@ export declare class QuickBooksSyncService {
     private push;
     private write;
     private classId;
+    private listId;
     private refsFor;
     private accountId;
     private bankAccountId;

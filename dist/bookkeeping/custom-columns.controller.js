@@ -18,10 +18,13 @@ const customer_jwt_guard_1 = require("../customer-auth/customer-jwt.guard");
 const book_scope_guard_1 = require("./book-scope.guard");
 const custom_columns_service_1 = require("./custom-columns.service");
 const custom_column_dto_1 = require("./dto/custom-column.dto");
+const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 let CustomColumnsController = class CustomColumnsController {
     columns;
-    constructor(columns) {
+    qbo;
+    constructor(columns, qbo) {
         this.columns = columns;
+        this.qbo = qbo;
     }
     view(scope) {
         return this.columns.view(scope);
@@ -48,6 +51,7 @@ let CustomColumnsController = class CustomColumnsController {
     }
     async answer(scope, id, columnId, dto) {
         await this.columns.answer(scope, [id], columnId, dto);
+        this.qbo.syncSoon(scope.bookId);
         return this.columns.view(scope);
     }
     async nameAnswer(scope, id, dto) {
@@ -127,6 +131,7 @@ __decorate([
 exports.CustomColumnsController = CustomColumnsController = __decorate([
     (0, common_1.Controller)('bookkeeping'),
     (0, common_1.UseGuards)(customer_jwt_guard_1.CustomerJwtGuard, book_scope_guard_1.BookScopeGuard),
-    __metadata("design:paramtypes", [custom_columns_service_1.CustomColumnsService])
+    __metadata("design:paramtypes", [custom_columns_service_1.CustomColumnsService,
+        quickbooks_sync_service_1.QuickBooksSyncService])
 ], CustomColumnsController);
 //# sourceMappingURL=custom-columns.controller.js.map
