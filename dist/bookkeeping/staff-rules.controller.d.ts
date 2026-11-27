@@ -1,13 +1,22 @@
 import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { CustomerAccountsService } from './customer-accounts.service';
-import { MergeNamesDto, ResetNameRuleDto, ResetProductRuleDto, SaveNameRuleDto, MergeProductsDto, SaveProductRuleDto } from './dto/agency.dto';
+import { CustomColumnsService, type CustomColumnView, type CustomNameAnswerView } from './custom-columns.service';
+import { CustomNameAnswerDto } from './dto/custom-column.dto';
+import { NameGroupDto, SetNameAgenciesDto, SetNameFieldsDto, SetNameGroupDto, SubNameSettingsDto, MergeNamesDto, ResetNameRuleDto, ResetProductRuleDto, SaveNameRuleDto, MergeProductsDto, SaveProductRuleDto } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import { type StaffNameView } from './merge-names';
 import { type StaffBook } from './staff-book.guard';
 import { StaffRulesService, type StaffRulesView } from './staff-rules.service';
-import { SubNamesService } from './sub-names.service';
-import { TaxService } from './tax.service';
+import { SubNamesService, type SubNameView } from './sub-names.service';
+import { TaxService, type NamesView, type TaxSettingsView } from './tax.service';
+export interface StaffNamesFull {
+    names: NamesView;
+    subNames: SubNameView[];
+    tax: TaxSettingsView;
+    columns: CustomColumnView[];
+    nameAnswers: CustomNameAnswerView[];
+}
 export declare class StaffRulesController {
     private readonly rules;
     private readonly accounts;
@@ -16,8 +25,20 @@ export declare class StaffRulesController {
     private readonly qbo;
     private readonly tax;
     private readonly subNames;
+    private readonly columns;
     private readonly logger;
-    constructor(rules: StaffRulesService, accounts: CustomerAccountsService, nameMemory: NameMemoryService, productMemory: ProductMemoryService, qbo: QuickBooksSyncService, tax: TaxService, subNames: SubNamesService);
+    constructor(rules: StaffRulesService, accounts: CustomerAccountsService, nameMemory: NameMemoryService, productMemory: ProductMemoryService, qbo: QuickBooksSyncService, tax: TaxService, subNames: SubNamesService, columns: CustomColumnsService);
+    private full;
+    private changed;
+    namesFull(_companyId: number, staff: StaffBook): Promise<StaffNamesFull>;
+    setNameGroup(_companyId: number, staff: StaffBook, dto: SetNameGroupDto): Promise<StaffNamesFull>;
+    setNameFields(_companyId: number, staff: StaffBook, dto: SetNameFieldsDto): Promise<StaffNamesFull>;
+    createNameGroup(_companyId: number, staff: StaffBook, dto: NameGroupDto): Promise<StaffNamesFull>;
+    setNameAgencies(_companyId: number, staff: StaffBook, dto: SetNameAgenciesDto): Promise<StaffNamesFull>;
+    saveDescriptionRule(_companyId: number, staff: StaffBook, dto: SaveNameRuleDto): Promise<StaffNamesFull>;
+    resetDescriptionRule(_companyId: number, staff: StaffBook, dto: ResetNameRuleDto): Promise<StaffNamesFull>;
+    setSubNameSettings(_companyId: number, id: number, staff: StaffBook, dto: SubNameSettingsDto): Promise<StaffNamesFull>;
+    setNameAnswer(_companyId: number, id: number, staff: StaffBook, dto: CustomNameAnswerDto): Promise<StaffNamesFull>;
     namesList(_companyId: number, staff: StaffBook): Promise<StaffNameView[]>;
     mergeNames(_companyId: number, staff: StaffBook, dto: MergeNamesDto): Promise<StaffNameView[]>;
     view(_companyId: number, staff: StaffBook): Promise<StaffRulesView>;

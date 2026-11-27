@@ -17,6 +17,8 @@ exports.StaffRulesController = void 0;
 const common_1 = require("@nestjs/common");
 const quickbooks_sync_service_1 = require("../quickbooks-sync/quickbooks-sync.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
+const custom_columns_service_1 = require("./custom-columns.service");
+const custom_column_dto_1 = require("./dto/custom-column.dto");
 const agency_dto_1 = require("./dto/agency.dto");
 const name_memory_service_1 = require("./name-memory.service");
 const product_memory_service_1 = require("./product-memory.service");
@@ -34,8 +36,9 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
     qbo;
     tax;
     subNames;
+    columns;
     logger = new common_1.Logger(StaffRulesController_1.name);
-    constructor(rules, accounts, nameMemory, productMemory, qbo, tax, subNames) {
+    constructor(rules, accounts, nameMemory, productMemory, qbo, tax, subNames, columns) {
         this.rules = rules;
         this.accounts = accounts;
         this.nameMemory = nameMemory;
@@ -43,6 +46,71 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
         this.qbo = qbo;
         this.tax = tax;
         this.subNames = subNames;
+        this.columns = columns;
+    }
+    async full(staff) {
+        const [names, subNames, tax, columns] = await Promise.all([
+            this.tax.names(staff.scope),
+            this.subNames.list(staff.scope),
+            this.tax.settings(staff.scope),
+            this.columns.view(staff.scope),
+        ]);
+        return {
+            names,
+            subNames,
+            tax,
+            columns: columns.columns,
+            nameAnswers: columns.nameAnswers,
+        };
+    }
+    async changed(staff, what) {
+        this.log(staff, what);
+        this.qbo.syncSoon(staff.scope.bookId);
+        return this.full(staff);
+    }
+    namesFull(_companyId, staff) {
+        return this.full(staff);
+    }
+    async setNameGroup(_companyId, staff, dto) {
+        await this.tax.setNameGroup(staff.scope, dto.name, dto.group ?? null);
+        return this.changed(staff, `put "${dto.name}" in group ${dto.group ?? '(its category)'}`);
+    }
+    async setNameFields(_companyId, staff, dto) {
+        await this.tax.setNameFields(staff.scope, dto.name, dto.fields);
+        return this.changed(staff, `saved the profile of "${dto.name}"`);
+    }
+    async createNameGroup(_companyId, staff, dto) {
+        await this.tax.createNameGroup(staff.scope, dto.name);
+        return this.changed(staff, `made the name group "${dto.name}"`);
+    }
+    async setNameAgencies(_companyId, staff, dto) {
+        await this.tax.setNameAgencies(staff.scope, dto.name, dto.agencyIds, dto.alone === true);
+        return this.changed(staff, `set the split rules of "${dto.name}" to [${dto.agencyIds.join(', ')}]`);
+    }
+    async saveDescriptionRule(_companyId, staff, dto) {
+        const { name, category } = await this.accounts.editValues(staff.scope, dto);
+        await this.nameMemory.saveRule(staff.scope, {
+            matchType: dto.matchType,
+            matchKey: dto.matchKey,
+            name,
+            category,
+            scope: 'ALWAYS',
+            replace: dto.replace,
+            subNameId: dto.subNameId ?? null,
+        });
+        return this.changed(staff, `saved ${dto.matchType} rule "${dto.matchKey}" → ${name ?? '—'}`);
+    }
+    async resetDescriptionRule(_companyId, staff, dto) {
+        await this.nameMemory.resetRule(staff.scope, dto);
+        return this.changed(staff, `removed ${dto.matchType} rule "${dto.matchKey}"`);
+    }
+    async setSubNameSettings(_companyId, id, staff, dto) {
+        await this.subNames.setSettings(staff.scope, id, dto);
+        return this.changed(staff, `changed the settings of sub-name #${id}`);
+    }
+    async setNameAnswer(_companyId, id, staff, dto) {
+        await this.columns.setNameAnswer(staff.scope, id, { name: dto.name, subNameId: dto.subNameId }, { value: dto.value ?? null, dropDownId: dto.dropDownId ?? null });
+        return this.changed(staff, `set column #${id}'s default for ${dto.name ?? `sub-name #${dto.subNameId}`}`);
     }
     namesList(_companyId, staff) {
         return (0, merge_names_1.staffNames)(this.tax, this.subNames, staff.scope);
@@ -100,6 +168,88 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
     }
 };
 exports.StaffRulesController = StaffRulesController;
+__decorate([
+    (0, common_1.Get)('names-full'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "namesFull", null);
+__decorate([
+    (0, common_1.Put)('names/group'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.SetNameGroupDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "setNameGroup", null);
+__decorate([
+    (0, common_1.Put)('names/fields'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.SetNameFieldsDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "setNameFields", null);
+__decorate([
+    (0, common_1.Post)('name-groups'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.NameGroupDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "createNameGroup", null);
+__decorate([
+    (0, common_1.Put)('names/agencies'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.SetNameAgenciesDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "setNameAgencies", null);
+__decorate([
+    (0, common_1.Put)('names/description-rule'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.SaveNameRuleDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "saveDescriptionRule", null);
+__decorate([
+    (0, common_1.Delete)('names/description-rule'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.ResetNameRuleDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "resetDescriptionRule", null);
+__decorate([
+    (0, common_1.Patch)('sub-names/:id/settings'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, staff_book_guard_1.Staff)()),
+    __param(3, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Number, Object, agency_dto_1.SubNameSettingsDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "setSubNameSettings", null);
+__decorate([
+    (0, common_1.Put)('custom-columns/:id/names'),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, staff_book_guard_1.Staff)()),
+    __param(3, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Number, Object, custom_column_dto_1.CustomNameAnswerDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "setNameAnswer", null);
 __decorate([
     (0, common_1.Get)('names-list'),
     __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
@@ -181,6 +331,7 @@ exports.StaffRulesController = StaffRulesController = StaffRulesController_1 = _
         product_memory_service_1.ProductMemoryService,
         quickbooks_sync_service_1.QuickBooksSyncService,
         tax_service_1.TaxService,
-        sub_names_service_1.SubNamesService])
+        sub_names_service_1.SubNamesService,
+        custom_columns_service_1.CustomColumnsService])
 ], StaffRulesController);
 //# sourceMappingURL=staff-rules.controller.js.map
