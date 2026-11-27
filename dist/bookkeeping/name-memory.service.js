@@ -283,13 +283,22 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
     }
     async mergeNames(scope, from, into) {
         await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, from);
-        if (await this.isWrapper(scope, into)) {
+        if ((await this.isWrapper(scope, into)) &&
+            (await this.hasRows(scope, from))) {
             const category = (await this.categoryOfName(scope, from)) ?? chart_of_accounts_1.UNCATEGORIZED;
             const sub = await (0, sub_name_parents_1.ensureSubName)(this.prisma, scope, into, category);
             return this.mergeIntoSubName(scope, from, sub.id);
         }
         await this.applyMerge(scope, from, into);
         await this.syncProvenance(scope);
+    }
+    async hasRows(scope, name) {
+        const clean = (0, name_memory_util_1.cleanName)(name);
+        if (!clean)
+            return false;
+        return ((await this.prisma.bankTransaction.count({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: clean, splitOfId: null },
+        })) > 0);
     }
     async mergeIntoSubName(scope, from, subNameId) {
         await (0, sub_name_parents_1.refuseWrapper)(this.prisma, scope, from);
@@ -1200,11 +1209,17 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         if (agency)
             throw new common_1.BadRequestException(`"${agency}" is a tax agency — tax agencies cannot be merged.`);
         const rows = await this.matchingRows(scope, 'NAME', (0, name_memory_util_1.nameKey)(source), new Set([(0, name_memory_util_1.nameKey)(source)]), true);
-        if (!rows.length)
+        if (!rows.length &&
+            !(await this.prisma.ledgerName.findFirst({
+                where: { ...(0, scope_1.scopeWhere)(scope), name: source },
+                select: { id: true },
+            })))
             throw new common_1.NotFoundException(`No rows are named "${source}".`);
         const category = sub
             ? sub.category
-            : ((await this.categoryOfName(scope, target)) ?? chart_of_accounts_1.UNCATEGORIZED);
+            : rows.length
+                ? ((await this.categoryOfName(scope, target)) ?? chart_of_accounts_1.UNCATEGORIZED)
+                : chart_of_accounts_1.UNCATEGORIZED;
         if (sub)
             await this.prisma.customerNameRule.updateMany({
                 where: {
@@ -1226,12 +1241,13 @@ let NameMemoryService = NameMemoryService_1 = class NameMemoryService {
         const previous = await this.prisma.customerNameRule.findFirst({ where });
         const ruleCategory = sub?.category ?? null;
         await this.upsertRule(previous, { ...where, name: target, category: ruleCategory }, { name: target, category: ruleCategory });
-        await this.writeRows(scope, rows, () => ({
-            name: target,
-            category,
-            ...(sub && { subNameId: sub.id }),
-        }));
-        if (!sub && category !== chart_of_accounts_1.UNCATEGORIZED)
+        if (rows.length)
+            await this.writeRows(scope, rows, () => ({
+                name: target,
+                category,
+                ...(sub && { subNameId: sub.id }),
+            }));
+        if (!sub && rows.length && category !== chart_of_accounts_1.UNCATEGORIZED)
             await this.setNameCategory(scope, target, category);
         if (sub) {
             const own = await this.prisma.ledgerName.findFirst({

@@ -23,6 +23,7 @@ const attachment_processor_service_1 = require("../bookkeeping/attachment-proces
 const attachments_service_1 = require("../bookkeeping/attachments.service");
 const bookkeeping_service_1 = require("../bookkeeping/bookkeeping.service");
 const statement_errors_service_1 = require("../bookkeeping/statement-errors.service");
+const sub_names_service_1 = require("../bookkeeping/sub-names.service");
 const customer_accounts_service_1 = require("../bookkeeping/customer-accounts.service");
 const name_memory_service_1 = require("../bookkeeping/name-memory.service");
 const reports_service_1 = require("../bookkeeping/reports.service");
@@ -280,7 +281,7 @@ const WRITE_TOOLS = [
     },
     {
         name: 'merge_names',
-        description: 'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and split rules of "into", and later rows follow. Split rules and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
+        description: 'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and split rules of "into", and later rows follow (a "from" with sub-names: each sub-name joins the sub-name of "into" with the same category, or moves under "into" keeping its category). Split rules and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
         parameters: obj({ from: str, into: str }, ['from', 'into']),
     },
     {
@@ -710,6 +711,7 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
         return this.errorsService;
     }
     errorsService;
+    subNames;
     logger = new common_1.Logger(AssistantTools_1.name);
     issueHandler = null;
     setIssueHandler(handler) {
@@ -1343,7 +1345,10 @@ let AssistantTools = AssistantTools_1 = class AssistantTools {
                 const into = s(a.into);
                 if (!from || !into)
                     throw new Error('which two names?');
-                await this.names.mergeNames(scope, from, into);
+                if (this.subNames)
+                    await this.subNames.merge(scope, { from, into });
+                else
+                    await this.names.mergeNames(scope, from, into);
                 return done(`Merged ${from} into ${into}`);
             }
             case 'merge_accounts': {
@@ -1602,6 +1607,11 @@ __decorate([
     (0, common_1.Inject)(statement_errors_service_1.StatementErrorsService),
     __metadata("design:type", statement_errors_service_1.StatementErrorsService)
 ], AssistantTools.prototype, "errorsService", void 0);
+__decorate([
+    (0, common_1.Optional)(),
+    (0, common_1.Inject)(sub_names_service_1.SubNamesService),
+    __metadata("design:type", sub_names_service_1.SubNamesService)
+], AssistantTools.prototype, "subNames", void 0);
 exports.AssistantTools = AssistantTools = AssistantTools_1 = __decorate([
     (0, common_1.Injectable)(),
     __param(12, (0, common_1.Optional)()),

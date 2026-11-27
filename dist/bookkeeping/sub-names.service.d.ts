@@ -54,6 +54,7 @@ export declare class SubNamesService implements OnApplicationBootstrap {
         into?: string;
         intoSubNameId?: number;
     }): Promise<void>;
+    private mergeWrapper;
     setParent(scope: BookScope, id: number, rawParent: string): Promise<void>;
     private get;
     private parentName;

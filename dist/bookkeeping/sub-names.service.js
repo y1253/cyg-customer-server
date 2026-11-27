@@ -307,6 +307,11 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
         if ((input.from == null) === (fromSub == null) ||
             (input.into == null) === (intoSub == null))
             throw new common_1.BadRequestException('Pick one name or sub-name, and the one to merge it into');
+        if (fromSub == null && (await this.names.isWrapper(scope, input.from)))
+            return this.mergeWrapper(scope, input.from, {
+                name: input.into,
+                subNameId: intoSub ?? undefined,
+            });
         if (fromSub == null && intoSub == null)
             return this.names.mergeNames(scope, input.from, input.into);
         if (fromSub == null)
@@ -315,6 +320,61 @@ let SubNamesService = SubNamesService_1 = class SubNamesService {
             name: input.into,
             subNameId: intoSub ?? undefined,
         });
+    }
+    async mergeWrapper(scope, rawFrom, into) {
+        const from = (0, name_memory_util_1.cleanName)(rawFrom);
+        if (!from)
+            throw new common_1.BadRequestException('Pick two names.');
+        const fromId = await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, from);
+        const subs = await this.prisma.subName.findMany({
+            where: { bookId: scope.bookId, nameId: fromId },
+            orderBy: { id: 'asc' },
+        });
+        if (into.subNameId != null) {
+            const target = await this.get(scope, into.subNameId);
+            if (subs.some((s) => s.id === target.id))
+                throw new common_1.BadRequestException(`It is already under “${from}” — drop it on another name.`);
+            for (const sub of subs)
+                await this.names.mergeSubName(scope, sub.id, {
+                    subNameId: target.id,
+                });
+            return this.names.mergeIntoSubName(scope, from, target.id);
+        }
+        const target = (0, name_memory_util_1.cleanName)(into.name);
+        if (!target)
+            throw new common_1.BadRequestException('Pick a name to merge it into.');
+        if ((0, name_memory_util_1.nameKey)(target) === (0, name_memory_util_1.nameKey)(from))
+            throw new common_1.BadRequestException('That is the same name.');
+        if ((0, name_memory_util_1.nameKey)(target) === (0, name_memory_util_1.nameKey)(reports_util_1.UNCLARIFIED_NAME))
+            throw new common_1.BadRequestException('"Unclarified name" cannot be merged — give its rows a name instead.');
+        if (await this.prisma.subName.findFirst({
+            where: { bookId: scope.bookId, name: target },
+            select: { id: true },
+        }))
+            throw new common_1.BadRequestException(`"${target}" is a sub-name — drop it on a name instead.`);
+        const agencies = await this.prisma.taxAgency.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), deletedAt: null },
+            select: { name: true },
+        });
+        if (agencies.some((a) => (0, name_memory_util_1.nameKey)(a.name) === (0, name_memory_util_1.nameKey)(target)))
+            throw new common_1.BadRequestException(`"${target}" is a split rule — split rules cannot be merged.`);
+        const targetId = await (0, sub_name_parents_1.ledgerNameId)(this.prisma, scope, target);
+        for (const sub of subs) {
+            const same = await this.prisma.subName.findFirst({
+                where: {
+                    bookId: scope.bookId,
+                    nameId: targetId,
+                    category: sub.category,
+                    splitKey: sub.splitKey,
+                },
+                select: { id: true },
+            });
+            if (same)
+                await this.names.mergeSubName(scope, sub.id, { subNameId: same.id });
+            else
+                await this.setParent(scope, sub.id, target);
+        }
+        await this.names.mergeNames(scope, from, target);
     }
     async setParent(scope, id, rawParent) {
         const sub = await this.get(scope, id);

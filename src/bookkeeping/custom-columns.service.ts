@@ -555,20 +555,34 @@ export class CustomColumnsService {
       });
       return ids.length;
     }
-    await this.prisma.$transaction(
-      ids.map((transactionId) =>
-        this.prisma.customColumnAnswer.upsert({
-          where: {
-            customColumnId_transactionId: {
+    const write = () =>
+      this.prisma.$transaction(
+        ids.map((transactionId) =>
+          this.prisma.customColumnAnswer.upsert({
+            where: {
+              customColumnId_transactionId: {
+                customColumnId: col.id,
+                transactionId,
+              },
+            },
+            create: {
               customColumnId: col.id,
               transactionId,
+              value,
+              dropDownId,
             },
-          },
-          create: { customColumnId: col.id, transactionId, value, dropDownId },
-          update: { value, dropDownId },
-        }),
-      ),
-    );
+            update: { value, dropDownId },
+          }),
+        ),
+      );
+    try {
+      await write();
+    } catch (err) {
+      // Two saves of the same cell at once: MySQL's upsert is find-then-insert, so the
+      // second insert collides — the row exists now, and the retry updates it.
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      await write();
+    }
     return ids.length;
   }
 

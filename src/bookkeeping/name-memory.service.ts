@@ -453,7 +453,12 @@ export class NameMemoryService implements OnApplicationBootstrap {
     // step9 (2026-11-17, second request): nothing is merged out of a wrapper name. step9
     // (2026-11-18): one dropped on a wrapper goes under its sub-name of the same category.
     await refuseWrapper(this.prisma, scope, from);
-    if (await this.isWrapper(scope, into)) {
+    // A name with no rows (added by hand, or a wrapper whose sub-names just moved) brings
+    // no category: it merges into the wrapper itself, never into a made-up sub-name.
+    if (
+      (await this.isWrapper(scope, into)) &&
+      (await this.hasRows(scope, from))
+    ) {
       const category =
         (await this.categoryOfName(scope, from)) ?? UNCATEGORIZED;
       const sub = await ensureSubName(this.prisma, scope, into, category);
@@ -461,6 +466,17 @@ export class NameMemoryService implements OnApplicationBootstrap {
     }
     await this.applyMerge(scope, from, into);
     await this.syncProvenance(scope);
+  }
+
+  /** Whether any top-level row of the book is named `name`. */
+  private async hasRows(scope: BookScope, name: string): Promise<boolean> {
+    const clean = cleanName(name);
+    if (!clean) return false;
+    return (
+      (await this.prisma.bankTransaction.count({
+        where: { ...scopeWhere(scope), name: clean, splitOfId: null },
+      })) > 0
+    );
   }
 
   /**
@@ -715,7 +731,7 @@ export class NameMemoryService implements OnApplicationBootstrap {
   }
 
   /** step9 (2026-11-18): whether `name` has sub-names (a wrapper). */
-  private async isWrapper(scope: BookScope, name: string): Promise<boolean> {
+  async isWrapper(scope: BookScope, name: string): Promise<boolean> {
     const clean = cleanName(name);
     if (!clean) return false;
     return (await wrapperNames(this.prisma, scope)).has(nameKeyOf(clean));
@@ -1867,12 +1883,22 @@ export class NameMemoryService implements OnApplicationBootstrap {
       new Set([nameKey(source)]),
       true,
     );
-    if (!rows.length)
+    // 2026-11-27: a name with no rows (added by hand, or a wrapper whose sub-names were
+    // just moved) still merges — its rules, files, profile and folder go to the target.
+    if (
+      !rows.length &&
+      !(await this.prisma.ledgerName.findFirst({
+        where: { ...scopeWhere(scope), name: source },
+        select: { id: true },
+      }))
+    )
       throw new NotFoundException(`No rows are named "${source}".`);
     // The target's category, read BEFORE the rows move (they would vote for their own).
     const category = sub
       ? sub.category
-      : ((await this.categoryOfName(scope, target)) ?? UNCATEGORIZED);
+      : rows.length
+        ? ((await this.categoryOfName(scope, target)) ?? UNCATEGORIZED)
+        : UNCATEGORIZED;
 
     // Rules that named rows `source` (renames to it, description / contains rules) → target.
     if (sub)
@@ -1901,12 +1927,13 @@ export class NameMemoryService implements OnApplicationBootstrap {
       { ...where, name: target, category: ruleCategory },
       { name: target, category: ruleCategory },
     );
-    await this.writeRows(scope, rows, () => ({
-      name: target,
-      category,
-      ...(sub && { subNameId: sub.id }),
-    }));
-    if (!sub && category !== UNCATEGORIZED)
+    if (rows.length)
+      await this.writeRows(scope, rows, () => ({
+        name: target,
+        category,
+        ...(sub && { subNameId: sub.id }),
+      }));
+    if (!sub && rows.length && category !== UNCATEGORIZED)
       await this.setNameCategory(scope, target, category);
     // step2 (2026-11-09): its profile fields (phone, email, …) join the target's.
     if (sub) {

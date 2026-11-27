@@ -436,16 +436,29 @@ let CustomColumnsService = class CustomColumnsService {
             });
             return ids.length;
         }
-        await this.prisma.$transaction(ids.map((transactionId) => this.prisma.customColumnAnswer.upsert({
+        const write = () => this.prisma.$transaction(ids.map((transactionId) => this.prisma.customColumnAnswer.upsert({
             where: {
                 customColumnId_transactionId: {
                     customColumnId: col.id,
                     transactionId,
                 },
             },
-            create: { customColumnId: col.id, transactionId, value, dropDownId },
+            create: {
+                customColumnId: col.id,
+                transactionId,
+                value,
+                dropDownId,
+            },
             update: { value, dropDownId },
         })));
+        try {
+            await write();
+        }
+        catch (err) {
+            if (err.code !== 'P2002')
+                throw err;
+            await write();
+        }
         return ids.length;
     }
     async ensureQboColumn(scope, col) {

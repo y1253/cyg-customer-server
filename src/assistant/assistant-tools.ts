@@ -11,6 +11,7 @@ import { AttachmentProcessorService } from '../bookkeeping/attachment-processor.
 import { AttachmentsService } from '../bookkeeping/attachments.service';
 import { BookkeepingService } from '../bookkeeping/bookkeeping.service';
 import { StatementErrorsService } from '../bookkeeping/statement-errors.service';
+import { SubNamesService } from '../bookkeeping/sub-names.service';
 import {
   ACCOUNT_TYPES,
   CustomerAccountsService,
@@ -419,7 +420,7 @@ const WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'merge_names',
     description:
-      'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and split rules of "into", and later rows follow. Split rules and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
+      'Merge payee name "from" into payee name "into" (both from list_names): every row of "from" takes the name, category and split rules of "into", and later rows follow (a "from" with sub-names: each sub-name joins the sub-name of "into" with the same category, or moves under "into" keeping its category). Split rules and "Unclarified name" cannot be merged. Only when the customer asks to merge / combine two names.',
     parameters: obj({ from: str, into: str }, ['from', 'into']),
   },
   {
@@ -968,6 +969,11 @@ export class AssistantTools {
   @Optional()
   @Inject(StatementErrorsService)
   private readonly errorsService?: StatementErrorsService;
+
+  /** 2026-11-27: a name with sub-names merges sub by sub (`SubNamesService.merge`). */
+  @Optional()
+  @Inject(SubNamesService)
+  private readonly subNames?: SubNamesService;
 
   private readonly logger = new Logger(AssistantTools.name);
 
@@ -1704,7 +1710,8 @@ export class AssistantTools {
         const from = s(a.from);
         const into = s(a.into);
         if (!from || !into) throw new Error('which two names?');
-        await this.names.mergeNames(scope, from, into);
+        if (this.subNames) await this.subNames.merge(scope, { from, into });
+        else await this.names.mergeNames(scope, from, into);
         return done(`Merged ${from} into ${into}`);
       }
       case 'merge_accounts': {

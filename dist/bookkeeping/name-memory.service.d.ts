@@ -36,6 +36,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     editTransaction(scope: BookScope, id: number, input: Parameters<NameMemoryService['applyEdit']>[2]): Promise<void>;
     setCategoryOfName(scope: BookScope, name: string, category: string): Promise<void>;
     mergeNames(scope: BookScope, from: string, into: string): Promise<void>;
+    private hasRows;
     mergeIntoSubName(scope: BookScope, from: string, subNameId: number): Promise<void>;
     mergeSubName(scope: BookScope, fromId: number, into: {
         name?: string;
@@ -43,7 +44,7 @@ export declare class NameMemoryService implements OnApplicationBootstrap {
     }): Promise<void>;
     reparentSubNameRows(scope: BookScope, subNameId: number, parent: string): Promise<void>;
     private moveSubNameRows;
-    private isWrapper;
+    isWrapper(scope: BookScope, name: string): Promise<boolean>;
     private subNameOfBook;
     private addFields;
     resetRule(scope: BookScope, input: Parameters<NameMemoryService['applyReset']>[1]): Promise<void>;

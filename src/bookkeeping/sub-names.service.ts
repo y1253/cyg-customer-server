@@ -482,6 +482,13 @@ export class SubNamesService implements OnApplicationBootstrap {
       throw new BadRequestException(
         'Pick one name or sub-name, and the one to merge it into',
       );
+    // 2026-11-27 (user: "it's not possible to drag one name into another"): almost every
+    // name is a wrapper since split rules give it sub-names — a wrapper merges sub by sub.
+    if (fromSub == null && (await this.names.isWrapper(scope, input.from!)))
+      return this.mergeWrapper(scope, input.from!, {
+        name: input.into,
+        subNameId: intoSub ?? undefined,
+      });
     if (fromSub == null && intoSub == null)
       return this.names.mergeNames(scope, input.from!, input.into!);
     if (fromSub == null)
@@ -492,6 +499,81 @@ export class SubNamesService implements OnApplicationBootstrap {
       name: input.into,
       subNameId: intoSub ?? undefined,
     });
+  }
+
+  /**
+   * 2026-11-27: a WRAPPER name (one with sub-names) dropped on a name or a sub-name. Onto a
+   * sub-name, every one of its sub-names merges into it. Onto a name, each sub-name goes to
+   * the target's sub-name of the same category (and split rule) when it has one, else moves
+   * under the target with its own category (`setParent` — a plain target becomes a wrapper),
+   * so no split is re-filed under another category. Then the emptied name merges as usual:
+   * its rules, files, profile and folder go to the target, and it is removed.
+   */
+  private async mergeWrapper(
+    scope: BookScope,
+    rawFrom: string,
+    into: { name?: string; subNameId?: number },
+  ): Promise<void> {
+    const from = cleanName(rawFrom);
+    if (!from) throw new BadRequestException('Pick two names.');
+    const fromId = await ledgerNameId(this.prisma, scope, from);
+    const subs = await this.prisma.subName.findMany({
+      where: { bookId: scope.bookId, nameId: fromId },
+      orderBy: { id: 'asc' },
+    });
+    if (into.subNameId != null) {
+      const target = await this.get(scope, into.subNameId);
+      if (subs.some((s) => s.id === target.id))
+        throw new BadRequestException(
+          `It is already under “${from}” — drop it on another name.`,
+        );
+      for (const sub of subs)
+        await this.names.mergeSubName(scope, sub.id, {
+          subNameId: target.id,
+        });
+      return this.names.mergeIntoSubName(scope, from, target.id);
+    }
+    const target = cleanName(into.name);
+    if (!target) throw new BadRequestException('Pick a name to merge it into.');
+    if (nameKey(target) === nameKey(from))
+      throw new BadRequestException('That is the same name.');
+    if (nameKey(target) === nameKey(UNCLARIFIED_NAME))
+      throw new BadRequestException(
+        '"Unclarified name" cannot be merged — give its rows a name instead.',
+      );
+    if (
+      await this.prisma.subName.findFirst({
+        where: { bookId: scope.bookId, name: target },
+        select: { id: true },
+      })
+    )
+      throw new BadRequestException(
+        `"${target}" is a sub-name — drop it on a name instead.`,
+      );
+    const agencies = await this.prisma.taxAgency.findMany({
+      where: { ...scopeWhere(scope), deletedAt: null },
+      select: { name: true },
+    });
+    if (agencies.some((a) => nameKey(a.name) === nameKey(target)))
+      throw new BadRequestException(
+        `"${target}" is a split rule — split rules cannot be merged.`,
+      );
+    const targetId = await ledgerNameId(this.prisma, scope, target);
+    for (const sub of subs) {
+      const same = await this.prisma.subName.findFirst({
+        where: {
+          bookId: scope.bookId,
+          nameId: targetId,
+          category: sub.category,
+          splitKey: sub.splitKey,
+        },
+        select: { id: true },
+      });
+      if (same)
+        await this.names.mergeSubName(scope, sub.id, { subNameId: same.id });
+      else await this.setParent(scope, sub.id, target);
+    }
+    await this.names.mergeNames(scope, from, target);
   }
 
   /**
