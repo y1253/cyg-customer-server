@@ -18,6 +18,8 @@ export declare class ProductMemoryService {
         parentCategory: string;
     }): Promise<(itemName: string) => string>;
     itemRules(scope: BookScope): Promise<Map<string, string>>;
+    itemNameFor(scope: BookScope): Promise<(printed: string) => string>;
+    mergeItems(scope: BookScope, rawFrom: string, rawInto: string): Promise<void>;
     products(scope: BookScope): Promise<ProductView[]>;
     saveRule(scope: BookScope, rawKey: string, rawCategory: string): Promise<void>;
     resetRule(scope: BookScope, rawKey: string): Promise<void>;

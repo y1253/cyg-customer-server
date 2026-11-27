@@ -91,6 +91,72 @@ let ProductMemoryService = ProductMemoryService_1 = class ProductMemoryService {
         });
         return new Map(rules.map((r) => [r.itemKey, r.category]));
     }
+    async itemNameFor(scope) {
+        const rules = await this.prisma.customerItemRule.findMany({
+            where: { ...(0, scope_1.scopeWhere)(scope), name: { not: null } },
+            select: { itemKey: true, name: true },
+        });
+        const names = new Map(rules.map((r) => [r.itemKey, r.name ?? '']));
+        return (printed) => names.get((0, receipt_items_util_1.itemKey)(printed)) || printed;
+    }
+    async mergeItems(scope, rawFrom, rawInto) {
+        const from = (0, receipt_items_util_1.itemKey)(rawFrom) || rawFrom.trim().toLowerCase();
+        const into = (0, receipt_items_util_1.itemKey)(rawInto) || rawInto.trim().toLowerCase();
+        if (!from || !into)
+            throw new common_1.BadRequestException('Pick two items');
+        if (from === into)
+            throw new common_1.BadRequestException('That is the same item');
+        const products = await this.products(scope);
+        const target = products.find((p) => p.itemKey === into);
+        if (!target)
+            throw new common_1.NotFoundException('That item has no receipt lines');
+        if (!products.some((p) => p.itemKey === from))
+            throw new common_1.NotFoundException('That item has no receipt lines');
+        const { name, category } = target;
+        const rules = await this.prisma.customerItemRule.findMany({
+            where: (0, scope_1.scopeWhere)(scope),
+            select: { id: true, itemKey: true, name: true },
+        });
+        const own = rules.find((r) => r.itemKey === from);
+        if (own) {
+            await this.prisma.customerItemRule.update({
+                where: { id: own.id },
+                data: { name, category },
+            });
+        }
+        else {
+            await this.prisma.customerItemRule.create({
+                data: { ...(0, scope_1.scopeWhere)(scope), itemKey: from, name, category },
+            });
+        }
+        const chained = rules
+            .filter((r) => r.name && (0, receipt_items_util_1.itemKey)(r.name) === from && r.itemKey !== into)
+            .map((r) => r.id);
+        if (chained.length)
+            await this.prisma.customerItemRule.updateMany({
+                where: { id: { in: chained } },
+                data: { name, category },
+            });
+        await this.prisma.customerItemRule.updateMany({
+            where: {
+                ...(0, scope_1.scopeWhere)(scope),
+                itemKey: into,
+                name: { not: null },
+            },
+            data: { name: null },
+        });
+        const ids = (await this.itemRows(scope, true))
+            .filter((r) => (0, receipt_items_util_1.itemKey)(r.itemName) === from)
+            .map((r) => r.id);
+        if (ids.length)
+            await this.prisma.bankTransaction.updateMany({
+                where: { id: { in: ids } },
+                data: { itemName: name },
+            });
+        const splits = (await this.itemRows(scope)).filter((r) => ids.includes(r.id));
+        await this.writeRows(scope, splits, () => category);
+        this.logger.log(`${(0, scope_1.bookLabel)(scope)}: item "${from}" merged into "${name}" (${ids.length} line(s))`);
+    }
     async products(scope) {
         const rows = await this.itemRows(scope, true);
         const keys = [...new Set(rows.map((r) => (0, receipt_items_util_1.itemKey)(r.itemName)))];

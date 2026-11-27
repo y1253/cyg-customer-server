@@ -18,6 +18,7 @@ import {
   ResetNameRuleDto,
   ResetProductRuleDto,
   SaveNameRuleDto,
+  MergeProductsDto,
   SaveProductRuleDto,
 } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
@@ -139,6 +140,20 @@ export class StaffRulesController {
   ): Promise<StaffRulesView> {
     await this.productMemory.saveRule(staff.scope, dto.itemKey, dto.category);
     this.log(staff, `saved item rule "${dto.itemKey}"`);
+    return this.rules.view(staff.scope);
+  }
+
+  /** 2026-11-27: a receipt item dragged onto another in the Rules tab — one product. */
+  @Post('items/merge')
+  @HttpCode(200)
+  async mergeItems(
+    @Param('companyId', ParseIntPipe) _companyId: number,
+    @Staff() staff: StaffBook,
+    @Body() dto: MergeProductsDto,
+  ): Promise<StaffRulesView> {
+    await this.productMemory.mergeItems(staff.scope, dto.from, dto.into);
+    this.qbo.syncSoon(staff.scope.bookId);
+    this.log(staff, `merged item "${dto.from}" into "${dto.into}"`);
     return this.rules.view(staff.scope);
   }
 

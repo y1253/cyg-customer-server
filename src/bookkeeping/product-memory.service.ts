@@ -1,5 +1,6 @@
 import { withAiUsage } from '../ai/ai-usage.context';
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -121,6 +122,91 @@ export class ProductMemoryService {
       select: { itemKey: true, category: true },
     });
     return new Map(rules.map((r) => [r.itemKey, r.category]));
+  }
+
+  /**
+   * 2026-11-27: the name a receipt line gets — the item it was merged into (`CustomerItemRule.name`,
+   * the internal Rules tab's drag), else the name as printed.
+   */
+  async itemNameFor(scope: BookScope): Promise<(printed: string) => string> {
+    const rules = await this.prisma.customerItemRule.findMany({
+      where: { ...scopeWhere(scope), name: { not: null } },
+      select: { itemKey: true, name: true },
+    });
+    const names = new Map(rules.map((r) => [r.itemKey, r.name ?? '']));
+    return (printed) => names.get(itemKey(printed)) || printed;
+  }
+
+  /**
+   * 2026-11-27 (internal Rules tab, user: "the receipt items should be draggable"): item
+   * `from` merged into `into` — one product. Every receipt line of `from` takes `into`'s
+   * name, and its splits `into`'s category; `from`'s rule renames later receipts' lines to
+   * `into` (with that category), and items merged into `from` before follow it.
+   */
+  async mergeItems(
+    scope: BookScope,
+    rawFrom: string,
+    rawInto: string,
+  ): Promise<void> {
+    const from = itemKey(rawFrom) || rawFrom.trim().toLowerCase();
+    const into = itemKey(rawInto) || rawInto.trim().toLowerCase();
+    if (!from || !into) throw new BadRequestException('Pick two items');
+    if (from === into) throw new BadRequestException('That is the same item');
+    const products = await this.products(scope);
+    const target = products.find((p) => p.itemKey === into);
+    if (!target) throw new NotFoundException('That item has no receipt lines');
+    if (!products.some((p) => p.itemKey === from))
+      throw new NotFoundException('That item has no receipt lines');
+    const { name, category } = target;
+    const rules = await this.prisma.customerItemRule.findMany({
+      where: scopeWhere(scope),
+      select: { id: true, itemKey: true, name: true },
+    });
+    const own = rules.find((r) => r.itemKey === from);
+    if (own) {
+      await this.prisma.customerItemRule.update({
+        where: { id: own.id },
+        data: { name, category },
+      });
+    } else {
+      await this.prisma.customerItemRule.create({
+        data: { ...scopeWhere(scope), itemKey: from, name, category },
+      });
+    }
+    // Items merged into `from` earlier now lead to `into`.
+    const chained = rules
+      .filter((r) => r.name && itemKey(r.name) === from && r.itemKey !== into)
+      .map((r) => r.id);
+    if (chained.length)
+      await this.prisma.customerItemRule.updateMany({
+        where: { id: { in: chained } },
+        data: { name, category },
+      });
+    // A rule renaming `into` to `from` would loop — it goes.
+    await this.prisma.customerItemRule.updateMany({
+      where: {
+        ...scopeWhere(scope),
+        itemKey: into,
+        name: { not: null },
+      },
+      data: { name: null },
+    });
+    const ids = (await this.itemRows(scope, true))
+      .filter((r) => itemKey(r.itemName) === from)
+      .map((r) => r.id);
+    if (ids.length)
+      await this.prisma.bankTransaction.updateMany({
+        where: { id: { in: ids } },
+        data: { itemName: name },
+      });
+    // Only splits move category: a whole transaction keeps its name's one category.
+    const splits = (await this.itemRows(scope)).filter((r) =>
+      ids.includes(r.id),
+    );
+    await this.writeRows(scope, splits, () => category);
+    this.logger.log(
+      `${bookLabel(scope)}: item "${from}" merged into "${name}" (${ids.length} line(s))`,
+    );
   }
 
   /** The Products tab: every item on the customer's receipts, with its category. */

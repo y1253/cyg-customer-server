@@ -241,6 +241,11 @@ let BookkeepingController = class BookkeepingController {
         await this.productMemory.saveRule(scope, dto.itemKey, dto.category);
         return this.productMemory.products(scope);
     }
+    async mergeProducts(scope, dto) {
+        await this.productMemory.mergeItems(scope, dto.from, dto.into);
+        this.qbo.syncSoon(scope.bookId);
+        return this.productMemory.products(scope);
+    }
     async resetProductRule(scope, dto) {
         await this.productMemory.resetRule(scope, dto.itemKey);
         return this.productMemory.products(scope);
@@ -708,6 +713,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, agency_dto_1.SaveProductRuleDto]),
     __metadata("design:returntype", Promise)
 ], BookkeepingController.prototype, "saveProductRule", null);
+__decorate([
+    (0, common_1.Post)('products/merge'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, book_scope_guard_1.Book)()),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, agency_dto_1.MergeProductsDto]),
+    __metadata("design:returntype", Promise)
+], BookkeepingController.prototype, "mergeProducts", null);
 __decorate([
     (0, common_1.Delete)('products/rule'),
     __param(0, (0, book_scope_guard_1.Book)()),

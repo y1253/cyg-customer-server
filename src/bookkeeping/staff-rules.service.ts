@@ -5,6 +5,8 @@ import {
   type AccountView,
 } from './customer-accounts.service';
 import { NameMemoryService } from './name-memory.service';
+import { ProductMemoryService } from './product-memory.service';
+import type { ProductView } from './product-memory.util';
 import {
   cleanName,
   descriptionContains,
@@ -39,6 +41,8 @@ export interface StaffItemRuleView {
   id: number;
   itemKey: string;
   category: string;
+  /** 2026-11-27: merged into this item (its lines are renamed to it); null = not merged. */
+  name: string | null;
   updatedAt: string;
 }
 
@@ -46,6 +50,8 @@ export interface StaffRulesView {
   descriptions: StaffNameRuleView[];
   names: StaffNameRuleView[];
   items: StaffItemRuleView[];
+  /** 2026-11-27: every item on the customer's receipts (the Rules tab drags them to merge). */
+  products: ProductView[];
   /** What a category may be set to: the chart plus the customer's own. */
   categories: AccountView[];
 }
@@ -62,6 +68,7 @@ export class StaffRulesService {
     private readonly prisma: PrismaService,
     private readonly accounts: CustomerAccountsService,
     private readonly nameMemory: NameMemoryService,
+    private readonly productMemory: ProductMemoryService,
   ) {}
 
   async view(scope: BookScope): Promise<StaffRulesView> {
@@ -139,8 +146,10 @@ export class StaffRulesService {
         id: i.id,
         itemKey: i.itemKey,
         category: i.category,
+        name: i.name,
         updatedAt: i.updatedAt.toISOString(),
       })),
+      products: await this.productMemory.products(scope),
       categories,
     };
   }

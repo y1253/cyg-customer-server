@@ -11,7 +11,7 @@ import { CommunicationsService, type ChannelSummary, type CommPage } from './com
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import type { ProductView } from './product-memory.util';
-import { ApplySplitRuleDto, CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SetSubNameParentDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
+import { ApplySplitRuleDto, CreateAccountDto, CreateAgencyDto, EditTransactionDto, MoveStatementDto, ResetNameRuleDto, ResetAccountTypeDto, MergeAccountsDto, RenameAccountDto, MergeNamesDto, NameGroupDto, SetNameFieldsDto, SetNameGroupDto, SetAccountCurrencyDto, ResetProductRuleDto, SaveSplitsDto, EditSplitDto, SetProductDto, SetSubNameCategoryDto, SetSubNameParentDto, SubNameSettingsDto, SetAccountTypeDto, SaveNameRuleDto, MergeProductsDto, SaveProductRuleDto, SetAttachmentTransactionDto, SetCurrencyDto, SetNameAgenciesDto, SplitGroupDto, UpdateSplitGroupDto, UpdateAgencyDto } from './dto/agency.dto';
 import { ReportsQueryDto } from './dto/reports-query.dto';
 import { LedgerQueryDto } from './dto/ledger-query.dto';
 import { LedgerQueryService, type LedgerPage } from './ledger-query.service';
@@ -92,6 +92,7 @@ export declare class BookkeepingController {
     resetNameRule(scope: BookScope, dto: ResetNameRuleDto): Promise<NamesView>;
     products(scope: BookScope): Promise<ProductView[]>;
     saveProductRule(scope: BookScope, dto: SaveProductRuleDto): Promise<ProductView[]>;
+    mergeProducts(scope: BookScope, dto: MergeProductsDto): Promise<ProductView[]>;
     resetProductRule(scope: BookScope, dto: ResetProductRuleDto): Promise<ProductView[]>;
     uploadAttachments(scope: BookScope, files: Express.Multer.File[], rawTransactionId?: string, name?: string, rawFolderId?: string): Promise<AttachmentView[]>;
     communicationChannels(scope: BookScope): Promise<ChannelSummary[]>;

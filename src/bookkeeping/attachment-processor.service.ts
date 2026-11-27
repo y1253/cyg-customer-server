@@ -1209,9 +1209,11 @@ export class AttachmentProcessorService {
     // step2 (2026-11-15): ONE item is no split — it fills the transaction's Product column.
     // Its category stays the name's (a name has one category).
     const named = reading.items.filter((i) => i.name?.trim());
+    // 2026-11-27: an item merged into another (internal Rules tab) takes that item's name.
+    const nameOf = await this.products.itemNameFor(scope);
     if (named.length === 1) {
       await this.splits.save(scope, parent.id, []);
-      await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+      await this.splits.setProduct(scope, parent.id, nameOf(named[0].name.trim()));
       await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
       return null;
     }
@@ -1233,7 +1235,7 @@ export class AttachmentProcessorService {
       parent.id,
       out.splits.map((s) => ({
         name: parent.name,
-        itemName: s.itemName,
+        itemName: s.itemName ? nameOf(s.itemName) : s.itemName,
         category: s.category,
         amount: s.amount,
       })),

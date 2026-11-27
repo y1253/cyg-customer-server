@@ -862,9 +862,10 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             return 'The transaction is already split; use "Use receipt items" to replace its splits.';
         }
         const named = reading.items.filter((i) => i.name?.trim());
+        const nameOf = await this.products.itemNameFor(scope);
         if (named.length === 1) {
             await this.splits.save(scope, parent.id, []);
-            await this.splits.setProduct(scope, parent.id, named[0].name.trim());
+            await this.splits.setProduct(scope, parent.id, nameOf(named[0].name.trim()));
             await this.splitRules?.apply(scope, { transactionIds: [parent.id] });
             return null;
         }
@@ -874,7 +875,7 @@ let AttachmentProcessorService = AttachmentProcessorService_1 = class Attachment
             return `${out.problem}, so it was not split.`;
         await this.splits.save(scope, parent.id, out.splits.map((s) => ({
             name: parent.name,
-            itemName: s.itemName,
+            itemName: s.itemName ? nameOf(s.itemName) : s.itemName,
             category: s.category,
             amount: s.amount,
         })));

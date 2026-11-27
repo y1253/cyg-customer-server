@@ -79,6 +79,7 @@ import {
   SubNameSettingsDto,
   SetAccountTypeDto,
   SaveNameRuleDto,
+  MergeProductsDto,
   SaveProductRuleDto,
   SetAttachmentTransactionDto,
   SetCurrencyDto,
@@ -544,6 +545,18 @@ export class BookkeepingController {
     @Body() dto: SaveProductRuleDto,
   ): Promise<ProductView[]> {
     await this.productMemory.saveRule(scope, dto.itemKey, dto.category);
+    return this.productMemory.products(scope);
+  }
+
+  /** 2026-11-27: one item merged into another (`ProductMemoryService.mergeItems`). */
+  @Post('products/merge')
+  @HttpCode(200)
+  async mergeProducts(
+    @Book() scope: BookScope,
+    @Body() dto: MergeProductsDto,
+  ): Promise<ProductView[]> {
+    await this.productMemory.mergeItems(scope, dto.from, dto.into);
+    this.qbo.syncSoon(scope.bookId);
     return this.productMemory.products(scope);
   }
 

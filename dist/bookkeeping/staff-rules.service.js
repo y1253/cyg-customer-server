@@ -14,16 +14,19 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const customer_accounts_service_1 = require("./customer-accounts.service");
 const name_memory_service_1 = require("./name-memory.service");
+const product_memory_service_1 = require("./product-memory.service");
 const name_memory_util_1 = require("./name-memory.util");
 const scope_1 = require("./scope");
 let StaffRulesService = class StaffRulesService {
     prisma;
     accounts;
     nameMemory;
-    constructor(prisma, accounts, nameMemory) {
+    productMemory;
+    constructor(prisma, accounts, nameMemory, productMemory) {
         this.prisma = prisma;
         this.accounts = accounts;
         this.nameMemory = nameMemory;
+        this.productMemory = productMemory;
     }
     async view(scope) {
         const [rules, items, rows, categories] = await Promise.all([
@@ -95,8 +98,10 @@ let StaffRulesService = class StaffRulesService {
                 id: i.id,
                 itemKey: i.itemKey,
                 category: i.category,
+                name: i.name,
                 updatedAt: i.updatedAt.toISOString(),
             })),
+            products: await this.productMemory.products(scope),
             categories,
         };
     }
@@ -106,6 +111,7 @@ exports.StaffRulesService = StaffRulesService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
         customer_accounts_service_1.CustomerAccountsService,
-        name_memory_service_1.NameMemoryService])
+        name_memory_service_1.NameMemoryService,
+        product_memory_service_1.ProductMemoryService])
 ], StaffRulesService);
 //# sourceMappingURL=staff-rules.service.js.map

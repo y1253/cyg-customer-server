@@ -253,6 +253,21 @@ export class SaveProductRuleDto {
   category!: string;
 }
 
+/** 2026-11-27: `POST …/products/merge` — item `from` becomes item `into` (both item keys). */
+export class MergeProductsDto {
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  from!: string;
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(191)
+  into!: string;
+}
+
 /** `DELETE /api/bookkeeping/products/rule` — back to the memory / the transaction's category. */
 export class ResetProductRuleDto {
   @Transform(trim)

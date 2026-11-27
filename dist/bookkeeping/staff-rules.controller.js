@@ -84,6 +84,12 @@ let StaffRulesController = StaffRulesController_1 = class StaffRulesController {
         this.log(staff, `saved item rule "${dto.itemKey}"`);
         return this.rules.view(staff.scope);
     }
+    async mergeItems(_companyId, staff, dto) {
+        await this.productMemory.mergeItems(staff.scope, dto.from, dto.into);
+        this.qbo.syncSoon(staff.scope.bookId);
+        this.log(staff, `merged item "${dto.from}" into "${dto.into}"`);
+        return this.rules.view(staff.scope);
+    }
     async resetItemRule(_companyId, staff, dto) {
         await this.productMemory.resetRule(staff.scope, dto.itemKey);
         this.log(staff, `removed item rule "${dto.itemKey}"`);
@@ -147,6 +153,16 @@ __decorate([
     __metadata("design:paramtypes", [Number, Object, agency_dto_1.SaveProductRuleDto]),
     __metadata("design:returntype", Promise)
 ], StaffRulesController.prototype, "saveItemRule", null);
+__decorate([
+    (0, common_1.Post)('items/merge'),
+    (0, common_1.HttpCode)(200),
+    __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),
+    __param(1, (0, staff_book_guard_1.Staff)()),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number, Object, agency_dto_1.MergeProductsDto]),
+    __metadata("design:returntype", Promise)
+], StaffRulesController.prototype, "mergeItems", null);
 __decorate([
     (0, common_1.Delete)('items'),
     __param(0, (0, common_1.Param)('companyId', common_1.ParseIntPipe)),

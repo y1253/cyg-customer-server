@@ -1,6 +1,6 @@
 import { QuickBooksSyncService } from '../quickbooks-sync/quickbooks-sync.service';
 import { CustomerAccountsService } from './customer-accounts.service';
-import { MergeNamesDto, ResetNameRuleDto, ResetProductRuleDto, SaveNameRuleDto, SaveProductRuleDto } from './dto/agency.dto';
+import { MergeNamesDto, ResetNameRuleDto, ResetProductRuleDto, SaveNameRuleDto, MergeProductsDto, SaveProductRuleDto } from './dto/agency.dto';
 import { NameMemoryService } from './name-memory.service';
 import { ProductMemoryService } from './product-memory.service';
 import { type StaffNameView } from './merge-names';
@@ -24,6 +24,7 @@ export declare class StaffRulesController {
     saveNameRule(_companyId: number, staff: StaffBook, dto: SaveNameRuleDto): Promise<StaffRulesView>;
     resetNameRule(_companyId: number, staff: StaffBook, dto: ResetNameRuleDto): Promise<StaffRulesView>;
     saveItemRule(_companyId: number, staff: StaffBook, dto: SaveProductRuleDto): Promise<StaffRulesView>;
+    mergeItems(_companyId: number, staff: StaffBook, dto: MergeProductsDto): Promise<StaffRulesView>;
     resetItemRule(_companyId: number, staff: StaffBook, dto: ResetProductRuleDto): Promise<StaffRulesView>;
     private log;
 }

@@ -49,6 +49,10 @@ export declare class SaveProductRuleDto {
     itemKey: string;
     category: string;
 }
+export declare class MergeProductsDto {
+    from: string;
+    into: string;
+}
 export declare class ResetProductRuleDto {
     itemKey: string;
 }
